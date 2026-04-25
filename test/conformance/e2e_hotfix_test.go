@@ -10,7 +10,7 @@ import (
 )
 
 // E2E Scenario 4: Hotfix/Emergency Flow
-// User Story: On-call engineer restores to old version, creates hotfix branch
+// User Story: On-call engineer restores to old version, creates hotfix workspace
 
 // TestE2E_Hotfix_EmergencyWorkflow tests the complete hotfix workflow
 func TestE2E_Hotfix_EmergencyWorkflow(t *testing.T) {
@@ -26,15 +26,15 @@ func TestE2E_Hotfix_EmergencyWorkflow(t *testing.T) {
 	t.Run("create_versions", func(t *testing.T) {
 		// v1.0 - initial stable release
 		os.WriteFile(versionPath, []byte("1.0"), 0644)
-		runJVSInRepo(t, repoPath, "snapshot", "v1.0", "--tag", "v1.0", "--tag", "stable")
+		runJVSInRepo(t, repoPath, "checkpoint", "v1.0", "--tag", "v1.0", "--tag", "stable")
 
 		// v1.1 - minor update
 		os.WriteFile(versionPath, []byte("1.1"), 0644)
-		runJVSInRepo(t, repoPath, "snapshot", "v1.1", "--tag", "v1.1")
+		runJVSInRepo(t, repoPath, "checkpoint", "v1.1", "--tag", "v1.1")
 
 		// v2.0 - major update
 		os.WriteFile(versionPath, []byte("2.0"), 0644)
-		runJVSInRepo(t, repoPath, "snapshot", "v2.0", "--tag", "v2.0")
+		runJVSInRepo(t, repoPath, "checkpoint", "v2.0", "--tag", "v2.0")
 	})
 
 	// Step 2: Emergency - restore to v1.1
@@ -50,31 +50,34 @@ func TestE2E_Hotfix_EmergencyWorkflow(t *testing.T) {
 			t.Errorf("expected '1.1', got '%s'", content)
 		}
 
-		// Verify detached state
-		if !strings.Contains(stdout, "DETACHED") && !strings.Contains(stderr, "DETACHED") {
-			t.Error("expected DETACHED state after restore")
+		if !strings.Contains(stdout, "Workspace current differs from latest") {
+			t.Errorf("expected historical status guidance, got stdout=%s stderr=%s", stdout, stderr)
+		}
+		status := readWorkspaceStatus(t, repoPath)
+		if status.AtLatest || status.Current == status.Latest {
+			t.Fatalf("expected current to differ from latest, got current=%s latest=%s", status.Current, status.Latest)
 		}
 	})
 
-	// Step 3: Try to create snapshot - must fail (detached)
-	t.Run("cannot_snapshot_in_detached", func(t *testing.T) {
+	// Step 3: Try to create checkpoint - must fail while current differs from latest
+	t.Run("cannot_checkpoint_while_historical", func(t *testing.T) {
 		os.WriteFile(versionPath, []byte("1.1.1"), 0644)
-		_, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "try")
+		_, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "try")
 		if code == 0 {
-			t.Error("snapshot should fail in detached state")
+			t.Error("checkpoint should fail while current differs from latest")
 		}
-		if !strings.Contains(stderr, "detach") && !strings.Contains(stderr, "DETACH") {
-			t.Logf("expected detach error, got: %s", stderr)
+		if !strings.Contains(stderr, "current differs from latest") {
+			t.Logf("expected historical-position error, got: %s", stderr)
 		}
 	})
 
-	// Step 4: Fork hotfix branch from detached state
+	// Step 4: Fork hotfix workspace from the historical current checkpoint
 	t.Run("fork_hotfix_branch", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "worktree", "fork", "hotfix-v1.1")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "fork", "hotfix-v1.1", "--discard-dirty")
 		if code != 0 {
 			t.Fatalf("fork failed: %s", stderr)
 		}
-		if !strings.Contains(stdout, "Created worktree") {
+		if !strings.Contains(stdout, "Created workspace") {
 			t.Errorf("expected success message, got: %s", stdout)
 		}
 	})
@@ -93,20 +96,20 @@ func TestE2E_Hotfix_EmergencyWorkflow(t *testing.T) {
 		// Create hotfix version
 		os.WriteFile(hotfixVersionPath, []byte("1.1.1"), 0644)
 		stdout, stderr, code := runJVSInWorktree(t, repoPath, "hotfix-v1.1",
-			"snapshot", "hotfix v1.1.1", "--tag", "v1.1.1", "--tag", "hotfix")
+			"checkpoint", "hotfix v1.1.1", "--tag", "v1.1.1", "--tag", "hotfix")
 		if code != 0 {
-			t.Fatalf("hotfix snapshot failed: %s", stderr)
+			t.Fatalf("hotfix checkpoint failed: %s", stderr)
 		}
-		if !strings.Contains(stdout, "Created snapshot") {
+		if !strings.Contains(stdout, "Created checkpoint") {
 			t.Errorf("expected success message, got: %s", stdout)
 		}
 	})
 
-	// Step 6: Return main to HEAD
-	t.Run("restore_main_head", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "restore", "HEAD")
+	// Step 6: Return main to latest
+	t.Run("restore_main_latest", func(t *testing.T) {
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "restore", "latest", "--discard-dirty")
 		if code != 0 {
-			t.Fatalf("restore HEAD failed: %s", stderr)
+			t.Fatalf("restore latest failed: %s", stderr)
 		}
 
 		// Verify main is back to v2.0
@@ -115,9 +118,8 @@ func TestE2E_Hotfix_EmergencyWorkflow(t *testing.T) {
 			t.Errorf("expected '2.0', got '%s'", content)
 		}
 
-		// Verify HEAD state message
-		if !strings.Contains(stdout, "HEAD") {
-			t.Errorf("expected HEAD state message, got: %s", stdout)
+		if !strings.Contains(stdout, "Workspace is at latest") {
+			t.Errorf("expected latest status message, got: %s", stdout)
 		}
 	})
 

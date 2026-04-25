@@ -151,8 +151,11 @@ func TestE2E_Journey_CompleteWorkflow(t *testing.T) {
 			t.Fatal("hotfix snapshot failed")
 		}
 
-		// Return main to HEAD
-		runJVSInRepo(t, repoPath, "restore", "HEAD")
+		// Return main to latest
+		_, stderr, code = runJVSInRepo(t, repoPath, "restore", "latest")
+		if code != 0 {
+			t.Fatalf("restore latest failed: %s", stderr)
+		}
 	})
 
 	// ===== Day 7: Verification and Cleanup =====
@@ -194,7 +197,7 @@ func TestE2E_Journey_CompleteWorkflow(t *testing.T) {
 		// Doctor should report healthy
 		stdout, stderr, code = runJVSInRepo(t, repoPath, "doctor", "--strict")
 		if code != 0 {
-			t.Fatalf("doctor failed: %s", stderr)
+			t.Fatalf("doctor failed: stdout=%s stderr=%s", stdout, stderr)
 		}
 		if !strings.Contains(stdout, "healthy") {
 			t.Errorf("expected healthy: %s", stdout)
@@ -250,19 +253,22 @@ func TestE2E_Journey_RestoreScenarios(t *testing.T) {
 		if len(ids) < 3 {
 			t.Skip("not enough snapshots")
 		}
-		runJVSInRepo(t, repoPath, "restore", "HEAD") // Reset first
+		_, stderr, code := runJVSInRepo(t, repoPath, "restore", "latest") // Reset first
+		if code != 0 {
+			t.Fatalf("restore latest failed: %s", stderr)
+		}
 
-		_, _, code := runJVSInRepo(t, repoPath, "restore", ids[2])
+		_, _, code = runJVSInRepo(t, repoPath, "restore", ids[2])
 		if code != 0 {
 			t.Fatal("restore by ID failed")
 		}
 	})
 
-	// Test restore HEAD
-	t.Run("restore_head", func(t *testing.T) {
-		_, _, code := runJVSInRepo(t, repoPath, "restore", "HEAD")
+	// Test restore latest
+	t.Run("restore_latest", func(t *testing.T) {
+		_, _, code := runJVSInRepo(t, repoPath, "restore", "latest")
 		if code != 0 {
-			t.Fatal("restore HEAD failed")
+			t.Fatal("restore latest failed")
 		}
 		content := readFile(t, mainPath, "version.txt")
 		if content != "v3.0" {

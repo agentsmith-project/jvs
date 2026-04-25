@@ -75,6 +75,28 @@ func writeUnsafeSnapshotTrap(t *testing.T, repoPath string, snapshotID model.Sna
 	require.NoError(t, os.WriteFile(descriptorPath, data, 0644))
 }
 
+func writeLineageDescriptor(t *testing.T, repoPath string, snapshotID model.SnapshotID, parentID *model.SnapshotID) {
+	t.Helper()
+
+	desc := &model.Descriptor{
+		SnapshotID:      snapshotID,
+		ParentID:        parentID,
+		WorktreeName:    "main",
+		CreatedAt:       time.Now().UTC(),
+		Engine:          model.EngineCopy,
+		PayloadRootHash: "hash",
+		IntegrityState:  model.IntegrityVerified,
+	}
+	checksum, err := integrity.ComputeDescriptorChecksum(desc)
+	require.NoError(t, err)
+	desc.DescriptorChecksum = checksum
+
+	data, err := json.MarshalIndent(desc, "", "  ")
+	require.NoError(t, err)
+	descriptorPath := filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json")
+	require.NoError(t, os.WriteFile(descriptorPath, data, 0644))
+}
+
 func TestVerifier_VerifySnapshot(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	snapshotID := createTestSnapshot(t, repoPath)
@@ -86,6 +108,35 @@ func TestVerifier_VerifySnapshot(t *testing.T) {
 	assert.True(t, result.ChecksumValid, "checksum should be valid")
 	assert.True(t, result.PayloadHashValid, "payload hash should be valid")
 	assert.False(t, result.TamperDetected, "no tamper should be detected")
+}
+
+func TestVerifierVerifySnapshotReportsMissingParent(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	childID := model.SnapshotID("1708300800000-deadbeef")
+	parentID := model.SnapshotID("1708300700000-feedface")
+	writeLineageDescriptor(t, repoPath, childID, &parentID)
+
+	result, err := verify.NewVerifier(repoPath).VerifySnapshot(childID, false)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.True(t, result.TamperDetected)
+	assert.Equal(t, "E_LINEAGE_PARENT_MISSING", result.ErrorCode)
+	assert.Contains(t, result.Error, "parent")
+}
+
+func TestVerifierVerifySnapshotReportsParentCycle(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	firstID := model.SnapshotID("1708300800000-deadbeef")
+	secondID := model.SnapshotID("1708300900000-feedface")
+	writeLineageDescriptor(t, repoPath, firstID, &secondID)
+	writeLineageDescriptor(t, repoPath, secondID, &firstID)
+
+	result, err := verify.NewVerifier(repoPath).VerifySnapshot(firstID, false)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.True(t, result.TamperDetected)
+	assert.Equal(t, "E_LINEAGE_CYCLE", result.ErrorCode)
+	assert.Contains(t, result.Error, "cycle")
 }
 
 func TestVerifier_VerifySnapshotRejectsPathLikeAndNonCanonicalIDs(t *testing.T) {

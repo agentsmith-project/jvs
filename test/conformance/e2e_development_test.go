@@ -10,7 +10,7 @@ import (
 )
 
 // E2E Scenario 2: Daily Development Cycle
-// User Story: Developer creates snapshots, restores to previous state, returns to HEAD
+// User Story: Developer creates checkpoints, restores to previous state, returns to latest
 
 // TestE2E_Development_DailyCycle tests a typical development day workflow
 func TestE2E_Development_DailyCycle(t *testing.T) {
@@ -25,31 +25,31 @@ func TestE2E_Development_DailyCycle(t *testing.T) {
 	// Step 1: Create morning baseline with tag
 	t.Run("morning_baseline", func(t *testing.T) {
 		os.WriteFile(versionPath, []byte("v1"), 0644)
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "morning baseline", "--tag", "daily")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "morning baseline", "--tag", "daily")
 		if code != 0 {
-			t.Fatalf("snapshot failed: %s", stderr)
+			t.Fatalf("checkpoint failed: %s", stderr)
 		}
-		if !strings.Contains(stdout, "Created snapshot") {
+		if !strings.Contains(stdout, "Created checkpoint") {
 			t.Errorf("expected success message, got: %s", stdout)
 		}
 	})
 
-	// Step 2: Create second snapshot (added feature)
+	// Step 2: Create second checkpoint (added feature)
 	t.Run("added_feature", func(t *testing.T) {
 		os.WriteFile(versionPath, []byte("v2"), 0644)
-		runJVSInRepo(t, repoPath, "snapshot", "added feature")
+		runJVSInRepo(t, repoPath, "checkpoint", "added feature")
 	})
 
-	// Step 3: Create third snapshot (version 3)
+	// Step 3: Create third checkpoint (version 3)
 	t.Run("version_3", func(t *testing.T) {
 		os.WriteFile(versionPath, []byte("v3"), 0644)
-		runJVSInRepo(t, repoPath, "snapshot", "version 3")
+		runJVSInRepo(t, repoPath, "checkpoint", "version 3")
 	})
 
-	// Get snapshot IDs from history
+	// Get checkpoint IDs from the public list
 	var snapshots []string
 	t.Run("get_snapshot_ids", func(t *testing.T) {
-		stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--json")
+		stdout, _, _ := runJVSInRepo(t, repoPath, "--json", "checkpoint", "list")
 		snapshots = extractAllSnapshotIDs(stdout)
 		if len(snapshots) < 3 {
 			t.Fatalf("expected at least 3 snapshots, got %d", len(snapshots))
@@ -60,7 +60,7 @@ func TestE2E_Development_DailyCycle(t *testing.T) {
 		t.Fatalf("cannot continue: need at least 3 snapshots, got %d", len(snapshots))
 	}
 
-	// Step 4: Restore to v2 snapshot (detached state)
+	// Step 4: Restore to v2 checkpoint so current differs from latest.
 	v2Snapshot := snapshots[len(snapshots)-2] // second oldest
 	t.Run("restore_to_v2", func(t *testing.T) {
 		stdout, stderr, code := runJVSInRepo(t, repoPath, "restore", v2Snapshot)
@@ -74,25 +74,25 @@ func TestE2E_Development_DailyCycle(t *testing.T) {
 			t.Errorf("expected 'v2', got '%s'", content)
 		}
 
-		// Verify detached state message
-		if !strings.Contains(stdout, "DETACHED") && !strings.Contains(stderr, "DETACHED") {
-			t.Error("expected DETACHED state message")
+		if !strings.Contains(stdout, "Workspace current differs from latest") {
+			t.Errorf("expected historical status guidance, got stdout=%s stderr=%s", stdout, stderr)
 		}
+		requireWorkspaceCurrentLatest(t, repoPath, v2Snapshot, snapshots[0], false)
 	})
 
-	// Step 5: Try to create snapshot in detached state - must fail
-	t.Run("snapshot_fails_in_detached", func(t *testing.T) {
-		_, _, code := runJVSInRepo(t, repoPath, "snapshot", "should fail")
+	// Step 5: Try to create checkpoint while current differs from latest - must fail
+	t.Run("checkpoint_fails_while_historical", func(t *testing.T) {
+		_, _, code := runJVSInRepo(t, repoPath, "checkpoint", "should fail")
 		if code == 0 {
-			t.Error("snapshot should fail in detached state")
+			t.Error("checkpoint should fail while current differs from latest")
 		}
 	})
 
-	// Step 6: Restore HEAD to return to latest
-	t.Run("restore_head", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "restore", "HEAD")
+	// Step 6: Restore latest to return to the newest checkpoint
+	t.Run("restore_latest", func(t *testing.T) {
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "restore", "latest")
 		if code != 0 {
-			t.Fatalf("restore HEAD failed: %s", stderr)
+			t.Fatalf("restore latest failed: %s", stderr)
 		}
 
 		// Verify file content is back to v3
@@ -101,20 +101,20 @@ func TestE2E_Development_DailyCycle(t *testing.T) {
 			t.Errorf("expected 'v3', got '%s'", content)
 		}
 
-		// Verify HEAD state message
-		if !strings.Contains(stdout, "HEAD") {
-			t.Errorf("expected HEAD state message, got: %s", stdout)
+		if !strings.Contains(stdout, "Workspace is at latest") {
+			t.Errorf("expected latest status message, got: %s", stdout)
 		}
+		requireWorkspaceCurrentLatest(t, repoPath, snapshots[0], snapshots[0], true)
 	})
 
-	// Step 7: Can create snapshots after restore HEAD
+	// Step 7: Can create checkpoints after restoring latest
 	t.Run("continue_working", func(t *testing.T) {
 		os.WriteFile(versionPath, []byte("v4"), 0644)
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "continue working")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "continue working")
 		if code != 0 {
-			t.Fatalf("snapshot failed: %s", stderr)
+			t.Fatalf("checkpoint failed: %s", stderr)
 		}
-		if !strings.Contains(stdout, "Created snapshot") {
+		if !strings.Contains(stdout, "Created checkpoint") {
 			t.Errorf("expected success message, got: %s", stdout)
 		}
 	})
@@ -155,13 +155,13 @@ func TestE2E_Development_WorkflowWithTags(t *testing.T) {
 
 	// Create snapshots with meaningful tags
 	os.WriteFile(filepath.Join(mainPath, "status.txt"), []byte("started"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "start of day", "--tag", "morning")
+	runJVSInRepo(t, repoPath, "checkpoint", "start of day", "--tag", "morning")
 
 	os.WriteFile(filepath.Join(mainPath, "status.txt"), []byte("feature-done"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "feature complete", "--tag", "feature")
+	runJVSInRepo(t, repoPath, "checkpoint", "feature complete", "--tag", "feature")
 
 	os.WriteFile(filepath.Join(mainPath, "status.txt"), []byte("end"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "end of day", "--tag", "eod")
+	runJVSInRepo(t, repoPath, "checkpoint", "end of day", "--tag", "eod")
 
 	// Restore by tag
 	t.Run("restore_by_tag", func(t *testing.T) {
@@ -176,9 +176,15 @@ func TestE2E_Development_WorkflowWithTags(t *testing.T) {
 		}
 	})
 
-	// Return to HEAD
-	t.Run("return_to_head", func(t *testing.T) {
-		runJVSInRepo(t, repoPath, "restore", "HEAD")
+	// Return to latest
+	t.Run("return_to_latest", func(t *testing.T) {
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "restore", "latest")
+		if code != 0 {
+			t.Fatalf("restore latest failed: %s", stderr)
+		}
+		if !strings.Contains(stdout, "Workspace is at latest") {
+			t.Errorf("expected latest status message, got: %s", stdout)
+		}
 		content := readFile(t, mainPath, "status.txt")
 		if content != "end" {
 			t.Errorf("expected 'end', got '%s'", content)

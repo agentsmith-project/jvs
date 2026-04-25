@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 
@@ -22,40 +21,44 @@ var gcCmd = &cobra.Command{
 var gcPlanCmd = &cobra.Command{
 	Use:   "plan",
 	Short: "Create a GC plan",
-	Run: func(cmd *cobra.Command, args []string) {
-		r := requireRepo()
+	RunE: func(cmd *cobra.Command, args []string) error {
+		r, err := discoverRequiredRepo()
+		if err != nil {
+			return err
+		}
 
 		collector := gc.NewCollector(r.Root)
 		plan, err := collector.Plan()
 		if err != nil {
-			fmtErr("create gc plan: %v", err)
-			os.Exit(1)
+			return fmt.Errorf("create gc plan: %w", err)
 		}
 
 		if jsonOutput {
-			outputJSON(plan)
-			return
+			return outputJSON(plan)
 		}
 
 		fmt.Printf("GC Plan: %s\n", plan.PlanID)
-		fmt.Printf("  Protected by lineage: %d snapshots\n", plan.ProtectedByLineage)
-		fmt.Printf("  Protected by pin: %d snapshots\n", plan.ProtectedByPin)
-		fmt.Printf("  To delete: %d snapshots\n", len(plan.ToDelete))
+		fmt.Printf("  Protected by lineage: %d checkpoints\n", plan.ProtectedByLineage)
+		fmt.Printf("  Protected by pin: %d checkpoints\n", plan.ProtectedByPin)
+		fmt.Printf("  To delete: %d checkpoints\n", len(plan.ToDelete))
 		fmt.Printf("  Estimated reclaim: ~%d MB\n", plan.DeletableBytesEstimate/1024/1024)
 		fmt.Println()
 		fmt.Printf("Run: jvs gc run --plan-id %s\n", plan.PlanID)
+		return nil
 	},
 }
 
 var gcRunCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Execute a GC plan",
-	Run: func(cmd *cobra.Command, args []string) {
-		r := requireRepo()
+	RunE: func(cmd *cobra.Command, args []string) error {
+		r, err := discoverRequiredRepo()
+		if err != nil {
+			return err
+		}
 
 		if gcPlanID == "" {
-			fmtErr("--plan-id is required")
-			os.Exit(1)
+			return fmt.Errorf("--plan-id is required")
 		}
 
 		collector := gc.NewCollector(r.Root)
@@ -65,8 +68,7 @@ var gcRunCmd = &cobra.Command{
 			// First get the plan to know total
 			plan, err := collector.LoadPlan(gcPlanID)
 			if err != nil {
-				fmtErr("load plan: %v", err)
-				os.Exit(1)
+				return fmt.Errorf("load plan: %w", err)
 			}
 
 			total := len(plan.ToDelete)
@@ -78,13 +80,17 @@ var gcRunCmd = &cobra.Command{
 		}
 
 		if err := collector.Run(gcPlanID); err != nil {
-			fmtErr("run gc: %v", err)
-			os.Exit(1)
+			if jsonOutput {
+				return err
+			}
+			return fmt.Errorf("%v", err)
 		}
 
-		if !jsonOutput {
-			fmt.Println("GC completed successfully.")
+		if jsonOutput {
+			return outputJSON(map[string]string{"plan_id": gcPlanID, "status": "completed"})
 		}
+		fmt.Println("GC completed successfully.")
+		return nil
 	},
 }
 

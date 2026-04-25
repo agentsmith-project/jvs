@@ -1,213 +1,87 @@
 package cli
 
 import (
-	"bufio"
 	"fmt"
-	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/jvs-project/jvs/internal/restore"
-	"github.com/jvs-project/jvs/internal/snapshot"
-	"github.com/jvs-project/jvs/internal/worktree"
 	"github.com/jvs-project/jvs/pkg/color"
-	"github.com/jvs-project/jvs/pkg/model"
 )
 
 var (
-	restoreInteractive bool
+	restoreInteractive    bool
+	restoreDiscardDirty   bool
+	restoreIncludeWorking bool
 )
 
 var restoreCmd = &cobra.Command{
-	Use:   "restore <snapshot-id>",
-	Short: "Restore worktree to a historical snapshot",
-	Long: `Restore worktree to a historical snapshot.
+	Use:   "restore <ref|latest>",
+	Short: "Restore the current workspace to a checkpoint",
+	Long: `Restore the current workspace to a checkpoint.
 
-This replaces the current worktree content with the specified snapshot.
-After restore, the worktree enters "detached" state - you cannot create
-new snapshots until you either:
-
-  - Create a new worktree from this point: jvs worktree fork <name>
-  - Return to the latest state: jvs restore HEAD
-
-The snapshot-id can be:
-  - A full snapshot ID
-  - A short ID prefix
-  - A tag name
-  - A note prefix (fuzzy match)
-  - "HEAD" to restore to the latest snapshot
+Refs can be current, latest, a full checkpoint ID, a unique short ID, or an exact tag.
 
 Examples:
-  jvs restore 1771589abc              # Restore by short ID
-  jvs restore v1.0                     # Restore by tag
-  jvs restore HEAD                     # Return to latest (exit detached)
-  jvs restore -i 177                   # Interactive mode with fuzzy match`,
+  jvs restore latest
+  jvs restore 1771589abc
+  jvs restore v1.0`,
 	Args: cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		r, wtName := requireWorktree()
-		snapshotArg := args[0]
-
-		var snapshotID model.SnapshotID
-
-		// Handle special "HEAD" case
-		if snapshotArg == "HEAD" {
-			restorer := restore.NewRestorer(r.Root, detectEngine(r.Root))
-			if err := restorer.RestoreToLatest(wtName); err != nil {
-				fmtErr("restore to latest: %v", err)
-				os.Exit(1)
-			}
-
-			// Load config to get the snapshot ID for output
-			wtMgr := worktree.NewManager(r.Root)
-			cfg, _ := wtMgr.Get(wtName)
-
-			if jsonOutput {
-				outputJSON(map[string]string{
-					"status":      "restored",
-					"snapshot_id": string(cfg.HeadSnapshotID),
-					"detached":    "false",
-				})
-			} else {
-				fmt.Printf("Restored to latest snapshot %s\n", cfg.HeadSnapshotID)
-				fmt.Println("Worktree is now at HEAD state.")
-			}
-			return
-		}
-
-		// Try to resolve the snapshot ID
-		snapshotID = model.SnapshotID(snapshotArg)
-
-		// Check if it's a valid snapshot ID (exists directly)
-		_, err := snapshot.LoadDescriptor(r.Root, snapshotID)
+	RunE: func(cmd *cobra.Command, args []string) error {
+		r, workspaceName, err := discoverRequiredWorktree()
 		if err != nil {
-			// In interactive mode, show fuzzy matches
-			if restoreInteractive && !jsonOutput {
-				matches, fuzzyErr := snapshot.FindMultiple(r.Root, snapshotArg, 10)
-				if fuzzyErr != nil {
-					fmtErr("search failed: %v", fuzzyErr)
-					os.Exit(1)
-				}
-				if len(matches) == 0 {
-					// Show enhanced error message with suggestions
-					fmt.Fprintln(os.Stderr, formatSnapshotNotFoundError(snapshotArg, r.Root))
-					os.Exit(1)
-				}
+			return err
+		}
 
-				// Show matches and prompt for selection
-				fmt.Println(snapshot.FormatMatchList(matches))
+		targetID, err := resolveCheckpointRef(r.Root, workspaceName, args[0])
+		if err != nil {
+			return err
+		}
 
-				// If only one match and it's a good match, confirm directly
-				if len(matches) == 1 && matches[0].Score >= 700 {
-					selected := matches[0]
-					fmt.Printf("\nRestore to %s? (%s) [y/N]: ",
-						selected.Desc.SnapshotID.ShortID(),
-						selected.Desc.Note)
-					if !confirm() {
-						fmt.Println("Restore cancelled.")
-						os.Exit(0)
-					}
-					snapshotID = selected.Desc.SnapshotID
-				} else {
-					// Prompt for selection
-					fmt.Printf("\nSelect snapshot to restore [1-%d]: ", len(matches))
-					choice := readInt(len(matches))
-
-					if choice == 0 {
-						fmt.Println("Restore cancelled.")
-						os.Exit(0)
-					}
-
-					selected := matches[choice-1]
-					fmt.Printf("\nRestore to %s? (%s) [y/N]: ",
-						selected.Desc.SnapshotID.ShortID(),
-						selected.Desc.Note)
-					if !confirm() {
-						fmt.Println("Restore cancelled.")
-						os.Exit(0)
-					}
-					snapshotID = selected.Desc.SnapshotID
-				}
-			} else {
-				// Non-interactive: use resolver with enhanced error messages
-				snapshotID = resolveSnapshotIDOrExit(r.Root, snapshotArg)
-			}
-		} else if restoreInteractive && !jsonOutput {
-			// Snapshot ID exists, but still confirm in interactive mode
-			desc, _ := snapshot.LoadDescriptor(r.Root, snapshotID)
-			note := desc.Note
-			if note == "" {
-				note = "(no note)"
-			}
-			fmt.Printf("\nRestore to %s? (%s) [y/N]: ", snapshotID, note)
-			if !confirm() {
-				fmt.Println("Restore cancelled.")
-				os.Exit(0)
+		if err := rejectDirtyWorkspace(r.Root, workspaceName, "restore", restoreDiscardDirty, restoreIncludeWorking); err != nil {
+			return err
+		}
+		if restoreIncludeWorking {
+			if _, err := createCheckpointDescriptor(r.Root, workspaceName, checkpointCreateOptions{
+				Note: "include working before restore",
+			}); err != nil {
+				return err
 			}
 		}
 
-		// Perform restore
-		restorer := restore.NewRestorer(r.Root, detectEngine(r.Root))
-		if err := restorer.Restore(wtName, snapshotID); err != nil {
-			fmtErr("restore: %v", err)
-			os.Exit(1)
+		if err := restore.NewRestorer(r.Root, detectEngine(r.Root)).Restore(workspaceName, targetID); err != nil {
+			return err
 		}
-
-		// Check if we're now detached
-		wtMgr := worktree.NewManager(r.Root)
-		cfg, _ := wtMgr.Get(wtName)
-		isDetached := cfg.IsDetached()
 
 		if jsonOutput {
-			outputJSON(map[string]interface{}{
-				"status":      "restored",
-				"snapshot_id": string(snapshotID),
-				"detached":    isDetached,
-			})
-		} else {
-			fmt.Printf("\nRestored to snapshot %s\n", color.SnapshotID(snapshotID.String()))
-			if isDetached {
-				fmt.Println(color.Warning("Worktree is now in DETACHED state."))
-				fmt.Println(color.Dim("To continue working from here: jvs worktree fork <name>"))
-				fmt.Println(color.Dim("To return to latest: jvs restore HEAD"))
-			} else {
-				fmt.Println(color.Success("Worktree is now at HEAD state."))
+			result, err := statusForRestore(r.Root, workspaceName)
+			if err != nil {
+				return err
 			}
+			result["checkpoint_id"] = string(targetID)
+			return outputJSON(result)
 		}
+
+		status, err := buildWorkspaceStatus(r.Root, workspaceName)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Restored to checkpoint %s\n", color.SnapshotID(targetID.String()))
+		if status.AtLatest {
+			fmt.Println(color.Success("Workspace is at latest."))
+		} else {
+			fmt.Println(color.Warning("Workspace current differs from latest."))
+			fmt.Println(color.Dim("To continue from here: jvs fork <name>"))
+			fmt.Println(color.Dim("To return to latest: jvs restore latest"))
+		}
+		return nil
 	},
 }
 
 func init() {
-	restoreCmd.Flags().BoolVarP(&restoreInteractive, "interactive", "i", false, "interactive mode with fuzzy matching and confirmation")
+	restoreCmd.Flags().BoolVarP(&restoreInteractive, "interactive", "i", false, "interactive confirmation")
+	restoreCmd.Flags().Lookup("interactive").Hidden = true
+	restoreCmd.Flags().BoolVar(&restoreDiscardDirty, "discard-dirty", false, "discard dirty workspace changes for this operation")
+	restoreCmd.Flags().BoolVar(&restoreIncludeWorking, "include-working", false, "checkpoint dirty workspace changes before this operation")
 	rootCmd.AddCommand(restoreCmd)
-}
-
-// confirm prompts the user for yes/no confirmation.
-func confirm() bool {
-	reader := bufio.NewReader(os.Stdin)
-	line, _ := reader.ReadString('\n')
-	line = strings.TrimSpace(strings.ToLower(line))
-	return line == "y" || line == "yes"
-}
-
-// readInt reads an integer from stdin within range [1, max].
-// Returns 0 if user wants to cancel.
-func readInt(max int) int {
-	reader := bufio.NewReader(os.Stdin)
-	line, _ := reader.ReadString('\n')
-	line = strings.TrimSpace(line)
-
-	if line == "" || line == "0" || strings.ToLower(line) == "cancel" {
-		return 0
-	}
-
-	var choice int
-	if _, err := fmt.Sscanf(line, "%d", &choice); err != nil {
-		return 0
-	}
-
-	if choice < 1 || choice > max {
-		return 0
-	}
-	return choice
 }

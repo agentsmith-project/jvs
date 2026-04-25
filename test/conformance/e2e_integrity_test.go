@@ -240,13 +240,16 @@ func TestE2E_Integrity_VerifyAfterRestore(t *testing.T) {
 		}
 	})
 
-	// Restore HEAD and verify
-	t.Run("restore_head_and_verify", func(t *testing.T) {
-		runJVSInRepo(t, repoPath, "restore", "HEAD")
-
-		_, _, code := runJVSInRepo(t, repoPath, "verify", "--all")
+	// Restore latest and verify
+	t.Run("restore_latest_and_verify", func(t *testing.T) {
+		_, stderr, code := runJVSInRepo(t, repoPath, "restore", "latest")
 		if code != 0 {
-			t.Error("verify should pass after restore HEAD")
+			t.Fatalf("restore latest failed: %s", stderr)
+		}
+
+		_, _, code = runJVSInRepo(t, repoPath, "verify", "--all")
+		if code != 0 {
+			t.Error("verify should pass after restore latest")
 		}
 	})
 }

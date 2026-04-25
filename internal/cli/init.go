@@ -2,53 +2,56 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
 
+	"github.com/jvs-project/jvs/internal/engine"
 	"github.com/jvs-project/jvs/internal/repo"
 	"github.com/jvs-project/jvs/pkg/color"
-	"github.com/jvs-project/jvs/pkg/pathutil"
 )
 
 var initCmd = &cobra.Command{
-	Use:   "init <name>",
+	Use:   "init <repo-path>",
 	Short: "Initialize a new JVS repository",
-	Long: `Initialize a new JVS repository in a directory named <name>.
+	Long: `Initialize a new JVS repository at <repo-path>.
 
 This creates:
   - .jvs/ directory with all metadata structures
-  - main/ worktree as the primary payload directory
+  - main/ workspace as the primary payload directory
   - format_version file (version 1)`,
 	Args: cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		name := args[0]
-
-		if err := pathutil.ValidateName(name); err != nil {
-			fmtErr("%v", err)
-			os.Exit(1)
-		}
-
-		cwd, _ := os.Getwd()
-		repoPath := filepath.Join(cwd, name)
-
-		r, err := repo.Init(repoPath, name)
+	RunE: func(cmd *cobra.Command, args []string) error {
+		r, err := repo.InitTarget(args[0])
 		if err != nil {
-			fmtErr("failed to initialize repository: %v", err)
-			os.Exit(1)
+			return fmt.Errorf("failed to initialize repository: %w", err)
+		}
+		mainWorkspace := filepath.Join(r.Root, "main")
+		capabilities, err := engine.ProbeCapabilities(r.Root, false)
+		if err != nil {
+			return fmt.Errorf("probe capabilities: %w", err)
 		}
 
 		if jsonOutput {
-			outputJSON(map[string]any{
+			return outputJSON(map[string]any{
 				"repo_root":      r.Root,
+				"main_workspace": mainWorkspace,
 				"format_version": r.FormatVersion,
 				"repo_id":        r.RepoID,
+				"capabilities":   capabilities,
 			})
-		} else {
-			fmt.Printf("Initialized JVS repository in %s\n", color.Success(repoPath))
-			fmt.Printf("  Main worktree: %s/main\n", color.Highlight(repoPath))
 		}
+
+		fmt.Printf("Initialized JVS repository\n")
+		fmt.Printf("  Repo root: %s\n", color.Success(r.Root))
+		fmt.Printf("  Main workspace: %s\n", color.Highlight(mainWorkspace))
+		fmt.Printf("  Capabilities: juicefs=%t reflink=%s copy=%t recommended=%s\n",
+			capabilities.JuiceFS.Supported,
+			capabilities.Reflink.Confidence,
+			capabilities.Copy.Supported,
+			capabilities.RecommendedEngine,
+		)
+		return nil
 	},
 }
 

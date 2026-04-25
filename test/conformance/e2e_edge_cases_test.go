@@ -141,8 +141,8 @@ func TestE2E_EdgeCases_VerifyNonExistentSnapshot(t *testing.T) {
 	})
 }
 
-// TestE2E_EdgeCases_RestoreWhenDetached tests restore operations while in detached state
-func TestE2E_EdgeCases_RestoreWhenDetached(t *testing.T) {
+// TestE2E_EdgeCases_RestoreWhenHistorical tests restore operations while current differs from latest.
+func TestE2E_EdgeCases_RestoreWhenHistorical(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 	mainPath := filepath.Join(repoPath, "main")
 
@@ -160,55 +160,54 @@ func TestE2E_EdgeCases_RestoreWhenDetached(t *testing.T) {
 		t.Fatal("need at least 2 snapshots")
 	}
 
-	// Restore to first (enters detached state)
-	runJVSInRepo(t, repoPath, "restore", ids[len(ids)-2])
+	// Restore to the historical checkpoint.
+	runJVSInRepo(t, repoPath, "restore", ids[len(ids)-1])
+	requireWorkspaceCurrentLatest(t, repoPath, ids[len(ids)-1], ids[0], false)
 
-	// Now restore while already detached
-	t.Run("restore_from_detached", func(t *testing.T) {
-		// Restore to latest (exit detached)
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "restore", "HEAD")
+	// Now restore while current differs from latest.
+	t.Run("restore_from_historical", func(t *testing.T) {
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "restore", "latest")
 		if code != 0 {
-			t.Errorf("restore HEAD should succeed: %s", stderr)
+			t.Errorf("restore latest should succeed: %s", stderr)
 		}
 		if !strings.Contains(stdout, "Restored") {
 			t.Logf("Restore output: %s", stdout)
 		}
+		requireWorkspaceCurrentLatest(t, repoPath, ids[0], ids[0], true)
 	})
 }
 
-// TestE2E_EdgeCases_SnapshotInDetachedState tests snapshot creation while detached
-func TestE2E_EdgeCases_SnapshotInDetachedState(t *testing.T) {
+// TestE2E_EdgeCases_CheckpointWhileHistorical tests checkpoint creation while current differs from latest.
+func TestE2E_EdgeCases_CheckpointWhileHistorical(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 	mainPath := filepath.Join(repoPath, "main")
 
-	// Create two snapshots
+	// Create two checkpoints
 	os.WriteFile(filepath.Join(mainPath, "state.txt"), []byte("first"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "first")
+	runJVSInRepo(t, repoPath, "checkpoint", "first")
 
 	os.WriteFile(filepath.Join(mainPath, "state.txt"), []byte("second"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "second")
+	runJVSInRepo(t, repoPath, "checkpoint", "second")
 
-	// Restore to first (enters detached)
-	stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--json")
+	// Restore to the first checkpoint so current differs from latest.
+	stdout, _, _ := runJVSInRepo(t, repoPath, "--json", "checkpoint", "list")
 	ids := extractAllSnapshotIDs(stdout)
 	if len(ids) < 2 {
 		t.Fatal("need at least 2 snapshots")
 	}
-	runJVSInRepo(t, repoPath, "restore", ids[len(ids)-2])
+	runJVSInRepo(t, repoPath, "restore", ids[len(ids)-1])
+	requireWorkspaceCurrentLatest(t, repoPath, ids[len(ids)-1], ids[0], false)
 
-	// Snapshot while detached should work
-	t.Run("snapshot_while_detached", func(t *testing.T) {
-		os.WriteFile(filepath.Join(mainPath, "detached.txt"), []byte("work"), 0644)
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "detached work")
-		if code != 0 {
-			t.Errorf("snapshot should work while detached: %s", stderr)
+	t.Run("checkpoint_while_historical", func(t *testing.T) {
+		os.WriteFile(filepath.Join(mainPath, "historical.txt"), []byte("work"), 0644)
+		_, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "historical work")
+		if code == 0 {
+			t.Error("checkpoint should fail while current differs from latest")
 		}
-		if !strings.Contains(stdout, "Created snapshot") {
-			t.Error("expected success message")
+		if !strings.Contains(stderr, "current differs from latest") {
+			t.Errorf("expected historical-position error, got: %s", stderr)
 		}
-
-		// Should still be detached (not at HEAD)
-		_, _, _ = runJVSInRepo(t, repoPath, "history")
+		requireWorkspaceCurrentLatest(t, repoPath, ids[len(ids)-1], ids[0], false)
 	})
 }
 
@@ -272,10 +271,10 @@ func TestE2E_EdgeCases_SpecialCharactersInFilename(t *testing.T) {
 
 	// Create files with various special characters
 	specialFiles := map[string]string{
-		"file-with-dashes.txt":       "dashes",
-		"file_with_underscores.txt":   "underscores",
-		"file.dots.and.more.txt":      "dots",
-		"file(1).txt":                  "parentheses",
+		"file-with-dashes.txt":      "dashes",
+		"file_with_underscores.txt": "underscores",
+		"file.dots.and.more.txt":    "dots",
+		"file(1).txt":               "parentheses",
 	}
 
 	for filename, content := range specialFiles {
@@ -296,7 +295,7 @@ func TestE2E_EdgeCases_SpecialCharactersInFilename(t *testing.T) {
 		if len(ids) > 0 {
 			runJVSInRepo(t, repoPath, "restore", "nonexistent-test-id")
 			// Then restore back to verify
-			runJVSInRepo(t, repoPath, "restore", "HEAD")
+			runJVSInRepo(t, repoPath, "restore", "latest")
 		}
 	})
 }
@@ -377,9 +376,9 @@ func TestE2E_EdgeCases_RestoreSameSnapshot(t *testing.T) {
 	runJVSInRepo(t, repoPath, "snapshot", "original")
 
 	t.Run("restore_same_snapshot", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "restore", "HEAD")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "restore", "latest")
 		if code != 0 {
-			t.Errorf("restore to HEAD (same snapshot) should succeed: %s", stderr)
+			t.Errorf("restore to latest (same checkpoint) should succeed: %s", stderr)
 		}
 		t.Logf("Restore same snapshot: %s", stdout)
 	})
@@ -560,10 +559,10 @@ func TestE2E_EdgeCases_UnicodeFilenames(t *testing.T) {
 
 	// Create files with unicode names
 	unicodeFiles := map[string]string{
-		"файл.txt":            "russian",
-		"文件.txt":             "chinese",
-		"αρχείο.txt":          "greek",
-		"test-ñoño.txt":        "spanish",
+		"файл.txt":      "russian",
+		"文件.txt":        "chinese",
+		"αρχείο.txt":    "greek",
+		"test-ñoño.txt": "spanish",
 	}
 
 	for filename, content := range unicodeFiles {

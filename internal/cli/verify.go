@@ -15,16 +15,16 @@ var (
 )
 
 var verifyCmd = &cobra.Command{
-	Use:   "verify [<snapshot-id>]",
-	Short: "Verify snapshot integrity",
-	Long: `Verify snapshot integrity.
+	Use:   "verify [<checkpoint-id>]",
+	Short: "Verify checkpoint integrity",
+	Long: `Verify checkpoint integrity.
 
 Checks descriptor checksum and logical payload hash.
 
 Examples:
-  jvs verify                    # Verify all snapshots
-  jvs verify 1771589abc         # Verify specific snapshot
-  jvs verify --all              # Verify all snapshots`,
+  jvs verify                    # Verify all checkpoints
+  jvs verify 1771589abc         # Verify specific checkpoint
+  jvs verify --all              # Verify all checkpoints`,
 	Args: cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		r := requireRepo()
@@ -46,7 +46,7 @@ Examples:
 			}
 
 			if jsonOutput {
-				outputJSON(results)
+				outputJSON(publicVerifyResults(results))
 				if tampered {
 					os.Exit(1)
 				}
@@ -73,14 +73,14 @@ Examples:
 			}
 
 			if jsonOutput {
-				outputJSON(result)
+				outputJSON(publicVerify(result))
 				if result.TamperDetected {
 					os.Exit(1)
 				}
 				return
 			}
 
-			fmt.Printf("Snapshot: %s\n", result.SnapshotID)
+			fmt.Printf("Checkpoint: %s\n", result.SnapshotID)
 			fmt.Printf("  Checksum: %v\n", result.ChecksumValid)
 			fmt.Printf("  Payload hash: %v\n", result.PayloadHashValid)
 			if result.TamperDetected {
@@ -92,6 +92,6 @@ Examples:
 }
 
 func init() {
-	verifyCmd.Flags().BoolVar(&verifyAll, "all", false, "verify all snapshots")
+	verifyCmd.Flags().BoolVar(&verifyAll, "all", false, "verify all checkpoints")
 	rootCmd.AddCommand(verifyCmd)
 }

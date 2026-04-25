@@ -20,22 +20,24 @@ var (
 
 var worktreeCmd = &cobra.Command{
 	Use:     "worktree",
-	Short:   "Manage worktrees",
+	Short:   "Manage workspaces (legacy alias)",
 	Aliases: []string{"wt"},
+	Hidden:  true,
 }
 
 var worktreeCreateCmd = &cobra.Command{
 	Use:   "create <name>",
-	Short: "Create a new worktree",
-	Long: `Create a new worktree.
+	Short: "Create a new workspace (legacy alias)",
+	Long: `Create a new workspace.
 
-If --from is specified, the worktree is created from an existing snapshot,
-otherwise an empty worktree is created.
+If --from is specified, the workspace is created from an existing checkpoint,
+otherwise an empty workspace is created. Prefer jvs fork for new workspaces
+from checkpoints.
 
 Examples:
-  jvs worktree create feature-x                    # Create empty worktree
-  jvs worktree create hotfix --from v1.0           # Create from tag
-  jvs worktree create feature-y --from 1771589-abc # Create from snapshot`,
+  jvs fork feature-x                               # Create from current checkpoint
+  jvs fork v1.0 hotfix                             # Create from tag
+  jvs worktree create scratch                      # Legacy empty workspace`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		r := requireRepo()
@@ -43,7 +45,7 @@ Examples:
 
 		mgr := worktree.NewManager(r.Root)
 
-		// If --from is specified, create from snapshot
+		// If --from is specified, create from checkpoint.
 		if worktreeCreateFrom != "" {
 			snapshotID := resolveSnapshotIDOrExit(r.Root, worktreeCreateFrom)
 
@@ -60,7 +62,7 @@ Examples:
 				return err
 			})
 			if err != nil {
-				fmtErr("create worktree from snapshot: %v", err)
+				fmtErr("create workspace from checkpoint: %v", err)
 				os.Exit(1)
 			}
 
@@ -72,7 +74,7 @@ Examples:
 					fmtErr("resolve worktree path: %v", err)
 					os.Exit(1)
 				}
-				fmt.Printf("Created worktree '%s' from snapshot %s\n", color.Success(name), color.SnapshotID(snapshotID.String()))
+				fmt.Printf("Created worktree '%s' from checkpoint %s\n", color.Success(name), color.SnapshotID(snapshotID.String()))
 				fmt.Printf("Path: %s\n", color.Dim(path))
 			}
 			return
@@ -130,10 +132,10 @@ func resolveSnapshotIDOrExit(repoRoot, ref string) model.SnapshotID {
 
 var worktreeListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List all worktrees",
-	Long: `List all worktrees in the repository.
+	Short: "List all workspaces (legacy alias)",
+	Long: `List all workspaces in the repository.
 
-Shows each worktree name and its current HEAD snapshot.`,
+Shows each workspace name and its current checkpoint. Prefer jvs workspace list.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		r := requireRepo()
 
@@ -165,14 +167,15 @@ Shows each worktree name and its current HEAD snapshot.`,
 
 var worktreePathCmd = &cobra.Command{
 	Use:   "path [<name>]",
-	Short: "Print the path to a worktree",
-	Long: `Print the path to a worktree.
+	Short: "Print the path to a workspace (legacy alias)",
+	Long: `Print the path to a workspace.
 
-If no name is specified, prints the path of the current worktree.
+If no name is specified, prints the path of the current workspace.
+Prefer jvs workspace path.
 
 Examples:
-  jvs worktree path              # Path of current worktree
-  jvs worktree path main         # Path of named worktree`,
+  jvs workspace path             # Path of current workspace
+  jvs workspace path main        # Path of named workspace`,
 	Args: cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		r := requireRepo()
@@ -207,13 +210,14 @@ Examples:
 
 var worktreeRenameCmd = &cobra.Command{
 	Use:   "rename <old> <new>",
-	Short: "Rename a worktree",
-	Long: `Rename a worktree.
+	Short: "Rename a workspace (legacy alias)",
+	Long: `Rename a workspace.
 
-Changes the worktree name without affecting its content or snapshots.
+Changes the workspace name without affecting its content or checkpoints.
+Prefer jvs workspace rename.
 
 Examples:
-  jvs worktree rename feature-1 feature-branch`,
+  jvs workspace rename feature-1 feature-branch`,
 	Args: cobra.ExactArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
 		r := requireRepo()
@@ -243,15 +247,16 @@ Examples:
 
 var worktreeRemoveCmd = &cobra.Command{
 	Use:   "remove <name>",
-	Short: "Remove a worktree",
-	Long: `Remove a worktree.
+	Short: "Remove a workspace (legacy alias)",
+	Long: `Remove a workspace.
 
-The worktree payload and metadata are deleted, but all snapshots remain.
-Use --force to remove a worktree that is in detached state.
+The workspace payload and metadata are deleted, but all checkpoints remain.
+Use --force when the workspace current differs from latest. Prefer
+jvs workspace remove.
 
 Examples:
-  jvs worktree remove feature-x      # Remove worktree
-  jvs worktree remove --force old    # Force remove detached worktree`,
+  jvs workspace remove feature-x      # Remove workspace
+  jvs workspace remove --force old    # Force remove when current differs from latest`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		r := requireRepo()
@@ -259,26 +264,9 @@ Examples:
 
 		mgr := worktree.NewManager(r.Root)
 
-		// First check if worktree exists for better error message
-		_, err := mgr.Get(name)
-		if err != nil {
-			// Worktree doesn't exist - show helpful error
-			fmt.Fprintln(os.Stderr, formatWorktreeNotFoundError(name, r.Root))
+		if _, err := validateWorkspaceRemoval(r.Root, name, worktreeForce); err != nil {
+			fmtErr("%v", err)
 			os.Exit(1)
-		}
-
-		// Check for detached state unless --force
-		if !worktreeForce {
-			cfg, err := mgr.Get(name)
-			if err == nil && cfg.IsDetached() {
-				fmtErr("worktree '%s' is in detached state", name)
-				fmt.Println()
-				fmt.Printf("Current position: %s\n", cfg.HeadSnapshotID)
-				fmt.Printf("Latest snapshot: %s\n", cfg.LatestSnapshotID)
-				fmt.Println()
-				fmt.Println("To remove anyway, use: jvs worktree remove --force " + name)
-				os.Exit(1)
-			}
 		}
 
 		if err := mgr.Remove(name); err != nil {
@@ -293,26 +281,28 @@ Examples:
 }
 
 var worktreeForkCmd = &cobra.Command{
-	Use:   "fork [snapshot-id] [name]",
-	Short: "Create a new worktree from a snapshot",
-	Long: `Create a new worktree from a snapshot.
+	Use:   "fork [checkpoint-ref] [name]",
+	Short: "Create a workspace from a checkpoint (legacy alias)",
+	Long: `Create a workspace from a checkpoint.
 
-The new worktree will be at HEAD state - you can create snapshots immediately.
+This hidden legacy alias remains for older scripts. Prefer jvs fork.
 
-If snapshot-id is omitted, uses the current worktree's position.
+If checkpoint-ref is omitted, uses the current workspace checkpoint.
 If name is omitted, auto-generates a name.
 
-The snapshot-id can be:
-  - A full snapshot ID
+The checkpoint ref can be:
+  - current
+  - latest
+  - A full checkpoint ID
   - A short ID prefix
   - A tag name
   - A note prefix (fuzzy match)
 
 Examples:
-  jvs worktree fork                           # Fork from current position, auto-name
-  jvs worktree fork feature-x                 # Fork from current position with name
-  jvs worktree fork v1.0 hotfix               # Fork from tag v1.0, name hotfix
-  jvs worktree fork 1771589-abc feature-y     # Fork from specific snapshot`,
+  jvs fork                                    # Fork from current, auto-name
+  jvs fork feature-x                          # Fork from current with name
+  jvs fork v1.0 hotfix                        # Fork from tag v1.0, name hotfix
+  jvs fork 1771589-abc feature-y              # Fork from specific checkpoint`,
 	Args: cobra.MaximumNArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
 		r, wtName := requireWorktree()
@@ -320,10 +310,10 @@ Examples:
 		var snapshotID model.SnapshotID
 		var name string
 
-		// Parse arguments
+		// Parse arguments.
 		switch len(args) {
 		case 0:
-			// No args: use current position, auto-generate name
+			// No args: use current checkpoint, auto-generate name.
 			mgr := worktree.NewManager(r.Root)
 			cfg, err := mgr.Get(wtName)
 			if err != nil {
@@ -331,25 +321,25 @@ Examples:
 				os.Exit(1)
 			}
 			if cfg.HeadSnapshotID == "" {
-				fmtErr("current worktree has no snapshots to fork from")
+				fmtErr("current workspace has no checkpoints to fork from")
 				os.Exit(1)
 			}
 			snapshotID = cfg.HeadSnapshotID
 			name = "" // auto-generate
 
 		case 1:
-			// One arg: could be snapshot-id or name
-			// Try to interpret as snapshot-id first
+			// One arg: could be checkpoint ref or name.
+			// Try to interpret as checkpoint ref first.
 			arg := args[0]
 
-			// Try to resolve as snapshot
+			// Try to resolve as checkpoint.
 			id, err := resolveSnapshotID(r.Root, arg)
 			if err == nil {
-				// Successfully resolved as snapshot
+				// Successfully resolved as checkpoint.
 				snapshotID = id
 				name = "" // auto-generate
 			} else {
-				// Not a snapshot, treat as name, use current position
+				// Not a checkpoint, treat as name and use current.
 				mgr := worktree.NewManager(r.Root)
 				cfg, err := mgr.Get(wtName)
 				if err != nil {
@@ -357,7 +347,7 @@ Examples:
 					os.Exit(1)
 				}
 				if cfg.HeadSnapshotID == "" {
-					fmtErr("current worktree has no snapshots to fork from")
+					fmtErr("current workspace has no checkpoints to fork from")
 					os.Exit(1)
 				}
 				snapshotID = cfg.HeadSnapshotID
@@ -365,7 +355,7 @@ Examples:
 			}
 
 		case 2:
-			// Two args: snapshot-id and name
+			// Two args: checkpoint ref and name.
 			snapshotArg := args[0]
 			name = args[1]
 
@@ -377,7 +367,7 @@ Examples:
 			name = fmt.Sprintf("fork-%s", snapshotID.ShortID())
 		}
 
-		// Verify snapshot exists and is valid
+		// Verify checkpoint exists and is valid.
 		if err := verifySnapshotStrong(r.Root, snapshotID); err != nil {
 			fmtErr("verify snapshot: %v", err)
 			os.Exit(1)
@@ -385,7 +375,7 @@ Examples:
 
 		eng := newCloneEngine(r.Root)
 
-		// Fork the worktree
+		// Fork the workspace.
 		mgr := worktree.NewManager(r.Root)
 		cfg, err := mgr.Fork(snapshotID, name, func(src, dst string) error {
 			_, err := eng.Clone(src, dst)
@@ -404,16 +394,16 @@ Examples:
 				fmtErr("resolve worktree path: %v", err)
 				os.Exit(1)
 			}
-			fmt.Printf("Created worktree '%s' from snapshot %s\n", color.Success(name), color.SnapshotID(snapshotID.String()))
+			fmt.Printf("Created worktree '%s' from checkpoint %s\n", color.Success(name), color.SnapshotID(snapshotID.String()))
 			fmt.Printf("Path: %s\n", color.Dim(path))
-			fmt.Println(color.Success("Worktree is at HEAD state - you can create snapshots."))
+			fmt.Println(color.Success("Workspace is at latest - you can create checkpoints."))
 		}
 	},
 }
 
 func init() {
-	worktreeCreateCmd.Flags().StringVar(&worktreeCreateFrom, "from", "", "create from snapshot (ID, tag, or note prefix)")
-	worktreeRemoveCmd.Flags().BoolVarP(&worktreeForce, "force", "f", false, "force removal even if in detached state")
+	worktreeCreateCmd.Flags().StringVar(&worktreeCreateFrom, "from", "", "create from checkpoint (ID, tag, or note prefix)")
+	worktreeRemoveCmd.Flags().BoolVarP(&worktreeForce, "force", "f", false, "force removal when current differs from latest")
 	worktreeCmd.AddCommand(worktreeCreateCmd)
 	worktreeCmd.AddCommand(worktreeListCmd)
 	worktreeCmd.AddCommand(worktreePathCmd)

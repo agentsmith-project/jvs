@@ -85,9 +85,12 @@ func TestE2E_Release_VersionTagging(t *testing.T) {
 			t.Errorf("expected '1.0.0-beta', got '%s'", content)
 		}
 
-		// Should be in detached state
-		if !strings.Contains(stdout, "DETACHED") && !strings.Contains(stderr, "DETACHED") {
-			t.Error("expected DETACHED state after restore to beta")
+		if !strings.Contains(stdout, "Workspace current differs from latest") {
+			t.Errorf("expected historical status guidance after restore to beta, got stdout=%s stderr=%s", stdout, stderr)
+		}
+		status := readWorkspaceStatus(t, repoPath)
+		if status.AtLatest || status.Current == status.Latest {
+			t.Fatalf("expected current to differ from latest, got current=%s latest=%s", status.Current, status.Latest)
 		}
 	})
 
@@ -132,7 +135,7 @@ func TestE2E_Release_VersionTagging(t *testing.T) {
 
 	// Step 8: Verify worktrees are independent
 	t.Run("verify_independence", func(t *testing.T) {
-		// Main worktree should still be at beta (detached)
+		// Main workspace should still be at the historical beta checkpoint.
 		mainContent := readFile(t, mainPath, "VERSION")
 		if mainContent != "1.0.0-beta" {
 			t.Errorf("main should still be at beta, got '%s'", mainContent)

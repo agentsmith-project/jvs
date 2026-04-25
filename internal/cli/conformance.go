@@ -16,8 +16,9 @@ var (
 )
 
 var conformanceCmd = &cobra.Command{
-	Use:   "conformance",
-	Short: "Conformance test commands",
+	Use:    "conformance",
+	Short:  "Conformance test commands",
+	Hidden: true,
 }
 
 var conformanceRunCmd = &cobra.Command{

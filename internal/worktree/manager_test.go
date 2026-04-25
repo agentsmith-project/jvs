@@ -121,6 +121,19 @@ func TestManager_Create(t *testing.T) {
 	assert.DirExists(t, filepath.Join(repoPath, "worktrees", "feature"))
 }
 
+func TestManagerCreateReturnsRepoBusyWhenMutationLockHeld(t *testing.T) {
+	repoPath := setupTestRepo(t)
+
+	held, err := repo.AcquireMutationLock(repoPath, "held-by-test")
+	require.NoError(t, err)
+	defer held.Release()
+
+	mgr := worktree.NewManager(repoPath)
+	_, err = mgr.Create("feature", nil)
+	require.ErrorIs(t, err, errclass.ErrRepoBusy)
+	assertWorktreeNotCreated(t, repoPath, "feature")
+}
+
 func TestManager_CreateLikeRejectsExistingPayloadResiduals(t *testing.T) {
 	for _, op := range []string{"create", "create-from", "fork"} {
 		for _, kind := range []string{"dir", "file", "symlink"} {

@@ -21,8 +21,9 @@ var (
 )
 
 var historyCmd = &cobra.Command{
-	Use:   "history",
-	Short: "Show snapshot history for the current worktree",
+	Use:    "history",
+	Short:  "Show snapshot history for the current worktree",
+	Hidden: true,
 	Long: `Show snapshot history for the current worktree.
 
 Traverses the lineage chain from head backwards.

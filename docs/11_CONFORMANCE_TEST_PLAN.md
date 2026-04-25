@@ -1,39 +1,123 @@
-# Conformance Test Plan (v7.0)
+# Conformance Test Plan (v0)
 
 ## Purpose
-Define mandatory spec tests that gate release quality.
+
+Define the release-blocking public CLI contract tests for the v0 line. This
+plan is intentionally scoped to observable behavior documented in
+`docs/02_CLI_SPEC.md`; implementation layout and private storage choices are
+out of scope.
 
 ## Profiles
-- `dev`: core safety/integrity checks
-- `release`: full matrix, no downgrade options
 
-## Mandatory tests
-1. path traversal name rejected (`E_PATH_ESCAPE` or `E_NAME_INVALID`)
-2. descriptor checksum tamper detected
-3. payload tamper detected (`E_PAYLOAD_HASH_MISMATCH`)
-4. crash tmp artifacts hidden and repairable via doctor
-5. migration excludes runtime state and destination rebuild succeeds
-6. gc run with mismatched plan id fails (`E_GC_PLAN_MISMATCH`)
-7. gc fail/retry path preserves consistency
-8. audit event exists for all mutating commands
-9. audit hash chain validates end-to-end (`E_AUDIT_CHAIN_BROKEN` on tamper)
-10. `format_version` mismatch rejected with `E_FORMAT_UNSUPPORTED`
-11. snapshot ID format matches `<timestamp_ms>-<random_hex8>` pattern
-12. payload root hash is deterministic for identical payload content
-13. tags are stored in descriptor and validated against `[a-zA-Z0-9._-]+`
-14. head orphan detected and `advance_head` repair offered by doctor
-15. descriptor checksum excludes checksum/integrity_state fields and matches canonical JSON computation
-16. worktree discovery resolves correct `config.json` from nested CWD within payload root
-17. payload roots contain zero control-plane artifacts after init and worktree create
-18. `jvs init` creates `.jvs/worktrees/main/config.json` with valid schema
-19. `jvs worktree remove` deletes both payload directory and `.jvs/worktrees/<name>/` metadata
-20. migration sync including `.jvs/worktrees/` preserves worktree metadata at destination
-21. restore to historical snapshot enters detached state
-22. restore HEAD exits detached state
-23. snapshot fails in detached state
-24. fork creates new worktree from snapshot
+- `contract`: fast checks for the public command surface and JSON shape.
+- `release`: full contract, regression, integrity, and destructive-operation
+  safety checks.
+
+The `release` profile is mandatory before any pre-release or v0 tag.
+
+## Mandatory Contract Areas
+
+### Public Command Surface
+
+- The documented commands exist and reject unsupported forms with stable error
+  classes: `init`, `import`, `clone`, `capability`, `info`, `status`,
+  `workspace list`, `workspace path`, `workspace rename`, `workspace remove`,
+  `checkpoint`, `checkpoint list`, `diff`, `restore`, `fork`, `verify`,
+  `doctor`, `gc plan`, and `gc run`.
+- Commands that document `--json` accept it; commands that do not document a
+  flag reject it consistently.
+- Global flags `--repo`, `--workspace`, `--json`, `--debug`, `--no-progress`,
+  and `--no-color` are accepted according to the CLI spec.
+- Public help and examples use the v0 vocabulary: repo, workspace,
+  checkpoint, `current`, `latest`, and `dirty`.
+
+### JSON Envelope
+
+- Successful JSON output emits exactly one object to stdout with
+  `schema_version`, `command`, `ok`, `repo_root`, `workspace`, `data`, and
+  `error`.
+- Failed JSON output sets `ok` to false, sets `data` to null, and returns an
+  `error` object containing `code`, `message`, and, when useful, `hint`.
+- Non-JSON diagnostics do not corrupt JSON stdout.
+- Failure exits are non-zero and use stable machine-readable error classes.
+
+### Repo and Workspace Resolution
+
+- Commands resolve the repository from the current path or `--repo`.
+- Workspace commands resolve the targeted workspace from the current path or
+  `--workspace`.
+- Running from the repo root and from nested workspace paths produces the same
+  targeted state when the same workspace is selected.
+- `jvs workspace path [name]` returns a canonical path.
+- No command mutates the caller's shell CWD.
+
+### Setup, Clone, and Capability
+
+- `jvs init <repo-path>` creates a new repo with a `main` workspace and is
+  rejected for invalid, overlapping, or unsafe paths.
+- `jvs import <existing-dir> <repo-path>` copies user files into a new repo,
+  creates an initial checkpoint tagged `import`, rejects sources containing
+  `.jvs/`, and rejects overlapping source and destination paths.
+- `jvs clone <source-repo> <dest-repo>` with `--scope full` preserves the
+  source repo's public state, while `--scope current` creates a new repo from
+  the source workspace's current contents.
+- `jvs clone` is validated as a local filesystem operation and does not expose
+  remote push or pull semantics.
+- `jvs capability <target-path>` reports engine support in both probe modes,
+  including conservative results when `--write-probe` is omitted.
+
+### Status, Refs, and State
+
+- `jvs status --json` reports `current`, `latest`, `dirty`, `at_latest`,
+  `workspace`, `repo`, `engine`, and `recovery_hints`.
+- `current` means the checkpoint materialized in the targeted workspace.
+- `latest` means the newest checkpoint on the targeted workspace's active
+  line.
+- `dirty` means uncheckpointed workspace contents and is never accepted as a
+  checkpoint ref.
+- Workspace commands accept `current`, `latest`, full checkpoint IDs, unique
+  ID prefixes, and exact tags where refs are documented.
+- Tags named `current`, `latest`, or `dirty` are rejected.
+
+### Checkpoint, Diff, Restore, and Fork
+
+- `jvs checkpoint` records the targeted workspace contents, note, repeated
+  tags, and file-provided notes; it advances only when `current` is also
+  `latest`.
+- `jvs checkpoint list` marks `current` and `latest` in workspace context.
+- `jvs diff <from> <to>` reports source and target IDs, times, changed paths,
+  and changed-path totals.
+- `jvs restore <ref>` replaces the targeted workspace with the selected
+  checkpoint and updates `current` without changing unrelated workspaces.
+- `jvs fork` supports `jvs fork <name>`, `jvs fork <ref> <name>`, and
+  `jvs fork --from <ref> <name>` with equivalent ref resolution.
+
+### Dirty Guards
+
+- Destructive workspace operations refuse to overwrite uncheckpointed changes
+  by default.
+- `--include-working` creates a checkpoint for dirty contents before
+  `restore` or `fork`.
+- `--discard-dirty` discards dirty contents before `restore` or `fork`.
+- `--include-working` and `--discard-dirty` are mutually exclusive.
+- `workspace remove --force` is required when the workspace's `current`
+  checkpoint differs from `latest`.
+
+### Integrity, Doctor, and Retention
+
+- `jvs verify [checkpoint-id]` and `jvs verify --all` detect descriptor and
+  payload integrity failures and return structured result fields.
+- `jvs doctor --strict` includes full integrity verification and reports
+  actionable repair information without inventing public state terms.
+- `jvs gc plan` returns a stable plan ID, protection reasons, deletion
+  candidates, and an estimated byte count.
+- `jvs gc run --plan-id <id>` rejects mismatched or stale plan IDs.
 
 ## Acceptance
-- release profile requires 100% pass
-- any failed mandatory test blocks release
-- failure output must include machine-readable error class
+
+- The `release` profile requires 100% pass.
+- Any failed mandatory contract area blocks release.
+- Tests that touch destructive behavior must assert preserved user data on the
+  default path and explicit behavior only when safety flags are provided.
+- Contract tests and public docs must agree on command names, flags, JSON
+  fields, refs, and public terminology.

@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// Test 26: Restore to historical snapshot enters detached state
+// Test 26: Restore to historical checkpoint makes current differ from latest.
 // (Covered by TestRestore_Inplace in restore_test.go)
 
 // Test 27: History limit works

@@ -56,7 +56,9 @@ func NewRestorer(repoRoot string, engineType model.EngineType) *Restorer {
 // This puts the worktree into a "detached" state (unless restoring to HEAD).
 // The worktree is specified by name, not derived from the snapshot.
 func (r *Restorer) Restore(worktreeName string, snapshotID model.SnapshotID) error {
-	return r.restore(worktreeName, snapshotID)
+	return repo.WithMutationLock(r.repoRoot, "restore", func() error {
+		return r.restore(worktreeName, snapshotID)
+	})
 }
 
 // restore performs the actual restore operation.

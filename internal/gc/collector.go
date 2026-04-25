@@ -59,6 +59,16 @@ func (c *Collector) Plan() (*model.GCPlan, error) {
 
 // PlanWithPolicy creates a GC plan using the given retention policy.
 func (c *Collector) PlanWithPolicy(policy model.RetentionPolicy) (*model.GCPlan, error) {
+	var plan *model.GCPlan
+	err := repo.WithMutationLock(c.repoRoot, "gc plan", func() error {
+		var err error
+		plan, err = c.planWithPolicy(policy)
+		return err
+	})
+	return plan, err
+}
+
+func (c *Collector) planWithPolicy(policy model.RetentionPolicy) (*model.GCPlan, error) {
 	inputs, err := c.computePlanInputs(policy)
 	if err != nil {
 		return nil, err
@@ -88,6 +98,12 @@ func (c *Collector) PlanWithPolicy(policy model.RetentionPolicy) (*model.GCPlan,
 
 // Run executes a GC plan.
 func (c *Collector) Run(planID string) error {
+	return repo.WithMutationLock(c.repoRoot, "gc run", func() error {
+		return c.run(planID)
+	})
+}
+
+func (c *Collector) run(planID string) error {
 	if planID == "" {
 		return fmt.Errorf("plan ID is required")
 	}
@@ -515,17 +531,25 @@ func (c *Collector) addPinsToProtectedSet(protected map[model.SnapshotID]bool) (
 }
 
 func (c *Collector) walkLineage(snapshotID model.SnapshotID, protected map[model.SnapshotID]bool) int {
+	return c.walkLineageSeen(snapshotID, protected, make(map[model.SnapshotID]bool))
+}
+
+func (c *Collector) walkLineageSeen(snapshotID model.SnapshotID, protected map[model.SnapshotID]bool, seen map[model.SnapshotID]bool) int {
 	count := 0
 	if err := snapshotID.Validate(); err != nil {
 		return count
 	}
+	if seen[snapshotID] {
+		return count
+	}
+	seen[snapshotID] = true
 	desc, err := snapshot.LoadDescriptor(c.repoRoot, snapshotID)
 	if err != nil {
 		return count
 	}
 	if desc.ParentID != nil && !protected[*desc.ParentID] {
 		protected[*desc.ParentID] = true
-		count = 1 + c.walkLineage(*desc.ParentID, protected)
+		count = 1 + c.walkLineageSeen(*desc.ParentID, protected, seen)
 	}
 	return count
 }

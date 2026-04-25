@@ -21,7 +21,7 @@ var doctorCmd = &cobra.Command{
 	Long: `Check repository health.
 
 Runs diagnostic checks on the repository and reports any issues.
-Use --strict to include full snapshot integrity verification.
+Use --strict to include full checkpoint integrity verification.
 Use --repair-runtime to execute safe automatic repairs.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		r := requireRepo()

@@ -12,6 +12,7 @@ import (
 	"github.com/jvs-project/jvs/internal/restore"
 	"github.com/jvs-project/jvs/internal/snapshot"
 	"github.com/jvs-project/jvs/internal/worktree"
+	"github.com/jvs-project/jvs/pkg/errclass"
 	"github.com/jvs-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -92,6 +93,18 @@ func TestRestorer_Restore(t *testing.T) {
 	assert.Equal(t, desc.SnapshotID, cfg.LatestSnapshotID)
 	assert.NoFileExists(t, filepath.Join(mainPath, ".READY"))
 	assert.NoFileExists(t, filepath.Join(mainPath, ".READY.gz"))
+}
+
+func TestRestorerRestoreReturnsRepoBusyWhenMutationLockHeld(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	desc := createSnapshot(t, repoPath)
+
+	held, err := repo.AcquireMutationLock(repoPath, "held-by-test")
+	require.NoError(t, err)
+	defer held.Release()
+
+	err = restore.NewRestorer(repoPath, model.EngineCopy).Restore("main", desc.SnapshotID)
+	require.ErrorIs(t, err, errclass.ErrRepoBusy)
 }
 
 func TestRestorerRestoreRejectsPathLikeAndNonCanonicalIDsWithoutMaterializing(t *testing.T) {

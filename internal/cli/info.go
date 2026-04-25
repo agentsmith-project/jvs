@@ -6,7 +6,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jvs-project/jvs/internal/engine"
 	"github.com/jvs-project/jvs/internal/worktree"
 )
 
@@ -24,16 +23,15 @@ var infoCmd = &cobra.Command{
 		entries, _ := os.ReadDir(snapshotsDir)
 		snapshotCount := len(entries)
 
-		eng, _ := engine.DetectEngine(r.Root)
-		snapshotEngine := string(eng.Name())
+		snapshotEngine := string(detectEngineNoWrite(r.Root))
 
 		info := map[string]any{
-			"repo_root":       r.Root,
-			"repo_id":         r.RepoID,
-			"format_version":  r.FormatVersion,
-			"snapshot_engine": snapshotEngine,
-			"total_worktrees": len(wtList),
-			"total_snapshots": snapshotCount,
+			"repo_root":        r.Root,
+			"repo_id":          r.RepoID,
+			"format_version":   r.FormatVersion,
+			"engine":           snapshotEngine,
+			"workspace_count":  len(wtList),
+			"checkpoint_count": snapshotCount,
 		}
 
 		if jsonOutput {
@@ -44,9 +42,9 @@ var infoCmd = &cobra.Command{
 		fmt.Printf("Repository: %s\n", r.Root)
 		fmt.Printf("  Repo ID: %s\n", r.RepoID)
 		fmt.Printf("  Format version: %d\n", r.FormatVersion)
-		fmt.Printf("  Snapshot engine: %s\n", snapshotEngine)
-		fmt.Printf("  Worktrees: %d\n", len(wtList))
-		fmt.Printf("  Snapshots: %d\n", snapshotCount)
+		fmt.Printf("  Engine: %s\n", snapshotEngine)
+		fmt.Printf("  Workspaces: %d\n", len(wtList))
+		fmt.Printf("  Checkpoints: %d\n", snapshotCount)
 	},
 }
 

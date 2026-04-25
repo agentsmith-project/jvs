@@ -7,6 +7,7 @@ import "fmt"
 type JVSError struct {
 	Code    string
 	Message string
+	Hint    string
 }
 
 func (e *JVSError) Error() string {
@@ -23,16 +24,24 @@ func (e *JVSError) Is(target error) bool {
 
 // WithMessage returns a new JVSError with the same Code but a specific message.
 func (e *JVSError) WithMessage(msg string) *JVSError {
-	return &JVSError{Code: e.Code, Message: msg}
+	return &JVSError{Code: e.Code, Message: msg, Hint: e.Hint}
 }
 
 // WithMessagef returns a new JVSError with a formatted message.
 func (e *JVSError) WithMessagef(format string, args ...any) *JVSError {
-	return &JVSError{Code: e.Code, Message: fmt.Sprintf(format, args...)}
+	return &JVSError{Code: e.Code, Message: fmt.Sprintf(format, args...), Hint: e.Hint}
+}
+
+// WithHint returns a new JVSError with the same Code and Message plus a hint.
+func (e *JVSError) WithHint(hint string) *JVSError {
+	return &JVSError{Code: e.Code, Message: e.Message, Hint: hint}
 }
 
 // All stable error classes for v0.x.
 var (
+	ErrNotRepo             = &JVSError{Code: "E_NOT_REPO"}
+	ErrNotWorkspace        = &JVSError{Code: "E_NOT_WORKSPACE"}
+	ErrUsage               = &JVSError{Code: "E_USAGE"}
 	ErrNameInvalid         = &JVSError{Code: "E_NAME_INVALID"}
 	ErrPathEscape          = &JVSError{Code: "E_PATH_ESCAPE"}
 	ErrDescriptorCorrupt   = &JVSError{Code: "E_DESCRIPTOR_CORRUPT"}
@@ -42,4 +51,6 @@ var (
 	ErrGCPlanMismatch      = &JVSError{Code: "E_GC_PLAN_MISMATCH"}
 	ErrFormatUnsupported   = &JVSError{Code: "E_FORMAT_UNSUPPORTED"}
 	ErrAuditChainBroken    = &JVSError{Code: "E_AUDIT_CHAIN_BROKEN"}
+	ErrRepoBusy            = &JVSError{Code: "E_REPO_BUSY"}
+	ErrLockConflict        = &JVSError{Code: "E_LOCK_CONFLICT"}
 )

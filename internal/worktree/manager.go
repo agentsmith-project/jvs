@@ -34,6 +34,16 @@ func NewManager(repoRoot string) *Manager {
 
 // Create creates a new worktree with the given name.
 func (m *Manager) Create(name string, baseSnapshotID *model.SnapshotID) (*model.WorktreeConfig, error) {
+	var cfg *model.WorktreeConfig
+	err := repo.WithMutationLock(m.repoRoot, "worktree create", func() error {
+		var err error
+		cfg, err = m.create(name, baseSnapshotID)
+		return err
+	})
+	return cfg, err
+}
+
+func (m *Manager) create(name string, baseSnapshotID *model.SnapshotID) (*model.WorktreeConfig, error) {
 	if err := pathutil.ValidateName(name); err != nil {
 		return nil, err
 	}
@@ -98,6 +108,16 @@ func (m *Manager) CreateFromSnapshot(name string, snapshotID model.SnapshotID, c
 }
 
 func (m *Manager) createMaterializedSnapshotWorktree(name string, snapshotID model.SnapshotID, cloneFunc func(src, dst string) error) (*model.WorktreeConfig, error) {
+	var cfg *model.WorktreeConfig
+	err := repo.WithMutationLock(m.repoRoot, "worktree create from snapshot", func() error {
+		var err error
+		cfg, err = m.createMaterializedSnapshotWorktreeLocked(name, snapshotID, cloneFunc)
+		return err
+	})
+	return cfg, err
+}
+
+func (m *Manager) createMaterializedSnapshotWorktreeLocked(name string, snapshotID model.SnapshotID, cloneFunc func(src, dst string) error) (*model.WorktreeConfig, error) {
 	if err := pathutil.ValidateName(name); err != nil {
 		return nil, err
 	}
@@ -218,6 +238,12 @@ func (m *Manager) Path(name string) (string, error) {
 
 // Rename renames a worktree.
 func (m *Manager) Rename(oldName, newName string) error {
+	return repo.WithMutationLock(m.repoRoot, "worktree rename", func() error {
+		return m.rename(oldName, newName)
+	})
+}
+
+func (m *Manager) rename(oldName, newName string) error {
 	if err := pathutil.ValidateName(oldName); err != nil {
 		return err
 	}
@@ -321,6 +347,12 @@ func (l *renameRollbackLedger) rollback(cause error) error {
 
 // Remove deletes a worktree. Fails if the worktree is main.
 func (m *Manager) Remove(name string) error {
+	return repo.WithMutationLock(m.repoRoot, "worktree remove", func() error {
+		return m.remove(name)
+	})
+}
+
+func (m *Manager) remove(name string) error {
 	if err := pathutil.ValidateName(name); err != nil {
 		return err
 	}

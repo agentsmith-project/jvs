@@ -77,6 +77,16 @@ func (c *Creator) Create(worktreeName, note string, tags []string) (*model.Descr
 // CreatePartial performs a snapshot of specific paths within the worktree.
 // If paths is nil or empty, performs a full snapshot.
 func (c *Creator) CreatePartial(worktreeName, note string, tags []string, paths []string) (*model.Descriptor, error) {
+	var desc *model.Descriptor
+	err := repo.WithMutationLock(c.repoRoot, "snapshot", func() error {
+		var err error
+		desc, err = c.createPartial(worktreeName, note, tags, paths)
+		return err
+	})
+	return desc, err
+}
+
+func (c *Creator) createPartial(worktreeName, note string, tags []string, paths []string) (*model.Descriptor, error) {
 	// Step 1: Validate worktree exists
 	wtMgr := worktree.NewManager(c.repoRoot)
 	cfg, err := wtMgr.Get(worktreeName)

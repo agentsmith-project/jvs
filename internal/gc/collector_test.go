@@ -135,6 +135,17 @@ func TestCollector_Plan(t *testing.T) {
 	// Fresh repo has no snapshots, so protected set may be empty
 }
 
+func TestCollectorRunReturnsRepoBusyWhenMutationLockHeld(t *testing.T) {
+	repoPath := setupTestRepo(t)
+
+	held, err := repo.AcquireMutationLock(repoPath, "held-by-test")
+	require.NoError(t, err)
+	defer held.Release()
+
+	err = gc.NewCollector(repoPath).Run("missing-plan")
+	require.ErrorIs(t, err, errclass.ErrRepoBusy)
+}
+
 func TestCollector_Plan_WithSnapshots(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	snapshotID := createTestSnapshot(t, repoPath)

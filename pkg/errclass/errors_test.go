@@ -28,6 +28,10 @@ func TestJVSError_Code(t *testing.T) {
 func TestJVSError_AllErrorsDefined(t *testing.T) {
 	// All v0.x error classes must exist
 	all := []error{
+		errclass.ErrNotRepo,
+		errclass.ErrNotWorkspace,
+		errclass.ErrUsage,
+		errclass.ErrRepoBusy,
 		errclass.ErrNameInvalid,
 		errclass.ErrPathEscape,
 		errclass.ErrDescriptorCorrupt,
@@ -38,5 +42,12 @@ func TestJVSError_AllErrorsDefined(t *testing.T) {
 		errclass.ErrFormatUnsupported,
 		errclass.ErrAuditChainBroken,
 	}
-	assert.Len(t, all, 9)
+	assert.Len(t, all, 13)
+}
+
+func TestJVSError_CLIContractCodes(t *testing.T) {
+	assert.Equal(t, "E_NOT_REPO", errclass.ErrNotRepo.Code)
+	assert.Equal(t, "E_NOT_WORKSPACE", errclass.ErrNotWorkspace.Code)
+	assert.Equal(t, "E_USAGE", errclass.ErrUsage.Code)
+	assert.Equal(t, "E_REPO_BUSY", errclass.ErrRepoBusy.Code)
 }

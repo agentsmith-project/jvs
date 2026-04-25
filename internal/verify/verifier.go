@@ -22,6 +22,7 @@ type Result struct {
 	TamperDetected   bool             `json:"tamper_detected"`
 	Severity         string           `json:"severity,omitempty"`
 	Error            string           `json:"error,omitempty"`
+	ErrorCode        string           `json:"error_code,omitempty"`
 }
 
 // Verifier performs integrity verification on snapshots.
@@ -61,6 +62,15 @@ func (v *Verifier) VerifySnapshot(snapshotID model.SnapshotID, verifyPayloadHash
 		result.TamperDetected = true
 		result.Severity = "critical"
 		result.Error = "descriptor checksum mismatch"
+		result.ErrorCode = "E_DESCRIPTOR_CHECKSUM_MISMATCH"
+		return result, nil
+	}
+
+	if issue := CheckLineage(v.repoRoot, snapshotID); issue != nil {
+		result.TamperDetected = true
+		result.Severity = "critical"
+		result.Error = issue.Message
+		result.ErrorCode = issue.Code
 		return result, nil
 	}
 

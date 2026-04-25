@@ -9,9 +9,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestResolveSnapshotWithTag tests diff command with tag-based snapshot resolution.
-// This exercises the FindByTag path in resolveSnapshot.
-func TestResolveSnapshotWithTag(t *testing.T) {
+// TestResolveCheckpointRefWithTag tests diff command with tag-based checkpoint refs.
+func TestResolveCheckpointRefWithTag(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 	defer os.Chdir(originalWd)
@@ -51,8 +50,8 @@ func TestResolveSnapshotWithTag(t *testing.T) {
 	})
 }
 
-// TestResolveSnapshotWithID tests diff with full snapshot ID resolution.
-func TestResolveSnapshotWithID(t *testing.T) {
+// TestResolveCheckpointRefWithID tests diff with full snapshot ID resolution.
+func TestResolveCheckpointRefWithID(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 	defer os.Chdir(originalWd)
@@ -104,8 +103,8 @@ func TestResolveSnapshotWithID(t *testing.T) {
 	}
 }
 
-// TestResolveSnapshotWithShortID tests diff with short ID prefix.
-func TestResolveSnapshotWithShortID(t *testing.T) {
+// TestResolveCheckpointRefWithShortID tests diff with short ID prefix.
+func TestResolveCheckpointRefWithShortID(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 	defer os.Chdir(originalWd)

@@ -10,9 +10,11 @@ import (
 
 	"github.com/jvs-project/jvs/internal/doctor"
 	"github.com/jvs-project/jvs/internal/gc"
+	"github.com/jvs-project/jvs/internal/integrity"
 	"github.com/jvs-project/jvs/internal/repo"
 	"github.com/jvs-project/jvs/internal/snapshot"
 	"github.com/jvs-project/jvs/internal/worktree"
+	"github.com/jvs-project/jvs/pkg/errclass"
 	"github.com/jvs-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -66,6 +68,28 @@ func writeSnapshotIntent(t *testing.T, repoPath string, snapshotID model.Snapsho
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(intentPath, data, 0644))
 	return intentPath
+}
+
+func writeLineageDescriptor(t *testing.T, repoPath string, snapshotID model.SnapshotID, parentID *model.SnapshotID) {
+	t.Helper()
+
+	desc := &model.Descriptor{
+		SnapshotID:      snapshotID,
+		ParentID:        parentID,
+		WorktreeName:    "main",
+		CreatedAt:       time.Now().UTC(),
+		Engine:          model.EngineCopy,
+		PayloadRootHash: "hash",
+		IntegrityState:  model.IntegrityVerified,
+	}
+	checksum, err := integrity.ComputeDescriptorChecksum(desc)
+	require.NoError(t, err)
+	desc.DescriptorChecksum = checksum
+
+	data, err := json.MarshalIndent(desc, "", "  ")
+	require.NoError(t, err)
+	descriptorPath := filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json")
+	require.NoError(t, os.WriteFile(descriptorPath, data, 0644))
 }
 
 func snapshotIDsContain(ids []model.SnapshotID, want model.SnapshotID) bool {
@@ -136,6 +160,59 @@ func TestDoctor_Check_WithSnapshots(t *testing.T) {
 	result, err := doc.Check(false)
 	require.NoError(t, err)
 	assert.True(t, result.Healthy)
+}
+
+func TestDoctorCheckReportsMissingParentWithMachineReadableCode(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	childID := model.SnapshotID("1708300800000-deadbeef")
+	parentID := model.SnapshotID("1708300700000-feedface")
+	writeLineageDescriptor(t, repoPath, childID, &parentID)
+
+	result, err := doctor.NewDoctor(repoPath).Check(false)
+	require.NoError(t, err)
+	assert.False(t, result.Healthy)
+	assertFindingCode(t, result, "lineage", "E_LINEAGE_PARENT_MISSING")
+}
+
+func TestDoctorCheckReportsParentCycleWithMachineReadableCode(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	firstID := model.SnapshotID("1708300800000-deadbeef")
+	secondID := model.SnapshotID("1708300900000-feedface")
+	writeLineageDescriptor(t, repoPath, firstID, &secondID)
+	writeLineageDescriptor(t, repoPath, secondID, &firstID)
+
+	result, err := doctor.NewDoctor(repoPath).Check(false)
+	require.NoError(t, err)
+	assert.False(t, result.Healthy)
+	assertFindingCode(t, result, "lineage", "E_LINEAGE_CYCLE")
+}
+
+func TestDoctorCheckReportsHeadLatestMismatchButAllowsHistoricalHead(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	ancestorID := model.SnapshotID("1708300800000-deadbeef")
+	latestID := model.SnapshotID("1708300900000-feedface")
+	unrelatedID := model.SnapshotID("1708301000000-cafebabe")
+	writeLineageDescriptor(t, repoPath, ancestorID, nil)
+	writeLineageDescriptor(t, repoPath, latestID, &ancestorID)
+	writeLineageDescriptor(t, repoPath, unrelatedID, nil)
+
+	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	cfg.HeadSnapshotID = ancestorID
+	cfg.LatestSnapshotID = latestID
+	require.NoError(t, repo.WriteWorktreeConfig(repoPath, "main", cfg))
+
+	result, err := doctor.NewDoctor(repoPath).Check(false)
+	require.NoError(t, err)
+	assertNoFindingCode(t, result, "E_WORKTREE_HEAD_LATEST_MISMATCH")
+
+	cfg.HeadSnapshotID = unrelatedID
+	require.NoError(t, repo.WriteWorktreeConfig(repoPath, "main", cfg))
+
+	result, err = doctor.NewDoctor(repoPath).Check(false)
+	require.NoError(t, err)
+	assert.False(t, result.Healthy)
+	assertFindingCode(t, result, "worktree", "E_WORKTREE_HEAD_LATEST_MISMATCH")
 }
 
 func TestDoctor_Check_Strict(t *testing.T) {
@@ -259,6 +336,29 @@ func TestDoctor_Repair_CleanTmp(t *testing.T) {
 	// Verify files are gone
 	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs-tmp-orphan1"))
 	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs-tmp-orphan2"))
+}
+
+func TestDoctorRepairReturnsRepoBusyWhenMutationLockHeld(t *testing.T) {
+	repoPath := setupTestRepo(t)
+
+	held, err := repo.AcquireMutationLock(repoPath, "held-by-test")
+	require.NoError(t, err)
+	defer held.Release()
+
+	_, err = doctor.NewDoctor(repoPath).Repair([]string{"clean_tmp"})
+	require.ErrorIs(t, err, errclass.ErrRepoBusy)
+}
+
+func TestDoctorRepairCleanTmpDoesNotDeleteUserPayloadByName(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	userPayloadTmp := filepath.Join(repoPath, "main", ".jvs-tmp-user-data")
+	require.NoError(t, os.WriteFile(userPayloadTmp, []byte("payload"), 0644))
+
+	results, err := doctor.NewDoctor(repoPath).Repair([]string{"clean_tmp"})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.True(t, results[0].Success)
+	assert.FileExists(t, userPayloadTmp, "doctor repair must not delete user payload by filename pattern")
 }
 
 func TestDoctor_Repair_CleanIntents(t *testing.T) {
@@ -517,7 +617,7 @@ func TestDoctor_Repair_AdvanceHeadRejectsUnsafeDescriptors(t *testing.T) {
 	}
 }
 
-func TestDoctor_Repair_AdvanceHeadAcceptsReadyGzWithValidDescriptor(t *testing.T) {
+func TestDoctor_Repair_AdvanceHeadPreservesReadyGzHistoricalHead(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	headID := createTestSnapshot(t, repoPath)
 	latestID := createTestSnapshot(t, repoPath)
@@ -532,8 +632,24 @@ func TestDoctor_Repair_AdvanceHeadAcceptsReadyGzWithValidDescriptor(t *testing.T
 	require.Len(t, results, 1)
 	assert.Equal(t, "advance_head", results[0].Action)
 	assert.True(t, results[0].Success)
-	assert.Equal(t, 1, results[0].Cleaned)
-	assertMainHeadSnapshot(t, repoPath, latestID)
+	assert.Zero(t, results[0].Cleaned)
+	assertMainHeadSnapshot(t, repoPath, headID)
+}
+
+func TestDoctorRepairAdvanceHeadDoesNotAdvanceLegalHistoricalHead(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	headID := createTestSnapshot(t, repoPath)
+	latestID := createTestSnapshot(t, repoPath)
+	setMainWorktreeSnapshots(t, repoPath, headID, latestID)
+
+	doc := doctor.NewDoctor(repoPath)
+	results, err := doc.Repair([]string{"advance_head"})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "advance_head", results[0].Action)
+	assert.True(t, results[0].Success)
+	assert.Zero(t, results[0].Cleaned)
+	assertMainHeadSnapshot(t, repoPath, headID)
 }
 
 func TestDoctor_Repair_UnknownAction(t *testing.T) {
@@ -1147,6 +1263,27 @@ func assertNoTmpFinding(t *testing.T, result *doctor.Result, severity string, su
 		}
 		if matches {
 			t.Fatalf("unexpected tmp finding severity %s containing %q in %#v", severity, substrings, result.Findings)
+		}
+	}
+}
+
+func assertFindingCode(t *testing.T, result *doctor.Result, category, code string) {
+	t.Helper()
+
+	for _, f := range result.Findings {
+		if f.Category == category && f.ErrorCode == code {
+			return
+		}
+	}
+	t.Fatalf("expected finding %s/%s in %#v", category, code, result.Findings)
+}
+
+func assertNoFindingCode(t *testing.T, result *doctor.Result, code string) {
+	t.Helper()
+
+	for _, f := range result.Findings {
+		if f.ErrorCode == code {
+			t.Fatalf("unexpected finding with code %s in %#v", code, result.Findings)
 		}
 	}
 }

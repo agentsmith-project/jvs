@@ -13,6 +13,7 @@ import (
 	"github.com/jvs-project/jvs/internal/snapshot"
 	"github.com/jvs-project/jvs/internal/snapshotpayload"
 	"github.com/jvs-project/jvs/internal/worktree"
+	"github.com/jvs-project/jvs/pkg/errclass"
 	"github.com/jvs-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -66,6 +67,18 @@ func TestCreator_Create(t *testing.T) {
 	// Verify .READY marker exists
 	readyPath := filepath.Join(snapshotDir, ".READY")
 	assert.FileExists(t, readyPath)
+}
+
+func TestCreatorCreateReturnsRepoBusyWhenMutationLockHeld(t *testing.T) {
+	repoPath := setupTestRepo(t)
+
+	held, err := repo.AcquireMutationLock(repoPath, "held-by-test")
+	require.NoError(t, err)
+	defer held.Release()
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	_, err = creator.Create("main", "blocked by lock", nil)
+	require.ErrorIs(t, err, errclass.ErrRepoBusy)
 }
 
 func TestCreator_ReadyProtocol(t *testing.T) {

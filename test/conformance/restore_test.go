@@ -16,19 +16,20 @@ func TestRestore_Inplace(t *testing.T) {
 	// Create first snapshot
 	dataPath := filepath.Join(repoPath, "main", "data.txt")
 	os.WriteFile(dataPath, []byte("original"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "v1")
+	runJVSInRepo(t, repoPath, "checkpoint", "v1")
 
-	// Create second snapshot (so we can restore to first and be detached)
+	// Create second checkpoint so the first checkpoint becomes historical.
 	os.WriteFile(dataPath, []byte("modified"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "v2")
+	runJVSInRepo(t, repoPath, "checkpoint", "v2")
 
-	// Get first snapshot ID from history
-	stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--json")
+	// Get first checkpoint ID from the public checkpoint list.
+	stdout, _, _ := runJVSInRepo(t, repoPath, "--json", "checkpoint", "list")
 	snapshots := extractAllSnapshotIDs(stdout)
 	if len(snapshots) < 2 {
 		t.Fatal("expected at least 2 snapshots")
 	}
 	firstSnapshot := snapshots[len(snapshots)-1] // oldest
+	latestSnapshot := snapshots[0]
 
 	// Restore to first - this is inplace
 	stdout, stderr, code := runJVSInRepo(t, repoPath, "restore", firstSnapshot)
@@ -51,33 +52,34 @@ func TestRestore_Inplace(t *testing.T) {
 		t.Error("restore should not materialize snapshot control markers into the worktree")
 	}
 
-	// Verify worktree is in detached state
-	if !strings.Contains(stdout, "DETACHED") {
-		t.Error("expected detached state message")
+	if !strings.Contains(stdout, "Workspace current differs from latest") {
+		t.Errorf("expected historical status guidance, got: %s", stdout)
 	}
+	requireWorkspaceCurrentLatest(t, repoPath, firstSnapshot, latestSnapshot, false)
 }
 
-// Test 7: Restore HEAD returns to latest
-func TestRestore_HEAD(t *testing.T) {
+// Test 7: Restore latest returns to the newest checkpoint.
+func TestRestore_Latest(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 
 	// Create two snapshots
 	dataPath := filepath.Join(repoPath, "main", "data.txt")
 	os.WriteFile(dataPath, []byte("first"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "v1")
+	runJVSInRepo(t, repoPath, "checkpoint", "v1")
 
 	os.WriteFile(dataPath, []byte("second"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "v2")
+	runJVSInRepo(t, repoPath, "checkpoint", "v2")
 
 	// Get first snapshot ID
-	stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--json")
+	stdout, _, _ := runJVSInRepo(t, repoPath, "--json", "checkpoint", "list")
 	snapshots := extractAllSnapshotIDs(stdout)
 	if len(snapshots) < 2 {
 		t.Fatal("expected at least 2 snapshots")
 	}
 	firstSnapshot := snapshots[len(snapshots)-1] // oldest
+	latestSnapshot := snapshots[0]
 
-	// Restore to first (detached)
+	// Restore to first so current differs from latest.
 	runJVSInRepo(t, repoPath, "restore", firstSnapshot)
 
 	// Verify content
@@ -86,10 +88,10 @@ func TestRestore_HEAD(t *testing.T) {
 		t.Errorf("expected 'first', got '%s'", string(content))
 	}
 
-	// Restore HEAD
-	stdout, stderr, code := runJVSInRepo(t, repoPath, "restore", "HEAD")
+	// Restore latest
+	stdout, stderr, code := runJVSInRepo(t, repoPath, "restore", "latest")
 	if code != 0 {
-		t.Fatalf("restore HEAD failed: %s", stderr)
+		t.Fatalf("restore latest failed: %s", stderr)
 	}
 
 	// Verify content is back to latest
@@ -98,10 +100,10 @@ func TestRestore_HEAD(t *testing.T) {
 		t.Errorf("expected 'second', got '%s'", string(content))
 	}
 
-	// Verify HEAD state
-	if !strings.Contains(stdout, "HEAD state") {
-		t.Error("expected HEAD state message")
+	if !strings.Contains(stdout, "Workspace is at latest") {
+		t.Errorf("expected latest status message, got: %s", stdout)
 	}
+	requireWorkspaceCurrentLatest(t, repoPath, latestSnapshot, latestSnapshot, true)
 }
 
 // Test 8: Worktree fork creates new worktree
@@ -177,26 +179,30 @@ func TestWorktree_ForkFromSnapshot(t *testing.T) {
 	}
 }
 
-// Test 10: Cannot snapshot in detached state
-func TestSnapshot_DetachedFails(t *testing.T) {
+// Test 10: Cannot checkpoint while current differs from latest.
+func TestCheckpoint_HistoricalFails(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 
-	// Create two snapshots
-	runJVSInRepo(t, repoPath, "snapshot", "v1")
-	runJVSInRepo(t, repoPath, "snapshot", "v2")
+	// Create two checkpoints
+	runJVSInRepo(t, repoPath, "checkpoint", "v1")
+	runJVSInRepo(t, repoPath, "checkpoint", "v2")
 
-	// Get first snapshot ID
-	stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--json")
+	// Get first checkpoint ID
+	stdout, _, _ := runJVSInRepo(t, repoPath, "--json", "checkpoint", "list")
 	snapshots := extractAllSnapshotIDs(stdout)
 	firstSnapshot := snapshots[len(snapshots)-1]
 
-	// Restore to first (detached)
+	// Restore to first so current differs from latest.
 	runJVSInRepo(t, repoPath, "restore", firstSnapshot)
+	requireWorkspaceCurrentLatest(t, repoPath, firstSnapshot, snapshots[0], false)
 
-	// Try to create snapshot - should fail
-	_, _, code := runJVSInRepo(t, repoPath, "snapshot", "should fail")
+	// Try to create checkpoint - should fail.
+	_, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "should fail")
 	if code == 0 {
-		t.Error("snapshot should fail in detached state")
+		t.Error("checkpoint should fail while current differs from latest")
+	}
+	if !strings.Contains(stderr, "current differs from latest") {
+		t.Errorf("expected historical-position error, got: %s", stderr)
 	}
 }
 
@@ -239,10 +245,13 @@ func extractAllSnapshotIDs(historyJSON string) []string {
 	var ids []string
 	lines := strings.Split(historyJSON, "\n")
 	for _, line := range lines {
-		if strings.Contains(line, `"snapshot_id"`) {
+		for _, field := range []string{"checkpoint_id", "snapshot_id"} {
+			if !strings.Contains(line, `"`+field+`"`) {
+				continue
+			}
 			parts := strings.Split(line, `"`)
 			for i, p := range parts {
-				if p == "snapshot_id" && i+2 < len(parts) {
+				if p == field && i+2 < len(parts) {
 					ids = append(ids, parts[i+2])
 				}
 			}

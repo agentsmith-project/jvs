@@ -256,12 +256,12 @@ func TestRegression_MultipleTags(t *testing.T) {
 	assert.Contains(t, stdout, "release", "should find release tag")
 }
 
-// TestRegression_RestoreHead tests that restore HEAD returns to the latest snapshot.
+// TestRegression_RestoreLatest tests that restore latest returns to the latest snapshot.
 //
-// Bug: Restore HEAD was not properly detecting the latest snapshot in some cases
+// Bug: Restoring the latest snapshot was not properly detecting the latest snapshot in some cases
 // Fixed: 2024-02-20
-func TestRegression_RestoreHead(t *testing.T) {
-	// Bug: Restore HEAD could fail to find the latest snapshot
+func TestRegression_RestoreLatest(t *testing.T) {
+	// Bug: restore latest could fail to find the latest snapshot
 	// Fixed: 2024-02-20
 
 	repoPath := initTestRepo(t)
@@ -288,15 +288,14 @@ func TestRegression_RestoreHead(t *testing.T) {
 		}
 	}
 
-	// Restore back to HEAD
-	stdout, _, code := runJVSInRepo(t, repoPath, "restore", "HEAD")
+	// Restore back to latest
+	stdout, _, code := runJVSInRepo(t, repoPath, "restore", "latest")
 
-	assert.Equal(t, 0, code, "restore HEAD should succeed")
-	assert.NotEmpty(t, stdout, "restore HEAD should have output")
+	assert.Equal(t, 0, code, "restore latest should succeed")
+	assert.Contains(t, stdout, "Workspace is at latest", "restore latest should report latest status")
 
 	// Verify we're back at the latest state
-	history2, _, _ := runJVSInRepo(t, repoPath, "history")
-	assert.Contains(t, history2, "HEAD", "should be back at HEAD")
+	assert.FileExists(t, filepath.Join(mainPath, "file2.txt"), "latest content should be restored")
 }
 
 // TestRegression_WorktreeFork tests forking a worktree from a snapshot.
@@ -392,9 +391,9 @@ func TestRegression_InfoCommand(t *testing.T) {
 	assert.Contains(t, stdout, "Repository:", "should show repository path")
 	assert.Contains(t, stdout, "Repo ID:", "should show repo ID")
 	assert.Contains(t, stdout, "Format version:", "should show format version")
-	assert.Contains(t, stdout, "Snapshot engine:", "should show engine")
-	assert.Contains(t, stdout, "Worktrees:", "should show worktree count")
-	assert.Contains(t, stdout, "Snapshots:", "should show snapshot count")
+	assert.Contains(t, stdout, "Engine:", "should show engine")
+	assert.Contains(t, stdout, "Workspaces:", "should show workspace count")
+	assert.Contains(t, stdout, "Checkpoints:", "should show checkpoint count")
 }
 
 // Helper functions
@@ -407,7 +406,7 @@ func extractSnapshotID(output string) string {
 	for _, line := range lines {
 		// Look for "Created snapshot" message or similar
 		if strings.Contains(line, "Created snapshot") ||
-		   strings.Contains(line, "snapshot") {
+			strings.Contains(line, "snapshot") {
 			// Extract ID after "snapshot" keyword
 			parts := strings.Fields(line)
 			for i, part := range parts {
@@ -491,10 +490,10 @@ func TestRegression_GCRespectsRetentionPolicy(t *testing.T) {
 	stdout, stderr, code := runJVSInRepo(t, repoPath, "gc", "plan")
 	assert.Equal(t, 0, code, "gc plan should succeed: %s", stderr)
 
-	// The single snapshot is the worktree HEAD and therefore protected.
-	// "To delete: 0 snapshots" must appear in the output.
-	assert.Contains(t, stdout, "To delete: 0 snapshots",
-		"gc plan should report 0 deletable snapshots for a protected snapshot")
+	// The single checkpoint is the workspace HEAD and therefore protected.
+	// "To delete: 0 checkpoints" must appear in the output.
+	assert.Contains(t, stdout, "To delete: 0 checkpoints",
+		"gc plan should report 0 deletable checkpoints for a protected checkpoint")
 }
 
 // TestRegression_ConfigCacheMutation is tested at the unit level in

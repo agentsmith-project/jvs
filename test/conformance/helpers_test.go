@@ -4,6 +4,7 @@ package conformance
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -162,6 +163,50 @@ func extractJSONField(jsonOutput, field string) string {
 func getSnapshotCount(historyJSON string) int {
 	// Count occurrences of "snapshot_id" in the output
 	return bytes.Count([]byte(historyJSON), []byte(`"snapshot_id"`))
+}
+
+type cliJSONEnvelope struct {
+	Data json.RawMessage `json:"data"`
+}
+
+type workspaceStatusJSON struct {
+	Current  string `json:"current"`
+	Latest   string `json:"latest"`
+	AtLatest bool   `json:"at_latest"`
+	Dirty    bool   `json:"dirty"`
+}
+
+func readWorkspaceStatus(t *testing.T, repoPath string) workspaceStatusJSON {
+	t.Helper()
+	stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "status")
+	if code != 0 {
+		t.Fatalf("status failed: %s", stderr)
+	}
+
+	var envelope cliJSONEnvelope
+	if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
+		t.Fatalf("decode status envelope: %v\n%s", err, stdout)
+	}
+
+	var status workspaceStatusJSON
+	if err := json.Unmarshal(envelope.Data, &status); err != nil {
+		t.Fatalf("decode status data: %v\n%s", err, stdout)
+	}
+	return status
+}
+
+func requireWorkspaceCurrentLatest(t *testing.T, repoPath, current, latest string, atLatest bool) {
+	t.Helper()
+	status := readWorkspaceStatus(t, repoPath)
+	if status.Current != current {
+		t.Fatalf("expected current %s, got %s", current, status.Current)
+	}
+	if status.Latest != latest {
+		t.Fatalf("expected latest %s, got %s", latest, status.Latest)
+	}
+	if status.AtLatest != atLatest {
+		t.Fatalf("expected at_latest=%t, got %t", atLatest, status.AtLatest)
+	}
 }
 
 // extractSnapshotIDByTag extracts a snapshot ID that has a specific tag.

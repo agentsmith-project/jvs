@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">JVS</h1>
   <p align="center">
-    <strong>Instant workspace snapshots on JuiceFS</strong>
+    <strong>Filesystem-native workspace checkpoints</strong>
   </p>
   <p align="center">
     <a href="https://github.com/jvs-project/jvs/releases/latest"><img src="https://img.shields.io/github/v/release/jvs-project/jvs?style=flat-square" alt="Release"></a>
@@ -13,31 +13,41 @@
 
 ---
 
-JVS (**Juicy Versioned Workspaces**) takes O(1) snapshots of entire workspace directories using JuiceFS Copy-on-Write. Think of it as `git init` + `git commit` for **any file type at any scale** — datasets, model weights, game assets, agent sandboxes — without staging areas, diffs, or blob graphs.
+JVS (**Juicy Versioned Workspaces**) creates verifiable checkpoints of entire
+workspace directories. It is local-first, works with normal filesystem paths,
+and uses the best available copy engine for the target filesystem: JuiceFS
+clone where available, reflink where supported, and recursive copy everywhere
+else.
 
 ```bash
-jvs init myproject          # create a versioned workspace
+jvs init myproject
 cd myproject/main
-# ... work on files ...
-jvs snapshot "baseline"     # O(1) snapshot via CoW — instant regardless of size
-jvs snapshot "experiment-1" --tag exp
-jvs restore baseline        # restore to any point
-jvs worktree fork "branch"  # fork a parallel workspace
-jvs verify --all            # SHA-256 integrity check
+
+echo "hello" > data.txt
+jvs status
+jvs checkpoint "baseline"
+
+echo "experiment" >> data.txt
+jvs checkpoint "experiment-1" --tag exp
+
+jvs restore latest
+jvs fork experiment
+jvs verify --all
 ```
 
 ## Why JVS?
 
 | Problem | JVS approach |
-|---|---|
-| Git chokes on large binary files | Snapshots the entire directory tree via filesystem CoW — size doesn't matter |
-| Dataset versioning tools need a server | Local-first CLI, zero infrastructure — JuiceFS handles storage |
-| Agent sandboxes need instant rollback | O(1) restore to any snapshot, fork to create parallel workspaces |
-| Need tamper-evident audit trail | Hash-chained audit log + two-layer integrity (descriptor checksum + payload SHA-256) |
+| --- | --- |
+| Git is awkward for large binary workspace state | Checkpoint the whole directory tree without staging files one by one |
+| Automation needs repeatable rollback points | `current`, `latest`, and `dirty` make workspace state explicit |
+| Teams want local-first workflows | Repos are ordinary directories; no JVS server or remote protocol is required |
+| Corruption should be detectable | Descriptor checksums and payload hashes can be verified with `jvs verify` |
 
 ## Install
 
-**Download a binary** from the [latest release](https://github.com/jvs-project/jvs/releases/latest) (Linux, macOS, Windows):
+**Download a binary** from the [latest release](https://github.com/jvs-project/jvs/releases/latest)
+(Linux, macOS, Windows):
 
 ```bash
 # Linux (amd64)
@@ -53,121 +63,101 @@ chmod +x jvs && sudo mv jvs /usr/local/bin/
 
 ```bash
 git clone https://github.com/jvs-project/jvs.git
-cd jvs && make build
-# binary at bin/jvs
+cd jvs
+make build
 ```
 
-## Quick start
-
-### 1. Set up a JuiceFS mount (recommended for O(1) snapshots)
+## Quick Start
 
 ```bash
-juicefs format redis://127.0.0.1:6379/1 myvol
-juicefs mount redis://127.0.0.1:6379/1 /mnt/jfs -d
-```
+jvs capability .
 
-> JVS also works on any POSIX filesystem — it auto-detects the best engine:
-> **juicefs-clone** (O(1)) → **reflink** (O(1) on btrfs/XFS) → **copy** (fallback).
-
-### 2. Create and use a workspace
-
-```bash
-cd /mnt/jfs
 jvs init myproject
-cd myproject/main        # this is your workspace root
+cd myproject/main
 
 echo "hello" > data.txt
-jvs snapshot "first version"
+jvs status
+jvs checkpoint "first version"
 
 echo "world" >> data.txt
-jvs snapshot "second version" --tag release
+jvs checkpoint "second version" --tag release
 
-jvs history              # see all snapshots
-jvs diff                 # see what changed
-jvs restore first        # go back to "first version"
+jvs checkpoint list
+jvs restore latest
+
+jvs fork experiment
+cd "$(jvs workspace path experiment)"
 ```
 
-### 3. Fork a parallel workspace
-
-```bash
-jvs worktree fork "experiment"
-cd ../worktrees/experiment
-# independent copy — changes here don't affect main
-```
+The repository root (`myproject/`) is the control plane plus workspace
+container. `myproject/main/` is the default workspace payload where your files
+live. Use `jvs status` to see whether the workspace is dirty, which checkpoint
+is `current`, and which checkpoint is `latest`.
 
 ## Commands
 
 | Command | What it does |
-|---|---|
-| `jvs init <name>` | Create a versioned workspace |
-| `jvs snapshot [note] [--tag T]` | Snapshot the current state |
-| `jvs history [--tag T] [--grep P]` | List snapshots |
-| `jvs diff [from [to]]` | Compare two snapshots |
-| `jvs restore <id\|note\|tag>` | Restore workspace to a snapshot |
-| `jvs worktree fork [id] <name>` | Fork an independent workspace |
-| `jvs worktree list\|remove` | Manage worktrees |
-| `jvs verify [--all]` | Verify integrity (SHA-256) |
-| `jvs doctor [--strict]` | Health check and auto-repair |
-| `jvs gc plan` / `jvs gc run` | Two-phase garbage collection |
+| --- | --- |
+| `jvs init <repo-path>` | Create a new JVS repo with a `main` workspace |
+| `jvs import <existing-dir> <repo-path>` | Import files into a new repo and create an initial checkpoint |
+| `jvs clone <source-repo> <dest-repo> [--scope full\|current]` | Copy a local JVS repo or its current workspace into a new repo |
+| `jvs capability <target-path> [--write-probe]` | Probe JuiceFS, reflink, and copy support |
+| `jvs info` | Show repo metadata and engine summary |
+| `jvs status` | Show `current`, `latest`, `dirty`, and recovery hints |
+| `jvs checkpoint [note] [--tag T]` | Create a checkpoint of the current workspace |
+| `jvs checkpoint list` | List checkpoints |
+| `jvs diff <from> <to> [--stat]` | Compare two checkpoints |
+| `jvs restore <ref\|current\|latest>` | Replace the workspace with a checkpoint |
+| `jvs fork [<ref> <name>\|<name>]` | Create another workspace from a checkpoint |
+| `jvs workspace list\|path\|rename\|remove` | Inspect and manage workspaces |
+| `jvs verify [<checkpoint-id>\|--all]` | Verify descriptor and payload integrity |
+| `jvs doctor [--strict]` | Check repository health |
+| `jvs gc plan` / `jvs gc run --plan-id ID` | Plan and run retention cleanup |
 
-## How it works
+Commands that overwrite or remove workspace files refuse dirty state by
+default. Use `--include-working` to checkpoint dirty work before `restore` or
+`fork`, or `--discard-dirty` when you intentionally want to throw it away.
 
-```
+## How It Works
+
+```text
 myproject/
-├── .jvs/                 # control plane (metadata)
-│   ├── snapshots/        # snapshot payloads (CoW clones)
-│   ├── descriptors/      # snapshot metadata (JSON)
-│   ├── audit/            # hash-chained audit log
-│   └── gc/               # GC plans and tombstones
-├── main/                 # your workspace (data plane)
-└── worktrees/            # forked workspaces
+├── .jvs/                 # control plane: metadata, descriptors, audit, gc
+├── main/                 # default workspace payload
+└── ...                   # additional workspace payloads managed by JVS
 ```
 
-**Snapshot publish is atomic** — a 12-step protocol (intent → clone → hash → descriptor → READY → rename → head update) ensures snapshots are either fully committed or not visible at all. No partial states.
+JVS publishes checkpoints atomically: incomplete checkpoint attempts remain
+invisible, and `jvs doctor` can report or repair safe runtime leftovers. The
+active engine is selected per filesystem and reported through `jvs info`,
+`jvs capability`, and checkpoint metadata.
 
-**Three snapshot engines**, auto-selected per filesystem:
+## Integrity
 
-| Engine | Mechanism | Performance | Filesystem |
-|---|---|---|---|
-| `juicefs-clone` | JuiceFS clone API | **O(1)** | JuiceFS |
-| `reflink-copy` | FICLONE ioctl | **O(1)** | btrfs, XFS |
-| `copy` | Recursive copy | O(n) | Any POSIX |
-
-## Use cases
-
-- **AI agent sandboxes** — snapshot before each tool call, rollback on failure ([guide](docs/agent_sandbox_quickstart.md))
-- **ML experiment tracking** — snapshot datasets + code + configs together, fork for A/B experiments
-- **Game development** — version large binary assets that Git can't handle ([guide](docs/game_dev_quickstart.md))
-- **ETL pipelines** — checkpoint each pipeline stage, restore to reprocess ([guide](docs/etl_pipeline_quickstart.md))
-
-## Integrity and security
-
-Every snapshot is verified by two independent layers:
-
-1. **Descriptor checksum** — detects metadata corruption
-2. **Payload root hash** (SHA-256) — detects data tampering
-
-The audit log is hash-chained (each entry includes the hash of the previous entry), making the history tamper-evident. Run `jvs verify --all` at any time to validate the entire repository.
+`jvs verify` checks checkpoint descriptors and payload hashes. `jvs doctor`
+checks repository layout, publish state, lineage, and safe repair candidates.
+The audit log is hash-chained so repository history can be made
+tamper-evident; signing and remote trust policy are future directions, not v0
+stable commands.
 
 ## Development
 
 ```bash
-make test           # unit tests
-make test-race      # unit tests + race detector
-make conformance    # end-to-end black-box tests
-make lint           # golangci-lint
-make fuzz           # fuzz testing (10s per target)
-make release-gate   # full pre-release gate (all of the above)
+make test
+make contract-check
+make conformance
+make lint
+make release-gate
 ```
 
 ## Documentation
 
 | Document | Description |
-|---|---|
+| --- | --- |
 | [Quick Start](docs/QUICKSTART.md) | 5-minute tutorial |
+| [Product Plan](docs/PRODUCT_PLAN.md) | Current product and CLI direction |
+| [CLI Spec](docs/02_CLI_SPEC.md) | Stable command reference |
 | [Architecture](docs/ARCHITECTURE.md) | System design and internals |
-| [CLI Spec](docs/02_CLI_SPEC.md) | Complete command reference |
-| [Constitution](docs/CONSTITUTION.md) | Core principles and non-goals |
 | [Changelog](docs/99_CHANGELOG.md) | Release history |
 
 ## License

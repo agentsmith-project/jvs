@@ -1,4 +1,4 @@
-.PHONY: build test library lint conformance regression verify security sec fuzz test-race test-cover test-all integration release-gate clean
+.PHONY: build test library lint conformance regression contract-check verify security sec fuzz test-race test-cover test-all integration release-gate clean
 
 build:
 	go build -o bin/jvs ./cmd/jvs
@@ -14,6 +14,10 @@ conformance:
 
 regression:
 	go test -tags conformance -count=1 -v ./test/regression/...
+
+contract-check: build
+	go test -count=1 ./internal/repo ./internal/snapshot ./internal/restore ./internal/worktree ./internal/gc ./internal/doctor ./internal/verify
+	go test -tags conformance -count=1 -run 'TestContract_' -v ./test/conformance/...
 
 lint:
 	golangci-lint run ./...

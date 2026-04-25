@@ -1,6 +1,7 @@
 package repo_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -48,6 +49,40 @@ func TestInit_CreatesDirectoryStructure(t *testing.T) {
 	assert.Equal(t, repoPath, r.Root)
 	assert.Equal(t, 1, r.FormatVersion)
 	assert.NotEmpty(t, r.RepoID)
+}
+
+func TestMutationLockNoWaitReturnsStableBusyError(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "lockedrepo")
+	_, err := repo.Init(repoPath, "lockedrepo")
+	require.NoError(t, err)
+
+	held, err := repo.AcquireMutationLock(repoPath, "test-holder")
+	require.NoError(t, err)
+	defer held.Release()
+
+	_, err = repo.AcquireMutationLock(repoPath, "test-contender")
+	require.Error(t, err)
+	require.ErrorIs(t, err, errclass.ErrRepoBusy)
+	assert.True(t, errors.Is(err, errclass.ErrRepoBusy))
+	assert.Contains(t, err.Error(), "E_REPO_BUSY")
+}
+
+func TestWithMutationLockReleasesAfterCallbackError(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "lockedrepo")
+	_, err := repo.Init(repoPath, "lockedrepo")
+	require.NoError(t, err)
+
+	sentinel := assert.AnError
+	err = repo.WithMutationLock(repoPath, "failing-op", func() error {
+		return sentinel
+	})
+	require.ErrorIs(t, err, sentinel)
+
+	lock, err := repo.AcquireMutationLock(repoPath, "after-error")
+	require.NoError(t, err)
+	require.NoError(t, lock.Release())
 }
 
 func TestInit_MainWorktreeConfig(t *testing.T) {

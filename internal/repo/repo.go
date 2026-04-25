@@ -34,12 +34,51 @@ type Repo struct {
 	RepoID        string
 }
 
+// ValidateInitTarget returns the absolute target path after enforcing the
+// repository creation rules: the target must be missing or empty, must not
+// already contain .jvs metadata, and must not be nested inside a JVS repo.
+func ValidateInitTarget(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("repository path must not be empty")
+	}
+
+	target, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve repository path: %w", err)
+	}
+	target = filepath.Clean(target)
+
+	if err := ensureTargetEmptyOrMissing(target); err != nil {
+		return "", err
+	}
+	if err := rejectNestedInitTarget(target); err != nil {
+		return "", err
+	}
+	return target, nil
+}
+
+// InitTarget creates a new repository at an absolute or relative target path.
+func InitTarget(path string) (*Repo, error) {
+	target, err := ValidateInitTarget(path)
+	if err != nil {
+		return nil, err
+	}
+	return initAt(target)
+}
+
 // Init creates a new JVS repository at the specified path.
 func Init(path string, name string) (*Repo, error) {
 	if err := pathutil.ValidateName(name); err != nil {
 		return nil, err
 	}
+	target, err := ValidateInitTarget(path)
+	if err != nil {
+		return nil, err
+	}
+	return initAt(target)
+}
 
+func initAt(path string) (*Repo, error) {
 	// Create directory structure
 	jvsDir := filepath.Join(path, JVSDirName)
 	dirs := []string{
@@ -49,6 +88,7 @@ func Init(path string, name string) (*Repo, error) {
 		filepath.Join(jvsDir, "descriptors"),
 		filepath.Join(jvsDir, "intents"),
 		filepath.Join(jvsDir, "audit"),
+		filepath.Join(jvsDir, "locks"),
 		filepath.Join(jvsDir, "gc"),
 		filepath.Join(jvsDir, "gc", "pins"),
 		filepath.Join(jvsDir, "gc", "tombstones"),
@@ -102,6 +142,65 @@ func Init(path string, name string) (*Repo, error) {
 		FormatVersion: FormatVersion,
 		RepoID:        repoID,
 	}, nil
+}
+
+func ensureTargetEmptyOrMissing(target string) error {
+	info, err := os.Lstat(target)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if err := rejectExistingMetadataAt(target); err != nil {
+				return err
+			}
+			return nil
+		}
+		return fmt.Errorf("stat repository target: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("repository target must not be a symlink: %s", target)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("repository target exists and is not a directory: %s", target)
+	}
+	if err := rejectExistingMetadataAt(target); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		return fmt.Errorf("read repository target: %w", err)
+	}
+	if len(entries) > 0 {
+		return fmt.Errorf("repository target must be empty or not exist: %s", target)
+	}
+	return nil
+}
+
+func rejectExistingMetadataAt(target string) error {
+	jvsDir := filepath.Join(target, JVSDirName)
+	info, err := os.Stat(jvsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat existing metadata: %w", err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("repository target already contains %s: %s", JVSDirName, target)
+	}
+	return fmt.Errorf("repository target contains reserved %s path: %s", JVSDirName, target)
+}
+
+func rejectNestedInitTarget(target string) error {
+	parent := filepath.Dir(target)
+	for {
+		if info, err := os.Stat(filepath.Join(parent, JVSDirName)); err == nil && info.IsDir() {
+			return fmt.Errorf("cannot initialize nested repository inside existing JVS repository: %s", target)
+		}
+		next := filepath.Dir(parent)
+		if next == parent {
+			return nil
+		}
+		parent = next
+	}
 }
 
 // Discover walks up from cwd to find the repo root (directory containing .jvs/).

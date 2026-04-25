@@ -27,11 +27,11 @@ func TestE2E_Hardening_CompressionRoundTrip(t *testing.T) {
 	})
 
 	t.Run("create_compressed_snapshot", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "compressed", "--compress", "fast")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "compressed", "--compress", "fast")
 		if code != 0 {
-			t.Fatalf("compressed snapshot failed: %s", stderr)
+			t.Fatalf("compressed checkpoint failed: %s", stderr)
 		}
-		if !strings.Contains(stdout, "Created snapshot") {
+		if !strings.Contains(stdout, "Created checkpoint") {
 			t.Errorf("expected success message, got: %s", stdout)
 		}
 	})
@@ -52,7 +52,7 @@ func TestE2E_Hardening_CompressionRoundTrip(t *testing.T) {
 		if len(ids) == 0 {
 			t.Fatal("expected at least one snapshot")
 		}
-		_, stderr, code := runJVSInRepo(t, repoPath, "restore", ids[0])
+		_, stderr, code := runJVSInRepo(t, repoPath, "restore", ids[0], "--discard-dirty")
 		if code != 0 {
 			t.Fatalf("restore failed: %s", stderr)
 		}
@@ -64,6 +64,9 @@ func TestE2E_Hardening_CompressionRoundTrip(t *testing.T) {
 			if got != expected {
 				t.Errorf("file %s: expected %q, got %q", filename, expected, got)
 			}
+		}
+		if fileExists(t, filepath.Join(mainPath, "extra.txt")) {
+			t.Error("restore with --discard-dirty should remove uncheckpointed extra file")
 		}
 	})
 }

@@ -94,6 +94,16 @@ func (d *Doctor) ListRepairActions() []RepairAction {
 
 // Repair executes the specified repair actions.
 func (d *Doctor) Repair(actions []string) ([]RepairResult, error) {
+	var results []RepairResult
+	err := repo.WithMutationLock(d.repoRoot, "doctor repair", func() error {
+		var err error
+		results, err = d.repair(actions)
+		return err
+	})
+	return results, err
+}
+
+func (d *Doctor) repair(actions []string) ([]RepairResult, error) {
 	results := []RepairResult{}
 	for _, action := range actions {
 		switch action {
@@ -117,19 +127,28 @@ func (d *Doctor) Repair(actions []string) ([]RepairResult, error) {
 func (d *Doctor) repairCleanTmp() RepairResult {
 	cleaned := 0
 
-	// Clean orphan .jvs-tmp-* files
-	filepath.Walk(d.repoRoot, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		name := info.Name()
-		if len(name) > 9 && name[:9] == ".jvs-tmp-" {
-			if err := os.RemoveAll(path); err == nil {
+	// Clean root-level JVS temp files without recursing into worktree payloads.
+	if entries, err := os.ReadDir(d.repoRoot); err == nil {
+		for _, entry := range entries {
+			if !strings.HasPrefix(entry.Name(), ".jvs-tmp-") {
+				continue
+			}
+			path := filepath.Join(d.repoRoot, entry.Name())
+			info, err := os.Lstat(path)
+			if err != nil {
+				continue
+			}
+			if info.IsDir() {
+				if err := os.RemoveAll(path); err == nil {
+					cleaned++
+				}
+				continue
+			}
+			if err := os.Remove(path); err == nil {
 				cleaned++
 			}
 		}
-		return nil
-	})
+	}
 
 	// Clean orphan snapshot .tmp directories
 	snapshotsDir, err := repo.SnapshotsDirPath(d.repoRoot)
@@ -414,11 +433,24 @@ func (d *Doctor) repairAdvanceHead() RepairResult {
 			continue
 		}
 
-		// Check if head is stale (not pointing to latest)
 		if cfg.HeadSnapshotID != cfg.LatestSnapshotID {
 			if err := d.snapshotReadyForMetadataAdvance(cfg.LatestSnapshotID); err != nil {
 				skippedUnsafe++
 				unsafeReasons = append(unsafeReasons, fmt.Sprintf("%s latest %s: %v", cfg.Name, cfg.LatestSnapshotID, err))
+				continue
+			}
+			if cfg.HeadSnapshotID != "" {
+				isHistoricalHead, err := verify.IsAncestor(d.repoRoot, cfg.HeadSnapshotID, cfg.LatestSnapshotID)
+				if err != nil {
+					skippedUnsafe++
+					unsafeReasons = append(unsafeReasons, fmt.Sprintf("%s lineage %s..%s: %v", cfg.Name, cfg.HeadSnapshotID, cfg.LatestSnapshotID, err))
+					continue
+				}
+				if isHistoricalHead {
+					continue
+				}
+				skippedUnsafe++
+				unsafeReasons = append(unsafeReasons, fmt.Sprintf("%s head %s is not in latest %s lineage", cfg.Name, cfg.HeadSnapshotID, cfg.LatestSnapshotID))
 				continue
 			}
 			if err := wtMgr.SetLatest(cfg.Name, cfg.LatestSnapshotID); err != nil {
@@ -532,17 +564,20 @@ func (d *Doctor) Check(strict bool) (*Result, error) {
 	// 3. Check snapshot completion markers
 	d.checkReadyMarkers(result, strict)
 
-	// 4. Check for orphan intents
+	// 4. Check descriptor parent links and worktree head/latest reachability
+	d.checkLineage(result)
+
+	// 5. Check for orphan intents
 	d.checkOrphanIntents(result)
 
-	// 5. Check snapshot integrity (if strict)
+	// 6. Check snapshot integrity (if strict)
 	if strict {
 		d.checkSnapshotIntegrity(result)
-		// 6. Check audit chain (if strict)
+		// 7. Check audit chain (if strict)
 		d.checkAuditChain(result)
 	}
 
-	// 7. Check for orphan tmp files
+	// 8. Check for orphan tmp files
 	d.checkOrphanTmp(result)
 
 	result.updateHealthFromFindings()
@@ -619,6 +654,7 @@ func (d *Doctor) checkWorktrees(result *Result) {
 		d.checkWorktreeSnapshotRef(result, cfg.Name, "base_snapshot_id", cfg.BaseSnapshotID)
 		headValid := d.checkWorktreeSnapshotRef(result, cfg.Name, "head_snapshot_id", cfg.HeadSnapshotID)
 		d.checkWorktreeSnapshotRef(result, cfg.Name, "latest_snapshot_id", cfg.LatestSnapshotID)
+		d.checkWorktreeLineagePosition(result, cfg)
 
 		// Check head snapshot exists
 		if cfg.HeadSnapshotID != "" && headValid {
@@ -663,6 +699,90 @@ func worktreeMetadataRefsValid(cfg *model.WorktreeConfig) bool {
 	return worktreeSnapshotRefValid(cfg.BaseSnapshotID) &&
 		worktreeSnapshotRefValid(cfg.HeadSnapshotID) &&
 		worktreeSnapshotRefValid(cfg.LatestSnapshotID)
+}
+
+func (d *Doctor) checkWorktreeLineagePosition(result *Result, cfg *model.WorktreeConfig) {
+	if cfg == nil || cfg.HeadSnapshotID == "" || cfg.LatestSnapshotID == "" || cfg.HeadSnapshotID == cfg.LatestSnapshotID {
+		return
+	}
+	if !worktreeMetadataRefsValid(cfg) {
+		return
+	}
+
+	isAncestor, err := verify.IsAncestor(d.repoRoot, cfg.HeadSnapshotID, cfg.LatestSnapshotID)
+	if err != nil {
+		return
+	}
+	if isAncestor {
+		return
+	}
+	result.Findings = append(result.Findings, Finding{
+		Category:    "worktree",
+		Description: fmt.Sprintf("worktree '%s' head snapshot %s is not in latest snapshot %s lineage", cfg.Name, cfg.HeadSnapshotID, cfg.LatestSnapshotID),
+		Severity:    "error",
+		ErrorCode:   "E_WORKTREE_HEAD_LATEST_MISMATCH",
+	})
+}
+
+func (d *Doctor) checkLineage(result *Result) {
+	ids, err := d.listDescriptorSnapshotIDs()
+	if err != nil {
+		result.Findings = append(result.Findings, Finding{
+			Category:    "lineage",
+			Description: fmt.Sprintf("cannot list descriptors: %v", err),
+			Severity:    "error",
+			ErrorCode:   "E_LINEAGE_DESCRIPTOR_LIST_FAILED",
+		})
+		return
+	}
+
+	for _, snapshotID := range ids {
+		if issue := verify.CheckLineage(d.repoRoot, snapshotID); issue != nil {
+			result.Findings = append(result.Findings, Finding{
+				Category:    "lineage",
+				Description: issue.Message,
+				Severity:    "error",
+				ErrorCode:   issue.Code,
+			})
+		}
+	}
+}
+
+func (d *Doctor) listDescriptorSnapshotIDs() ([]model.SnapshotID, error) {
+	descriptorsDir, err := repo.DescriptorsDirPath(d.repoRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	entries, err := os.ReadDir(descriptorsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var ids []model.SnapshotID
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		_, info, err := safeControlChildInfo(descriptorsDir, entry.Name())
+		if err != nil {
+			return nil, err
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		id := model.SnapshotID(strings.TrimSuffix(entry.Name(), ".json"))
+		if !id.IsValid() {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
 }
 
 func (d *Doctor) checkOrphanIntents(result *Result) {
@@ -866,22 +986,21 @@ func (d *Doctor) checkSnapshotIntegrity(result *Result) {
 }
 
 func (d *Doctor) checkOrphanTmp(result *Result) {
-	// Check for orphan .jvs-tmp-* files
-	filepath.Walk(d.repoRoot, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		name := info.Name()
-		if len(name) > 9 && name[:9] == ".jvs-tmp-" {
+	// Check root-level JVS temp files without recursing into worktree payloads.
+	if entries, err := os.ReadDir(d.repoRoot); err == nil {
+		for _, entry := range entries {
+			name := entry.Name()
+			if !strings.HasPrefix(name, ".jvs-tmp-") {
+				continue
+			}
 			result.Findings = append(result.Findings, Finding{
 				Category:    "tmp",
 				Description: fmt.Sprintf("orphan temp file: %s", name),
 				Severity:    "info",
-				Path:        path,
+				Path:        filepath.Join(d.repoRoot, name),
 			})
 		}
-		return nil
-	})
+	}
 
 	// Check for orphan snapshot .tmp directories
 	snapshotsDir, err := repo.SnapshotsDirPath(d.repoRoot)

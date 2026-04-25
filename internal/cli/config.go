@@ -5,13 +5,15 @@ import (
 	"os"
 	"strings"
 
+	"github.com/jvs-project/jvs/internal/repo"
 	"github.com/jvs-project/jvs/pkg/config"
 	"github.com/spf13/cobra"
 )
 
 var configCmd = &cobra.Command{
-	Use:   "config <command>",
-	Short: "Manage JVS configuration",
+	Use:    "config <command>",
+	Short:  "Manage JVS configuration",
+	Hidden: true,
 	Long: `Manage JVS configuration stored in .jvs/config.yaml.
 
 Configuration options:
@@ -96,22 +98,25 @@ Available keys:
 	Args: cobra.ExactArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
 		r := requireRepo()
-		cfg, err := config.Load(r.Root)
-		if err != nil {
-			fmtErr("load config: %v", err)
-			os.Exit(1)
-		}
 
 		key := args[0]
 		value := args[1]
 
-		if err := cfg.Set(key, value); err != nil {
-			fmtErr("set config: %v", err)
-			os.Exit(1)
-		}
-
-		if err := config.Save(r.Root, cfg); err != nil {
-			fmtErr("save config: %v", err)
+		err := repo.WithMutationLock(r.Root, "config set", func() error {
+			cfg, err := config.Load(r.Root)
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+			if err := cfg.Set(key, value); err != nil {
+				return fmt.Errorf("set config: %w", err)
+			}
+			if err := config.Save(r.Root, cfg); err != nil {
+				return fmt.Errorf("save config: %w", err)
+			}
+			return nil
+		})
+		if err != nil {
+			fmtErr("%v", err)
 			os.Exit(1)
 		}
 

@@ -9,7 +9,7 @@ import (
 	"github.com/jvs-project/jvs/pkg/color"
 )
 
-// suggestSnapshots provides helpful suggestions when a snapshot is not found.
+// suggestSnapshots provides helpful suggestions when a checkpoint is not found.
 // Returns a formatted suggestion string.
 func suggestSnapshots(query string, repoRoot string) string {
 	// Try to find close matches
@@ -35,21 +35,21 @@ func suggestSnapshots(query string, repoRoot string) string {
 		return fmt.Sprintf("%s: %s?", hint, strings.Join(suggestions, ", "))
 	}
 
-	// No close matches - suggest listing history
-	return fmt.Sprintf("Run %s to see available snapshots.", color.Code("jvs history"))
+	// No close matches - suggest listing checkpoints.
+	return fmt.Sprintf("Run %s to see available checkpoints.", color.Code("jvs checkpoint list"))
 }
 
-// suggestWorktrees provides helpful suggestions when a worktree is not found.
+// suggestWorktrees provides helpful suggestions when a workspace is not found.
 // Returns a formatted suggestion string.
 func suggestWorktrees(name string, repoRoot string) string {
 	mgr := worktree.NewManager(repoRoot)
 	list, err := mgr.List()
 	if err != nil {
-		return fmt.Sprintf("Run %s to see available worktrees.", color.Code("jvs worktree list"))
+		return fmt.Sprintf("Run %s to see available workspaces.", color.Code("jvs workspace list"))
 	}
 
 	if len(list) == 0 {
-		return "No worktrees exist yet."
+		return "No workspaces exist yet."
 	}
 
 	// Try to find close matches by name
@@ -77,12 +77,12 @@ func suggestWorktrees(name string, repoRoot string) string {
 		return fmt.Sprintf("%s: %s?", hint, strings.Join(matches, ", "))
 	}
 
-	// List all available worktrees
+	// List all available workspaces.
 	var names []string
 	for _, cfg := range list {
 		names = append(names, color.Success(cfg.Name))
 	}
-	return fmt.Sprintf("Available worktrees: %s", strings.Join(names, ", "))
+	return fmt.Sprintf("Available workspaces: %s", strings.Join(names, ", "))
 }
 
 // suggestInit provides a suggestion to initialize a repository.
@@ -90,11 +90,11 @@ func suggestInit() string {
 	return fmt.Sprintf("Run %s to create a new repository.", color.Code("jvs init <name>"))
 }
 
-// formatSnapshotNotFoundError formats a snapshot not found error with suggestions.
+// formatSnapshotNotFoundError formats a checkpoint not found error with suggestions.
 func formatSnapshotNotFoundError(query string, repoRoot string) string {
 	var sb strings.Builder
 
-	sb.WriteString(color.Error(fmt.Sprintf("snapshot '%s' not found", query)))
+	sb.WriteString(color.Error(fmt.Sprintf("checkpoint '%s' not found", query)))
 	sb.WriteString("\n")
 
 	// Add suggestions
@@ -104,11 +104,11 @@ func formatSnapshotNotFoundError(query string, repoRoot string) string {
 	return sb.String()
 }
 
-// formatWorktreeNotFoundError formats a worktree not found error with suggestions.
+// formatWorktreeNotFoundError formats a workspace not found error with suggestions.
 func formatWorktreeNotFoundError(name string, repoRoot string) string {
 	var sb strings.Builder
 
-	sb.WriteString(color.Error(fmt.Sprintf("worktree '%s' not found", name)))
+	sb.WriteString(color.Error(fmt.Sprintf("workspace '%s' not found", name)))
 	sb.WriteString("\n")
 
 	// Add suggestions

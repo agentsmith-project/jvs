@@ -33,7 +33,7 @@ func TestSuggestWorktrees(t *testing.T) {
 	t.Run("Suggestion contains helpful info", func(t *testing.T) {
 		result := suggestWorktrees("feat", "/invalid/repo/root")
 		// Should suggest running list command when repo is invalid
-		assert.Contains(t, result, "worktree")
+		assert.Contains(t, result, "workspace")
 	})
 }
 
@@ -42,7 +42,7 @@ func TestSuggestSnapshots(t *testing.T) {
 	t.Run("No snapshots available (invalid repo)", func(t *testing.T) {
 		result := suggestSnapshots("abc123", "/invalid/repo/root")
 		assert.NotEmpty(t, result)
-		assert.Contains(t, result, "history")
+		assert.Contains(t, result, "checkpoint list")
 	})
 }
 
@@ -53,7 +53,7 @@ func TestFormatSnapshotNotFoundError(t *testing.T) {
 		assert.Contains(t, result, "abc123")
 		assert.Contains(t, result, "not found")
 		// Should contain suggestion even for invalid repo
-		assert.True(t, strings.Contains(result, "history") || strings.Contains(result, "Did you mean"))
+		assert.True(t, strings.Contains(result, "checkpoint list") || strings.Contains(result, "Did you mean"))
 	})
 }
 
@@ -90,14 +90,14 @@ func TestFormatSnapshotNotFoundError_ColorCodes(t *testing.T) {
 func TestSuggestWorktrees_InvalidRepo(t *testing.T) {
 	result := suggestWorktrees("test", "/invalid/nonexistent/repo")
 	assert.NotEmpty(t, result)
-	assert.Contains(t, result, "worktree list")
+	assert.Contains(t, result, "workspace list")
 }
 
 // TestSuggestSnapshots_InvalidRepo tests suggestSnapshots with invalid repository.
 func TestSuggestSnapshots_InvalidRepo(t *testing.T) {
 	result := suggestSnapshots("abc123", "/invalid/nonexistent/repo")
 	assert.NotEmpty(t, result)
-	assert.Contains(t, result, "history")
+	assert.Contains(t, result, "checkpoint list")
 }
 
 // Benchmark tests

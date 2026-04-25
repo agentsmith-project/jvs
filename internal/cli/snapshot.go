@@ -25,40 +25,38 @@ var (
 )
 
 var snapshotCmd = &cobra.Command{
-	Use:   "snapshot [note] [-- <paths>...]",
-	Short: "Create a snapshot of the current worktree",
-	Long: `Create a snapshot of the current worktree.
+	Use:    "snapshot [note] [-- <paths>...]",
+	Short:  "Create a checkpoint of the current workspace (legacy alias)",
+	Hidden: true,
+	Long: `Create a checkpoint of the current workspace.
 
-Captures the current state of the worktree at a point in time.
+This hidden legacy alias remains for older scripts. Prefer jvs checkpoint.
+
+Captures the current state of the workspace at a point in time.
 
 Examples:
-  # Basic snapshot with note
-  jvs snapshot "Before refactoring"
+  # Basic checkpoint with note
+  jvs checkpoint "Before refactoring"
 
-  # Snapshot with tags
-  jvs snapshot "v1.0 release" --tag v1.0 --tag release
+  # Checkpoint with tags
+  jvs checkpoint "v1.0 release" --tag v1.0 --tag release
 
-  # Partial snapshot of specific paths
-  jvs snapshot "Assets only" -- paths/Assets/
+  # Continue from a historical current checkpoint
+  jvs fork hotfix
 
-  # Compressed snapshot
-  jvs snapshot "checkpoint" --compress fast
-
-  # Multi-line note via stdin
-  jvs snapshot - < <<EOF
-  ML Experiment: ResNet50 v2
-  Result: 92.3% accuracy
-  EOF
+  # Return to latest before checkpointing
+  jvs restore latest
 
 Compression levels: none, fast, default, max
 
-NOTE: Cannot create snapshots in detached state. Use 'jvs worktree fork'
-to create a new worktree from the current position first.`,
+NOTE: Cannot create a checkpoint when current differs from latest. Use
+jvs fork <name> to continue from the current checkpoint, or jvs restore latest
+before running jvs checkpoint.`,
 	Args: cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		r, wtName := requireWorktree()
 
-		// Check if worktree is in detached state
+		// Check whether current differs from latest.
 		wtMgr := worktree.NewManager(r.Root)
 		cfg, err := wtMgr.Get(wtName)
 		if err != nil {
@@ -67,16 +65,22 @@ to create a new worktree from the current position first.`,
 		}
 
 		if cfg.IsDetached() {
-			fmtErr("cannot create snapshot in detached state")
+			fmtErr("cannot create checkpoint: current differs from latest")
 			fmt.Println()
-			fmt.Printf("You are currently at snapshot '%s' (historical).\n", cfg.HeadSnapshotID)
-			fmt.Println("To continue working from this point:")
+			fmt.Printf("Current checkpoint: %s\n", cfg.HeadSnapshotID)
+			fmt.Printf("Latest checkpoint: %s\n", cfg.LatestSnapshotID)
 			fmt.Println()
-			fmt.Printf("    jvs worktree fork %s <new-worktree-name>\n", cfg.HeadSnapshotID.ShortID())
+			fmt.Println("To continue from the current checkpoint:")
 			fmt.Println()
-			fmt.Println("Or return to the latest state:")
+			fmt.Printf("    jvs fork %s <new-workspace-name>\n", cfg.HeadSnapshotID.ShortID())
 			fmt.Println()
-			fmt.Println("    jvs restore HEAD")
+			fmt.Println("To return this workspace to latest before checkpointing:")
+			fmt.Println()
+			fmt.Println("    jvs restore latest")
+			fmt.Println()
+			fmt.Println("Then create a checkpoint with:")
+			fmt.Println()
+			fmt.Println("    jvs checkpoint <note>")
 			os.Exit(1)
 		}
 
@@ -191,8 +195,8 @@ func readNoteFromStdin() string {
 }
 
 func init() {
-	snapshotCmd.Flags().StringSliceVar(&snapshotTags, "tag", []string{}, "tag for this snapshot (can be repeated)")
-	snapshotCmd.Flags().StringSliceVar(&snapshotPaths, "paths", []string{}, "paths to include in partial snapshot")
+	snapshotCmd.Flags().StringSliceVar(&snapshotTags, "tag", []string{}, "tag for this checkpoint (can be repeated)")
+	snapshotCmd.Flags().StringSliceVar(&snapshotPaths, "paths", []string{}, "paths to include in partial checkpoint")
 	snapshotCmd.Flags().StringVar(&snapshotCompression, "compress", "", "compression level (none, fast, default, max)")
 	snapshotCmd.Flags().StringVarP(&snapshotNoteFile, "file", "F", "", "read note from file")
 	rootCmd.AddCommand(snapshotCmd)

@@ -16,6 +16,9 @@ import (
 )
 
 func executeCommand(root *cobra.Command, args ...string) (stdout string, err error) {
+	resetCommandHelpFlags(root)
+	defer resetCommandHelpFlags(root)
+
 	// Capture os.Stdout since CLI uses fmt.Printf directly
 	oldStdout := os.Stdout
 	r, w, _ := os.Pipe()
@@ -32,6 +35,19 @@ func executeCommand(root *cobra.Command, args ...string) (stdout string, err err
 	return buf.String(), err
 }
 
+func resetCommandHelpFlags(cmd *cobra.Command) {
+	if cmd == nil {
+		return
+	}
+	if flag := cmd.Flags().Lookup("help"); flag != nil {
+		_ = flag.Value.Set("false")
+		flag.Changed = false
+	}
+	for _, child := range cmd.Commands() {
+		resetCommandHelpFlags(child)
+	}
+}
+
 func setupTestDir(t *testing.T) string {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
@@ -46,7 +62,24 @@ func TestRootCommand_Help(t *testing.T) {
 	cmd := createTestRootCmd()
 	stdout, err := executeCommand(cmd, "--help")
 	require.NoError(t, err)
-	assert.Contains(t, stdout, "snapshot-first")
+	assert.Contains(t, stdout, "checkpoint-first")
+	assert.Contains(t, stdout, "checkpoint")
+	assert.Contains(t, stdout, "workspace")
+	assert.NotContains(t, stdout, "snapshot")
+	assert.NotContains(t, stdout, "worktree")
+	assert.NotContains(t, stdout, "detached")
+	assert.NotContains(t, stdout, "config")
+	assert.NotContains(t, stdout, "conformance")
+}
+
+func TestCheckpointCommand_HelpHidesUnpublishedFlags(t *testing.T) {
+	cmd := createTestRootCmd()
+	stdout, err := executeCommand(cmd, "checkpoint", "--help")
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "--tag")
+	assert.Contains(t, stdout, "--file")
+	assert.NotContains(t, stdout, "--paths")
+	assert.NotContains(t, stdout, "--compress")
 }
 
 func TestRootCommand_JSONFlag(t *testing.T) {
@@ -466,31 +499,62 @@ func createTestRootCmd() *cobra.Command {
 	// Reset global flags to avoid test pollution
 	jsonOutput = false
 	debugOutput = false
+	noProgress = false
+	noColor = false
+	targetRepoPath = ""
+	targetWorkspaceName = ""
+	activeCommandName = ""
+	resolvedRepoRoot = ""
+	resolvedWorkspace = ""
+	jsonErrorEmitted = false
 	worktreeCreateFrom = ""
 	worktreeForce = false
+	workspaceRemoveForce = false
+	forkFromRef = ""
+	forkDiscardDirty = false
+	forkIncludeWorking = false
 	historyLimit = 0
 	historyNoteFilter = ""
 	historyTagFilter = ""
 	historyAll = false
+	checkpointTags = nil
+	checkpointPaths = nil
+	checkpointCompression = ""
+	checkpointNoteFile = ""
 	snapshotTags = nil
 	snapshotPaths = nil
 	snapshotCompression = ""
+	snapshotNoteFile = ""
 	restoreInteractive = false
+	restoreDiscardDirty = false
+	restoreIncludeWorking = false
 	gcPlanID = ""
+	diffStatOnly = false
+	cloneScope = "full"
+	capabilityWriteProbe = false
 
 	// Create a new root command
 	cmd := &cobra.Command{
-		Use:           "jvs",
-		Short:         "JVS - Juicy Versioned Workspaces",
-		Long:          `JVS is a snapshot-first, filesystem-native workspace versioning system built on JuiceFS.`,
-		SilenceUsage:  true,
-		SilenceErrors: true,
+		Use:              "jvs",
+		Short:            "JVS - Juicy Versioned Workspaces",
+		Long:             `JVS is a checkpoint-first, filesystem-native workspace versioning system built on JuiceFS.`,
+		SilenceUsage:     true,
+		SilenceErrors:    true,
+		PersistentPreRun: cliPersistentPreRun,
 	}
 	cmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output in JSON format")
 	cmd.PersistentFlags().BoolVar(&debugOutput, "debug", false, "enable debug logging")
+	cmd.PersistentFlags().BoolVar(&noProgress, "no-progress", false, "disable progress bars")
+	cmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable colored output (also respects NO_COLOR env var)")
+	cmd.PersistentFlags().StringVar(&targetRepoPath, "repo", "", "target repository root or path inside a repository")
+	cmd.PersistentFlags().StringVar(&targetWorkspaceName, "workspace", "", "target workspace name")
 
 	// Add all subcommands
 	cmd.AddCommand(initCmd)
+	cmd.AddCommand(statusCmd)
+	cmd.AddCommand(checkpointCmd)
+	cmd.AddCommand(workspaceCmd)
+	cmd.AddCommand(forkCmd)
 	cmd.AddCommand(snapshotCmd)
 	cmd.AddCommand(worktreeCmd)
 	cmd.AddCommand(historyCmd)
@@ -503,6 +567,9 @@ func createTestRootCmd() *cobra.Command {
 	cmd.AddCommand(configCmd)
 	cmd.AddCommand(diffCmd)
 	cmd.AddCommand(conformanceCmd)
+	cmd.AddCommand(importCmd)
+	cmd.AddCommand(cloneCmd)
+	cmd.AddCommand(capabilityCmd)
 
 	return cmd
 }
@@ -776,8 +843,10 @@ func TestInfoCommand_JSONFields(t *testing.T) {
 	require.NoError(t, err)
 	// Should contain required spec fields
 	assert.Contains(t, stdout, "format_version")
-	assert.Contains(t, stdout, "total_worktrees")
-	assert.Contains(t, stdout, "total_snapshots")
+	assert.Contains(t, stdout, "workspace_count")
+	assert.Contains(t, stdout, "checkpoint_count")
+	assert.NotContains(t, stdout, "total_worktrees")
+	assert.NotContains(t, stdout, "total_snapshots")
 
 	os.Chdir(originalWd)
 }
@@ -831,8 +900,8 @@ func TestSnapshotCommand_DetachedState(t *testing.T) {
 	cmd3 := createTestRootCmd()
 	executeCommand(cmd3, "snapshot", "second")
 
-	// Now we're at HEAD and can create snapshots
-	// (Restore to first would put us in detached state)
+	// Now current equals latest and checkpoints can advance.
+	// Restoring to first would make current differ from latest.
 	_ = cmd3
 
 	os.Chdir(originalWd)
@@ -1320,12 +1389,13 @@ func TestInfoFields(t *testing.T) {
 	stdout, err := executeCommand(cmd2, "info")
 	require.NoError(t, err)
 	assert.Contains(t, stdout, "Repository")
-	assert.Contains(t, stdout, "Worktrees")
+	assert.Contains(t, stdout, "Workspaces")
+	assert.NotContains(t, stdout, "Worktrees")
 
 	os.Chdir(originalWd)
 }
 
-// TestRestoreToHead tests restoring to HEAD.
+// TestRestoreToHead tests restoring to the latest checkpoint.
 func TestRestoreToHead(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
@@ -1353,11 +1423,11 @@ func TestRestoreToHead(t *testing.T) {
 	_, err = executeCommand(cmd3, "snapshot", "second snapshot")
 	require.NoError(t, err)
 
-	// Restore to HEAD (should stay at current state)
+	// Restore to latest (should stay at current state)
 	cmd4 := createTestRootCmd()
-	stdout, err := executeCommand(cmd4, "restore", "HEAD")
+	stdout, err := executeCommand(cmd4, "restore", "latest")
 	require.NoError(t, err)
-	assert.Contains(t, stdout, "HEAD")
+	assert.Contains(t, stdout, "Restored to checkpoint")
 
 	os.Chdir(originalWd)
 }
@@ -1383,11 +1453,11 @@ func TestRestoreToTag(t *testing.T) {
 	_, err = executeCommand(cmd2, "snapshot", "tagged snapshot", "--tag", uniqueTag)
 	require.NoError(t, err)
 
-	// Restore by tag immediately (this should work and put us in detached state)
+	// Restore by tag immediately.
 	cmd3 := createTestRootCmd()
 	stdout, err := executeCommand(cmd3, "restore", uniqueTag)
 	require.NoError(t, err)
-	assert.Contains(t, stdout, "snapshot")
+	assert.Contains(t, stdout, "checkpoint")
 
 	os.Chdir(originalWd)
 }

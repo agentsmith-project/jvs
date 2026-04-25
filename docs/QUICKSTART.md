@@ -1,233 +1,178 @@
 # JVS Quick Start Guide
 
-**Get started with JVS in 5 minutes**
-
----
+Get from an empty directory to a verified workspace checkpoint in a few
+minutes.
 
 ## Prerequisites
 
-### Required
-- **Go 1.25+** - For building from source
-- **JuiceFS** (recommended) - For O(1) snapshot performance
+- Go 1.25+ if you build from source.
+- Optional: JuiceFS or a reflink-capable filesystem for faster copy-on-write
+  materialization. JVS also works on regular POSIX filesystems with the copy
+  engine.
 
-### Optional
-- A CoW-capable filesystem (btrfs, XFS) for reflink engine
-- Any POSIX filesystem (fallback to copy engine)
-
----
-
-## Installation
-
-### Option 1: Build from Source
+## Install
 
 ```bash
-# Clone the repository
 git clone https://github.com/jvs-project/jvs.git
 cd jvs
-
-# Build the binary
 make build
-
-# (Optional) Install to your PATH
 sudo cp bin/jvs /usr/local/bin/
 ```
 
-### Option 2: Using Go Install
+You can inspect the filesystem JVS will use before creating a repo:
 
 ```bash
-go install github.com/jvs-project/jvs@latest
+jvs capability /path/to/parent
 ```
-
-### Verify Installation
-
-```bash
-jvs --version
-# Output: jvs version 7.0.0
-```
-
----
 
 ## 5-Minute Tutorial
 
-### Step 1: Initialize a Repository
-
-Create a new repository with a main workspace:
+### 1. Initialize a Repo
 
 ```bash
-# Navigate to where you want your repository
-cd /path/to/workspace
-
-# Initialize JVS repository
+cd /path/to/parent
 jvs init myproject
-
-# JVS creates:
-# myproject/
-# ├── .jvs/          # Metadata (control plane)
-# └── main/          # Your workspace (data plane)
 ```
 
-### Step 2: Enter Your Workspace
+JVS creates a repository root with a default `main` workspace:
+
+```text
+myproject/
+├── .jvs/          # control-plane metadata
+└── main/          # workspace payload
+```
+
+The repo root is not the workspace payload. Work on files inside `main/`:
 
 ```bash
 cd myproject/main
 ```
 
-**Important:** The repository root (`myproject/`) is NOT your workspace. `main/` is your actual working directory.
-
-### Step 3: Create Your First Snapshot
+### 2. Create the First Checkpoint
 
 ```bash
-# Add some files to your workspace
 echo "Hello JVS" > README.md
 echo "print('hello')" > script.py
 
-# Create a snapshot
-jvs snapshot "Initial setup"
-
-# JVS responds with snapshot ID:
-# ✓ Snapshot created: 01abcd...
+jvs status
+jvs checkpoint "initial setup"
 ```
 
-### Step 4: Make Changes and Snapshot Again
+`jvs status` reports the targeted workspace, the `current` checkpoint, the
+`latest` checkpoint, and whether the workspace is `dirty`.
+
+### 3. Make and Save More Changes
 
 ```bash
-# Modify files
 echo "Updated content" >> README.md
 echo "print('world')" >> script.py
 
-# Create another snapshot
-jvs snapshot "Added more content"
-# ✓ Snapshot created: 01efgh...
+jvs status
+jvs checkpoint "added more content" --tag stable
 ```
 
-### Step 5: View History
+List checkpoints:
 
 ```bash
-jvs history
-
-# Output:
-# SNAPSHOT ID   TIMESTAMP         NOTE                TAGS
-# 01efgh...     2026-02-23 12:05  Added more content
-# 01abcd...     2026-02-23 12:00  Initial setup
+jvs checkpoint list
 ```
 
-### Step 6: Restore to a Previous Snapshot
+### 4. Restore
+
+Restore accepts `current`, `latest`, a full checkpoint ID, a unique ID prefix,
+or an exact tag:
 
 ```bash
-# Restore to initial state
-jvs restore 01abcd
-
-# JVS modifies main/ in-place to match snapshot
-# ✓ Restored to 01abcd... (Initial setup)
-# ℹ Worktree is now in detached state
+jvs restore stable
+jvs restore latest
 ```
 
-**Detached State:** After restoring to an old snapshot, your worktree is "detached" from HEAD. New snapshots will create a new lineage.
-
-### Step 7: Return to Latest State
+If the workspace has uncheckpointed changes, restore refuses to overwrite them.
+Choose one explicit outcome:
 
 ```bash
-jvs restore HEAD
-# ✓ Restored to latest snapshot
+jvs restore latest --include-working
+jvs restore latest --discard-dirty
 ```
 
----
-
-## Common Workflows
-
-### Create a Branch
+### 5. Fork Another Workspace
 
 ```bash
-# Create a new worktree (branch) from current state
-jvs worktree fork experiment
-
-# New worktree created at:
-# myproject/worktrees/experiment/
-
-# Navigate to your new worktree
-cd ../worktrees/experiment
+jvs fork experiment
+cd "$(jvs workspace path experiment)"
 ```
 
-### Use Tags for Organization
+The new workspace is a normal directory with its own `current`, `latest`, and
+`dirty` state. To create a workspace from a specific checkpoint:
 
 ```bash
-# Create snapshot with tags
-jvs snapshot "Stable point" --tag stable --tag v1.0
-
-# Restore by tag
-jvs restore --latest-tag stable
+jvs fork stable release-test
+# or
+jvs fork --from stable release-test-2
 ```
 
-### Verify Integrity
+### 6. Verify and Diagnose
 
 ```bash
-# Verify all snapshots
 jvs verify --all
-
-# ✓ All snapshots verified
+jvs doctor --strict
 ```
 
-### Check Repository Health
+`verify` checks descriptor checksums and payload hashes. `doctor --strict`
+checks repository health and integrity more broadly.
+
+## Import and Clone
+
+Import an existing directory into a new JVS repo:
 
 ```bash
-jvs doctor --strict
-
-# ✓ Repository is healthy
+jvs import ./existing-files ./myproject
+cd myproject/main
 ```
 
----
+Clone an existing local repo:
 
-## Common Commands Reference
+```bash
+jvs clone ./myproject ./myproject-copy
+jvs clone ./myproject ./current-only-copy --scope current
+```
+
+`clone` is local filesystem copy, not a push/pull remote protocol.
+
+## Command Reference
 
 | Command | Description | Example |
-|---------|-------------|---------|
-| `jvs init <name>` | Create new repository | `jvs init myproject` |
-| `jvs snapshot [note]` | Create snapshot | `jvs snapshot "Fixed bug"` |
-| `jvs restore <id>` | Restore to snapshot | `jvs restore HEAD` |
-| `jvs worktree fork <name>` | Create branch | `jvs worktree fork feature-x` |
-| `jvs history` | Show snapshots | `jvs history --tag v1.0` |
-| `jvs verify` | Verify integrity | `jvs verify --all` |
-| `jvs doctor` | Health check | `jvs doctor --strict` |
-| `jvs gc plan` | Preview GC | `jvs gc plan --keep-daily 7` |
+| --- | --- | --- |
+| `jvs init <repo-path>` | Create a repo | `jvs init myproject` |
+| `jvs import <dir> <repo-path>` | Import an existing directory | `jvs import ./src ./repo` |
+| `jvs clone <src> <dest>` | Clone a local repo | `jvs clone ./repo ./copy` |
+| `jvs capability <path>` | Probe filesystem support | `jvs capability .` |
+| `jvs info` | Show repo metadata | `jvs info --json` |
+| `jvs status` | Show workspace state | `jvs status` |
+| `jvs checkpoint [note]` | Save current workspace | `jvs checkpoint "fixed bug"` |
+| `jvs checkpoint list` | List checkpoints | `jvs checkpoint list` |
+| `jvs diff <from> <to>` | Compare checkpoints | `jvs diff current latest --stat` |
+| `jvs restore <ref>` | Restore a checkpoint | `jvs restore latest` |
+| `jvs fork [ref] <name>` | Create another workspace | `jvs fork stable test` |
+| `jvs workspace list` | List workspaces | `jvs workspace list` |
+| `jvs workspace path [name]` | Print a workspace path | `jvs workspace path main` |
+| `jvs verify [--all]` | Verify integrity | `jvs verify --all` |
+| `jvs doctor [--strict]` | Diagnose repository health | `jvs doctor --strict` |
+| `jvs gc plan` | Preview retention cleanup | `jvs gc plan` |
 
----
+## Tips
 
-## Tips and Gotchas
+- Work inside a workspace payload such as `main/`, not in the repo root.
+- Run `jvs status` before destructive operations.
+- Use tags for important checkpoints, and keep external automation on full
+  checkpoint IDs when possible.
+- Use `jvs restore latest` to return a workspace from an older `current`
+  checkpoint to the normal latest checkpoint.
+- Use `jvs fork <name>` when you want to continue from the current checkpoint
+  without moving the original workspace forward.
 
-### ✅ Do
+## What Is Not in v0
 
-- Work in `main/` or `worktrees/<name>/`, not the repository root
-- Use descriptive snapshot notes
-- Run `jvs doctor --strict` if something seems wrong
-- Use tags to mark important snapshots (releases, milestones)
-
-### ❌ Don't
-
-- Don't manually edit `.jvs/` contents
-- Don't expect Git-like merge behavior (JVS doesn't merge)
-- Don't ignore detached state warnings
-- Don't commit `.jvs/` to Git (it's metadata, not payload)
-
----
-
-## What's Next?
-
-- **Full Documentation:** See [docs/](docs/) for detailed specifications
-- **Contributing:** See [CONTRIBUTING.md](CONTRIBUTING.md) to contribute
-- **Reporting Issues:** Use [GitHub Issues](https://github.com/jvs-project/jvs/issues)
-- **Architecture:** See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for design details
-
----
-
-## Getting Help
-
-| Resource | Link |
-|----------|------|
-| Documentation | https://github.com/jvs-project/jvs/tree/main/docs |
-| GitHub Issues | https://github.com/jvs-project/jvs/issues |
-| GitHub Discussions | https://github.com/jvs-project/jvs/discussions |
-| Security Reporting | See [SECURITY.md](SECURITY.md) |
-
----
-
-*This guide covers JVS basics. For advanced usage, see the full specification documents.*
+The v0 public CLI does not include remote push/pull, signing commands, partial
+checkpoint contracts, compression contracts, merge/rebase, or complex retention
+policy flags.

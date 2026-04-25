@@ -91,30 +91,6 @@ func TestDetectEngine_Coverage(t *testing.T) {
 	})
 }
 
-// TestReadIntBehavior documents readInt behavior.
-// Note: readInt requires stdin input which is difficult to test in unit tests.
-// This test documents expected behavior for coverage.
-func TestReadIntBehavior(t *testing.T) {
-	t.Skip("readInt reads from stdin - tested via E2E tests")
-
-	// Expected behavior:
-	// - Returns 0 for empty input, "0", or "cancel"
-	// - Returns 0 for invalid input (non-numeric)
-	// - Returns 0 for out-of-range values (< 1 or > max)
-	// - Returns the selected integer for valid input (1 to max)
-}
-
-// TestConfirmBehavior documents confirm behavior.
-// Note: confirm requires stdin input which is difficult to test in unit tests.
-// This test documents expected behavior for coverage.
-func TestConfirmBehavior(t *testing.T) {
-	t.Skip("confirm reads from stdin - tested via E2E tests")
-
-	// Expected behavior:
-	// - Returns true for "y" or "yes" (case-insensitive)
-	// - Returns false for anything else
-}
-
 // TestExecuteFunctionExists tests that Execute function exists and is callable.
 // Note: Execute calls os.Exit() which terminates the process, making it
 // difficult to test in unit tests.
@@ -127,8 +103,8 @@ func TestExecuteFunctionExists(t *testing.T) {
 	// This is tested via the E2E test suite
 }
 
-// TestResolveSnapshotForDiff tests the diff.go resolveSnapshot function.
-func TestResolveSnapshotForDiff(t *testing.T) {
+// TestResolveCheckpointRefForDiff tests the shared checkpoint ref resolver.
+func TestResolveCheckpointRefForDiff(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 
@@ -141,36 +117,35 @@ func TestResolveSnapshotForDiff(t *testing.T) {
 	repoPath := dir + "/testrepo"
 	mainPath := repoPath + "/main"
 
-	t.Run("Resolve HEAD from outside worktree returns error", func(t *testing.T) {
-		// Change to a directory outside the worktree
+	t.Run("Resolve current without workspace returns error", func(t *testing.T) {
 		assert.NoError(t, os.Chdir(dir))
-		_, err := resolveSnapshot(repoPath, "HEAD")
+		_, err := resolveCheckpointRef(repoPath, "", "current")
 		assert.Error(t, err)
 	})
 
 	t.Run("Resolve non-existent snapshot returns error", func(t *testing.T) {
-		_, err := resolveSnapshot(repoPath, "nonexistent-snapshot-id")
+		_, err := resolveCheckpointRef(repoPath, "main", "nonexistent-snapshot-id")
 		assert.Error(t, err)
 	})
 
 	t.Run("Resolve empty string returns error", func(t *testing.T) {
-		_, err := resolveSnapshot(repoPath, "")
+		_, err := resolveCheckpointRef(repoPath, "main", "")
 		assert.Error(t, err)
 	})
 
-	t.Run("Resolve HEAD when no snapshots exist", func(t *testing.T) {
+	t.Run("Resolve current when no checkpoints exist", func(t *testing.T) {
 		assert.NoError(t, os.Chdir(mainPath))
-		_, err := resolveSnapshot(repoPath, "HEAD")
+		_, err := resolveCheckpointRef(repoPath, "main", "current")
 		assert.Error(t, err)
 	})
 
-	t.Run("Resolve HEAD successfully after creating snapshot", func(t *testing.T) {
+	t.Run("Resolve current successfully after creating checkpoint", func(t *testing.T) {
 		// Create a snapshot first
 		assert.NoError(t, os.Chdir(mainPath))
 		assert.NoError(t, os.WriteFile("headtest.txt", []byte("head test"), 0644))
 
 		cmd3 := createTestRootCmd()
-		stdout, _ := executeCommand(cmd3, "snapshot", "for HEAD test", "--json")
+		stdout, _ := executeCommand(cmd3, "snapshot", "for current ref test", "--json")
 
 		// Extract snapshot ID
 		lines := strings.Split(stdout, "\n")
@@ -188,23 +163,23 @@ func TestResolveSnapshotForDiff(t *testing.T) {
 		}
 
 		if snapshotID != "" {
-			// Now HEAD should resolve
-			resolved, err := resolveSnapshot(repoPath, "HEAD")
+			// Now current should resolve
+			resolved, err := resolveCheckpointRef(repoPath, "main", "current")
 			assert.NoError(t, err)
 			assert.Equal(t, snapshotID, string(resolved))
 		}
 	})
 
 	t.Run("Resolve with whitespace only", func(t *testing.T) {
-		_, err := resolveSnapshot(repoPath, "   ")
+		_, err := resolveCheckpointRef(repoPath, "main", "   ")
 		assert.Error(t, err)
 	})
 
 	os.Chdir(originalWd)
 }
 
-// TestResolveSnapshotByID tests resolving snapshots by full ID.
-func TestResolveSnapshotByID(t *testing.T) {
+// TestResolveCheckpointRefByID tests resolving checkpoints by full ID.
+func TestResolveCheckpointRefByID(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 
@@ -240,13 +215,13 @@ func TestResolveSnapshotByID(t *testing.T) {
 
 	if snapshotID != "" {
 		// Test resolving by full ID
-		resolved, err := resolveSnapshot(repoPath, snapshotID)
+		resolved, err := resolveCheckpointRef(repoPath, "main", snapshotID)
 		assert.NoError(t, err)
 		assert.Equal(t, snapshotID, string(resolved))
 
 		// Test resolving by short prefix
 		shortPrefix := snapshotID[:8]
-		resolved2, err := resolveSnapshot(repoPath, shortPrefix)
+		resolved2, err := resolveCheckpointRef(repoPath, "main", shortPrefix)
 		assert.NoError(t, err)
 		assert.Equal(t, snapshotID, string(resolved2))
 	}
@@ -254,8 +229,8 @@ func TestResolveSnapshotByID(t *testing.T) {
 	os.Chdir(originalWd)
 }
 
-// TestResolveSnapshotByTag tests resolving snapshots by tag.
-func TestResolveSnapshotByTag(t *testing.T) {
+// TestResolveCheckpointRefByTag tests resolving checkpoints by tag.
+func TestResolveCheckpointRefByTag(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 
@@ -291,7 +266,7 @@ func TestResolveSnapshotByTag(t *testing.T) {
 
 	if snapshotID != "" {
 		// Test resolving by tag
-		resolved, err := resolveSnapshot(repoPath, "testtag")
+		resolved, err := resolveCheckpointRef(repoPath, "main", "testtag")
 		assert.NoError(t, err)
 		assert.Equal(t, snapshotID, string(resolved))
 	}
@@ -299,8 +274,8 @@ func TestResolveSnapshotByTag(t *testing.T) {
 	os.Chdir(originalWd)
 }
 
-// TestResolveSnapshotByNote tests resolving snapshots by note.
-func TestResolveSnapshotByNote(t *testing.T) {
+// TestResolveCheckpointRefRejectsNote tests that notes are not public checkpoint refs.
+func TestResolveCheckpointRefRejectsNote(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 
@@ -336,10 +311,9 @@ func TestResolveSnapshotByNote(t *testing.T) {
 	}
 
 	if snapshotID != "" {
-		// Test resolving by note prefix
-		resolved, err := resolveSnapshot(repoPath, "unique-snapshot-note")
-		assert.NoError(t, err)
-		assert.Equal(t, snapshotID, string(resolved))
+		// Notes are not public checkpoint refs.
+		_, err := resolveCheckpointRef(repoPath, "main", "unique-snapshot-note")
+		assert.Error(t, err)
 	}
 
 	os.Chdir(originalWd)
@@ -361,54 +335,8 @@ func TestFmtErr_Coverage(t *testing.T) {
 	})
 }
 
-// TestReadInt_Coverage provides basic coverage for readInt.
-// Note: This function reads from stdin which is difficult in unit tests.
-func TestReadInt_Coverage(t *testing.T) {
-	// We can't easily test stdin reading in unit tests, but we can
-	// verify the function compiles and has the right signature
-	_ = readInt // Mark as used for coverage
-}
-
-// TestConfirm_Coverage provides basic coverage for confirm.
-// Note: This function reads from stdin which is difficult in unit tests.
-func TestConfirm_Coverage(t *testing.T) {
-	// We can't easily test stdin reading in unit tests, but we can
-	// verify the function compiles and has the right signature
-	_ = confirm // Mark as used for coverage
-}
-
-// TestResolveSnapshotAmbiguous tests resolving when multiple snapshots match.
-func TestResolveSnapshotAmbiguous(t *testing.T) {
-	dir := t.TempDir()
-	originalWd, _ := os.Getwd()
-
-	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	assert.NoError(t, err)
-
-	repoPath := dir + "/testrepo"
-	mainPath := repoPath + "/main"
-
-	// Create snapshots with similar notes to test ambiguity
-	assert.NoError(t, os.Chdir(mainPath))
-	assert.NoError(t, os.WriteFile("test1.txt", []byte("test1"), 0644))
-	cmd2 := createTestRootCmd()
-	executeCommand(cmd2, "snapshot", "similar-prefix-01")
-
-	assert.NoError(t, os.WriteFile("test2.txt", []byte("test2"), 0644))
-	cmd3 := createTestRootCmd()
-	executeCommand(cmd3, "snapshot", "similar-prefix-02")
-
-	// Resolving with "similar-prefix" should fail due to ambiguity
-	_, err = resolveSnapshot(repoPath, "similar-prefix")
-	assert.Error(t, err)
-
-	os.Chdir(originalWd)
-}
-
-// TestResolveSnapshotMultipleTags tests when multiple snapshots have the same tag.
-func TestResolveSnapshotMultipleTags(t *testing.T) {
+// TestResolveCheckpointRefMultipleTags tests when multiple snapshots have the same tag.
+func TestResolveCheckpointRefMultipleTags(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 
@@ -430,10 +358,9 @@ func TestResolveSnapshotMultipleTags(t *testing.T) {
 	cmd3 := createTestRootCmd()
 	executeCommand(cmd3, "snapshot", "second", "--tag", "shared")
 
-	// Resolving by tag when multiple have it - should get the latest
-	_, err = resolveSnapshot(repoPath, "shared")
-	// May return error or the latest - either is acceptable behavior
-	_ = err
+	// Public refs reject ambiguous tags.
+	_, err = resolveCheckpointRef(repoPath, "main", "shared")
+	assert.Error(t, err)
 
 	os.Chdir(originalWd)
 }
@@ -479,8 +406,8 @@ func TestPersistentPreRunTests(t *testing.T) {
 	})
 }
 
-// TestResolveSnapshotEdgeCases tests edge cases for snapshot resolution.
-func TestResolveSnapshotEdgeCases(t *testing.T) {
+// TestResolveCheckpointRefEdgeCases tests edge cases for checkpoint ref resolution.
+func TestResolveCheckpointRefEdgeCases(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 
@@ -492,17 +419,17 @@ func TestResolveSnapshotEdgeCases(t *testing.T) {
 	repoPath := dir + "/testrepo"
 
 	t.Run("Resolve with very short prefix (<4 chars)", func(t *testing.T) {
-		_, err := resolveSnapshot(repoPath, "abc")
+		_, err := resolveCheckpointRef(repoPath, "main", "abc")
 		assert.Error(t, err)
 	})
 
 	t.Run("Resolve with special characters", func(t *testing.T) {
-		_, err := resolveSnapshot(repoPath, "!@#$%")
+		_, err := resolveCheckpointRef(repoPath, "main", "!@#$%")
 		assert.Error(t, err)
 	})
 
 	t.Run("Resolve with newlines", func(t *testing.T) {
-		_, err := resolveSnapshot(repoPath, "test\nsnapshot")
+		_, err := resolveCheckpointRef(repoPath, "main", "test\nsnapshot")
 		assert.Error(t, err)
 	})
 
@@ -650,8 +577,8 @@ func TestDetectEngine_EdgeCases(t *testing.T) {
 	})
 }
 
-// TestResolveSnapshotNonExistentTag tests resolving with non-existent tag.
-func TestResolveSnapshotNonExistentTag(t *testing.T) {
+// TestResolveCheckpointRefNonExistentTag tests resolving with non-existent tag.
+func TestResolveCheckpointRefNonExistentTag(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 
@@ -663,7 +590,7 @@ func TestResolveSnapshotNonExistentTag(t *testing.T) {
 	repoPath := dir + "/testrepo"
 
 	t.Run("Resolve non-existent tag returns error", func(t *testing.T) {
-		_, err := resolveSnapshot(repoPath, "nonexistent-tag")
+		_, err := resolveCheckpointRef(repoPath, "main", "nonexistent-tag")
 		assert.Error(t, err)
 	})
 
@@ -678,7 +605,7 @@ func TestResolveSnapshotNonExistentTag(t *testing.T) {
 		assert.NoError(t, err)
 
 		// Try to resolve with different case
-		_, err = resolveSnapshot(repoPath, "mytag")
+		_, err = resolveCheckpointRef(repoPath, "main", "mytag")
 		// Should fail due to case sensitivity
 		assert.Error(t, err)
 	})
@@ -686,8 +613,8 @@ func TestResolveSnapshotNonExistentTag(t *testing.T) {
 	os.Chdir(originalWd)
 }
 
-// TestResolveSnapshot_InvalidID tests resolveSnapshot with invalid IDs.
-func TestResolveSnapshot_InvalidID(t *testing.T) {
+// TestResolveCheckpointRef_InvalidID tests checkpoint refs with invalid IDs.
+func TestResolveCheckpointRef_InvalidID(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 
@@ -699,22 +626,22 @@ func TestResolveSnapshot_InvalidID(t *testing.T) {
 	repoPath := dir + "/testrepo"
 
 	t.Run("Resolve with invalid hex characters", func(t *testing.T) {
-		_, err := resolveSnapshot(repoPath, "zzzzzzzzzzzz")
+		_, err := resolveCheckpointRef(repoPath, "main", "zzzzzzzzzzzz")
 		assert.Error(t, err)
 	})
 
 	t.Run("Resolve with ID too long", func(t *testing.T) {
 		// Very long ID string
 		longID := strings.Repeat("a", 1000)
-		_, err := resolveSnapshot(repoPath, longID)
+		_, err := resolveCheckpointRef(repoPath, "main", longID)
 		assert.Error(t, err)
 	})
 
 	os.Chdir(originalWd)
 }
 
-// TestResolveSnapshot_ByIDThenTag tests resolveSnapshot prefers exact ID match over tag.
-func TestResolveSnapshot_ByIDThenTag(t *testing.T) {
+// TestResolveCheckpointRef_ByTagLikeIDPrefix tests tag refs that look like short IDs.
+func TestResolveCheckpointRef_ByTagLikeIDPrefix(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 
@@ -749,9 +676,8 @@ func TestResolveSnapshot_ByIDThenTag(t *testing.T) {
 	}
 
 	if snapshotID != "" {
-		// If the ID starts with "abc", the tag lookup might conflict
-		// This tests the priority of resolution
-		_, err := resolveSnapshot(repoPath, "abc123")
+		// This is not a canonical ID, so it should resolve as an exact tag.
+		_, err := resolveCheckpointRef(repoPath, "main", "abc123")
 		// Should resolve by tag
 		assert.NoError(t, err)
 	}
@@ -759,8 +685,8 @@ func TestResolveSnapshot_ByIDThenTag(t *testing.T) {
 	os.Chdir(originalWd)
 }
 
-// TestResolveSnapshot_HEAD_ErrorPaths tests HEAD resolution error paths.
-func TestResolveSnapshot_HEAD_ErrorPaths(t *testing.T) {
+// TestResolveCheckpointRef_CurrentErrorPaths tests current ref error paths.
+func TestResolveCheckpointRef_CurrentErrorPaths(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 
@@ -772,11 +698,11 @@ func TestResolveSnapshot_HEAD_ErrorPaths(t *testing.T) {
 	repoPath := dir + "/testrepo"
 	mainPath := repoPath + "/main"
 
-	t.Run("HEAD from worktree with no snapshots", func(t *testing.T) {
+	t.Run("current from workspace with no checkpoints", func(t *testing.T) {
 		assert.NoError(t, os.Chdir(mainPath))
-		_, err := resolveSnapshot(repoPath, "HEAD")
+		_, err := resolveCheckpointRef(repoPath, "main", "current")
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "no snapshots")
+		assert.Contains(t, err.Error(), "no current")
 	})
 
 	os.Chdir(originalWd)
