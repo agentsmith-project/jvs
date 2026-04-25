@@ -1,19 +1,26 @@
 package snapshot
 
 import (
+	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/jvs-project/jvs/internal/repo"
 	"github.com/jvs-project/jvs/pkg/model"
 )
 
 // ListAll returns all snapshot descriptors sorted by creation time (newest first).
 func ListAll(repoRoot string) ([]*model.Descriptor, error) {
-	snapshotsDir := filepath.Join(repoRoot, ".jvs", "snapshots")
+	snapshotsDir, err := repo.SnapshotsDirPath(repoRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("resolve snapshots directory: %w", err)
+	}
 	entries, err := os.ReadDir(snapshotsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -24,10 +31,25 @@ func ListAll(repoRoot string) ([]*model.Descriptor, error) {
 
 	var descriptors []*model.Descriptor
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if strings.HasSuffix(entry.Name(), ".tmp") {
 			continue
 		}
 		snapshotID := model.SnapshotID(entry.Name())
+		if entry.Type()&os.ModeSymlink != 0 {
+			if err := snapshotID.Validate(); err == nil {
+				return nil, fmt.Errorf("snapshot leaf is symlink: %s", entry.Name())
+			}
+			continue
+		}
+		if !entry.IsDir() {
+			continue
+		}
+		if err := snapshotID.Validate(); err != nil {
+			continue
+		}
+		if _, err := repo.SnapshotPathForRead(repoRoot, snapshotID); err != nil {
+			return nil, err
+		}
 		desc, err := LoadDescriptor(repoRoot, snapshotID)
 		if err != nil {
 			// Skip corrupted/missing descriptors

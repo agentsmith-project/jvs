@@ -47,6 +47,9 @@ func TestRestore_Inplace(t *testing.T) {
 	if string(content) != "original" {
 		t.Errorf("expected 'original', got '%s'", string(content))
 	}
+	if fileExists(t, filepath.Join(repoPath, "main", ".READY")) || fileExists(t, filepath.Join(repoPath, "main", ".READY.gz")) {
+		t.Error("restore should not materialize snapshot control markers into the worktree")
+	}
 
 	// Verify worktree is in detached state
 	if !strings.Contains(stdout, "DETACHED") {

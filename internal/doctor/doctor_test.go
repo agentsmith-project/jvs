@@ -1,13 +1,18 @@
 package doctor_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/jvs-project/jvs/internal/doctor"
+	"github.com/jvs-project/jvs/internal/gc"
 	"github.com/jvs-project/jvs/internal/repo"
 	"github.com/jvs-project/jvs/internal/snapshot"
+	"github.com/jvs-project/jvs/internal/worktree"
 	"github.com/jvs-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,10 +25,97 @@ func setupTestRepo(t *testing.T) string {
 	return dir
 }
 
-func createTestSnapshot(t *testing.T, repoPath string) {
+func createTestSnapshot(t *testing.T, repoPath string) model.SnapshotID {
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
-	_, err := creator.Create("main", "test", nil)
+	desc, err := creator.Create("main", "test", nil)
 	require.NoError(t, err)
+	return desc.SnapshotID
+}
+
+func createRemovedWorktreeSnapshot(t *testing.T, repoPath string) model.SnapshotID {
+	t.Helper()
+
+	wtMgr := worktree.NewManager(repoPath)
+	_, err := wtMgr.Create("temp", nil)
+	require.NoError(t, err)
+
+	tempPath, err := wtMgr.Path("temp")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(tempPath, "file.txt"), []byte("content"), 0644))
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	desc, err := creator.Create("temp", "recoverable", nil)
+	require.NoError(t, err)
+	require.NoError(t, wtMgr.Remove("temp"))
+	return desc.SnapshotID
+}
+
+func writeSnapshotIntent(t *testing.T, repoPath string, snapshotID model.SnapshotID, worktreeName string) string {
+	t.Helper()
+
+	intentPath, err := repo.IntentPath(repoPath, snapshotID)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(intentPath), 0755))
+	intent := model.IntentRecord{
+		SnapshotID:   snapshotID,
+		WorktreeName: worktreeName,
+		StartedAt:    time.Now().UTC(),
+		Engine:       model.EngineCopy,
+	}
+	data, err := json.Marshal(intent)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(intentPath, data, 0644))
+	return intentPath
+}
+
+func snapshotIDsContain(ids []model.SnapshotID, want model.SnapshotID) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
+}
+
+func assertWorktreeInvalidSnapshotIDFinding(t *testing.T, result *doctor.Result, field string, id model.SnapshotID) {
+	t.Helper()
+
+	for _, f := range result.Findings {
+		if f.Category == "worktree" && f.Severity == "error" {
+			if strings.Contains(f.Description, field) {
+				assert.Contains(t, f.Description, string(id))
+				return
+			}
+		}
+	}
+	t.Fatalf("expected invalid %s worktree finding in %#v", field, result.Findings)
+}
+
+func setMainWorktreeSnapshots(t *testing.T, repoPath string, head, latest model.SnapshotID) {
+	t.Helper()
+
+	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	cfg.HeadSnapshotID = head
+	cfg.LatestSnapshotID = latest
+	require.NoError(t, repo.WriteWorktreeConfig(repoPath, "main", cfg))
+}
+
+func assertMainHeadSnapshot(t *testing.T, repoPath string, want model.SnapshotID) {
+	t.Helper()
+
+	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	assert.Equal(t, want, cfg.HeadSnapshotID)
+}
+
+func assertAdvanceHeadSkippedUnsafe(t *testing.T, result doctor.RepairResult) {
+	t.Helper()
+
+	assert.Equal(t, "advance_head", result.Action)
+	assert.False(t, result.Success)
+	assert.Zero(t, result.Cleaned)
+	assert.Contains(t, result.Message, "skipped")
 }
 
 func TestDoctor_Check_Healthy(t *testing.T) {
@@ -96,16 +188,40 @@ func TestDoctor_Check_MissingWorktreePayload(t *testing.T) {
 	doc := doctor.NewDoctor(repoPath)
 	result, err := doc.Check(false)
 	require.NoError(t, err)
-	// Missing payload reports error finding but repo stays "healthy" at info level
+	assert.False(t, result.Healthy)
 	assert.NotEmpty(t, result.Findings)
 	found := false
 	for _, f := range result.Findings {
 		if f.Category == "worktree" {
 			found = true
 			assert.Contains(t, f.Description, "payload directory missing")
+			assert.Equal(t, "error", f.Severity)
 		}
 	}
 	assert.True(t, found, "expected worktree finding for missing payload")
+}
+
+func TestDoctor_Check_WorktreeConfigRejectsInvalidSnapshotIDsWithoutTrustingOutsidePath(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	invalid := model.SnapshotID("../../../outside")
+
+	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	cfg.HeadSnapshotID = invalid
+	cfg.LatestSnapshotID = invalid
+	require.NoError(t, repo.WriteWorktreeConfig(repoPath, "main", cfg))
+
+	outsideDescriptor := filepath.Join(repoPath, ".jvs", "descriptors", string(invalid)+".json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(outsideDescriptor), 0755))
+	require.NoError(t, os.WriteFile(outsideDescriptor, []byte("{}"), 0644))
+
+	doc := doctor.NewDoctor(repoPath)
+	result, err := doc.Check(false)
+	require.NoError(t, err)
+
+	assert.False(t, result.Healthy)
+	assertWorktreeInvalidSnapshotIDFinding(t, result, "head_snapshot_id", invalid)
+	assertWorktreeInvalidSnapshotIDFinding(t, result, "latest_snapshot_id", invalid)
 }
 
 func TestDoctor_ListRepairActions(t *testing.T) {
@@ -167,6 +283,99 @@ func TestDoctor_Repair_CleanIntents(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(intentsDir, "orphan2.json"))
 }
 
+func TestDoctor_Repair_CleanIntentsRemovesStaleSnapshotIntentWithoutEvidence(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := model.NewSnapshotID()
+	intentPath := writeSnapshotIntent(t, repoPath, snapshotID, "main")
+
+	doc := doctor.NewDoctor(repoPath)
+	results, err := doc.Repair([]string{"clean_intents"})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.True(t, results[0].Success)
+	assert.Equal(t, 1, results[0].Cleaned)
+	assert.NoFileExists(t, intentPath)
+}
+
+func TestDoctor_Repair_CleanIntentsRetainsRecoverablePublishIntent(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := createRemovedWorktreeSnapshot(t, repoPath)
+	intentPath := writeSnapshotIntent(t, repoPath, snapshotID, "temp")
+
+	intentsDir := filepath.Join(repoPath, ".jvs", "intents")
+	staleIntent := filepath.Join(intentsDir, "orphan.json")
+	require.NoError(t, os.WriteFile(staleIntent, []byte("{}"), 0644))
+
+	doc := doctor.NewDoctor(repoPath)
+	results, err := doc.Repair([]string{"clean_intents"})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.True(t, results[0].Success)
+	assert.Equal(t, 1, results[0].Cleaned)
+	assert.Contains(t, results[0].Message, "retained 1")
+	assert.FileExists(t, intentPath, "descriptor/payload evidence from an uncertain publish must keep the intent")
+	assert.NoFileExists(t, staleIntent)
+}
+
+func TestDoctor_Repair_CleanIntentsRetainsHeadUpdateIntentReferencedByMetadata(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := model.NewSnapshotID()
+
+	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	cfg.HeadSnapshotID = snapshotID
+	cfg.LatestSnapshotID = snapshotID
+	require.NoError(t, repo.WriteWorktreeConfig(repoPath, "main", cfg))
+
+	intentPath := writeSnapshotIntent(t, repoPath, snapshotID, "main")
+
+	doc := doctor.NewDoctor(repoPath)
+	results, err := doc.Repair([]string{"clean_intents"})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.True(t, results[0].Success)
+	assert.Equal(t, 0, results[0].Cleaned)
+	assert.Contains(t, results[0].Message, "retained 1")
+	assert.FileExists(t, intentPath, "metadata evidence from an uncertain head update must keep the intent")
+}
+
+func TestDoctor_Repair_CleanIntentsRetainsMalformedIntentReferencingPublishedSnapshot(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := createRemovedWorktreeSnapshot(t, repoPath)
+
+	intentPath, err := repo.IntentPath(repoPath, snapshotID)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(intentPath, []byte(`{"snapshot_id":`), 0644))
+
+	doc := doctor.NewDoctor(repoPath)
+	results, err := doc.Repair([]string{"clean_intents"})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.True(t, results[0].Success)
+	assert.Equal(t, 0, results[0].Cleaned)
+	assert.Contains(t, results[0].Message, "retained 1")
+	assert.FileExists(t, intentPath, "malformed intent must fail closed while published snapshot evidence exists")
+}
+
+func TestDoctor_Repair_CleanIntentsRetainedIntentStillProtectsSnapshotFromGC(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := createRemovedWorktreeSnapshot(t, repoPath)
+	intentPath := writeSnapshotIntent(t, repoPath, snapshotID, "temp")
+
+	doc := doctor.NewDoctor(repoPath)
+	results, err := doc.Repair([]string{"clean_intents"})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.True(t, results[0].Success)
+	require.FileExists(t, intentPath)
+
+	collector := gc.NewCollector(repoPath)
+	plan, err := collector.PlanWithPolicy(model.RetentionPolicy{})
+	require.NoError(t, err)
+	assert.True(t, snapshotIDsContain(plan.ProtectedSet, snapshotID), "retained intent must stay in GC protected set")
+	assert.False(t, snapshotIDsContain(plan.ToDelete, snapshotID), "retained intent must keep the snapshot out of GC candidates")
+}
+
 func TestDoctor_Repair_AdvanceHead(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	createTestSnapshot(t, repoPath)
@@ -182,6 +391,149 @@ func TestDoctor_Repair_AdvanceHead(t *testing.T) {
 	assert.Len(t, results, 1)
 	assert.Equal(t, "advance_head", results[0].Action)
 	assert.True(t, results[0].Success)
+}
+
+func TestDoctor_Repair_AdvanceHeadRejectsInvalidLatestSnapshotIDEvenWithOutsideReady(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	invalid := model.SnapshotID("../../../outside")
+
+	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	cfg.LatestSnapshotID = invalid
+	require.NoError(t, repo.WriteWorktreeConfig(repoPath, "main", cfg))
+
+	outsideReady := filepath.Join(repoPath, ".jvs", "snapshots", string(invalid), ".READY")
+	require.NoError(t, os.MkdirAll(filepath.Dir(outsideReady), 0755))
+	require.NoError(t, os.WriteFile(outsideReady, []byte("{}"), 0644))
+
+	doc := doctor.NewDoctor(repoPath)
+	results, err := doc.Repair([]string{"advance_head"})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "advance_head", results[0].Action)
+	assert.Zero(t, results[0].Cleaned)
+	assert.Contains(t, results[0].Message, "invalid")
+
+	after, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	assert.NotEqual(t, invalid, after.HeadSnapshotID)
+}
+
+func TestDoctor_Repair_AdvanceHeadRejectsSymlinkedReadyMarker(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	headID := createTestSnapshot(t, repoPath)
+	latestID := createTestSnapshot(t, repoPath)
+	setMainWorktreeSnapshots(t, repoPath, headID, latestID)
+
+	readyPath := filepath.Join(repoPath, ".jvs", "snapshots", string(latestID), ".READY")
+	require.NoError(t, os.Remove(readyPath))
+	outsideReady := filepath.Join(t.TempDir(), "READY")
+	require.NoError(t, os.WriteFile(outsideReady, []byte("{}"), 0644))
+	if err := os.Symlink(outsideReady, readyPath); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	doc := doctor.NewDoctor(repoPath)
+	results, err := doc.Repair([]string{"advance_head"})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assertAdvanceHeadSkippedUnsafe(t, results[0])
+	assertMainHeadSnapshot(t, repoPath, headID)
+}
+
+func TestDoctor_Repair_AdvanceHeadRejectsUnsafeDescriptors(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(t *testing.T, descriptorPath string)
+	}{
+		{
+			name: "missing",
+			mutate: func(t *testing.T, descriptorPath string) {
+				t.Helper()
+				require.NoError(t, os.Remove(descriptorPath))
+			},
+		},
+		{
+			name: "symlink",
+			mutate: func(t *testing.T, descriptorPath string) {
+				t.Helper()
+				require.NoError(t, os.Remove(descriptorPath))
+				outsideDescriptor := filepath.Join(t.TempDir(), "descriptor.json")
+				require.NoError(t, os.WriteFile(outsideDescriptor, []byte("{}"), 0644))
+				if err := os.Symlink(outsideDescriptor, descriptorPath); err != nil {
+					t.Skipf("symlinks not supported: %v", err)
+				}
+			},
+		},
+		{
+			name: "directory",
+			mutate: func(t *testing.T, descriptorPath string) {
+				t.Helper()
+				require.NoError(t, os.Remove(descriptorPath))
+				require.NoError(t, os.Mkdir(descriptorPath, 0755))
+			},
+		},
+		{
+			name: "corrupt_json",
+			mutate: func(t *testing.T, descriptorPath string) {
+				t.Helper()
+				require.NoError(t, os.WriteFile(descriptorPath, []byte("{invalid json"), 0644))
+			},
+		},
+		{
+			name: "checksum_mismatch",
+			mutate: func(t *testing.T, descriptorPath string) {
+				t.Helper()
+				data, err := os.ReadFile(descriptorPath)
+				require.NoError(t, err)
+				var desc model.Descriptor
+				require.NoError(t, json.Unmarshal(data, &desc))
+				desc.Note = "tampered after checksum"
+				data, err = json.Marshal(desc)
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(descriptorPath, data, 0644))
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repoPath := setupTestRepo(t)
+			headID := createTestSnapshot(t, repoPath)
+			latestID := createTestSnapshot(t, repoPath)
+			setMainWorktreeSnapshots(t, repoPath, headID, latestID)
+
+			descriptorPath, err := repo.SnapshotDescriptorPath(repoPath, latestID)
+			require.NoError(t, err)
+			tt.mutate(t, descriptorPath)
+
+			doc := doctor.NewDoctor(repoPath)
+			results, err := doc.Repair([]string{"advance_head"})
+			require.NoError(t, err)
+			require.Len(t, results, 1)
+			assertAdvanceHeadSkippedUnsafe(t, results[0])
+			assertMainHeadSnapshot(t, repoPath, headID)
+		})
+	}
+}
+
+func TestDoctor_Repair_AdvanceHeadAcceptsReadyGzWithValidDescriptor(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	headID := createTestSnapshot(t, repoPath)
+	latestID := createTestSnapshot(t, repoPath)
+	setMainWorktreeSnapshots(t, repoPath, headID, latestID)
+
+	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(latestID))
+	require.NoError(t, os.Rename(filepath.Join(snapshotDir, ".READY"), filepath.Join(snapshotDir, ".READY.gz")))
+
+	doc := doctor.NewDoctor(repoPath)
+	results, err := doc.Repair([]string{"advance_head"})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "advance_head", results[0].Action)
+	assert.True(t, results[0].Success)
+	assert.Equal(t, 1, results[0].Cleaned)
+	assertMainHeadSnapshot(t, repoPath, latestID)
 }
 
 func TestDoctor_Repair_UnknownAction(t *testing.T) {
@@ -264,6 +616,47 @@ func TestDoctor_Check_OrphanSnapshotTmp(t *testing.T) {
 	assert.True(t, found, "expected tmp finding for orphan snapshot tmp directory")
 }
 
+func TestDoctor_Check_OrphanTmpRejectsSymlinkedSnapshotsDirWithoutFollowing(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	outside := t.TempDir()
+	outsideTmp := filepath.Join(outside, "outside.tmp")
+	require.NoError(t, os.MkdirAll(outsideTmp, 0755))
+
+	snapshotsDir := filepath.Join(repoPath, ".jvs", "snapshots")
+	require.NoError(t, os.RemoveAll(snapshotsDir))
+	if err := os.Symlink(outside, snapshotsDir); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	doc := doctor.NewDoctor(repoPath)
+	result, err := doc.Check(false)
+	require.NoError(t, err)
+
+	assert.False(t, result.Healthy)
+	assertTmpFinding(t, result, "error", "snapshots", "symlink")
+	assertNoTmpFinding(t, result, "warning", "outside.tmp")
+}
+
+func TestDoctor_Check_OrphanTmpRejectsSymlinkedSnapshotTmpEntryWithoutFollowing(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	outsideTmp := filepath.Join(t.TempDir(), "outside.tmp")
+	require.NoError(t, os.MkdirAll(outsideTmp, 0755))
+
+	snapshotsDir := filepath.Join(repoPath, ".jvs", "snapshots")
+	tmpEntry := filepath.Join(snapshotsDir, "unsafe.tmp")
+	if err := os.Symlink(outsideTmp, tmpEntry); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	doc := doctor.NewDoctor(repoPath)
+	result, err := doc.Check(false)
+	require.NoError(t, err)
+
+	assert.False(t, result.Healthy)
+	assertTmpFinding(t, result, "error", "unsafe.tmp", "symlink")
+	assertNoTmpFinding(t, result, "warning", "unsafe.tmp")
+}
+
 func TestDoctor_Repair_CleanTmp_SnapshotTmp(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
@@ -280,6 +673,48 @@ func TestDoctor_Repair_CleanTmp_SnapshotTmp(t *testing.T) {
 
 	// Verify tmp directory is gone
 	assert.NoDirExists(t, filepath.Join(snapshotsDir, "something.tmp"))
+}
+
+func TestDoctor_Repair_CleanTmpRejectsSymlinkedSnapshotsDirWithoutDeletingOutside(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	outside := t.TempDir()
+	outsideTmp := filepath.Join(outside, "outside.tmp")
+	require.NoError(t, os.MkdirAll(outsideTmp, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(outsideTmp, "keep.txt"), []byte("keep"), 0644))
+
+	snapshotsDir := filepath.Join(repoPath, ".jvs", "snapshots")
+	require.NoError(t, os.RemoveAll(snapshotsDir))
+	if err := os.Symlink(outside, snapshotsDir); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	doc := doctor.NewDoctor(repoPath)
+	results, err := doc.Repair([]string{"clean_tmp"})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.False(t, results[0].Success)
+	assert.DirExists(t, outsideTmp)
+	assert.FileExists(t, filepath.Join(outsideTmp, "keep.txt"))
+}
+
+func TestDoctor_Repair_CleanIntentsRejectsSymlinkedIntentsDirWithoutDeletingOutside(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	outside := t.TempDir()
+	outsideIntent := filepath.Join(outside, "orphan.json")
+	require.NoError(t, os.WriteFile(outsideIntent, []byte("{}"), 0644))
+
+	intentsDir := filepath.Join(repoPath, ".jvs", "intents")
+	require.NoError(t, os.RemoveAll(intentsDir))
+	if err := os.Symlink(outside, intentsDir); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	doc := doctor.NewDoctor(repoPath)
+	results, err := doc.Repair([]string{"clean_intents"})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.False(t, results[0].Success)
+	assert.FileExists(t, outsideIntent)
 }
 
 func TestDoctor_Check_AuditChain_WithBrokenChain(t *testing.T) {
@@ -416,28 +851,302 @@ func TestDoctor_Check_CorruptedFormatVersion(t *testing.T) {
 func TestDoctor_Check_SnapshotIntegrity_VerifyError(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	// Create a snapshot but corrupt its descriptor
-	createTestSnapshot(t, repoPath)
+	require.NoError(t, os.RemoveAll(filepath.Join(repoPath, ".jvs", "snapshots")))
+	require.NoError(t, os.WriteFile(filepath.Join(repoPath, ".jvs", "snapshots"), []byte("not a directory"), 0644))
+
+	doc := doctor.NewDoctor(repoPath)
+	result, err := doc.Check(true)
+	require.NoError(t, err)
+
+	assert.False(t, result.Healthy)
+	found := false
+	for _, f := range result.Findings {
+		if f.Category == "integrity" && f.Severity == "error" {
+			found = true
+			assert.Contains(t, f.Description, "verification failed")
+		}
+	}
+	assert.True(t, found, "expected strict verification execution error finding")
+}
+
+func TestDoctor_Check_SnapshotIntegrity_CorruptedDescriptorUnhealthy(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := createTestSnapshot(t, repoPath)
+
+	descriptorPath := filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json")
+	require.NoError(t, os.WriteFile(descriptorPath, []byte("{invalid json"), 0644))
+
+	doc := doctor.NewDoctor(repoPath)
+	result, err := doc.Check(true)
+	require.NoError(t, err)
+
+	assert.False(t, result.Healthy)
+	found := false
+	for _, f := range result.Findings {
+		if f.Category == "integrity" && f.Severity == "critical" {
+			found = true
+			assert.Contains(t, f.Description, string(snapshotID))
+		}
+	}
+	assert.True(t, found, "expected corrupted descriptor to be a critical integrity finding")
+}
+
+func TestDoctor_Check_MissingReadyMarkerUnhealthy(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := createTestSnapshot(t, repoPath)
+
+	readyPath := filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID), ".READY")
+	require.NoError(t, os.Remove(readyPath))
+
+	doc := doctor.NewDoctor(repoPath)
+	result, err := doc.Check(false)
+	require.NoError(t, err)
+
+	assert.False(t, result.Healthy)
+	found := false
+	for _, f := range result.Findings {
+		if f.Category == "snapshot" && f.Severity == "error" {
+			found = true
+			assert.Contains(t, f.Description, "READY marker missing")
+			assert.Equal(t, "E_READY_MISSING", f.ErrorCode)
+		}
+	}
+	assert.True(t, found, "expected missing READY marker finding")
+}
+
+func TestDoctor_Check_ReadyWithoutDescriptorFailsClosed(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := model.NewSnapshotID()
+	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID))
+	require.NoError(t, os.MkdirAll(snapshotDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(snapshotDir, ".READY"), []byte("{}"), 0644))
+	expectedDescriptorPath, err := repo.SnapshotDescriptorPath(repoPath, snapshotID)
+	require.NoError(t, err)
+
+	doc := doctor.NewDoctor(repoPath)
+	result, err := doc.Check(false)
+	require.NoError(t, err)
+	assert.False(t, result.Healthy)
+	assertReadyWithoutDescriptorFinding(t, result, snapshotID, "error", expectedDescriptorPath)
+
+	result, err = doc.Check(true)
+	require.NoError(t, err)
+	assert.False(t, result.Healthy)
+	assertReadyWithoutDescriptorFinding(t, result, snapshotID, "critical", expectedDescriptorPath)
+}
+
+func TestDoctor_Check_ReadyRejectsSymlinkedDescriptorsDirWithoutTrustingExternalDescriptor(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := model.NewSnapshotID()
+	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID))
+	require.NoError(t, os.MkdirAll(snapshotDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(snapshotDir, ".READY"), []byte("{}"), 0644))
+
+	outsideDescriptors := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outsideDescriptors, string(snapshotID)+".json"), []byte("{}"), 0644))
 
 	descriptorsDir := filepath.Join(repoPath, ".jvs", "descriptors")
-	entries, _ := os.ReadDir(descriptorsDir)
-	if len(entries) > 0 {
-		descriptorPath := filepath.Join(descriptorsDir, entries[0].Name())
-		// Write invalid JSON
-		os.WriteFile(descriptorPath, []byte("{invalid json"), 0644)
+	require.NoError(t, os.RemoveAll(descriptorsDir))
+	if err := os.Symlink(outsideDescriptors, descriptorsDir); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
 
-		doc := doctor.NewDoctor(repoPath)
-		result, err := doc.Check(true)
-		require.NoError(t, err)
+	doc := doctor.NewDoctor(repoPath)
+	result, err := doc.Check(false)
+	require.NoError(t, err)
 
-		// Should report verification error
-		found := false
-		for _, f := range result.Findings {
-			if f.Category == "integrity" {
-				found = true
+	assert.False(t, result.Healthy)
+	assertReadyDescriptorInvalidFinding(t, result, "descriptor", "symlink")
+}
+
+func TestDoctor_Check_ReadyRejectsSymlinkedSnapshotsDirWithoutTrustingExternalSnapshot(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := model.NewSnapshotID()
+
+	outsideSnapshots := t.TempDir()
+	outsideSnapshotDir := filepath.Join(outsideSnapshots, string(snapshotID))
+	require.NoError(t, os.MkdirAll(outsideSnapshotDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(outsideSnapshotDir, ".READY"), []byte("{}"), 0644))
+
+	descriptorPath := filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json")
+	require.NoError(t, os.WriteFile(descriptorPath, []byte("{}"), 0644))
+
+	snapshotsDir := filepath.Join(repoPath, ".jvs", "snapshots")
+	require.NoError(t, os.RemoveAll(snapshotsDir))
+	if err := os.Symlink(outsideSnapshots, snapshotsDir); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	doc := doctor.NewDoctor(repoPath)
+	result, err := doc.Check(false)
+	require.NoError(t, err)
+
+	assert.False(t, result.Healthy)
+	assertSnapshotFinding(t, result, "error", "snapshots", "symlink")
+}
+
+func TestDoctor_Check_ReadyRejectsSymlinkedSnapshotEntryWithoutFollowing(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := model.NewSnapshotID()
+
+	outsideSnapshot := filepath.Join(t.TempDir(), "snapshot")
+	require.NoError(t, os.MkdirAll(outsideSnapshot, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(outsideSnapshot, ".READY"), []byte("{}"), 0644))
+
+	descriptorPath := filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json")
+	require.NoError(t, os.WriteFile(descriptorPath, []byte("{}"), 0644))
+
+	snapshotEntry := filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID))
+	if err := os.Symlink(outsideSnapshot, snapshotEntry); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	doc := doctor.NewDoctor(repoPath)
+	result, err := doc.Check(false)
+	require.NoError(t, err)
+
+	assert.False(t, result.Healthy)
+	assertSnapshotFinding(t, result, "error", string(snapshotID), "symlink")
+}
+
+func TestDoctor_Check_ReadyRejectsSymlinkedReadyMarkerWithoutFollowing(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := model.NewSnapshotID()
+	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID))
+	require.NoError(t, os.MkdirAll(snapshotDir, 0755))
+
+	outsideReady := filepath.Join(t.TempDir(), "READY")
+	require.NoError(t, os.WriteFile(outsideReady, []byte("{}"), 0644))
+	if err := os.Symlink(outsideReady, filepath.Join(snapshotDir, ".READY")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	descriptorPath := filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json")
+	require.NoError(t, os.WriteFile(descriptorPath, []byte("{}"), 0644))
+
+	doc := doctor.NewDoctor(repoPath)
+	result, err := doc.Check(false)
+	require.NoError(t, err)
+
+	assert.False(t, result.Healthy)
+	assertSnapshotFinding(t, result, "error", string(snapshotID), "READY marker", "symlink")
+}
+
+func TestDoctor_Check_ReadyRejectsInvalidSnapshotIDBeforeDescriptorLookup(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	invalidName := "not-a-snapshot"
+	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", invalidName)
+	require.NoError(t, os.MkdirAll(snapshotDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(snapshotDir, ".READY"), []byte("{}"), 0644))
+
+	descriptorPath := filepath.Join(repoPath, ".jvs", "descriptors", invalidName+".json")
+	require.NoError(t, os.WriteFile(descriptorPath, []byte("{}"), 0644))
+
+	doc := doctor.NewDoctor(repoPath)
+	result, err := doc.Check(false)
+	require.NoError(t, err)
+
+	assert.False(t, result.Healthy)
+	assertSnapshotFinding(t, result, "error", invalidName, "invalid snapshot ID")
+}
+
+func assertReadyWithoutDescriptorFinding(t *testing.T, result *doctor.Result, snapshotID model.SnapshotID, severity, expectedPath string) {
+	t.Helper()
+
+	for _, f := range result.Findings {
+		if f.Category == "snapshot" && f.ErrorCode == "E_READY_DESCRIPTOR_MISSING" && f.Severity == severity {
+			assert.Contains(t, f.Description, string(snapshotID))
+			assert.Equal(t, expectedPath, f.Path)
+			return
+		}
+	}
+	t.Fatalf("expected READY-without-descriptor finding with severity %s in %#v", severity, result.Findings)
+}
+
+func assertReadyDescriptorInvalidFinding(t *testing.T, result *doctor.Result, substrings ...string) {
+	t.Helper()
+
+	for _, f := range result.Findings {
+		if f.Category != "snapshot" || f.ErrorCode != "E_READY_DESCRIPTOR_INVALID" || f.Severity != "error" {
+			continue
+		}
+		description := f.Description + " " + f.Path
+		matches := true
+		for _, substring := range substrings {
+			if !strings.Contains(description, substring) {
+				matches = false
+				break
 			}
 		}
-		// May or may not find depending on how verifier handles corrupt descriptors
-		_ = found
+		if matches {
+			assert.Empty(t, f.Path)
+			return
+		}
+	}
+	t.Fatalf("expected READY descriptor invalid finding containing %q in %#v", substrings, result.Findings)
+}
+
+func assertSnapshotFinding(t *testing.T, result *doctor.Result, severity string, substrings ...string) {
+	t.Helper()
+
+	for _, f := range result.Findings {
+		if f.Category != "snapshot" || f.Severity != severity {
+			continue
+		}
+		description := f.Description + " " + f.Path
+		matches := true
+		for _, substring := range substrings {
+			if !strings.Contains(description, substring) {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			return
+		}
+	}
+	t.Fatalf("expected snapshot finding severity %s containing %q in %#v", severity, substrings, result.Findings)
+}
+
+func assertTmpFinding(t *testing.T, result *doctor.Result, severity string, substrings ...string) {
+	t.Helper()
+
+	for _, f := range result.Findings {
+		if f.Category != "tmp" || f.Severity != severity {
+			continue
+		}
+		description := f.Description + " " + f.Path
+		matches := true
+		for _, substring := range substrings {
+			if !strings.Contains(description, substring) {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			return
+		}
+	}
+	t.Fatalf("expected tmp finding severity %s containing %q in %#v", severity, substrings, result.Findings)
+}
+
+func assertNoTmpFinding(t *testing.T, result *doctor.Result, severity string, substrings ...string) {
+	t.Helper()
+
+	for _, f := range result.Findings {
+		if f.Category != "tmp" || f.Severity != severity {
+			continue
+		}
+		description := f.Description + " " + f.Path
+		matches := true
+		for _, substring := range substrings {
+			if !strings.Contains(description, substring) {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			t.Fatalf("unexpected tmp finding severity %s containing %q in %#v", severity, substrings, result.Findings)
+		}
 	}
 }

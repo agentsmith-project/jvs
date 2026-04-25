@@ -1,13 +1,19 @@
-.PHONY: build test lint conformance verify security sec fuzz test-race test-cover test-all integration release-gate clean
+.PHONY: build test library lint conformance regression verify security sec fuzz test-race test-cover test-all integration release-gate clean
 
 build:
 	go build -o bin/jvs ./cmd/jvs
 
 test:
-	go test ./internal/... ./pkg/...
+	go test ./internal/... ./pkg/... ./test/library/...
+
+library:
+	go test -count=1 ./test/library/...
 
 conformance:
 	go test -tags conformance -count=1 -v ./test/conformance/...
+
+regression:
+	go test -tags conformance -count=1 -v ./test/regression/...
 
 lint:
 	golangci-lint run ./...
@@ -26,7 +32,7 @@ sec:
 
 fuzz:
 	@echo "Running fuzzing tests (10 seconds each)..."
-	@for target in FuzzValidateName FuzzValidateTag FuzzParseSnapshotID FuzzCanonicalMarshal FuzzDescriptorJSON FuzzSnapshotIDString; do \
+	@for target in FuzzValidateName FuzzValidateTag FuzzParseSnapshotID FuzzCanonicalMarshal FuzzDescriptorJSON FuzzSnapshotIDString FuzzPartialPaths; do \
 		echo "Fuzzing $$target..."; \
 		go test -fuzz="$$target" -fuzztime=10s ./test/fuzz/... || exit 1; \
 	done
@@ -39,11 +45,11 @@ test-cover:
 	go test -coverprofile=coverage.out -covermode=atomic ./internal/... ./pkg/...
 	@go tool cover -func=coverage.out | awk '/^total:/ { gsub(/%/, "", $$3); if ($$3+0 < 60) { printf "FAIL: coverage %.1f%% < 60%% threshold\n", $$3; exit 1 } else { printf "OK: coverage %.1f%% >= 60%% threshold\n", $$3 } }'
 
-test-all: test conformance fuzz
+test-all: test conformance regression fuzz
 
 integration: build conformance
 
-release-gate: test-race test-cover lint build conformance fuzz
+release-gate: test-race test-cover lint build conformance library regression fuzz
 	@echo "RELEASE GATE PASSED"
 
 clean:

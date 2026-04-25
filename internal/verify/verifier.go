@@ -2,12 +2,15 @@
 package verify
 
 import (
+	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
+	"strings"
 
 	"github.com/jvs-project/jvs/internal/integrity"
+	"github.com/jvs-project/jvs/internal/repo"
 	"github.com/jvs-project/jvs/internal/snapshot"
+	"github.com/jvs-project/jvs/internal/snapshotpayload"
 	"github.com/jvs-project/jvs/pkg/model"
 )
 
@@ -63,11 +66,18 @@ func (v *Verifier) VerifySnapshot(snapshotID model.SnapshotID, verifyPayloadHash
 
 	// Optionally verify payload hash (expensive)
 	if verifyPayloadHash {
-		snapshotDir := filepath.Join(v.repoRoot, ".jvs", "snapshots", string(snapshotID))
-		computedHash, err := integrity.ComputePayloadRootHash(snapshotDir)
+		snapshotDir, err := repo.SnapshotPathForRead(v.repoRoot, snapshotID)
+		if err != nil {
+			result.Error = err.Error()
+			result.TamperDetected = true
+			result.Severity = "critical"
+			return result, nil
+		}
+		computedHash, err := snapshotpayload.ComputeHash(snapshotDir, snapshotpayload.OptionsFromDescriptor(desc))
 		if err != nil {
 			result.Error = fmt.Sprintf("compute payload hash: %v", err)
-			result.Severity = "error"
+			result.TamperDetected = true
+			result.Severity = "critical"
 			return result, nil
 		}
 
@@ -84,7 +94,13 @@ func (v *Verifier) VerifySnapshot(snapshotID model.SnapshotID, verifyPayloadHash
 
 // VerifyAll verifies all snapshots in the repository.
 func (v *Verifier) VerifyAll(verifyPayloadHash bool) ([]*Result, error) {
-	snapshotsDir := filepath.Join(v.repoRoot, ".jvs", "snapshots")
+	snapshotsDir, err := repo.SnapshotsDirPath(v.repoRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("resolve snapshots directory: %w", err)
+	}
 	entries, err := os.ReadDir(snapshotsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -95,10 +111,22 @@ func (v *Verifier) VerifyAll(verifyPayloadHash bool) ([]*Result, error) {
 
 	var results []*Result
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if strings.HasSuffix(entry.Name(), ".tmp") {
 			continue
 		}
 		snapshotID := model.SnapshotID(entry.Name())
+		if entry.Type()&os.ModeSymlink != 0 {
+			if err := snapshotID.Validate(); err == nil {
+				return nil, fmt.Errorf("snapshot leaf is symlink: %s", entry.Name())
+			}
+			continue
+		}
+		if !entry.IsDir() {
+			continue
+		}
+		if err := snapshotID.Validate(); err != nil {
+			continue
+		}
 		result, err := v.VerifySnapshot(snapshotID, verifyPayloadHash)
 		if err != nil {
 			return nil, err

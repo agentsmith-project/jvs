@@ -137,6 +137,12 @@ func DetectEngine(repoRoot string) (Engine, error) {
 		}
 	}
 
+	return DetectEngineAuto(repoRoot)
+}
+
+// DetectEngineAuto auto-detects the best available engine without considering
+// environment overrides.
+func DetectEngineAuto(repoRoot string) (Engine, error) {
 	// Auto-detect based on filesystem
 	// 1. Check if on JuiceFS
 	juicefsEngine := NewJuiceFSEngine()

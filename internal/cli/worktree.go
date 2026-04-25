@@ -6,8 +6,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jvs-project/jvs/internal/engine"
 	"github.com/jvs-project/jvs/internal/snapshot"
+	"github.com/jvs-project/jvs/internal/verify"
 	"github.com/jvs-project/jvs/internal/worktree"
 	"github.com/jvs-project/jvs/pkg/color"
 	"github.com/jvs-project/jvs/pkg/model"
@@ -48,13 +48,12 @@ Examples:
 			snapshotID := resolveSnapshotIDOrExit(r.Root, worktreeCreateFrom)
 
 			// Verify snapshot exists and is valid
-			if err := snapshot.VerifySnapshot(r.Root, snapshotID, false); err != nil {
+			if err := verifySnapshotStrong(r.Root, snapshotID); err != nil {
 				fmtErr("verify snapshot: %v", err)
 				os.Exit(1)
 			}
 
-			// Create engine for cloning
-			eng := engine.NewEngine(detectEngine(r.Root))
+			eng := newCloneEngine(r.Root)
 
 			cfg, err := mgr.CreateFromSnapshot(name, snapshotID, func(src, dst string) error {
 				_, err := eng.Clone(src, dst)
@@ -68,8 +67,13 @@ Examples:
 			if jsonOutput {
 				outputJSON(cfg)
 			} else {
+				path, err := mgr.Path(name)
+				if err != nil {
+					fmtErr("resolve worktree path: %v", err)
+					os.Exit(1)
+				}
 				fmt.Printf("Created worktree '%s' from snapshot %s\n", color.Success(name), color.SnapshotID(snapshotID.String()))
-				fmt.Printf("Path: %s\n", color.Dim(mgr.Path(name)))
+				fmt.Printf("Path: %s\n", color.Dim(path))
 			}
 			return
 		}
@@ -84,7 +88,12 @@ Examples:
 		if jsonOutput {
 			outputJSON(cfg)
 		} else {
-			fmt.Printf("Created worktree '%s' at %s\n", color.Success(name), color.Dim(mgr.Path(name)))
+			path, err := mgr.Path(name)
+			if err != nil {
+				fmtErr("resolve worktree path: %v", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Created worktree '%s' at %s\n", color.Success(name), color.Dim(path))
 		}
 	},
 }
@@ -187,7 +196,11 @@ Examples:
 			}
 		}
 
-		path := mgr.Path(name)
+		path, err := mgr.Path(name)
+		if err != nil {
+			fmtErr("resolve worktree path: %v", err)
+			os.Exit(1)
+		}
 		fmt.Println(path)
 	},
 }
@@ -365,13 +378,12 @@ Examples:
 		}
 
 		// Verify snapshot exists and is valid
-		if err := snapshot.VerifySnapshot(r.Root, snapshotID, false); err != nil {
+		if err := verifySnapshotStrong(r.Root, snapshotID); err != nil {
 			fmtErr("verify snapshot: %v", err)
 			os.Exit(1)
 		}
 
-		// Create engine for cloning (use copy engine as default)
-		eng := engine.NewEngine(model.EngineCopy)
+		eng := newCloneEngine(r.Root)
 
 		// Fork the worktree
 		mgr := worktree.NewManager(r.Root)
@@ -387,8 +399,13 @@ Examples:
 		if jsonOutput {
 			outputJSON(cfg)
 		} else {
+			path, err := mgr.Path(name)
+			if err != nil {
+				fmtErr("resolve worktree path: %v", err)
+				os.Exit(1)
+			}
 			fmt.Printf("Created worktree '%s' from snapshot %s\n", color.Success(name), color.SnapshotID(snapshotID.String()))
-			fmt.Printf("Path: %s\n", color.Dim(mgr.Path(name)))
+			fmt.Printf("Path: %s\n", color.Dim(path))
 			fmt.Println(color.Success("Worktree is at HEAD state - you can create snapshots."))
 		}
 	},
@@ -404,4 +421,18 @@ func init() {
 	worktreeCmd.AddCommand(worktreeRemoveCmd)
 	worktreeCmd.AddCommand(worktreeForkCmd)
 	rootCmd.AddCommand(worktreeCmd)
+}
+
+func verifySnapshotStrong(repoRoot string, snapshotID model.SnapshotID) error {
+	result, err := verify.NewVerifier(repoRoot).VerifySnapshot(snapshotID, true)
+	if err != nil {
+		return err
+	}
+	if result.TamperDetected {
+		if result.Error != "" {
+			return fmt.Errorf("%s", result.Error)
+		}
+		return fmt.Errorf("tamper detected")
+	}
+	return nil
 }

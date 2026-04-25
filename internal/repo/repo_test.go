@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/jvs-project/jvs/internal/repo"
+	"github.com/jvs-project/jvs/pkg/errclass"
 	"github.com/jvs-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -168,19 +169,353 @@ func TestDiscoverWorktree_FromJvsDir(t *testing.T) {
 }
 
 func TestWorktreeConfigPath(t *testing.T) {
-	path := repo.WorktreeConfigPath("/repo", "main")
+	path, err := repo.WorktreeConfigPath("/repo", "main")
+	require.NoError(t, err)
 	assert.Equal(t, "/repo/.jvs/worktrees/main/config.json", path)
 
-	path = repo.WorktreeConfigPath("/repo", "feature")
+	path, err = repo.WorktreeConfigPath("/repo", "feature")
+	require.NoError(t, err)
 	assert.Equal(t, "/repo/.jvs/worktrees/feature/config.json", path)
 }
 
 func TestWorktreePayloadPath(t *testing.T) {
-	path := repo.WorktreePayloadPath("/repo", "main")
+	path, err := repo.WorktreePayloadPath("/repo", "main")
+	require.NoError(t, err)
 	assert.Equal(t, "/repo/main", path)
 
-	path = repo.WorktreePayloadPath("/repo", "feature")
+	path, err = repo.WorktreePayloadPath("/repo", "feature")
+	require.NoError(t, err)
 	assert.Equal(t, "/repo/worktrees/feature", path)
+}
+
+func TestWorktreePathHelpersRejectInvalidNames(t *testing.T) {
+	repoPath := filepath.Join(t.TempDir(), "repo")
+	for _, name := range []string{
+		"",
+		"../victim",
+		"nested/victim",
+		filepath.Join(string(os.PathSeparator), "abs-victim"),
+		"..",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := repo.WorktreeConfigPath(repoPath, name)
+			require.ErrorIs(t, err, errclass.ErrNameInvalid)
+
+			_, err = repo.WorktreeConfigDirPath(repoPath, name)
+			require.ErrorIs(t, err, errclass.ErrNameInvalid)
+
+			_, err = repo.WorktreePayloadPath(repoPath, name)
+			require.ErrorIs(t, err, errclass.ErrNameInvalid)
+		})
+	}
+}
+
+func TestLoadWorktreeConfigRejectsInvalidNameBeforeTraversal(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "testrepo")
+	_, err := repo.Init(repoPath, "testrepo")
+	require.NoError(t, err)
+
+	traversedConfig := filepath.Join(repoPath, ".jvs", "victim", "config.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(traversedConfig), 0755))
+	require.NoError(t, os.WriteFile(traversedConfig, []byte(`{"name":"../victim"}`), 0644))
+
+	_, err = repo.LoadWorktreeConfig(repoPath, "../victim")
+	require.ErrorIs(t, err, errclass.ErrNameInvalid)
+}
+
+func TestLoadWorktreeConfigRejectsSymlinkParent(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "testrepo")
+	_, err := repo.Init(repoPath, "testrepo")
+	require.NoError(t, err)
+
+	outside := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(outside, "feature"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "feature", "config.json"), []byte(`{"name":"feature"}`), 0644))
+	require.NoError(t, os.RemoveAll(filepath.Join(repoPath, ".jvs", "worktrees")))
+	if err := os.Symlink(outside, filepath.Join(repoPath, ".jvs", "worktrees")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	_, err = repo.LoadWorktreeConfig(repoPath, "feature")
+	require.Error(t, err)
+}
+
+func TestLoadWorktreeConfigRejectsFinalConfigSymlink(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "testrepo")
+	_, err := repo.Init(repoPath, "testrepo")
+	require.NoError(t, err)
+
+	outsideConfig := filepath.Join(t.TempDir(), "config.json")
+	require.NoError(t, os.WriteFile(outsideConfig, []byte(`{"name":"feature"}`), 0644))
+	cfgDir := filepath.Join(repoPath, ".jvs", "worktrees", "feature")
+	require.NoError(t, os.MkdirAll(cfgDir, 0755))
+	if err := os.Symlink(outsideConfig, filepath.Join(cfgDir, "config.json")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	_, err = repo.LoadWorktreeConfig(repoPath, "feature")
+	require.Error(t, err)
+}
+
+func TestWriteWorktreeConfigRejectsSymlinkParentWithoutOutsideWrite(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "testrepo")
+	_, err := repo.Init(repoPath, "testrepo")
+	require.NoError(t, err)
+
+	outside := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(outside, "feature"), 0755))
+	require.NoError(t, os.RemoveAll(filepath.Join(repoPath, ".jvs", "worktrees")))
+	if err := os.Symlink(outside, filepath.Join(repoPath, ".jvs", "worktrees")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	err = repo.WriteWorktreeConfig(repoPath, "feature", &model.WorktreeConfig{Name: "feature"})
+	require.Error(t, err)
+	assert.NoFileExists(t, filepath.Join(outside, "feature", "config.json"))
+}
+
+func TestSnapshotPathHelpersRejectInvalidSnapshotIDs(t *testing.T) {
+	repoPath := filepath.Join(t.TempDir(), "repo")
+	for _, id := range []model.SnapshotID{
+		"",
+		"/tmp/evil",
+		"../../victim",
+		"1708300800000/nothex",
+		"1708300800000-A3F7C1B2",
+	} {
+		t.Run(string(id), func(t *testing.T) {
+			_, err := repo.SnapshotPath(repoPath, id)
+			require.Error(t, err)
+			_, err = repo.SnapshotDescriptorPath(repoPath, id)
+			require.Error(t, err)
+			_, err = repo.GCTombstonePath(repoPath, id)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestSnapshotPathHelpersReturnCanonicalPaths(t *testing.T) {
+	repoPath := filepath.Join(t.TempDir(), "repo")
+	_, err := repo.Init(repoPath, "repo")
+	require.NoError(t, err)
+	id := model.SnapshotID("1708300800000-a3f7c1b2")
+
+	snapshotPath, err := repo.SnapshotPath(repoPath, id)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(repoPath, ".jvs", "snapshots", string(id)), snapshotPath)
+
+	descriptorPath, err := repo.SnapshotDescriptorPath(repoPath, id)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(repoPath, ".jvs", "descriptors", string(id)+".json"), descriptorPath)
+
+	tombstonePath, err := repo.GCTombstonePath(repoPath, id)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(repoPath, ".jvs", "gc", "tombstones", string(id)+".json"), tombstonePath)
+}
+
+func TestSnapshotPathHelpersRejectSymlinkControlParents(t *testing.T) {
+	id := model.SnapshotID("1708300800000-a3f7c1b2")
+
+	tests := []struct {
+		name       string
+		controlDir string
+		call       func(string) (string, error)
+	}{
+		{
+			name:       "worktrees",
+			controlDir: filepath.Join(".jvs", "worktrees"),
+			call: func(repoPath string) (string, error) {
+				return repo.WorktreesDirPath(repoPath)
+			},
+		},
+		{
+			name:       "snapshots",
+			controlDir: filepath.Join(".jvs", "snapshots"),
+			call: func(repoPath string) (string, error) {
+				return repo.SnapshotPath(repoPath, id)
+			},
+		},
+		{
+			name:       "intents",
+			controlDir: filepath.Join(".jvs", "intents"),
+			call: func(repoPath string) (string, error) {
+				return repo.IntentsDirPath(repoPath)
+			},
+		},
+		{
+			name:       "descriptors",
+			controlDir: filepath.Join(".jvs", "descriptors"),
+			call: func(repoPath string) (string, error) {
+				return repo.SnapshotDescriptorPath(repoPath, id)
+			},
+		},
+		{
+			name:       "tombstones",
+			controlDir: filepath.Join(".jvs", "gc", "tombstones"),
+			call: func(repoPath string) (string, error) {
+				return repo.GCTombstonePath(repoPath, id)
+			},
+		},
+		{
+			name:       "gc pins",
+			controlDir: filepath.Join(".jvs", "gc", "pins"),
+			call: func(repoPath string) (string, error) {
+				return repo.GCPinsDirPath(repoPath)
+			},
+		},
+		{
+			name:       "legacy pins",
+			controlDir: filepath.Join(".jvs", "pins"),
+			call: func(repoPath string) (string, error) {
+				return repo.LegacyPinsDirPath(repoPath)
+			},
+		},
+		{
+			name:       "gc",
+			controlDir: filepath.Join(".jvs", "gc"),
+			call: func(repoPath string) (string, error) {
+				return repo.GCPlanPath(repoPath, "plan-123")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repoPath := filepath.Join(t.TempDir(), "repo")
+			_, err := repo.Init(repoPath, "repo")
+			require.NoError(t, err)
+
+			outside := t.TempDir()
+			controlPath := filepath.Join(repoPath, tt.controlDir)
+			require.NoError(t, os.RemoveAll(controlPath))
+			if err := os.Symlink(outside, controlPath); err != nil {
+				t.Skipf("symlinks not supported: %v", err)
+			}
+
+			_, err = tt.call(repoPath)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestControlLeafHelpersRejectFinalSymlinks(t *testing.T) {
+	id := model.SnapshotID("1708300800000-a3f7c1b2")
+
+	tests := []struct {
+		name     string
+		leafPath func(string) string
+		ops      []func(string) (string, error)
+	}{
+		{
+			name: "snapshot dir",
+			leafPath: func(repoPath string) string {
+				return filepath.Join(repoPath, ".jvs", "snapshots", string(id))
+			},
+			ops: []func(string) (string, error){
+				func(repoPath string) (string, error) { return repo.SnapshotPathForRead(repoPath, id) },
+				func(repoPath string) (string, error) { return repo.SnapshotPathForDelete(repoPath, id) },
+			},
+		},
+		{
+			name: "descriptor",
+			leafPath: func(repoPath string) string {
+				return filepath.Join(repoPath, ".jvs", "descriptors", string(id)+".json")
+			},
+			ops: []func(string) (string, error){
+				func(repoPath string) (string, error) { return repo.SnapshotDescriptorPathForRead(repoPath, id) },
+				func(repoPath string) (string, error) { return repo.SnapshotDescriptorPathForWrite(repoPath, id) },
+				func(repoPath string) (string, error) { return repo.SnapshotDescriptorPathForDelete(repoPath, id) },
+			},
+		},
+		{
+			name: "plan",
+			leafPath: func(repoPath string) string {
+				return filepath.Join(repoPath, ".jvs", "gc", "plan-123.json")
+			},
+			ops: []func(string) (string, error){
+				func(repoPath string) (string, error) { return repo.GCPlanPathForRead(repoPath, "plan-123") },
+				func(repoPath string) (string, error) { return repo.GCPlanPathForWrite(repoPath, "plan-123") },
+				func(repoPath string) (string, error) { return repo.GCPlanPathForDelete(repoPath, "plan-123") },
+			},
+		},
+		{
+			name: "tombstone",
+			leafPath: func(repoPath string) string {
+				return filepath.Join(repoPath, ".jvs", "gc", "tombstones", string(id)+".json")
+			},
+			ops: []func(string) (string, error){
+				func(repoPath string) (string, error) { return repo.GCTombstonePathForRead(repoPath, id) },
+				func(repoPath string) (string, error) { return repo.GCTombstonePathForWrite(repoPath, id) },
+				func(repoPath string) (string, error) { return repo.GCTombstonePathForDelete(repoPath, id) },
+			},
+		},
+		{
+			name: "pin",
+			leafPath: func(repoPath string) string {
+				return filepath.Join(repoPath, ".jvs", "gc", "pins", string(id)+".json")
+			},
+			ops: []func(string) (string, error){
+				func(repoPath string) (string, error) { return repo.GCPinPathForRead(repoPath, string(id)+".json") },
+			},
+		},
+		{
+			name: "legacy pin",
+			leafPath: func(repoPath string) string {
+				return filepath.Join(repoPath, ".jvs", "pins", string(id)+".json")
+			},
+			ops: []func(string) (string, error){
+				func(repoPath string) (string, error) { return repo.LegacyPinPathForRead(repoPath, string(id)+".json") },
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		for i, op := range tt.ops {
+			t.Run(tt.name, func(t *testing.T) {
+				repoPath := filepath.Join(t.TempDir(), "repo")
+				_, err := repo.Init(repoPath, "repo")
+				require.NoError(t, err)
+
+				outside := filepath.Join(t.TempDir(), "outside")
+				require.NoError(t, os.MkdirAll(outside, 0755))
+				require.NoError(t, os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("outside"), 0644))
+
+				leaf := tt.leafPath(repoPath)
+				require.NoError(t, os.MkdirAll(filepath.Dir(leaf), 0755))
+				if err := os.Symlink(outside, leaf); err != nil {
+					t.Skipf("symlinks not supported: %v", err)
+				}
+
+				_, err = op(repoPath)
+				require.Error(t, err, "operation %d should reject final symlink", i)
+				assert.Contains(t, err.Error(), "symlink")
+				assert.FileExists(t, filepath.Join(outside, "secret.txt"))
+			})
+		}
+	}
+}
+
+func TestGCPlanPathRejectsTraversalPlanID(t *testing.T) {
+	repoPath := filepath.Join(t.TempDir(), "repo")
+	for _, planID := range []string{"", "../plan", "../../victim", "/tmp/plan", `a\b`} {
+		t.Run(planID, func(t *testing.T) {
+			_, err := repo.GCPlanPath(repoPath, planID)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestGCPlanPathAllowsSafePlanID(t *testing.T) {
+	repoPath := filepath.Join(t.TempDir(), "repo")
+	_, err := repo.Init(repoPath, "repo")
+	require.NoError(t, err)
+	path, err := repo.GCPlanPath(repoPath, "plan-123")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(repoPath, ".jvs", "gc", "plan-123.json"), path)
 }
 
 func TestWriteAndLoadWorktreeConfig(t *testing.T) {

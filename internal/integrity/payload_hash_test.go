@@ -121,6 +121,21 @@ func TestComputePayloadRootHash_SkipsReadyMarker(t *testing.T) {
 	assert.Equal(t, hash, hash2, ".READY should be excluded from hash")
 }
 
+func TestComputePayloadRootHash_HashesSubdirReadyMarker(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "subdir"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "subdir", ".READY"), []byte("user data"), 0644))
+
+	hash1, err := integrity.ComputePayloadRootHash(dir)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "subdir", ".READY"), []byte("tampered"), 0644))
+	hash2, err := integrity.ComputePayloadRootHash(dir)
+	require.NoError(t, err)
+
+	assert.NotEqual(t, hash1, hash2, "subdirectory .READY files are user payload")
+}
+
 func TestComputePayloadRootHash_BrokenSymlink(t *testing.T) {
 	dir := t.TempDir()
 	// Create a symlink pointing to nothing

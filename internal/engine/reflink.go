@@ -31,6 +31,7 @@ func (e *ReflinkEngine) Name() model.EngineType {
 // Clone performs a reflink copy if supported, falls back to regular copy otherwise.
 func (e *ReflinkEngine) Clone(src, dst string) (*CloneResult, error) {
 	result := &CloneResult{}
+	var dirs []dirMode
 
 	if err := os.MkdirAll(dst, 0755); err != nil {
 		return nil, fmt.Errorf("create dst directory: %w", err)
@@ -49,7 +50,11 @@ func (e *ReflinkEngine) Clone(src, dst string) (*CloneResult, error) {
 
 		switch {
 		case info.IsDir():
-			return e.copyDir(path, dstPath, info)
+			if err := e.copyDir(path, dstPath, info); err != nil {
+				return err
+			}
+			dirs = append(dirs, dirMode{path: dstPath, mode: info.Mode().Perm()})
+			return nil
 
 		case info.Mode()&os.ModeSymlink != 0:
 			return e.copySymlink(path, dstPath, info)
@@ -68,6 +73,10 @@ func (e *ReflinkEngine) Clone(src, dst string) (*CloneResult, error) {
 		return nil, fmt.Errorf("reflink clone: %w", err)
 	}
 
+	if err := chmodDirs(dirs); err != nil {
+		return nil, fmt.Errorf("reflink clone: %w", err)
+	}
+
 	if err := fsutil.FsyncDir(dst); err != nil {
 		return nil, fmt.Errorf("fsync dst: %w", err)
 	}
@@ -76,7 +85,7 @@ func (e *ReflinkEngine) Clone(src, dst string) (*CloneResult, error) {
 }
 
 func (e *ReflinkEngine) copyDir(src, dst string, info os.FileInfo) error {
-	return os.MkdirAll(dst, info.Mode())
+	return os.MkdirAll(dst, writableDirMode(info.Mode().Perm()))
 }
 
 func (e *ReflinkEngine) copySymlink(src, dst string, info os.FileInfo) error {
@@ -94,7 +103,8 @@ func (e *ReflinkEngine) copyFile(src, dst string, info os.FileInfo) error {
 	}
 	defer srcFile.Close()
 
-	dstFile, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+	mode := info.Mode().Perm()
+	dstFile, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
 		return fmt.Errorf("create dst: %w", err)
 	}
@@ -106,6 +116,10 @@ func (e *ReflinkEngine) copyFile(src, dst string, info os.FileInfo) error {
 
 	if err := dstFile.Sync(); err != nil {
 		return fmt.Errorf("sync: %w", err)
+	}
+
+	if err := os.Chmod(dst, mode); err != nil {
+		return fmt.Errorf("chmod: %w", err)
 	}
 
 	return os.Chtimes(dst, info.ModTime(), info.ModTime())

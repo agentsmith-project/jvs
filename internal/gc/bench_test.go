@@ -86,7 +86,10 @@ func setupBenchmarkRepoWithDeletable(b *testing.B, totalSnapshots, deletableCoun
 			b.Fatalf("create worktree: %v", err)
 		}
 
-		wtPath := wtMgr.Path(wtName)
+		wtPath, err := wtMgr.Path(wtName)
+		if err != nil {
+			b.Fatalf("worktree path: %v", err)
+		}
 		filename := filepath.Join(wtPath, "file.txt")
 		if err := os.WriteFile(filename, []byte(string(rune(i))), 0644); err != nil {
 			b.Fatalf("write file: %v", err)
@@ -340,7 +343,10 @@ func recreateDeletableSnapshot(b *testing.B, repoPath string) {
 		b.Fatalf("create worktree: %v", err)
 	}
 
-	wtPath := wtMgr.Path(wtName)
+	wtPath, err := wtMgr.Path(wtName)
+	if err != nil {
+		b.Fatalf("worktree path: %v", err)
+	}
 	filename := filepath.Join(wtPath, "file.txt")
 	if err := os.WriteFile(filename, []byte("temp"), 0644); err != nil {
 		b.Fatalf("write file: %v", err)

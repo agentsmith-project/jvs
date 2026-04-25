@@ -123,14 +123,8 @@ to create a new worktree from the current position first.`,
 			}
 		}
 
-		// Detect engine from config or auto-detect
-		engine := detectEngine(r.Root)
-		if defaultEngine := jvsCfg.GetDefaultEngine(); defaultEngine != "" {
-			engine = defaultEngine
-		}
-
 		// Create creator with compression if specified
-		creator := snapshot.NewCreator(r.Root, engine)
+		creator := snapshot.NewCreator(r.Root, detectEngine(r.Root))
 		if snapshotCompression != "" {
 			comp, err := compression.NewCompressorFromString(snapshotCompression)
 			if err != nil {

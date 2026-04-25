@@ -16,7 +16,8 @@ func reflinkFile(src, dst string, info os.FileInfo) error {
 	}
 	defer srcFile.Close()
 
-	dstFile, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+	mode := info.Mode().Perm()
+	dstFile, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
 		return fmt.Errorf("create dst: %w", err)
 	}
@@ -28,6 +29,10 @@ func reflinkFile(src, dst string, info os.FileInfo) error {
 		dstFile.Close()
 		os.Remove(dst)
 		return fmt.Errorf("ficlone failed: %v", errno)
+	}
+
+	if err := os.Chmod(dst, mode); err != nil {
+		return fmt.Errorf("chmod dst: %w", err)
 	}
 
 	return os.Chtimes(dst, info.ModTime(), info.ModTime())

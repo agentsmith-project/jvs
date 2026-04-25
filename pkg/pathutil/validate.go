@@ -2,6 +2,7 @@
 package pathutil
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -79,6 +80,78 @@ func ValidatePathSafety(repoRoot, targetPath string) error {
 	if !strings.HasPrefix(resolvedTarget+"/", resolvedRoot+"/") &&
 		resolvedTarget != resolvedRoot {
 		return errclass.ErrPathEscape.WithMessagef("path escapes repo root: %s", targetPath)
+	}
+
+	return nil
+}
+
+// CleanRel normalizes a component-relative path and rejects paths that escape
+// their root. It treats ".." as a component, so names such as "a..b" remain valid.
+func CleanRel(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("path must not be empty")
+	}
+	if filepath.IsAbs(path) {
+		return "", fmt.Errorf("path must be relative: %s", path)
+	}
+	for _, component := range strings.Split(filepath.ToSlash(path), "/") {
+		if component == ".." {
+			return "", fmt.Errorf("path cannot contain '..': %s", path)
+		}
+	}
+
+	clean := filepath.Clean(path)
+	if clean == "." {
+		return "", fmt.Errorf("path must not be empty")
+	}
+	if filepath.IsAbs(clean) {
+		return "", fmt.Errorf("path must be relative: %s", path)
+	}
+
+	return clean, nil
+}
+
+// ValidateNoSymlinkParents verifies that every existing parent component under
+// root is a real directory. The final component is intentionally not checked so
+// callers can treat a symlink leaf as data.
+func ValidateNoSymlinkParents(root, rel string) error {
+	clean, err := CleanRel(rel)
+	if err != nil {
+		return err
+	}
+
+	rootInfo, err := os.Lstat(root)
+	if err != nil {
+		return fmt.Errorf("stat root %s: %w", root, err)
+	}
+	if rootInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("root is symlink: %s", root)
+	}
+	if !rootInfo.IsDir() {
+		return fmt.Errorf("root is not directory: %s", root)
+	}
+
+	parent := filepath.Dir(clean)
+	if parent == "." {
+		return nil
+	}
+
+	current := root
+	for _, component := range strings.Split(filepath.ToSlash(parent), "/") {
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return fmt.Errorf("stat parent %s: %w", current, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("path parent is symlink: %s", current)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("path parent is not directory: %s", current)
+		}
 	}
 
 	return nil

@@ -3,29 +3,41 @@ package snapshot
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/jvs-project/jvs/internal/audit"
 	"github.com/jvs-project/jvs/internal/compression"
 	"github.com/jvs-project/jvs/internal/engine"
 	"github.com/jvs-project/jvs/internal/integrity"
+	"github.com/jvs-project/jvs/internal/repo"
+	"github.com/jvs-project/jvs/internal/snapshotpayload"
 	"github.com/jvs-project/jvs/internal/worktree"
 	"github.com/jvs-project/jvs/pkg/errclass"
 	"github.com/jvs-project/jvs/pkg/fsutil"
 	"github.com/jvs-project/jvs/pkg/model"
+	"github.com/jvs-project/jvs/pkg/pathutil"
 )
 
 // Creator handles snapshot creation using the 12-step protocol.
 type Creator struct {
-	repoRoot    string
-	engineType  model.EngineType
-	engine      engine.Engine
-	auditLogger *audit.FileAppender
-	compression *compression.Compressor
+	repoRoot         string
+	engineType       model.EngineType
+	engine           engine.Engine
+	auditLogger      *audit.FileAppender
+	compression      *compression.Compressor
+	descriptorWriter func(string, *model.Descriptor) error
+	snapshotRenamer  func(string, string) error
+	latestUpdater    func(*worktree.Manager, string, model.SnapshotID) error
+}
+
+type snapshotPublishPaths struct {
+	tmpDir         string
+	dir            string
+	descriptorPath string
 }
 
 // NewCreator creates a new snapshot creator.
@@ -39,11 +51,16 @@ func NewCreatorWithCompression(repoRoot string, engineType model.EngineType, com
 
 	auditPath := filepath.Join(repoRoot, ".jvs", "audit", "audit.jsonl")
 	return &Creator{
-		repoRoot:    repoRoot,
-		engineType:  engineType,
-		engine:      eng,
-		auditLogger: audit.NewFileAppender(auditPath),
-		compression: comp,
+		repoRoot:         repoRoot,
+		engineType:       engineType,
+		engine:           eng,
+		auditLogger:      audit.NewFileAppender(auditPath),
+		compression:      comp,
+		descriptorWriter: writeDescriptorFile,
+		snapshotRenamer:  fsutil.RenameNoReplaceAndSync,
+		latestUpdater: func(wtMgr *worktree.Manager, worktreeName string, snapshotID model.SnapshotID) error {
+			return wtMgr.SetLatest(worktreeName, snapshotID)
+		},
 	}
 }
 
@@ -68,19 +85,86 @@ func (c *Creator) CreatePartial(worktreeName, note string, tags []string, paths 
 	}
 
 	// Normalize and validate paths if provided
-	var partialPaths []string
-	if len(paths) > 0 {
-		partialPaths, err = c.validateAndNormalizePaths(paths, worktreeName)
-		if err != nil {
-			return nil, err
-		}
+	partialPaths, err := c.normalizePartialPaths(paths, worktreeName)
+	if err != nil {
+		return nil, err
 	}
 
 	// Step 2: Generate snapshot ID
 	snapshotID := model.NewSnapshotID()
 
+	publishPaths, err := c.resolveSnapshotPublishPaths(snapshotID)
+	if err != nil {
+		return nil, err
+	}
+
+	payloadPath, err := wtMgr.Path(worktreeName)
+	if err != nil {
+		return nil, fmt.Errorf("worktree payload path: %w", err)
+	}
+
 	// Step 3: Create intent record (for crash recovery)
-	intentPath := filepath.Join(c.repoRoot, ".jvs", "intents", string(snapshotID)+".json")
+	intentPath, err := c.writeCreateIntent(snapshotID, worktreeName)
+	if err != nil {
+		return nil, err
+	}
+
+	desc, err := c.stageSnapshot(cfg, payloadPath, publishPaths, snapshotID, worktreeName, note, tags, partialPaths)
+	if err != nil {
+		return nil, err
+	}
+
+	// Step 12: Write descriptor atomically before publishing the READY payload.
+	if err := c.publishStagedSnapshot(publishPaths, desc); err != nil {
+		return nil, err
+	}
+
+	// Step 14: Update worktree head and latest
+	if err := c.updateLatestAfterPublish(wtMgr, worktreeName, desc, publishPaths); err != nil {
+		return nil, err
+	}
+
+	// Step 15: Remove intent only after the snapshot is fully published.
+	removeSnapshotIntent(intentPath)
+
+	// Step 16: Write audit log
+	c.appendCreateAudit(worktreeName, snapshotID, note, desc.DescriptorChecksum, partialPaths)
+
+	return desc, nil
+}
+
+func (c *Creator) normalizePartialPaths(paths []string, worktreeName string) ([]string, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	return c.validateAndNormalizePaths(paths, worktreeName)
+}
+
+func (c *Creator) resolveSnapshotPublishPaths(snapshotID model.SnapshotID) (snapshotPublishPaths, error) {
+	tmpDir, err := repo.SnapshotTmpPath(c.repoRoot, snapshotID)
+	if err != nil {
+		return snapshotPublishPaths{}, fmt.Errorf("resolve snapshot tmp path: %w", err)
+	}
+	dir, err := repo.SnapshotPath(c.repoRoot, snapshotID)
+	if err != nil {
+		return snapshotPublishPaths{}, fmt.Errorf("resolve snapshot path: %w", err)
+	}
+	descriptorPath, err := repo.SnapshotDescriptorPathForWrite(c.repoRoot, snapshotID)
+	if err != nil {
+		return snapshotPublishPaths{}, fmt.Errorf("resolve descriptor path: %w", err)
+	}
+	return snapshotPublishPaths{
+		tmpDir:         tmpDir,
+		dir:            dir,
+		descriptorPath: descriptorPath,
+	}, nil
+}
+
+func (c *Creator) writeCreateIntent(snapshotID model.SnapshotID, worktreeName string) (string, error) {
+	intentPath, err := repo.IntentPath(c.repoRoot, snapshotID)
+	if err != nil {
+		return "", fmt.Errorf("resolve intent path: %w", err)
+	}
 	intent := &model.IntentRecord{
 		SnapshotID:   snapshotID,
 		WorktreeName: worktreeName,
@@ -88,59 +172,102 @@ func (c *Creator) CreatePartial(worktreeName, note string, tags []string, paths 
 		Engine:       c.engineType,
 	}
 	if err := c.writeIntent(intentPath, intent); err != nil {
-		return nil, fmt.Errorf("write intent: %w", err)
+		return "", fmt.Errorf("write intent: %w", err)
 	}
-	defer os.Remove(intentPath) // cleanup on success
+	return intentPath, nil
+}
 
+func (c *Creator) stageSnapshot(
+	cfg *model.WorktreeConfig,
+	payloadPath string,
+	publishPaths snapshotPublishPaths,
+	snapshotID model.SnapshotID,
+	worktreeName string,
+	note string,
+	tags []string,
+	partialPaths []string,
+) (*model.Descriptor, error) {
 	// Step 4: Create snapshot .tmp directory (atomic publish pattern)
-	snapshotTmpDir := filepath.Join(c.repoRoot, ".jvs", "snapshots", string(snapshotID)+".tmp")
-	snapshotDir := filepath.Join(c.repoRoot, ".jvs", "snapshots", string(snapshotID))
-	if err := os.MkdirAll(snapshotTmpDir, 0755); err != nil {
+	if err := os.MkdirAll(publishPaths.tmpDir, 0755); err != nil {
 		return nil, fmt.Errorf("create snapshot tmp dir: %w", err)
 	}
-
-	// Cleanup helper for failure cases
 	cleanupTmp := func() {
-		os.RemoveAll(snapshotTmpDir)
+		os.RemoveAll(publishPaths.tmpDir)
 	}
 
-	// Step 5: Clone payload to snapshot .tmp directory
-	payloadPath := wtMgr.Path(worktreeName)
-
-	// For partial snapshots, only copy specified paths
-	if len(partialPaths) > 0 {
-		if err := c.clonePaths(payloadPath, snapshotTmpDir, partialPaths); err != nil {
-			cleanupTmp()
-			return nil, fmt.Errorf("clone partial paths: %w", err)
-		}
-	} else {
-		if _, err := c.engine.Clone(payloadPath, snapshotTmpDir); err != nil {
-			cleanupTmp()
-			return nil, fmt.Errorf("clone payload: %w", err)
-		}
-	}
-
-	// Step 6: Fsync the cloned tree for durability
-	if err := fsutil.FsyncTree(snapshotTmpDir); err != nil {
+	if err := c.cloneSnapshotPayload(payloadPath, publishPaths.tmpDir, partialPaths); err != nil {
 		cleanupTmp()
-		return nil, fmt.Errorf("fsync snapshot tree: %w", err)
+		return nil, err
 	}
 
-	// Step 7: Compute payload root hash
-	payloadHash, err := integrity.ComputePayloadRootHash(snapshotTmpDir)
+	// Step 6: Compute payload root hash before any storage-only compression.
+	payloadHash, err := integrity.ComputePayloadRootHash(publishPaths.tmpDir)
 	if err != nil {
 		cleanupTmp()
 		return nil, fmt.Errorf("compute payload hash: %w", err)
 	}
 
-	// Step 8: Create descriptor
+	// Step 7: Create descriptor
+	desc := c.newSnapshotDescriptor(cfg, snapshotID, worktreeName, note, tags, payloadHash, partialPaths)
+
+	// Step 8: Compute descriptor checksum
+	checksum, err := integrity.ComputeDescriptorChecksum(desc)
+	if err != nil {
+		cleanupTmp()
+		return nil, fmt.Errorf("compute checksum: %w", err)
+	}
+	desc.DescriptorChecksum = checksum
+
+	// Step 9: Write .READY marker in tmp
+	if err := c.writeSnapshotReadyMarker(publishPaths.tmpDir, snapshotID, payloadHash, checksum); err != nil {
+		cleanupTmp()
+		return nil, err
+	}
+
+	// Step 10: Compress snapshot storage inside the unpublished tmp tree.
+	if err := c.compressSnapshotStorage(publishPaths.tmpDir); err != nil {
+		cleanupTmp()
+		return nil, err
+	}
+
+	// Step 11: Fsync the final staged tree for durability.
+	if err := fsutil.FsyncTree(publishPaths.tmpDir); err != nil {
+		cleanupTmp()
+		return nil, fmt.Errorf("fsync snapshot tree: %w", err)
+	}
+
+	return desc, nil
+}
+
+func (c *Creator) cloneSnapshotPayload(payloadPath, snapshotTmpDir string, partialPaths []string) error {
+	// For partial snapshots, only copy specified paths
+	if len(partialPaths) > 0 {
+		if err := c.clonePaths(payloadPath, snapshotTmpDir, partialPaths); err != nil {
+			return fmt.Errorf("clone partial paths: %w", err)
+		}
+		return nil
+	}
+	if _, err := c.engine.Clone(payloadPath, snapshotTmpDir); err != nil {
+		return fmt.Errorf("clone payload: %w", err)
+	}
+	return nil
+}
+
+func (c *Creator) newSnapshotDescriptor(
+	cfg *model.WorktreeConfig,
+	snapshotID model.SnapshotID,
+	worktreeName string,
+	note string,
+	tags []string,
+	payloadHash model.HashValue,
+	partialPaths []string,
+) *model.Descriptor {
 	var parentID *model.SnapshotID
 	if cfg.HeadSnapshotID != "" {
 		pid := cfg.HeadSnapshotID
 		parentID = &pid
 	}
 
-	// Build descriptor with compression info if enabled
 	desc := &model.Descriptor{
 		SnapshotID:      snapshotID,
 		ParentID:        parentID,
@@ -153,24 +280,16 @@ func (c *Creator) CreatePartial(worktreeName, note string, tags []string, paths 
 		IntegrityState:  model.IntegrityVerified,
 		PartialPaths:    partialPaths,
 	}
-
-	// Add compression info if compression is enabled
 	if c.compression != nil && c.compression.IsEnabled() {
 		desc.Compression = &model.CompressionInfo{
 			Type:  string(c.compression.Type),
 			Level: int(c.compression.Level),
 		}
 	}
+	return desc
+}
 
-	// Step 9: Compute descriptor checksum
-	checksum, err := integrity.ComputeDescriptorChecksum(desc)
-	if err != nil {
-		cleanupTmp()
-		return nil, fmt.Errorf("compute checksum: %w", err)
-	}
-	desc.DescriptorChecksum = checksum
-
-	// Step 10: Write .READY marker in tmp
+func (c *Creator) writeSnapshotReadyMarker(snapshotTmpDir string, snapshotID model.SnapshotID, payloadHash, checksum model.HashValue) error {
 	readyMarker := &model.ReadyMarker{
 		SnapshotID:         snapshotID,
 		CompletedAt:        time.Now().UTC(),
@@ -180,42 +299,73 @@ func (c *Creator) CreatePartial(worktreeName, note string, tags []string, paths 
 	}
 	readyPath := filepath.Join(snapshotTmpDir, ".READY")
 	if err := c.writeReadyMarker(readyPath, readyMarker); err != nil {
-		cleanupTmp()
-		return nil, fmt.Errorf("write ready marker: %w", err)
+		return fmt.Errorf("write ready marker: %w", err)
+	}
+	return nil
+}
+
+func (c *Creator) compressSnapshotStorage(snapshotTmpDir string) error {
+	if c.compression == nil || !c.compression.IsEnabled() {
+		return nil
+	}
+	count, err := c.compression.CompressDir(snapshotTmpDir)
+	if err != nil {
+		return fmt.Errorf("compress snapshot: %w", err)
+	}
+	if count > 0 {
+		fmt.Fprintf(os.Stderr, "compressed %d files\n", count)
+	}
+	return nil
+}
+
+func (c *Creator) publishStagedSnapshot(publishPaths snapshotPublishPaths, desc *model.Descriptor) error {
+	descriptorPath, err := repo.SnapshotDescriptorPathForWrite(c.repoRoot, desc.SnapshotID)
+	if err != nil {
+		cleanupErr := c.cleanupUncommittedPublishArtifacts(publishPaths.tmpDir, "")
+		return withCleanupError(fmt.Errorf("validate descriptor path: %w", err), cleanupErr)
+	}
+	publishPaths.descriptorPath = descriptorPath
+
+	if err := c.descriptorWriter(publishPaths.descriptorPath, desc); err != nil {
+		cleanupErr := c.cleanupUncommittedPublishArtifacts(publishPaths.tmpDir, publishPaths.descriptorPath)
+		return withCleanupError(fmt.Errorf("write descriptor: %w", err), cleanupErr)
 	}
 
-	// Step 11: Atomic rename tmp -> final
-	if err := fsutil.RenameAndSync(snapshotTmpDir, snapshotDir); err != nil {
-		cleanupTmp()
-		return nil, fmt.Errorf("atomic rename snapshot: %w", err)
-	}
-
-	// Step 11.5: Compress snapshot if enabled
-	if c.compression != nil && c.compression.IsEnabled() {
-		count, err := c.compression.CompressDir(snapshotDir)
-		if err != nil {
-			// Compression failure is non-fatal; snapshot is valid
-			fmt.Fprintf(os.Stderr, "warning: compression failed: %v\n", err)
-		} else if count > 0 {
-			// Log compression success
-			fmt.Fprintf(os.Stderr, "compressed %d files\n", count)
+	// Step 13: Atomic rename tmp -> final
+	if err := c.snapshotRenamer(publishPaths.tmpDir, publishPaths.dir); err != nil {
+		if fsutil.IsCommitUncertain(err) {
+			return fmt.Errorf("atomic rename snapshot commit uncertain after publishing snapshot %s; retained descriptor, payload, and intent for recovery: %w", desc.SnapshotID, err)
 		}
+		cleanupErr := c.cleanupFailedSnapshotRename(publishPaths, desc)
+		return withCleanupError(fmt.Errorf("atomic rename snapshot: %w", err), cleanupErr)
 	}
+	return nil
+}
 
-	// Step 12: Write descriptor atomically
-	descriptorPath := filepath.Join(c.repoRoot, ".jvs", "descriptors", string(snapshotID)+".json")
-	if err := c.writeDescriptor(descriptorPath, desc); err != nil {
-		// Snapshot is already renamed, don't remove it
-		return nil, fmt.Errorf("write descriptor: %w", err)
+func (c *Creator) updateLatestAfterPublish(
+	wtMgr *worktree.Manager,
+	worktreeName string,
+	desc *model.Descriptor,
+	publishPaths snapshotPublishPaths,
+) error {
+	snapshotID := desc.SnapshotID
+	if err := c.latestUpdater(wtMgr, worktreeName, snapshotID); err != nil {
+		if fsutil.IsCommitUncertain(err) {
+			return fmt.Errorf("update head commit uncertain after publishing snapshot %s; retained descriptor and payload for recovery: %w", snapshotID, err)
+		}
+		cleanupErr := c.cleanupOwnedPublishedSnapshot(publishPaths, desc)
+		return withCleanupError(fmt.Errorf("update head: %w", err), cleanupErr)
 	}
+	return nil
+}
 
-	// Step 13: Update worktree head and latest
-	if err := wtMgr.SetLatest(worktreeName, snapshotID); err != nil {
-		// Don't remove snapshot, it's valid
-		return nil, fmt.Errorf("update head: %w", err)
+func removeSnapshotIntent(intentPath string) {
+	if err := os.Remove(intentPath); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "warning: failed to remove snapshot intent %s: %v\n", intentPath, err)
 	}
+}
 
-	// Step 14: Write audit log
+func (c *Creator) appendCreateAudit(worktreeName string, snapshotID model.SnapshotID, note string, checksum model.HashValue, partialPaths []string) {
 	auditData := map[string]any{
 		"engine":   string(c.engineType),
 		"note":     note,
@@ -228,49 +378,34 @@ func (c *Creator) CreatePartial(worktreeName, note string, tags []string, paths 
 		// Non-fatal, just log
 		fmt.Fprintf(os.Stderr, "warning: failed to write audit log: %v\n", err)
 	}
-
-	return desc, nil
 }
 
 // validateAndNormalizePaths validates and normalizes the partial snapshot paths.
 func (c *Creator) validateAndNormalizePaths(paths []string, worktreeName string) ([]string, error) {
 	wtMgr := worktree.NewManager(c.repoRoot)
-	wtPath := wtMgr.Path(worktreeName)
+	wtPath, err := wtMgr.Path(worktreeName)
+	if err != nil {
+		return nil, fmt.Errorf("worktree payload path: %w", err)
+	}
 
 	var normalized []string
 	for _, p := range paths {
-		// Clean the path
-		p = filepath.Clean(p)
-
-		// Ensure it's relative
-		if filepath.IsAbs(p) {
-			return nil, fmt.Errorf("path must be relative: %s", p)
+		clean, err := pathutil.CleanRel(p)
+		if err != nil {
+			return nil, err
 		}
+		p = clean
 
-		// Check for path traversal attempts
-		if strings.Contains(p, "..") {
-			return nil, fmt.Errorf("path cannot contain '..': %s", p)
+		if err := pathutil.ValidateNoSymlinkParents(wtPath, p); err != nil {
+			return nil, fmt.Errorf("path escapes worktree through parent: %s: %w", p, err)
 		}
 
 		// Build full path and verify it exists within worktree
 		fullPath := filepath.Join(wtPath, p)
-		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+		if _, err := os.Lstat(fullPath); os.IsNotExist(err) {
 			return nil, fmt.Errorf("path does not exist: %s", p)
-		}
-
-		// Verify it's within worktree
-		absWtPath, err := filepath.Abs(wtPath)
-		if err != nil {
-			return nil, fmt.Errorf("resolve worktree path: %w", err)
-		}
-		absFullPath, err := filepath.Abs(fullPath)
-		if err != nil {
-			return nil, fmt.Errorf("resolve full path: %w", err)
-		}
-
-		rel, err := filepath.Rel(absWtPath, absFullPath)
-		if err != nil || strings.HasPrefix(rel, "..") {
-			return nil, fmt.Errorf("path is outside worktree: %s", p)
+		} else if err != nil {
+			return nil, fmt.Errorf("stat path %s: %w", p, err)
 		}
 
 		normalized = append(normalized, p)
@@ -296,7 +431,7 @@ func (c *Creator) clonePaths(src, dst string, paths []string) error {
 		dstPath := filepath.Join(dst, p)
 
 		// Get source info
-		info, err := os.Stat(srcPath)
+		info, err := os.Lstat(srcPath)
 		if err != nil {
 			return fmt.Errorf("stat %s: %w", p, err)
 		}
@@ -338,7 +473,7 @@ func (c *Creator) writeReadyMarker(path string, marker *model.ReadyMarker) error
 	return fsutil.AtomicWrite(path, data, 0644)
 }
 
-func (c *Creator) writeDescriptor(path string, desc *model.Descriptor) error {
+func writeDescriptorFile(path string, desc *model.Descriptor) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
@@ -349,9 +484,205 @@ func (c *Creator) writeDescriptor(path string, desc *model.Descriptor) error {
 	return fsutil.AtomicWrite(path, data, 0644)
 }
 
+func (c *Creator) cleanupUncommittedPublishArtifacts(snapshotTmpDir, descriptorPath string) error {
+	var errs []error
+
+	if descriptorPath != "" {
+		if err := removeFileIfExists(descriptorPath); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if snapshotTmpDir != "" {
+		if err := removeDirIfExists(snapshotTmpDir); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+func (c *Creator) cleanupFailedSnapshotRename(publishPaths snapshotPublishPaths, desc *model.Descriptor) error {
+	var errs []error
+
+	if publishPaths.descriptorPath != "" {
+		if err := removeFileIfExists(publishPaths.descriptorPath); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	tmpExists, err := pathExists(publishPaths.tmpDir)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("stat snapshot tmp dir: %w", err))
+		return errors.Join(errs...)
+	}
+	if tmpExists {
+		if err := removeDirIfExists(publishPaths.tmpDir); err != nil {
+			errs = append(errs, err)
+		}
+		return errors.Join(errs...)
+	}
+
+	if err := removeOwnedSnapshotDir(publishPaths.dir, desc); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+func (c *Creator) cleanupOwnedPublishedSnapshot(publishPaths snapshotPublishPaths, desc *model.Descriptor) error {
+	var errs []error
+
+	if err := removeOwnedSnapshotDir(publishPaths.dir, desc); err != nil {
+		errs = append(errs, err)
+	}
+	if publishPaths.descriptorPath != "" {
+		if err := removeFileIfExists(publishPaths.descriptorPath); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+func removeOwnedSnapshotDir(snapshotDir string, desc *model.Descriptor) error {
+	owned, err := snapshotDirOwnedByDescriptor(snapshotDir, desc)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		return nil
+	}
+	if err := removeReadyMarkers(snapshotDir); err != nil {
+		return err
+	}
+	return removeDirIfExists(snapshotDir)
+}
+
+func snapshotDirOwnedByDescriptor(snapshotDir string, desc *model.Descriptor) (bool, error) {
+	if snapshotDir == "" || desc == nil {
+		return false, nil
+	}
+	info, err := os.Lstat(snapshotDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat snapshot dir %s: %w", snapshotDir, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return false, nil
+	}
+
+	readyPath := filepath.Join(snapshotDir, ".READY")
+	readyInfo, err := os.Lstat(readyPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat ready marker %s: %w", readyPath, err)
+	}
+	if readyInfo.Mode()&os.ModeSymlink != 0 || !readyInfo.Mode().IsRegular() {
+		return false, nil
+	}
+
+	data, err := os.ReadFile(readyPath)
+	if err != nil {
+		return false, fmt.Errorf("read ready marker %s: %w", readyPath, err)
+	}
+	var marker model.ReadyMarker
+	if err := json.Unmarshal(data, &marker); err != nil {
+		return false, nil
+	}
+	return marker.SnapshotID == desc.SnapshotID &&
+		marker.PayloadHash == desc.PayloadRootHash &&
+		marker.Engine == desc.Engine &&
+		marker.DescriptorChecksum == desc.DescriptorChecksum, nil
+}
+
+func removeReadyMarkers(snapshotDir string) error {
+	info, err := os.Lstat(snapshotDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat snapshot dir before removing ready marker: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refuse to remove ready marker through symlink: %s", snapshotDir)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("snapshot path is not directory: %s", snapshotDir)
+	}
+
+	var errs []error
+	removed := false
+	for _, name := range []string{".READY", ".READY.gz"} {
+		path := filepath.Join(snapshotDir, name)
+		if err := os.Remove(path); err != nil {
+			if !os.IsNotExist(err) {
+				errs = append(errs, fmt.Errorf("remove ready marker %s: %w", path, err))
+			}
+			continue
+		}
+		removed = true
+	}
+	if removed {
+		if err := fsutil.FsyncDir(snapshotDir); err != nil {
+			errs = append(errs, fmt.Errorf("fsync snapshot dir after unpublish: %w", err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func pathExists(path string) (bool, error) {
+	_, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func removeFileIfExists(path string) error {
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if err := fsutil.FsyncDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("fsync parent after remove %s: %w", path, err)
+	}
+	return nil
+}
+
+func removeDirIfExists(path string) error {
+	if err := os.RemoveAll(path); err != nil {
+		return err
+	}
+	if err := fsutil.FsyncDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("fsync parent after remove %s: %w", path, err)
+	}
+	return nil
+}
+
+func withCleanupError(err, cleanupErr error) error {
+	if cleanupErr == nil {
+		return err
+	}
+	return fmt.Errorf("%w; additionally failed cleanup: %v", err, cleanupErr)
+}
+
 // LoadDescriptor loads a descriptor from disk.
 func LoadDescriptor(repoRoot string, snapshotID model.SnapshotID) (*model.Descriptor, error) {
-	path := filepath.Join(repoRoot, ".jvs", "descriptors", string(snapshotID)+".json")
+	path, err := repo.SnapshotDescriptorPathForRead(repoRoot, snapshotID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, errclass.ErrDescriptorCorrupt.WithMessagef("descriptor not found: %s", snapshotID)
+		}
+		return nil, err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -362,6 +693,9 @@ func LoadDescriptor(repoRoot string, snapshotID model.SnapshotID) (*model.Descri
 	var desc model.Descriptor
 	if err := json.Unmarshal(data, &desc); err != nil {
 		return nil, errclass.ErrDescriptorCorrupt.WithMessagef("parse descriptor: %v", err)
+	}
+	if desc.SnapshotID != snapshotID {
+		return nil, errclass.ErrDescriptorCorrupt.WithMessagef("descriptor snapshot ID %q does not match requested %q", desc.SnapshotID, snapshotID)
 	}
 	return &desc, nil
 }
@@ -383,8 +717,11 @@ func VerifySnapshot(repoRoot string, snapshotID model.SnapshotID, verifyPayloadH
 	}
 
 	if verifyPayloadHash {
-		snapshotDir := filepath.Join(repoRoot, ".jvs", "snapshots", string(snapshotID))
-		computedHash, err := integrity.ComputePayloadRootHash(snapshotDir)
+		snapshotDir, err := repo.SnapshotPathForRead(repoRoot, snapshotID)
+		if err != nil {
+			return err
+		}
+		computedHash, err := snapshotpayload.ComputeHash(snapshotDir, snapshotpayload.OptionsFromDescriptor(desc))
 		if err != nil {
 			return fmt.Errorf("compute payload hash: %w", err)
 		}

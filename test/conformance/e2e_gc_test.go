@@ -3,6 +3,7 @@
 package conformance
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -104,6 +105,63 @@ func TestE2E_GC_OrphanedSnapshots(t *testing.T) {
 			t.Errorf("expected OK in verify output, got: %s", stdout)
 		}
 	})
+}
+
+func TestE2E_GC_CommitsDeletionAndTombstone(t *testing.T) {
+	repoPath, _ := initTestRepo(t)
+	snapshotID := createOldOrphanedSnapshot(t, repoPath)
+
+	planOut, stderr, code := runJVSInRepo(t, repoPath, "gc", "plan", "--json")
+	if code != 0 {
+		t.Fatalf("gc plan failed: %s", stderr)
+	}
+	planID := extractPlanID(planOut)
+	if planID == "" {
+		t.Fatalf("plan id not found in output: %s", planOut)
+	}
+	if got := extractJSONField(planOut, "candidate_count"); got != "1" {
+		t.Fatalf("expected exactly one GC candidate, got %s plan=%s", got, planOut)
+	}
+	if !strings.Contains(planOut, snapshotID) {
+		t.Fatalf("expected GC plan to include orphan %s, plan=%s", snapshotID, planOut)
+	}
+
+	_, stderr, code = runJVSInRepo(t, repoPath, "gc", "run", "--plan-id", planID)
+	if code != 0 {
+		t.Fatalf("gc run failed: %s", stderr)
+	}
+
+	requirePathMissing(t, filepath.Join(repoPath, ".jvs", "snapshots", snapshotID))
+	requirePathMissing(t, filepath.Join(repoPath, ".jvs", "descriptors", snapshotID+".json"))
+	requireCommittedTombstone(t, repoPath, snapshotID)
+}
+
+func requirePathMissing(t *testing.T, path string) {
+	t.Helper()
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected %s to be removed, stat err=%v", path, err)
+	}
+}
+
+func requireCommittedTombstone(t *testing.T, repoPath, snapshotID string) {
+	t.Helper()
+
+	tombstonePath := filepath.Join(repoPath, ".jvs", "gc", "tombstones", snapshotID+".json")
+	data, err := os.ReadFile(tombstonePath)
+	if err != nil {
+		t.Fatalf("read tombstone: %v", err)
+	}
+	var tombstone map[string]any
+	if err := json.Unmarshal(data, &tombstone); err != nil {
+		t.Fatalf("parse tombstone: %v", err)
+	}
+	if tombstone["gc_state"] != "committed" {
+		t.Fatalf("expected committed tombstone, got %v in %s", tombstone["gc_state"], string(data))
+	}
+	if tombstone["reclaimable"] != true {
+		t.Fatalf("expected reclaimable tombstone, got %v in %s", tombstone["reclaimable"], string(data))
+	}
 }
 
 // extractPlanIDFromText extracts plan ID from non-JSON output

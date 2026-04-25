@@ -4,12 +4,15 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jvs-project/jvs/internal/compression"
 	"github.com/jvs-project/jvs/internal/repo"
 	"github.com/jvs-project/jvs/internal/snapshot"
+	"github.com/jvs-project/jvs/internal/snapshotpayload"
+	"github.com/jvs-project/jvs/internal/worktree"
 	"github.com/jvs-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,6 +23,18 @@ func setupTestRepo(t *testing.T) string {
 	_, err := repo.Init(dir, "test")
 	require.NoError(t, err)
 	return dir
+}
+
+func readDirNames(t *testing.T, path string) []string {
+	t.Helper()
+
+	entries, err := os.ReadDir(path)
+	require.NoError(t, err)
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names
 }
 
 func TestCreator_Create(t *testing.T) {
@@ -132,6 +147,61 @@ func TestCreator_InvalidWorktree(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestCreator_CreateRejectsUnsafeWorktreePayloadPath(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, repoPath, worktreeName string) string
+	}{
+		{
+			name: "worktrees parent symlink",
+			setup: func(t *testing.T, repoPath, worktreeName string) string {
+				outsideRoot := t.TempDir()
+				outsidePayload := filepath.Join(outsideRoot, worktreeName)
+				require.NoError(t, os.MkdirAll(outsidePayload, 0755))
+				require.NoError(t, os.WriteFile(filepath.Join(outsidePayload, "secret.txt"), []byte("outside"), 0644))
+				require.NoError(t, os.RemoveAll(filepath.Join(repoPath, "worktrees")))
+				if err := os.Symlink(outsideRoot, filepath.Join(repoPath, "worktrees")); err != nil {
+					t.Skipf("symlinks not supported: %v", err)
+				}
+				return outsidePayload
+			},
+		},
+		{
+			name: "final payload symlink",
+			setup: func(t *testing.T, repoPath, worktreeName string) string {
+				outsidePayload := t.TempDir()
+				require.NoError(t, os.WriteFile(filepath.Join(outsidePayload, "secret.txt"), []byte("outside"), 0644))
+				payloadPath := filepath.Join(repoPath, "worktrees", worktreeName)
+				require.NoError(t, os.RemoveAll(payloadPath))
+				if err := os.Symlink(outsidePayload, payloadPath); err != nil {
+					t.Skipf("symlinks not supported: %v", err)
+				}
+				return outsidePayload
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repoPath := setupTestRepo(t)
+			wtMgr := worktree.NewManager(repoPath)
+			const worktreeName = "unsafe"
+			_, err := wtMgr.Create(worktreeName, nil)
+			require.NoError(t, err)
+			outsidePayload := tc.setup(t, repoPath, worktreeName)
+
+			creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+			_, err = creator.Create(worktreeName, "must fail", nil)
+			require.Error(t, err)
+
+			content, readErr := os.ReadFile(filepath.Join(outsidePayload, "secret.txt"))
+			require.NoError(t, readErr)
+			assert.Equal(t, "outside", string(content))
+			assert.Empty(t, readDirNames(t, filepath.Join(repoPath, ".jvs", "snapshots")))
+			assert.Empty(t, readDirNames(t, filepath.Join(repoPath, ".jvs", "descriptors")))
+			assert.Empty(t, readDirNames(t, filepath.Join(repoPath, ".jvs", "intents")))
+		})
+	}
+}
+
 func TestCreator_WithTags(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
@@ -162,10 +232,65 @@ func TestLoadDescriptor(t *testing.T) {
 	assert.Equal(t, desc.Note, loaded.Note)
 }
 
+func TestLoadDescriptorRejectsPathLikeAndNonCanonicalIDs(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	trap := []byte(`{"snapshot_id":"1708300800000-deadbeef","created_at":"2024-01-01T00:00:00Z","engine":"copy","payload_root_hash":"abc","descriptor_checksum":"def","integrity_state":"verified"}`)
+
+	ids := []model.SnapshotID{
+		"../../outside/escape",
+		"/tmp/absolute",
+		"nested/1708300800000-deadbeef",
+		"1708300800000-DEADBEEF",
+		"not-canonical",
+	}
+
+	for _, id := range ids {
+		t.Run(string(id), func(t *testing.T) {
+			rawPath := filepath.Join(repoPath, ".jvs", "descriptors", string(id)+".json")
+			require.NoError(t, os.MkdirAll(filepath.Dir(rawPath), 0755))
+			require.NoError(t, os.WriteFile(rawPath, trap, 0644))
+
+			_, err := snapshot.LoadDescriptor(repoPath, id)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestLoadDescriptorRejectsDescriptorIDMismatch(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	requestedID := model.SnapshotID("1708300800000-deadbeef")
+	otherID := model.SnapshotID("1708300800001-feedface")
+	descriptorPath := filepath.Join(repoPath, ".jvs", "descriptors", string(requestedID)+".json")
+	data := []byte(`{"snapshot_id":"` + string(otherID) + `","created_at":"2024-01-01T00:00:00Z","engine":"copy","payload_root_hash":"abc","descriptor_checksum":"def","integrity_state":"verified"}`)
+	require.NoError(t, os.WriteFile(descriptorPath, data, 0644))
+
+	_, err := snapshot.LoadDescriptor(repoPath, requestedID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not match requested")
+}
+
+func TestLoadDescriptorRejectsFinalDescriptorSymlink(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := model.SnapshotID("1708300800000-deadbeef")
+	outsideDescriptor := filepath.Join(t.TempDir(), "outside-descriptor.json")
+	data := []byte(`{"snapshot_id":"` + string(snapshotID) + `","created_at":"2024-01-01T00:00:00Z","engine":"copy","payload_root_hash":"abc","descriptor_checksum":"def","integrity_state":"verified"}`)
+	require.NoError(t, os.WriteFile(outsideDescriptor, data, 0644))
+
+	descriptorPath := filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json")
+	if err := os.Symlink(outsideDescriptor, descriptorPath); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	_, err := snapshot.LoadDescriptor(repoPath, snapshotID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "symlink")
+	assert.FileExists(t, outsideDescriptor)
+}
+
 func TestLoadDescriptor_NotFound(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	_, err := snapshot.LoadDescriptor(repoPath, "nonexistent-snapshot-id")
+	_, err := snapshot.LoadDescriptor(repoPath, "1708300800000-deadbeef")
 	require.Error(t, err)
 }
 
@@ -186,6 +311,29 @@ func TestVerifySnapshot(t *testing.T) {
 	// Verify with payload hash
 	err = snapshot.VerifySnapshot(repoPath, desc.SnapshotID, true)
 	require.NoError(t, err)
+}
+
+func TestVerifySnapshotRejectsFinalSnapshotSymlink(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644))
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	desc, err := creator.Create("main", "", nil)
+	require.NoError(t, err)
+
+	outside := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "file.txt"), []byte("content"), 0644))
+	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(desc.SnapshotID))
+	require.NoError(t, os.RemoveAll(snapshotDir))
+	if err := os.Symlink(outside, snapshotDir); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	err = snapshot.VerifySnapshot(repoPath, desc.SnapshotID, true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "symlink")
+	assert.FileExists(t, filepath.Join(outside, "file.txt"))
 }
 
 func TestVerifySnapshot_InvalidID(t *testing.T) {
@@ -220,10 +368,10 @@ func TestLoadDescriptor_CorruptJSON(t *testing.T) {
 	// Create a descriptor file with invalid JSON
 	descriptorsDir := filepath.Join(repoPath, ".jvs", "descriptors")
 	require.NoError(t, os.MkdirAll(descriptorsDir, 0755))
-	descriptorPath := filepath.Join(descriptorsDir, "test-snapshot.json")
+	descriptorPath := filepath.Join(descriptorsDir, "1708300800000-deadbeef.json")
 	require.NoError(t, os.WriteFile(descriptorPath, []byte("{invalid json"), 0644))
 
-	_, err := snapshot.LoadDescriptor(repoPath, "test-snapshot")
+	_, err := snapshot.LoadDescriptor(repoPath, "1708300800000-deadbeef")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "parse descriptor")
 }
@@ -347,14 +495,13 @@ func TestLoadDescriptor_EmptySnapshotID(t *testing.T) {
 	// Create a descriptor file with empty snapshot_id
 	descriptorsDir := filepath.Join(repoPath, ".jvs", "descriptors")
 	require.NoError(t, os.MkdirAll(descriptorsDir, 0755))
-	descriptorPath := filepath.Join(descriptorsDir, "test-snapshot.json")
+	descriptorPath := filepath.Join(descriptorsDir, "1708300800000-deadbeef.json")
 	// Valid JSON but minimal fields
 	require.NoError(t, os.WriteFile(descriptorPath, []byte(`{"snapshot_id": "", "created_at": "2024-01-01T00:00:00Z", "engine": "copy", "payload_root_hash": "abc", "descriptor_checksum": "def", "integrity_state": "verified"}`), 0644))
 
-	desc, err := snapshot.LoadDescriptor(repoPath, "test-snapshot")
-	// Should load without error (empty snapshot_id is valid JSON)
-	require.NoError(t, err)
-	assert.Equal(t, model.SnapshotID(""), desc.SnapshotID)
+	_, err := snapshot.LoadDescriptor(repoPath, "1708300800000-deadbeef")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not match requested")
 }
 
 func TestVerifySnapshot_LoadDescriptorError(t *testing.T) {
@@ -652,6 +799,54 @@ func TestCreatePartial_PathTraversalRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "cannot contain '..'")
 }
 
+func TestCreatePartial_RejectsSymlinkIntermediateEscape(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+	outsidePath := filepath.Join(repoPath, "outside")
+	require.NoError(t, os.MkdirAll(outsidePath, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(outsidePath, "secret.txt"), []byte("outside secret"), 0644))
+	if err := os.Symlink(outsidePath, filepath.Join(mainPath, "link")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	desc, err := creator.CreatePartial("main", "must not escape", nil, []string{"link/secret.txt"})
+	require.Error(t, err)
+	assert.Nil(t, desc)
+
+	content, readErr := os.ReadFile(filepath.Join(outsidePath, "secret.txt"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "outside secret", string(content))
+
+	entries, readErr := os.ReadDir(filepath.Join(repoPath, ".jvs", "snapshots"))
+	require.NoError(t, readErr)
+	assert.Empty(t, entries, "rejected partial snapshot must not publish outside content")
+}
+
+func TestCreatePartial_AllowsFinalSymlinkLeaf(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+	outsidePath := filepath.Join(repoPath, "outside")
+	require.NoError(t, os.MkdirAll(outsidePath, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(outsidePath, "secret.txt"), []byte("outside secret"), 0644))
+	if err := os.Symlink(filepath.Join(outsidePath, "secret.txt"), filepath.Join(mainPath, "link")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	desc, err := creator.CreatePartial("main", "symlink leaf", nil, []string{"link"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"link"}, desc.PartialPaths)
+
+	snapshotLink := filepath.Join(repoPath, ".jvs", "snapshots", string(desc.SnapshotID), "link")
+	info, err := os.Lstat(snapshotLink)
+	require.NoError(t, err)
+	assert.NotZero(t, info.Mode()&os.ModeSymlink)
+	target, err := os.Readlink(snapshotLink)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(outsidePath, "secret.txt"), target)
+}
+
 // TestCreatePartial_NonExistentPathRejected tests that non-existent paths are rejected.
 func TestCreatePartial_NonExistentPathRejected(t *testing.T) {
 	repoPath := setupTestRepo(t)
@@ -759,6 +954,84 @@ func TestCreator_SetCompression(t *testing.T) {
 	assert.Equal(t, 6, desc.Compression.Level)
 }
 
+func TestCreator_CompressionFailureFailsClosed(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+	writeNameWhoseGzipSiblingCannotBeCreated(t, mainPath)
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	creator.SetCompression(compression.LevelFast)
+
+	desc, err := creator.Create("main", "must fail closed", nil)
+	require.Error(t, err)
+	assert.Nil(t, desc)
+
+	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	assert.Empty(t, cfg.HeadSnapshotID)
+	assert.Empty(t, cfg.LatestSnapshotID)
+
+	descriptorEntries, err := os.ReadDir(filepath.Join(repoPath, ".jvs", "descriptors"))
+	require.NoError(t, err)
+	assert.Empty(t, descriptorEntries, "compression failure must not write a descriptor")
+
+	snapshotEntries, err := os.ReadDir(filepath.Join(repoPath, ".jvs", "snapshots"))
+	require.NoError(t, err)
+	for _, entry := range snapshotEntries {
+		entryPath := filepath.Join(repoPath, ".jvs", "snapshots", entry.Name())
+		assert.NoFileExists(t, filepath.Join(entryPath, ".READY"), "failed compressed snapshot must not be published READY")
+		if strings.HasSuffix(entry.Name(), ".tmp") {
+			assert.NoFileExists(t, filepath.Join(entryPath, ".READY"), "failed tmp snapshot must not contain publish state")
+		}
+	}
+}
+
+func TestCreator_CompressedSnapshotIsPublishableAndMaterializesSafely(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("logical payload"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "archive.gz"), []byte("user gzip-named data"), 0644))
+	require.NoError(t, os.Symlink("archive.gz", filepath.Join(mainPath, "leaf-link")))
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	creator.SetCompression(compression.LevelDefault)
+
+	desc, err := creator.Create("main", "compressed publish", nil)
+	require.NoError(t, err)
+	require.NotNil(t, desc.Compression)
+
+	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(desc.SnapshotID))
+	readyData, err := os.ReadFile(filepath.Join(snapshotDir, ".READY"))
+	require.NoError(t, err)
+	var ready map[string]any
+	require.NoError(t, json.Unmarshal(readyData, &ready))
+	assert.Contains(t, ready, "compression_manifest")
+	assert.FileExists(t, filepath.Join(snapshotDir, "file.txt.gz"))
+	assert.NoFileExists(t, filepath.Join(snapshotDir, "file.txt"))
+	assert.FileExists(t, filepath.Join(snapshotDir, "archive.gz"))
+	info, err := os.Lstat(filepath.Join(snapshotDir, "leaf-link"))
+	require.NoError(t, err)
+	assert.NotZero(t, info.Mode()&os.ModeSymlink)
+
+	require.NoError(t, snapshot.VerifySnapshot(repoPath, desc.SnapshotID, true))
+	hash, err := snapshotpayload.ComputeHash(snapshotDir, snapshotpayload.OptionsFromDescriptor(desc))
+	require.NoError(t, err)
+	assert.Equal(t, desc.PayloadRootHash, hash)
+
+	materialized := filepath.Join(t.TempDir(), "payload")
+	err = snapshotpayload.Materialize(snapshotDir, materialized, snapshotpayload.OptionsFromDescriptor(desc), copySnapshotTreeForCreatorTest)
+	require.NoError(t, err)
+	content, err := os.ReadFile(filepath.Join(materialized, "file.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "logical payload", string(content))
+	userGzip, err := os.ReadFile(filepath.Join(materialized, "archive.gz"))
+	require.NoError(t, err)
+	assert.Equal(t, "user gzip-named data", string(userGzip))
+	target, err := os.Readlink(filepath.Join(materialized, "leaf-link"))
+	require.NoError(t, err)
+	assert.Equal(t, "archive.gz", target)
+}
+
 func TestCreator_CreatePartial_EmptyPaths(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
@@ -788,4 +1061,58 @@ func TestCreator_Create_EmptyWorktree(t *testing.T) {
 	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(desc.SnapshotID))
 	assert.DirExists(t, snapshotDir)
 	assert.FileExists(t, filepath.Join(snapshotDir, ".READY"))
+}
+
+func writeNameWhoseGzipSiblingCannotBeCreated(t *testing.T, dir string) string {
+	t.Helper()
+
+	for n := 253; n >= 1; n-- {
+		name := strings.Repeat("a", n)
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("payload"), 0644); err != nil {
+			continue
+		}
+
+		probePath := path + ".gz"
+		if err := os.WriteFile(probePath, []byte("probe"), 0644); err != nil {
+			return name
+		}
+		require.NoError(t, os.Remove(probePath))
+		require.NoError(t, os.Remove(path))
+	}
+
+	t.Skip("filesystem did not expose a filename length that allows the source but rejects the .gz sibling")
+	return ""
+}
+
+func copySnapshotTreeForCreatorTest(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		switch {
+		case info.IsDir():
+			return os.MkdirAll(target, info.Mode().Perm())
+		case info.Mode()&os.ModeSymlink != 0:
+			linkTarget, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(linkTarget, target)
+		default:
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return err
+			}
+			return os.WriteFile(target, data, info.Mode().Perm())
+		}
+	})
 }

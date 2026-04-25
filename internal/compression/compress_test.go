@@ -1,8 +1,12 @@
 package compression
 
 import (
+	"compress/gzip"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jvs-project/jvs/pkg/model"
@@ -160,6 +164,7 @@ func TestCompressDecompressFile(t *testing.T) {
 
 func TestCompressDir(t *testing.T) {
 	tmpDir := t.TempDir()
+	requireReadyMarker(t, tmpDir)
 
 	// Create test files
 	files := map[string]string{
@@ -203,29 +208,27 @@ func TestCompressDir(t *testing.T) {
 
 func TestDecompressDir(t *testing.T) {
 	tmpDir := t.TempDir()
+	requireReadyMarker(t, tmpDir)
 
-	// Create compressed test files
+	// Create test files
 	files := map[string]string{
 		"file1.txt":        "content 1",
 		"file2.txt":        "content 2",
 		"subdir/file3.txt": "content 3",
 	}
 	for path, content := range files {
-		fullPath := filepath.Join(tmpDir, path+".gz")
+		fullPath := filepath.Join(tmpDir, path)
 		if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
-		// Create compressed file
-		c := NewCompressor(LevelFast)
-		testFile := filepath.Join(tmpDir, path)
-		if err := os.WriteFile(testFile, []byte(content), 0644); err != nil {
+		if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
 			t.Fatalf("write file: %v", err)
 		}
-		if _, err := c.CompressFile(testFile); err != nil {
-			t.Fatalf("compress file: %v", err)
-		}
-		// Remove original
-		os.Remove(testFile)
+	}
+
+	c := NewCompressor(LevelFast)
+	if _, err := c.CompressDir(tmpDir); err != nil {
+		t.Fatalf("compress dir: %v", err)
 	}
 
 	// Decompress directory
@@ -256,6 +259,294 @@ func TestDecompressDir(t *testing.T) {
 	}
 }
 
+func TestDecompressDir_UsesCompressionManifestNotGzipSuffix(t *testing.T) {
+	tmpDir := t.TempDir()
+	requireReadyMarker(t, tmpDir)
+
+	if err := os.WriteFile(filepath.Join(tmpDir, "data.txt"), []byte("payload"), 0644); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+	userGzip := filepath.Join(tmpDir, "archive.gz")
+	userGzipContent := []byte("user-owned gzip-named content")
+	if err := os.WriteFile(userGzip, userGzipContent, 0644); err != nil {
+		t.Fatalf("write user gzip: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "target.txt"), []byte("target"), 0644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.Symlink("target.txt", filepath.Join(tmpDir, "link.gz")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	c := NewCompressor(LevelFast)
+	count, err := c.CompressDir(tmpDir)
+	if err != nil {
+		t.Fatalf("compress dir: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected 2 compressed regular files, got %d", count)
+	}
+
+	ready, err := os.ReadFile(filepath.Join(tmpDir, ".READY"))
+	if err != nil {
+		t.Fatalf("read ready: %v", err)
+	}
+	if !strings.Contains(string(ready), "compression_manifest") {
+		t.Fatalf("ready marker missing compression manifest: %s", string(ready))
+	}
+
+	count, err = DecompressDir(tmpDir)
+	if err != nil {
+		t.Fatalf("decompress dir: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected 2 decompressed files, got %d", count)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, "data.txt"))
+	if err != nil {
+		t.Fatalf("read data: %v", err)
+	}
+	if string(data) != "payload" {
+		t.Fatalf("unexpected data content: %q", string(data))
+	}
+	archive, err := os.ReadFile(userGzip)
+	if err != nil {
+		t.Fatalf("read user gzip: %v", err)
+	}
+	if string(archive) != string(userGzipContent) {
+		t.Fatalf("user gzip was modified: %q", string(archive))
+	}
+	info, err := os.Lstat(filepath.Join(tmpDir, "link.gz"))
+	if err != nil {
+		t.Fatalf("lstat symlink: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("link.gz should remain a symlink")
+	}
+}
+
+func TestDecompressDir_CorruptSecondGzipLeavesTreeUnchanged(t *testing.T) {
+	root := t.TempDir()
+
+	writeGzipFixture(t, filepath.Join(root, "first.txt.gz"), []byte("first"))
+	secondGzip := filepath.Join(root, "second.txt.gz")
+	secondGzipContent := []byte("this is not valid gzip data")
+	if err := os.WriteFile(secondGzip, secondGzipContent, 0644); err != nil {
+		t.Fatalf("write corrupt gzip: %v", err)
+	}
+	requireReadyMarkerForPaths(t, root, []string{"first.txt", "second.txt"})
+
+	count, err := DecompressDir(root)
+	if err == nil {
+		t.Fatal("expected corrupt gzip to fail")
+	}
+	if count != 0 {
+		t.Fatalf("expected no files to be decompressed, got %d", count)
+	}
+	assertPathMissing(t, filepath.Join(root, "first.txt"))
+	assertFileContent(t, filepath.Join(root, "first.txt.gz"), []byte("first"))
+	assertPathMissing(t, filepath.Join(root, "second.txt"))
+	assertRawFileContent(t, secondGzip, secondGzipContent)
+}
+
+func TestDecompressDir_TruncatedLaterGzipLeavesTreeUnchanged(t *testing.T) {
+	root := t.TempDir()
+
+	writeGzipFixture(t, filepath.Join(root, "first.txt.gz"), []byte("first"))
+	secondGzip := filepath.Join(root, "second.txt.gz")
+	writeGzipFixture(t, secondGzip, []byte("second"))
+	secondGzipContent, err := os.ReadFile(secondGzip)
+	if err != nil {
+		t.Fatalf("read gzip fixture: %v", err)
+	}
+	if len(secondGzipContent) < 8 {
+		t.Fatalf("gzip fixture unexpectedly short: %d bytes", len(secondGzipContent))
+	}
+	secondGzipContent = secondGzipContent[:len(secondGzipContent)-4]
+	if err := os.WriteFile(secondGzip, secondGzipContent, 0644); err != nil {
+		t.Fatalf("truncate gzip fixture: %v", err)
+	}
+	requireReadyMarkerForEntries(t, root, []map[string]any{
+		{
+			"path":            "first.txt",
+			"compressed_path": "first.txt.gz",
+			"original_size":   int64(len("first")),
+		},
+		{
+			"path":            "second.txt",
+			"compressed_path": "second.txt.gz",
+			"original_size":   int64(len("second")),
+		},
+	})
+
+	count, err := DecompressDir(root)
+	if err == nil {
+		t.Fatal("expected truncated gzip to fail")
+	}
+	if count != 0 {
+		t.Fatalf("expected no files to be decompressed, got %d", count)
+	}
+	assertPathMissing(t, filepath.Join(root, "first.txt"))
+	assertFileContent(t, filepath.Join(root, "first.txt.gz"), []byte("first"))
+	assertPathMissing(t, filepath.Join(root, "second.txt"))
+	assertRawFileContent(t, secondGzip, secondGzipContent)
+}
+
+func TestDecompressDir_RejectsDeclaredOriginalSizeTooSmall(t *testing.T) {
+	root := t.TempDir()
+
+	writeGzipFixture(t, filepath.Join(root, "first.txt.gz"), []byte("first"))
+	bombGzip := filepath.Join(root, "bomb.txt.gz")
+	writeGzipFixture(t, bombGzip, []byte("larger than declared"))
+	bombRaw, err := os.ReadFile(bombGzip)
+	if err != nil {
+		t.Fatalf("read bomb gzip: %v", err)
+	}
+	requireReadyMarkerForEntries(t, root, []map[string]any{
+		{
+			"path":            "first.txt",
+			"compressed_path": "first.txt.gz",
+			"original_size":   int64(len("first")),
+		},
+		{
+			"path":            "bomb.txt",
+			"compressed_path": "bomb.txt.gz",
+			"original_size":   int64(1),
+		},
+	})
+
+	count, err := DecompressDir(root)
+	if err == nil {
+		t.Fatal("expected declared size mismatch to fail")
+	}
+	if count != 0 {
+		t.Fatalf("expected no files to be decompressed, got %d", count)
+	}
+	assertPathMissing(t, filepath.Join(root, "first.txt"))
+	assertFileContent(t, filepath.Join(root, "first.txt.gz"), []byte("first"))
+	assertPathMissing(t, filepath.Join(root, "bomb.txt"))
+	assertRawFileContent(t, bombGzip, bombRaw)
+}
+
+func TestDecompressDir_AcceptsDeclaredOriginalSizeExactMatch(t *testing.T) {
+	root := t.TempDir()
+
+	content := []byte("exactly declared")
+	writeGzipFixture(t, filepath.Join(root, "file.txt.gz"), content)
+	requireReadyMarkerForEntries(t, root, []map[string]any{
+		{
+			"path":            "file.txt",
+			"compressed_path": "file.txt.gz",
+			"original_size":   int64(len(content)),
+		},
+	})
+
+	count, err := DecompressDir(root)
+	if err != nil {
+		t.Fatalf("decompress dir: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected one file to be decompressed, got %d", count)
+	}
+	assertRawFileContent(t, filepath.Join(root, "file.txt"), content)
+	assertPathMissing(t, filepath.Join(root, "file.txt.gz"))
+}
+
+func TestDecompressDir_CommitRenameFailureRollsBackEarlierOutput(t *testing.T) {
+	root := t.TempDir()
+
+	writeGzipFixture(t, filepath.Join(root, "first.txt.gz"), []byte("first"))
+	writeGzipFixture(t, filepath.Join(root, "second.txt.gz"), []byte("second"))
+	requireReadyMarkerForPaths(t, root, []string{"first.txt", "second.txt"})
+
+	secondOutput := filepath.Join(root, "second.txt")
+	originalRenameFile := renameFile
+	renameFile = func(oldPath, newPath string) error {
+		if newPath == secondOutput {
+			return errors.New("injected rename failure")
+		}
+		return originalRenameFile(oldPath, newPath)
+	}
+	defer func() {
+		renameFile = originalRenameFile
+	}()
+
+	count, err := DecompressDir(root)
+	if err == nil {
+		t.Fatal("expected injected rename failure")
+	}
+	if count != 0 {
+		t.Fatalf("expected no files to be decompressed, got %d", count)
+	}
+	assertPathMissing(t, filepath.Join(root, "first.txt"))
+	assertFileContent(t, filepath.Join(root, "first.txt.gz"), []byte("first"))
+	assertPathMissing(t, secondOutput)
+	assertFileContent(t, filepath.Join(root, "second.txt.gz"), []byte("second"))
+}
+
+func TestDecompressDir_RejectsOutputSymlinkParent(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+
+	writeGzipFixture(t, filepath.Join(root, "source.gz"), []byte("outside write"))
+	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	requireReadyMarkerForEntries(t, root, []map[string]any{
+		{
+			"path":            "escape/out.txt",
+			"compressed_path": "source.gz",
+			"original_size":   int64(len("outside write")),
+		},
+	})
+
+	count, err := DecompressDir(root)
+	if err == nil {
+		t.Fatal("expected symlink parent to be rejected")
+	}
+	if count != 0 {
+		t.Fatalf("expected no files to be decompressed, got %d", count)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "out.txt")); !os.IsNotExist(err) {
+		t.Fatalf("outside target was written or stat failed unexpectedly: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "source.gz")); err != nil {
+		t.Fatalf("compressed source should not be removed: %v", err)
+	}
+}
+
+func TestDecompressDir_RejectsCompressedPathSymlinkParent(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+
+	writeGzipFixture(t, filepath.Join(outside, "secret.gz"), []byte("outside read"))
+	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	requireReadyMarkerForEntries(t, root, []map[string]any{
+		{
+			"path":            "out.txt",
+			"compressed_path": "escape/secret.gz",
+			"original_size":   int64(len("outside read")),
+		},
+	})
+
+	count, err := DecompressDir(root)
+	if err == nil {
+		t.Fatal("expected symlink parent to be rejected")
+	}
+	if count != 0 {
+		t.Fatalf("expected no files to be decompressed, got %d", count)
+	}
+	if _, err := os.Stat(filepath.Join(root, "out.txt")); !os.IsNotExist(err) {
+		t.Fatalf("output was written or stat failed unexpectedly: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "secret.gz")); err != nil {
+		t.Fatalf("outside compressed source should not be removed: %v", err)
+	}
+}
+
 func TestIsCompressedFile(t *testing.T) {
 	tests := []struct {
 		path     string
@@ -275,6 +566,117 @@ func TestIsCompressedFile(t *testing.T) {
 			}
 		})
 	}
+}
+
+func requireReadyMarker(t *testing.T, root string) {
+	t.Helper()
+	requireReadyMarkerForPaths(t, root, nil)
+}
+
+func requireReadyMarkerForPaths(t *testing.T, root string, paths []string) {
+	t.Helper()
+	files := make([]map[string]any, 0, len(paths))
+	for _, path := range paths {
+		compressedPath := filepath.ToSlash(path + ".gz")
+		files = append(files, map[string]any{
+			"path":            filepath.ToSlash(path),
+			"compressed_path": compressedPath,
+			"original_size":   originalSizeForCompressedFixture(t, filepath.Join(root, filepath.FromSlash(compressedPath))),
+		})
+	}
+	requireReadyMarkerForEntries(t, root, files)
+}
+
+func requireReadyMarkerForEntries(t *testing.T, root string, files []map[string]any) {
+	t.Helper()
+	marker := map[string]any{
+		"snapshot_id":           "test",
+		"payload_root_hash":     "hash",
+		"engine":                "copy",
+		"descriptor_checksum":   "checksum",
+		"completed_at_for_test": "now",
+		"compression_manifest": map[string]any{
+			"version": 1,
+			"type":    TypeGzip,
+			"files":   files,
+		},
+	}
+	data, err := json.Marshal(marker)
+	if err != nil {
+		t.Fatalf("marshal ready marker: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".READY"), data, 0644); err != nil {
+		t.Fatalf("write ready marker: %v", err)
+	}
+}
+
+func originalSizeForCompressedFixture(t *testing.T, path string) int64 {
+	t.Helper()
+	data, err := decompressFileContentForTest(path)
+	if err != nil {
+		return 0
+	}
+	return int64(len(data))
+}
+
+func writeGzipFixture(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("mkdir gzip parent: %v", err)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create gzip fixture: %v", err)
+	}
+	w := gzip.NewWriter(f)
+	if _, err := w.Write(data); err != nil {
+		f.Close()
+		t.Fatalf("write gzip fixture: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		f.Close()
+		t.Fatalf("close gzip fixture: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close gzip file: %v", err)
+	}
+}
+
+func assertPathMissing(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected %s to be missing, got err %v", path, err)
+	}
+}
+
+func assertRawFileContent(t *testing.T, path string, expected []byte) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if string(data) != string(expected) {
+		t.Fatalf("content mismatch for %s: got %q, want %q", path, string(data), string(expected))
+	}
+}
+
+func assertFileContent(t *testing.T, path string, expected []byte) {
+	t.Helper()
+	data, err := decompressFileContentForTest(path)
+	if err != nil {
+		t.Fatalf("read gzip content %s: %v", path, err)
+	}
+	if string(data) != string(expected) {
+		t.Fatalf("content mismatch for %s: got %q, want %q", path, string(data), string(expected))
+	}
+}
+
+func decompressFileContentForTest(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return decompressBytes(data)
 }
 
 func TestCompressedUncompressedPath(t *testing.T) {
@@ -434,6 +836,7 @@ func TestDecompressFile_Error_NonExistent(t *testing.T) {
 
 func TestCompressDir_Empty(t *testing.T) {
 	tmpDir := t.TempDir()
+	requireReadyMarker(t, tmpDir)
 
 	c := NewCompressor(LevelFast)
 	count, err := c.CompressDir(tmpDir)
@@ -466,6 +869,7 @@ func TestCompressDir_Disabled(t *testing.T) {
 
 func TestDecompressDir_Empty(t *testing.T) {
 	tmpDir := t.TempDir()
+	requireReadyMarker(t, tmpDir)
 
 	count, err := DecompressDir(tmpDir)
 	if err != nil {
@@ -478,6 +882,7 @@ func TestDecompressDir_Empty(t *testing.T) {
 
 func TestDecompressDir_SkipReadyMarker(t *testing.T) {
 	tmpDir := t.TempDir()
+	requireReadyMarker(t, tmpDir)
 
 	// Create a .READY.gz file which should be skipped
 	readyFile := filepath.Join(tmpDir, ".READY.gz")
@@ -497,6 +902,7 @@ func TestDecompressDir_SkipReadyMarker(t *testing.T) {
 
 func TestCompressDir_SkipAlreadyCompressed(t *testing.T) {
 	tmpDir := t.TempDir()
+	requireReadyMarker(t, tmpDir)
 
 	// Create an already compressed file
 	gzFile := filepath.Join(tmpDir, "already.txt.gz")
@@ -517,6 +923,7 @@ func TestCompressDir_SkipAlreadyCompressed(t *testing.T) {
 
 func TestDecompressDir_SkipNonCompressed(t *testing.T) {
 	tmpDir := t.TempDir()
+	requireReadyMarker(t, tmpDir)
 
 	// Create a non-compressed file
 	txtFile := filepath.Join(tmpDir, "test.txt")
@@ -667,6 +1074,7 @@ func TestSnapshotCompressionInfoString(t *testing.T) {
 
 func TestCompressDir_WithSubdirectories(t *testing.T) {
 	tmpDir := t.TempDir()
+	requireReadyMarker(t, tmpDir)
 
 	// Create complex directory structure
 	structure := map[string]string{
@@ -731,6 +1139,11 @@ func TestDecompressDir_WithSubdirectories(t *testing.T) {
 		}
 		os.Remove(fullPath)
 	}
+	paths := make([]string, 0, len(compressibleFiles))
+	for path := range compressibleFiles {
+		paths = append(paths, path)
+	}
+	requireReadyMarkerForPaths(t, tmpDir, paths)
 
 	// Create a .READY.gz marker file (should be skipped)
 	readyFile := filepath.Join(tmpDir, ".READY.gz")
@@ -856,6 +1269,7 @@ func TestIsEnabled(t *testing.T) {
 
 func TestCompressDir_WithSymlinks(t *testing.T) {
 	tmpDir := t.TempDir()
+	requireReadyMarker(t, tmpDir)
 
 	// Create a regular file
 	regularFile := filepath.Join(tmpDir, "regular.txt")
@@ -978,6 +1392,7 @@ func TestCompressFile_VerySmall(t *testing.T) {
 
 func TestCompressDir_NestedDeepStructure(t *testing.T) {
 	tmpDir := t.TempDir()
+	requireReadyMarker(t, tmpDir)
 
 	// Create a deeply nested structure
 	deepPath := filepath.Join(tmpDir, "a", "b", "c", "d", "e", "file.txt")

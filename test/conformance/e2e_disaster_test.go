@@ -231,7 +231,7 @@ func TestE2E_Disaster_CorruptedDescriptor(t *testing.T) {
 
 	// Corrupt the descriptor file
 	t.Run("corrupt_descriptor", func(t *testing.T) {
-		descPath := filepath.Join(jvsPath, "snapshots", snapID+".json")
+		descPath := filepath.Join(jvsPath, "descriptors", snapID+".json")
 		// Write invalid JSON
 		os.WriteFile(descPath, []byte("not valid json {{{"), 0644)
 	})
@@ -239,7 +239,22 @@ func TestE2E_Disaster_CorruptedDescriptor(t *testing.T) {
 	// Doctor should detect corruption
 	t.Run("doctor_detects_corruption", func(t *testing.T) {
 		stdout, stderr, code := runJVSInRepo(t, repoPath, "doctor", "--strict")
-		t.Logf("Doctor output: code=%d, stdout=%s, stderr=%s", code, stdout, stderr)
+		if code == 0 {
+			t.Fatalf("doctor --strict should fail for corrupted descriptor; stdout=%s stderr=%s", stdout, stderr)
+		}
+		if !strings.Contains(stdout, "integrity") {
+			t.Fatalf("expected integrity finding for corrupted descriptor, got: %s", stdout)
+		}
+	})
+
+	t.Run("doctor_json_exits_nonzero", func(t *testing.T) {
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "doctor", "--strict")
+		if code == 0 {
+			t.Fatalf("doctor --json --strict should fail for corrupted descriptor; stdout=%s stderr=%s", stdout, stderr)
+		}
+		if !strings.Contains(stdout, `"healthy": false`) {
+			t.Fatalf("expected unhealthy JSON result, got: %s", stdout)
+		}
 	})
 
 	// Verify should fail for corrupted snapshot
@@ -267,7 +282,7 @@ func TestE2E_Disaster_MissingReadyMarker(t *testing.T) {
 
 	// Remove .READY marker to simulate incomplete snapshot
 	t.Run("remove_ready_marker", func(t *testing.T) {
-		readyPath := filepath.Join(jvsPath, "snapshots", ids[0]+".READY")
+		readyPath := filepath.Join(jvsPath, "snapshots", ids[0], ".READY")
 		if fileExists(t, readyPath) {
 			os.Remove(readyPath)
 		}
@@ -275,8 +290,13 @@ func TestE2E_Disaster_MissingReadyMarker(t *testing.T) {
 
 	// Doctor should detect
 	t.Run("doctor_detects_missing_ready", func(t *testing.T) {
-		stdout, _, _ := runJVSInRepo(t, repoPath, "doctor", "--strict")
-		t.Logf("Doctor output: %s", stdout)
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "doctor", "--strict")
+		if code == 0 {
+			t.Fatalf("doctor --strict should fail for missing READY marker; stdout=%s stderr=%s", stdout, stderr)
+		}
+		if !strings.Contains(stdout, "READY marker missing") {
+			t.Fatalf("expected missing READY finding, got: %s", stdout)
+		}
 	})
 
 	// Repair

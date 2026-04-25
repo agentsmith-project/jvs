@@ -37,6 +37,43 @@ func TestSnapshotID_String(t *testing.T) {
 	assert.Equal(t, "1708300800000-a3f7c1b2", id.String())
 }
 
+func TestSnapshotID_Validate(t *testing.T) {
+	tests := []struct {
+		name string
+		id   model.SnapshotID
+	}{
+		{name: "generated shape", id: "1708300800000-a3f7c1b2"},
+		{name: "all zero random suffix is still canonical", id: "1708300800000-00000000"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.NoError(t, tt.id.Validate())
+			assert.True(t, tt.id.IsValid())
+		})
+	}
+}
+
+func TestSnapshotID_ValidateRejectsUnsafeOrNonCanonical(t *testing.T) {
+	invalid := []model.SnapshotID{
+		"",
+		"/1708300800000-a3f7c1b2",
+		"1708300800000/a3f7c1b2",
+		`1708300800000\a3f7c1b2`,
+		"..",
+		"../1708300800000-a3f7c1b2",
+		"1708300800000-A3F7C1B2",
+		"170830080000-a3f7c1b2",
+		"1708300800000-a3f7c1b",
+		"1708300800000-a3f7c1b2.json",
+	}
+	for _, id := range invalid {
+		t.Run(string(id), func(t *testing.T) {
+			require.Error(t, id.Validate())
+			assert.False(t, id.IsValid())
+		})
+	}
+}
+
 func TestNewSnapshotID_Uniqueness(t *testing.T) {
 	seen := make(map[model.SnapshotID]bool)
 	for i := 0; i < 100; i++ {

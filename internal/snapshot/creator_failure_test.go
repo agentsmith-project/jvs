@@ -1,0 +1,309 @@
+package snapshot
+
+import (
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/jvs-project/jvs/internal/repo"
+	"github.com/jvs-project/jvs/internal/worktree"
+	"github.com/jvs-project/jvs/pkg/fsutil"
+	"github.com/jvs-project/jvs/pkg/model"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func setupCreatorFailureRepo(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	_, err := repo.Init(dir, "test")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main", "file.txt"), []byte("content"), 0644))
+	return dir
+}
+
+func TestCreator_DescriptorWriteFailureDoesNotPublishReadyAndKeepsIntent(t *testing.T) {
+	repoPath := setupCreatorFailureRepo(t)
+	creator := NewCreator(repoPath, model.EngineCopy)
+	descriptorLanded := false
+	creator.descriptorWriter = func(path string, desc *model.Descriptor) error {
+		if err := writeDescriptorFile(path, desc); err != nil {
+			return err
+		}
+		descriptorLanded = true
+		return errors.New("injected descriptor post-write failure")
+	}
+
+	desc, err := creator.Create("main", "descriptor failure", nil)
+	require.Error(t, err)
+	assert.Nil(t, desc)
+	assert.True(t, descriptorLanded, "test must exercise descriptor cleanup after a landed write")
+
+	intent := requireSingleIntent(t, repoPath)
+	assert.NoDirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(intent.SnapshotID)))
+	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(intent.SnapshotID), ".READY"))
+	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(intent.SnapshotID)+".json"))
+
+	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	assert.Empty(t, cfg.HeadSnapshotID)
+	assert.Empty(t, cfg.LatestSnapshotID)
+}
+
+func TestCreator_PublishFailureAfterDescriptorWriteUnpublishesPayloadAndKeepsIntent(t *testing.T) {
+	repoPath := setupCreatorFailureRepo(t)
+	creator := NewCreator(repoPath, model.EngineCopy)
+
+	descriptorWritten := false
+	creator.descriptorWriter = func(path string, desc *model.Descriptor) error {
+		descriptorWritten = true
+		return writeDescriptorFile(path, desc)
+	}
+	creator.snapshotRenamer = func(oldpath, newpath string) error {
+		if err := fsutil.RenameAndSync(oldpath, newpath); err != nil {
+			return err
+		}
+		return errors.New("injected post-rename failure")
+	}
+
+	desc, err := creator.Create("main", "publish failure", nil)
+	require.Error(t, err)
+	assert.Nil(t, desc)
+	assert.True(t, descriptorWritten, "test must exercise failure after descriptor write")
+
+	intent := requireSingleIntent(t, repoPath)
+	assert.NoDirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(intent.SnapshotID)))
+	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(intent.SnapshotID)+".json"))
+
+	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	assert.Empty(t, cfg.HeadSnapshotID)
+	assert.Empty(t, cfg.LatestSnapshotID)
+}
+
+func TestCreator_PublishRenameDefiniteFailurePreservesExistingFinalSnapshot(t *testing.T) {
+	repoPath := setupCreatorFailureRepo(t)
+	creator := NewCreator(repoPath, model.EngineCopy)
+
+	var snapshotID model.SnapshotID
+	creator.descriptorWriter = func(path string, desc *model.Descriptor) error {
+		snapshotID = desc.SnapshotID
+		if err := writeDescriptorFile(path, desc); err != nil {
+			return err
+		}
+
+		finalDir := filepath.Join(repoPath, ".jvs", "snapshots", string(desc.SnapshotID))
+		require.NoError(t, os.MkdirAll(finalDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(finalDir, ".READY"), []byte("existing ready"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(finalDir, "existing.txt"), []byte("existing content"), 0644))
+		return nil
+	}
+	creator.snapshotRenamer = func(oldpath, newpath string) error {
+		assert.DirExists(t, oldpath)
+		assert.DirExists(t, newpath)
+		return errors.New("injected definite rename failure before commit")
+	}
+
+	desc, err := creator.Create("main", "publish final exists", nil)
+	require.Error(t, err)
+	assert.Nil(t, desc)
+	require.NotEmpty(t, snapshotID)
+
+	finalDir := filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID))
+	assert.DirExists(t, finalDir)
+	assert.FileExists(t, filepath.Join(finalDir, ".READY"))
+	content, readErr := os.ReadFile(filepath.Join(finalDir, "existing.txt"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "existing content", string(content))
+	assertPublishAttemptArtifactsCleaned(t, repoPath, snapshotID)
+
+	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	assert.Empty(t, cfg.HeadSnapshotID)
+	assert.Empty(t, cfg.LatestSnapshotID)
+}
+
+func TestCreator_PublishRenameDefiniteFailurePreservesFinalSnapshotSymlinkTarget(t *testing.T) {
+	repoPath := setupCreatorFailureRepo(t)
+	creator := NewCreator(repoPath, model.EngineCopy)
+
+	outsideDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outsideDir, ".READY"), []byte("outside ready"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(outsideDir, "outside.txt"), []byte("outside content"), 0644))
+
+	var snapshotID model.SnapshotID
+	creator.descriptorWriter = func(path string, desc *model.Descriptor) error {
+		snapshotID = desc.SnapshotID
+		if err := writeDescriptorFile(path, desc); err != nil {
+			return err
+		}
+
+		finalDir := filepath.Join(repoPath, ".jvs", "snapshots", string(desc.SnapshotID))
+		if err := os.Symlink(outsideDir, finalDir); err != nil {
+			t.Skipf("symlinks not supported: %v", err)
+		}
+		return nil
+	}
+	creator.snapshotRenamer = func(oldpath, newpath string) error {
+		assert.DirExists(t, oldpath)
+		info, statErr := os.Lstat(newpath)
+		require.NoError(t, statErr)
+		assert.NotZero(t, info.Mode()&os.ModeSymlink, "expected final leaf to be a symlink")
+		return errors.New("injected definite rename failure before commit")
+	}
+
+	desc, err := creator.Create("main", "publish final symlink", nil)
+	require.Error(t, err)
+	assert.Nil(t, desc)
+	require.NotEmpty(t, snapshotID)
+
+	finalDir := filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID))
+	info, statErr := os.Lstat(finalDir)
+	require.NoError(t, statErr)
+	assert.NotZero(t, info.Mode()&os.ModeSymlink, "cleanup must not remove a preexisting final symlink")
+	assert.FileExists(t, filepath.Join(outsideDir, ".READY"))
+	content, readErr := os.ReadFile(filepath.Join(outsideDir, "outside.txt"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "outside content", string(content))
+	assertPublishAttemptArtifactsCleaned(t, repoPath, snapshotID)
+
+	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	assert.Empty(t, cfg.HeadSnapshotID)
+	assert.Empty(t, cfg.LatestSnapshotID)
+}
+
+func TestCreator_PublishRenameCommitUncertainRetainsSnapshotDescriptorAndIntent(t *testing.T) {
+	repoPath := setupCreatorFailureRepo(t)
+	creator := NewCreator(repoPath, model.EngineCopy)
+
+	descriptorWritten := false
+	creator.descriptorWriter = func(path string, desc *model.Descriptor) error {
+		descriptorWritten = true
+		return writeDescriptorFile(path, desc)
+	}
+	creator.snapshotRenamer = func(oldpath, newpath string) error {
+		if err := fsutil.RenameAndSync(oldpath, newpath); err != nil {
+			return err
+		}
+		return &fsutil.CommitUncertainError{
+			Op:   "rename",
+			Path: newpath,
+			Err:  errors.New("injected post-rename fsync failure"),
+		}
+	}
+
+	desc, err := creator.Create("main", "publish uncertain", nil)
+	require.Error(t, err)
+	assert.Nil(t, desc)
+	require.True(t, fsutil.IsCommitUncertain(err), "creator should preserve uncertain publish semantics")
+	assert.True(t, descriptorWritten, "test must exercise failure after descriptor write")
+
+	intent := requireSingleIntent(t, repoPath)
+	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(intent.SnapshotID))
+	assert.DirExists(t, snapshotDir)
+	assert.FileExists(t, filepath.Join(snapshotDir, ".READY"))
+	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(intent.SnapshotID)+".json"))
+	require.NoError(t, VerifySnapshot(repoPath, intent.SnapshotID, true))
+
+	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	assert.Empty(t, cfg.HeadSnapshotID)
+	assert.Empty(t, cfg.LatestSnapshotID)
+}
+
+func TestCreator_HeadUpdateUncertainCommitRetainsPublishedSnapshotAndIntent(t *testing.T) {
+	repoPath := setupCreatorFailureRepo(t)
+	creator := NewCreator(repoPath, model.EngineCopy)
+
+	var committedSnapshotID model.SnapshotID
+	creator.latestUpdater = func(_ *worktree.Manager, worktreeName string, snapshotID model.SnapshotID) error {
+		cfg, err := repo.LoadWorktreeConfig(repoPath, worktreeName)
+		require.NoError(t, err)
+		cfg.HeadSnapshotID = snapshotID
+		cfg.LatestSnapshotID = snapshotID
+		require.NoError(t, repo.WriteWorktreeConfig(repoPath, worktreeName, cfg))
+
+		committedSnapshotID = snapshotID
+		return &fsutil.CommitUncertainError{
+			Op:   "worktree config update",
+			Path: filepath.Join(repoPath, ".jvs", "worktrees", worktreeName, "config.json"),
+			Err:  errors.New("injected post-rename fsync failure"),
+		}
+	}
+
+	desc, err := creator.Create("main", "head uncertain", nil)
+	require.Error(t, err)
+	assert.Nil(t, desc)
+	require.True(t, fsutil.IsCommitUncertain(err), "creator should preserve uncertain metadata commit semantics")
+	require.NotEmpty(t, committedSnapshotID)
+
+	intent := requireSingleIntent(t, repoPath)
+	assert.Equal(t, committedSnapshotID, intent.SnapshotID)
+
+	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(committedSnapshotID))
+	assert.DirExists(t, snapshotDir)
+	assert.FileExists(t, filepath.Join(snapshotDir, ".READY"))
+	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(committedSnapshotID)+".json"))
+	require.NoError(t, VerifySnapshot(repoPath, committedSnapshotID, true))
+
+	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	assert.Equal(t, committedSnapshotID, cfg.HeadSnapshotID)
+	assert.Equal(t, committedSnapshotID, cfg.LatestSnapshotID)
+}
+
+func TestCreator_HeadUpdateFailureUnpublishesDescriptorAndPayloadAndKeepsIntent(t *testing.T) {
+	repoPath := setupCreatorFailureRepo(t)
+	creator := NewCreator(repoPath, model.EngineCopy)
+
+	descriptorWritten := false
+	creator.descriptorWriter = func(path string, desc *model.Descriptor) error {
+		descriptorWritten = true
+		return writeDescriptorFile(path, desc)
+	}
+	creator.latestUpdater = func(*worktree.Manager, string, model.SnapshotID) error {
+		return errors.New("injected head update failure")
+	}
+
+	desc, err := creator.Create("main", "head failure", nil)
+	require.Error(t, err)
+	assert.Nil(t, desc)
+	assert.True(t, descriptorWritten, "test must exercise failure after descriptor write")
+
+	intent := requireSingleIntent(t, repoPath)
+	assert.NoDirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(intent.SnapshotID)))
+	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(intent.SnapshotID)+".json"))
+	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(intent.SnapshotID), ".READY"))
+
+	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	assert.Empty(t, cfg.HeadSnapshotID)
+	assert.Empty(t, cfg.LatestSnapshotID)
+}
+
+func requireSingleIntent(t *testing.T, repoPath string) model.IntentRecord {
+	t.Helper()
+
+	intentsDir := filepath.Join(repoPath, ".jvs", "intents")
+	entries, err := os.ReadDir(intentsDir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+
+	data, err := os.ReadFile(filepath.Join(intentsDir, entries[0].Name()))
+	require.NoError(t, err)
+	var intent model.IntentRecord
+	require.NoError(t, json.Unmarshal(data, &intent))
+	require.NotEmpty(t, intent.SnapshotID)
+	return intent
+}
+
+func assertPublishAttemptArtifactsCleaned(t *testing.T, repoPath string, snapshotID model.SnapshotID) {
+	t.Helper()
+
+	assert.NoDirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID)+".tmp"))
+	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json"))
+}

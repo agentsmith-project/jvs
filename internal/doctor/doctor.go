@@ -4,16 +4,20 @@ package doctor
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
+	"github.com/jvs-project/jvs/internal/integrity"
 	"github.com/jvs-project/jvs/internal/repo"
 	"github.com/jvs-project/jvs/internal/verify"
 	"github.com/jvs-project/jvs/internal/worktree"
 	"github.com/jvs-project/jvs/pkg/model"
+	"github.com/jvs-project/jvs/pkg/pathutil"
 )
 
 // Finding represents a detected issue.
@@ -29,6 +33,27 @@ type Finding struct {
 type Result struct {
 	Healthy  bool      `json:"healthy"`
 	Findings []Finding `json:"findings"`
+}
+
+var intentSnapshotIDFieldPattern = regexp.MustCompile(`"snapshot_id"\s*:\s*"([^"]+)"`)
+
+func severityAffectsHealth(severity string) bool {
+	switch strings.ToLower(severity) {
+	case "error", "critical":
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *Result) updateHealthFromFindings() {
+	r.Healthy = true
+	for _, finding := range r.Findings {
+		if severityAffectsHealth(finding.Severity) {
+			r.Healthy = false
+			return
+		}
+	}
 }
 
 // RepairAction describes a repair operation.
@@ -107,15 +132,35 @@ func (d *Doctor) repairCleanTmp() RepairResult {
 	})
 
 	// Clean orphan snapshot .tmp directories
-	snapshotsDir := filepath.Join(d.repoRoot, ".jvs", "snapshots")
+	snapshotsDir, err := repo.SnapshotsDirPath(d.repoRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return RepairResult{
+				Action:  "clean_tmp",
+				Success: true,
+				Message: fmt.Sprintf("cleaned %d tmp files/directories", cleaned),
+				Cleaned: cleaned,
+			}
+		}
+		return RepairResult{Action: "clean_tmp", Success: false, Message: err.Error(), Cleaned: cleaned}
+	}
 	entries, err := os.ReadDir(snapshotsDir)
-	if err == nil {
-		for _, entry := range entries {
-			if entry.IsDir() && strings.HasSuffix(entry.Name(), ".tmp") {
-				tmpPath := filepath.Join(snapshotsDir, entry.Name())
-				if err := os.RemoveAll(tmpPath); err == nil {
-					cleaned++
-				}
+	if err != nil {
+		return RepairResult{Action: "clean_tmp", Success: false, Message: err.Error(), Cleaned: cleaned}
+	}
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".tmp") {
+			continue
+		}
+		tmpPath, info, err := safeControlChildInfo(snapshotsDir, entry.Name())
+		if err != nil {
+			return RepairResult{Action: "clean_tmp", Success: false, Message: err.Error(), Cleaned: cleaned}
+		}
+		if info.IsDir() {
+			if err := os.RemoveAll(tmpPath); err == nil {
+				cleaned++
+			} else {
+				return RepairResult{Action: "clean_tmp", Success: false, Message: err.Error(), Cleaned: cleaned}
 			}
 		}
 	}
@@ -129,9 +174,16 @@ func (d *Doctor) repairCleanTmp() RepairResult {
 }
 
 func (d *Doctor) repairCleanIntents() RepairResult {
-	intentsDir := filepath.Join(d.repoRoot, ".jvs", "intents")
 	cleaned := 0
+	retained := 0
 
+	intentsDir, err := repo.IntentsDirPath(d.repoRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return RepairResult{Action: "clean_intents", Success: true, Message: "no intents directory"}
+		}
+		return RepairResult{Action: "clean_intents", Success: false, Message: err.Error()}
+	}
 	entries, err := os.ReadDir(intentsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -140,21 +192,203 @@ func (d *Doctor) repairCleanIntents() RepairResult {
 		return RepairResult{Action: "clean_intents", Success: false, Message: err.Error()}
 	}
 
-	for _, entry := range entries {
-		intentPath := filepath.Join(intentsDir, entry.Name())
-		// Remove all intent files - they should be cleaned up by normal operations
-		// Any remaining are considered orphaned
-		if err := os.Remove(intentPath); err == nil {
-			cleaned++
+	metadataRefs := make(map[model.SnapshotID]bool)
+	if len(entries) > 0 {
+		metadataRefs, err = d.collectMetadataSnapshotRefs()
+		if err != nil {
+			return RepairResult{Action: "clean_intents", Success: false, Message: fmt.Sprintf("inspect worktree metadata: %v", err)}
 		}
 	}
 
-	return RepairResult{
-		Action:  "clean_intents",
-		Success: true,
-		Message: fmt.Sprintf("cleaned %d orphan intent files", cleaned),
-		Cleaned: cleaned,
+	for _, entry := range entries {
+		intentPath, info, err := safeControlChildInfo(intentsDir, entry.Name())
+		if err != nil {
+			return RepairResult{Action: "clean_intents", Success: false, Message: err.Error(), Cleaned: cleaned}
+		}
+		if info.IsDir() {
+			continue
+		}
+		retain, err := d.intentHasRecoveryEvidence(intentPath, entry.Name(), metadataRefs)
+		if err != nil {
+			return RepairResult{Action: "clean_intents", Success: false, Message: err.Error(), Cleaned: cleaned}
+		}
+		if retain {
+			retained++
+			continue
+		}
+		if err := os.Remove(intentPath); err == nil {
+			cleaned++
+		} else if !os.IsNotExist(err) {
+			return RepairResult{Action: "clean_intents", Success: false, Message: err.Error(), Cleaned: cleaned}
+		}
 	}
+
+	message := fmt.Sprintf("cleaned %d orphan intent files", cleaned)
+	if retained > 0 {
+		message = fmt.Sprintf("%s; warning: retained %d recoverable intent files", message, retained)
+	}
+
+	return RepairResult{Action: "clean_intents", Success: true, Message: message, Cleaned: cleaned}
+}
+
+func (d *Doctor) collectMetadataSnapshotRefs() (map[model.SnapshotID]bool, error) {
+	refs := make(map[model.SnapshotID]bool)
+	worktreesDir, err := repo.WorktreesDirPath(d.repoRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return refs, nil
+		}
+		return nil, err
+	}
+
+	entries, err := os.ReadDir(worktreesDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return refs, nil
+		}
+		return nil, err
+	}
+
+	for _, entry := range entries {
+		configDir, info, err := safeControlChildInfo(worktreesDir, entry.Name())
+		if err != nil {
+			return nil, err
+		}
+		if !info.IsDir() {
+			continue
+		}
+		configPath, configInfo, err := safeControlChildInfo(configDir, "config.json")
+		if err != nil {
+			return nil, err
+		}
+		if configInfo.IsDir() {
+			return nil, fmt.Errorf("worktree config is directory: %s", configPath)
+		}
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			return nil, err
+		}
+		var cfg model.WorktreeConfig
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return nil, fmt.Errorf("parse worktree config %s: %w", configPath, err)
+		}
+		addMetadataSnapshotRef(refs, cfg.BaseSnapshotID)
+		addMetadataSnapshotRef(refs, cfg.HeadSnapshotID)
+		addMetadataSnapshotRef(refs, cfg.LatestSnapshotID)
+	}
+	return refs, nil
+}
+
+func addMetadataSnapshotRef(refs map[model.SnapshotID]bool, id model.SnapshotID) {
+	if id != "" && id.IsValid() {
+		refs[id] = true
+	}
+}
+
+func (d *Doctor) intentHasRecoveryEvidence(intentPath, name string, metadataRefs map[model.SnapshotID]bool) (bool, error) {
+	data, err := os.ReadFile(intentPath)
+	if err != nil {
+		return false, fmt.Errorf("read intent %s: %w", intentPath, err)
+	}
+
+	ids := make(map[model.SnapshotID]bool)
+	if id, ok := snapshotIDFromIntentFilename(name); ok {
+		ids[id] = true
+	}
+
+	var intent model.IntentRecord
+	if err := json.Unmarshal(data, &intent); err == nil {
+		if intent.SnapshotID.IsValid() {
+			ids[intent.SnapshotID] = true
+		}
+	} else {
+		for _, id := range snapshotIDsFromMalformedIntent(data) {
+			ids[id] = true
+		}
+	}
+
+	for id := range ids {
+		hasEvidence, err := d.snapshotHasRecoveryEvidence(id, metadataRefs)
+		if err != nil {
+			return false, err
+		}
+		if hasEvidence {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func snapshotIDFromIntentFilename(name string) (model.SnapshotID, bool) {
+	if !strings.HasSuffix(name, ".json") {
+		return "", false
+	}
+	id := model.SnapshotID(strings.TrimSuffix(name, ".json"))
+	if !id.IsValid() {
+		return "", false
+	}
+	return id, true
+}
+
+func snapshotIDsFromMalformedIntent(data []byte) []model.SnapshotID {
+	var ids []model.SnapshotID
+	seen := make(map[model.SnapshotID]bool)
+	for _, match := range intentSnapshotIDFieldPattern.FindAllSubmatch(data, -1) {
+		if len(match) != 2 {
+			continue
+		}
+		id := model.SnapshotID(string(match[1]))
+		if !id.IsValid() || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func (d *Doctor) snapshotHasRecoveryEvidence(snapshotID model.SnapshotID, metadataRefs map[model.SnapshotID]bool) (bool, error) {
+	if metadataRefs[snapshotID] {
+		return true, nil
+	}
+
+	if _, err := repo.SnapshotDescriptorPathForRead(d.repoRoot, snapshotID); err == nil {
+		return true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+
+	if _, err := repo.SnapshotPathForRead(d.repoRoot, snapshotID); err == nil {
+		return true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	return false, nil
+}
+
+func safeControlChildInfo(parent, name string) (string, os.FileInfo, error) {
+	if name == "." || name == ".." || filepath.Base(name) != name {
+		return "", nil, fmt.Errorf("invalid control child name: %s", name)
+	}
+	clean, err := pathutil.CleanRel(name)
+	if err != nil {
+		return "", nil, err
+	}
+	if clean != name {
+		return "", nil, fmt.Errorf("invalid control child name: %s", name)
+	}
+	if err := pathutil.ValidateNoSymlinkParents(parent, clean); err != nil {
+		return "", nil, err
+	}
+	path := filepath.Join(parent, clean)
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", nil, fmt.Errorf("control child is symlink: %s", path)
+	}
+	return path, info, nil
 }
 
 func (d *Doctor) repairAdvanceHead() RepairResult {
@@ -166,31 +400,123 @@ func (d *Doctor) repairAdvanceHead() RepairResult {
 	}
 
 	advanced := 0
+	skippedInvalid := 0
+	skippedUnsafe := 0
+	updateFailed := 0
+	var unsafeReasons []string
+	var updateReasons []string
 	for _, cfg := range list {
+		if !worktreeMetadataRefsValid(cfg) {
+			skippedInvalid++
+			continue
+		}
 		if cfg.LatestSnapshotID == "" {
 			continue
 		}
 
 		// Check if head is stale (not pointing to latest)
 		if cfg.HeadSnapshotID != cfg.LatestSnapshotID {
-			// Verify the latest snapshot has a .READY marker
-			snapshotDir := filepath.Join(d.repoRoot, ".jvs", "snapshots", string(cfg.LatestSnapshotID))
-			readyPath := filepath.Join(snapshotDir, ".READY")
-			if _, err := os.Stat(readyPath); err == nil {
-				// Advance head to latest
-				if err := wtMgr.SetLatest(cfg.Name, cfg.LatestSnapshotID); err == nil {
-					advanced++
-				}
+			if err := d.snapshotReadyForMetadataAdvance(cfg.LatestSnapshotID); err != nil {
+				skippedUnsafe++
+				unsafeReasons = append(unsafeReasons, fmt.Sprintf("%s latest %s: %v", cfg.Name, cfg.LatestSnapshotID, err))
+				continue
 			}
+			if err := wtMgr.SetLatest(cfg.Name, cfg.LatestSnapshotID); err != nil {
+				updateFailed++
+				updateReasons = append(updateReasons, fmt.Sprintf("%s: %v", cfg.Name, err))
+				continue
+			}
+			advanced++
+		}
+	}
+
+	message := fmt.Sprintf("advanced %d stale heads to latest", advanced)
+	success := true
+	if skippedInvalid > 0 {
+		success = false
+		message = fmt.Sprintf("%s; skipped %d worktrees with invalid snapshot metadata", message, skippedInvalid)
+	}
+	if skippedUnsafe > 0 {
+		success = false
+		message = fmt.Sprintf("%s; skipped %d worktrees with unsafe/recoverable snapshot metadata", message, skippedUnsafe)
+		if len(unsafeReasons) > 0 {
+			message = fmt.Sprintf("%s (%s)", message, summarizeRepairReasons(unsafeReasons))
+		}
+	}
+	if updateFailed > 0 {
+		success = false
+		message = fmt.Sprintf("%s; failed to update %d worktrees", message, updateFailed)
+		if len(updateReasons) > 0 {
+			message = fmt.Sprintf("%s (%s)", message, summarizeRepairReasons(updateReasons))
 		}
 	}
 
 	return RepairResult{
 		Action:  "advance_head",
-		Success: true,
-		Message: fmt.Sprintf("advanced %d stale heads to latest", advanced),
+		Success: success,
+		Message: message,
 		Cleaned: advanced,
 	}
+}
+
+func (d *Doctor) snapshotReadyForMetadataAdvance(snapshotID model.SnapshotID) error {
+	if err := snapshotID.Validate(); err != nil {
+		return err
+	}
+
+	snapshotDir, err := repo.SnapshotPathForRead(d.repoRoot, snapshotID)
+	if err != nil {
+		return fmt.Errorf("snapshot path invalid: %w", err)
+	}
+
+	readyExists, err := readyMarkerExists(snapshotDir)
+	if err != nil {
+		return fmt.Errorf("READY marker invalid: %w", err)
+	}
+	if !readyExists {
+		return errors.New("READY marker missing")
+	}
+
+	descriptorPath, err := repo.SnapshotDescriptorPathForRead(d.repoRoot, snapshotID)
+	if err != nil {
+		return fmt.Errorf("descriptor path invalid: %w", err)
+	}
+	if err := validateDescriptorForMetadataAdvance(descriptorPath, snapshotID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateDescriptorForMetadataAdvance(descriptorPath string, snapshotID model.SnapshotID) error {
+	data, err := os.ReadFile(descriptorPath)
+	if err != nil {
+		return fmt.Errorf("read descriptor: %w", err)
+	}
+	var desc model.Descriptor
+	if err := json.Unmarshal(data, &desc); err != nil {
+		return fmt.Errorf("parse descriptor: %w", err)
+	}
+	if desc.SnapshotID != snapshotID {
+		return fmt.Errorf("descriptor snapshot ID %q does not match requested %q", desc.SnapshotID, snapshotID)
+	}
+	computedChecksum, err := integrity.ComputeDescriptorChecksum(&desc)
+	if err != nil {
+		return fmt.Errorf("compute descriptor checksum: %w", err)
+	}
+	if computedChecksum != desc.DescriptorChecksum {
+		return errors.New("descriptor checksum mismatch")
+	}
+	return nil
+}
+
+func summarizeRepairReasons(reasons []string) string {
+	if len(reasons) == 0 {
+		return ""
+	}
+	if len(reasons) == 1 {
+		return reasons[0]
+	}
+	return fmt.Sprintf("%s; +%d more", reasons[0], len(reasons)-1)
 }
 
 // Check runs all diagnostic checks.
@@ -203,18 +529,23 @@ func (d *Doctor) Check(strict bool) (*Result, error) {
 	// 2. Check worktrees
 	d.checkWorktrees(result)
 
-	// 3. Check for orphan intents
+	// 3. Check snapshot completion markers
+	d.checkReadyMarkers(result, strict)
+
+	// 4. Check for orphan intents
 	d.checkOrphanIntents(result)
 
-	// 4. Check snapshot integrity (if strict)
+	// 5. Check snapshot integrity (if strict)
 	if strict {
 		d.checkSnapshotIntegrity(result)
-		// 5. Check audit chain (if strict)
+		// 6. Check audit chain (if strict)
 		d.checkAuditChain(result)
 	}
 
-	// 6. Check for orphan tmp files
+	// 7. Check for orphan tmp files
 	d.checkOrphanTmp(result)
+
+	result.updateHealthFromFindings()
 
 	return result, nil
 }
@@ -269,8 +600,14 @@ func (d *Doctor) checkWorktrees(result *Result) {
 
 	for _, cfg := range list {
 		// Check payload directory exists
-		payloadPath := wtMgr.Path(cfg.Name)
-		if _, err := os.Stat(payloadPath); os.IsNotExist(err) {
+		payloadPath, err := wtMgr.Path(cfg.Name)
+		if err != nil {
+			result.Findings = append(result.Findings, Finding{
+				Category:    "worktree",
+				Description: fmt.Sprintf("worktree '%s' payload path invalid: %v", cfg.Name, err),
+				Severity:    "error",
+			})
+		} else if _, err := os.Stat(payloadPath); os.IsNotExist(err) {
 			result.Findings = append(result.Findings, Finding{
 				Category:    "worktree",
 				Description: fmt.Sprintf("worktree '%s' payload directory missing", cfg.Name),
@@ -279,18 +616,53 @@ func (d *Doctor) checkWorktrees(result *Result) {
 			})
 		}
 
+		d.checkWorktreeSnapshotRef(result, cfg.Name, "base_snapshot_id", cfg.BaseSnapshotID)
+		headValid := d.checkWorktreeSnapshotRef(result, cfg.Name, "head_snapshot_id", cfg.HeadSnapshotID)
+		d.checkWorktreeSnapshotRef(result, cfg.Name, "latest_snapshot_id", cfg.LatestSnapshotID)
+
 		// Check head snapshot exists
-		if cfg.HeadSnapshotID != "" {
-			descPath := filepath.Join(d.repoRoot, ".jvs", "descriptors", string(cfg.HeadSnapshotID)+".json")
-			if _, err := os.Stat(descPath); os.IsNotExist(err) {
+		if cfg.HeadSnapshotID != "" && headValid {
+			if _, err := repo.SnapshotDescriptorPathForRead(d.repoRoot, cfg.HeadSnapshotID); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					result.Findings = append(result.Findings, Finding{
+						Category:    "worktree",
+						Description: fmt.Sprintf("worktree '%s' head snapshot %s not found", cfg.Name, cfg.HeadSnapshotID),
+						Severity:    "warning",
+					})
+					continue
+				}
 				result.Findings = append(result.Findings, Finding{
 					Category:    "worktree",
-					Description: fmt.Sprintf("worktree '%s' head snapshot %s not found", cfg.Name, cfg.HeadSnapshotID),
-					Severity:    "warning",
+					Description: fmt.Sprintf("worktree '%s' head snapshot %s path invalid: %v", cfg.Name, cfg.HeadSnapshotID, err),
+					Severity:    "error",
 				})
 			}
 		}
 	}
+}
+
+func (d *Doctor) checkWorktreeSnapshotRef(result *Result, worktreeName, field string, id model.SnapshotID) bool {
+	if worktreeSnapshotRefValid(id) {
+		return true
+	}
+	err := id.Validate()
+	result.Findings = append(result.Findings, Finding{
+		Category:    "worktree",
+		Description: fmt.Sprintf("worktree '%s' %s %s invalid: %v", worktreeName, field, id, err),
+		Severity:    "error",
+		ErrorCode:   "E_WORKTREE_INVALID_SNAPSHOT_ID",
+	})
+	return false
+}
+
+func worktreeSnapshotRefValid(id model.SnapshotID) bool {
+	return id == "" || id.IsValid()
+}
+
+func worktreeMetadataRefsValid(cfg *model.WorktreeConfig) bool {
+	return worktreeSnapshotRefValid(cfg.BaseSnapshotID) &&
+		worktreeSnapshotRefValid(cfg.HeadSnapshotID) &&
+		worktreeSnapshotRefValid(cfg.LatestSnapshotID)
 }
 
 func (d *Doctor) checkOrphanIntents(result *Result) {
@@ -310,6 +682,158 @@ func (d *Doctor) checkOrphanIntents(result *Result) {
 	}
 }
 
+func (d *Doctor) checkReadyMarkers(result *Result, strict bool) {
+	snapshotsDir, err := repo.SnapshotsDirPath(d.repoRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if err != nil {
+		result.Findings = append(result.Findings, Finding{
+			Category:    "snapshot",
+			Description: fmt.Sprintf("cannot read snapshots directory: %v", err),
+			Severity:    "error",
+		})
+		return
+	}
+
+	entries, err := os.ReadDir(snapshotsDir)
+	if os.IsNotExist(err) {
+		return
+	}
+	if err != nil {
+		result.Findings = append(result.Findings, Finding{
+			Category:    "snapshot",
+			Description: fmt.Sprintf("cannot read snapshots directory: %v", err),
+			Severity:    "error",
+			Path:        snapshotsDir,
+		})
+		return
+	}
+
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".tmp") {
+			continue
+		}
+
+		entryPath, info, err := safeControlChildInfo(snapshotsDir, entry.Name())
+		if err != nil {
+			result.Findings = append(result.Findings, Finding{
+				Category:    "snapshot",
+				Description: fmt.Sprintf("snapshot entry %s invalid: %v", entry.Name(), err),
+				Severity:    "error",
+				ErrorCode:   "E_READY_CONTROL_INVALID",
+			})
+			continue
+		}
+		if !info.IsDir() {
+			continue
+		}
+
+		snapshotID := model.SnapshotID(entry.Name())
+		if err := snapshotID.Validate(); err != nil {
+			result.Findings = append(result.Findings, Finding{
+				Category:    "snapshot",
+				Description: fmt.Sprintf("snapshot entry %s invalid: %v", entry.Name(), err),
+				Severity:    "error",
+				ErrorCode:   "E_READY_INVALID_SNAPSHOT_ID",
+				Path:        entryPath,
+			})
+			continue
+		}
+
+		snapshotDir, err := repo.SnapshotPathForRead(d.repoRoot, snapshotID)
+		if err != nil {
+			result.Findings = append(result.Findings, Finding{
+				Category:    "snapshot",
+				Description: fmt.Sprintf("snapshot %s path invalid: %v", snapshotID, err),
+				Severity:    "error",
+				ErrorCode:   "E_READY_CONTROL_INVALID",
+				Path:        entryPath,
+			})
+			continue
+		}
+
+		readyExists, err := readyMarkerExists(snapshotDir)
+		if err != nil {
+			result.Findings = append(result.Findings, Finding{
+				Category:    "snapshot",
+				Description: fmt.Sprintf("snapshot %s READY marker invalid: %v", snapshotID, err),
+				Severity:    "error",
+				ErrorCode:   "E_READY_CONTROL_INVALID",
+				Path:        snapshotDir,
+			})
+			continue
+		}
+
+		if readyExists {
+			_, err := repo.SnapshotDescriptorPathForRead(d.repoRoot, snapshotID)
+			if err == nil {
+				continue
+			}
+			descriptorPath, pathErr := repo.SnapshotDescriptorPath(d.repoRoot, snapshotID)
+			if pathErr != nil {
+				descriptorPath = ""
+			}
+			if !errors.Is(err, os.ErrNotExist) {
+				result.Findings = append(result.Findings, Finding{
+					Category:    "snapshot",
+					Description: fmt.Sprintf("snapshot %s READY descriptor path invalid: %v", snapshotID, err),
+					Severity:    "error",
+					ErrorCode:   "E_READY_DESCRIPTOR_INVALID",
+					Path:        descriptorPath,
+				})
+				continue
+			}
+			severity := "error"
+			if strict {
+				severity = "critical"
+			}
+			result.Findings = append(result.Findings, Finding{
+				Category:    "snapshot",
+				Description: fmt.Sprintf("snapshot %s READY marker present but descriptor missing", snapshotID),
+				Severity:    severity,
+				ErrorCode:   "E_READY_DESCRIPTOR_MISSING",
+				Path:        descriptorPath,
+			})
+			continue
+		}
+
+		result.Findings = append(result.Findings, Finding{
+			Category:    "snapshot",
+			Description: fmt.Sprintf("snapshot %s READY marker missing", snapshotID),
+			Severity:    "error",
+			ErrorCode:   "E_READY_MISSING",
+			Path:        filepath.Join(snapshotDir, ".READY"),
+		})
+	}
+}
+
+func readyMarkerExists(snapshotDir string) (bool, error) {
+	found := false
+	for _, name := range []string{".READY", ".READY.gz"} {
+		exists, err := readyMarkerLeafExists(snapshotDir, name)
+		if err != nil {
+			return false, err
+		}
+		found = found || exists
+	}
+	return found, nil
+}
+
+func readyMarkerLeafExists(snapshotDir, name string) (bool, error) {
+	readyPath, info, err := safeControlChildInfo(snapshotDir, name)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("READY marker is not regular file: %s", readyPath)
+	}
+	return true, nil
+}
+
 func (d *Doctor) checkSnapshotIntegrity(result *Result) {
 	verifier := verify.NewVerifier(d.repoRoot)
 	results, err := verifier.VerifyAll(true)
@@ -323,13 +847,20 @@ func (d *Doctor) checkSnapshotIntegrity(result *Result) {
 	}
 
 	for _, r := range results {
-		if r.TamperDetected {
+		if r.TamperDetected || r.Error != "" || severityAffectsHealth(r.Severity) {
+			severity := r.Severity
+			if severity == "" {
+				severity = "error"
+			}
+			description := fmt.Sprintf("snapshot %s verification failed", r.SnapshotID)
+			if r.Error != "" {
+				description = fmt.Sprintf("snapshot %s: %s", r.SnapshotID, r.Error)
+			}
 			result.Findings = append(result.Findings, Finding{
 				Category:    "integrity",
-				Description: fmt.Sprintf("snapshot %s: %s", r.SnapshotID, r.Error),
-				Severity:    "critical",
+				Description: description,
+				Severity:    severity,
 			})
-			result.Healthy = false
 		}
 	}
 }
@@ -353,18 +884,53 @@ func (d *Doctor) checkOrphanTmp(result *Result) {
 	})
 
 	// Check for orphan snapshot .tmp directories
-	snapshotsDir := filepath.Join(d.repoRoot, ".jvs", "snapshots")
+	snapshotsDir, err := repo.SnapshotsDirPath(d.repoRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if err != nil {
+		result.Findings = append(result.Findings, Finding{
+			Category:    "tmp",
+			Description: fmt.Sprintf("cannot read snapshots directory: %v", err),
+			Severity:    "error",
+			ErrorCode:   "E_TMP_CONTROL_INVALID",
+			Path:        filepath.Join(d.repoRoot, ".jvs", "snapshots"),
+		})
+		return
+	}
 	entries, err := os.ReadDir(snapshotsDir)
-	if err == nil {
-		for _, entry := range entries {
-			if entry.IsDir() && filepath.Ext(entry.Name()) == ".tmp" {
-				result.Findings = append(result.Findings, Finding{
-					Category:    "tmp",
-					Description: fmt.Sprintf("orphan snapshot tmp directory: %s", entry.Name()),
-					Severity:    "warning",
-					Path:        filepath.Join(snapshotsDir, entry.Name()),
-				})
-			}
+	if os.IsNotExist(err) {
+		return
+	}
+	if err != nil {
+		result.Findings = append(result.Findings, Finding{
+			Category:    "tmp",
+			Description: fmt.Sprintf("cannot read snapshots directory: %v", err),
+			Severity:    "error",
+			ErrorCode:   "E_TMP_CONTROL_INVALID",
+			Path:        snapshotsDir,
+		})
+		return
+	}
+
+	for _, entry := range entries {
+		entryPath, info, err := safeControlChildInfo(snapshotsDir, entry.Name())
+		if err != nil {
+			result.Findings = append(result.Findings, Finding{
+				Category:    "tmp",
+				Description: fmt.Sprintf("snapshot tmp entry %s invalid: %v", entry.Name(), err),
+				Severity:    "error",
+				ErrorCode:   "E_TMP_CONTROL_INVALID",
+			})
+			continue
+		}
+		if strings.HasSuffix(entry.Name(), ".tmp") && info.IsDir() {
+			result.Findings = append(result.Findings, Finding{
+				Category:    "tmp",
+				Description: fmt.Sprintf("orphan snapshot tmp directory: %s", entry.Name()),
+				Severity:    "warning",
+				Path:        entryPath,
+			})
 		}
 	}
 }

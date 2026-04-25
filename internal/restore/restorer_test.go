@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/jvs-project/jvs/internal/integrity"
 	"github.com/jvs-project/jvs/internal/repo"
 	"github.com/jvs-project/jvs/internal/restore"
 	"github.com/jvs-project/jvs/internal/snapshot"
@@ -31,6 +33,35 @@ func createSnapshot(t *testing.T, repoPath string) *model.Descriptor {
 	require.NoError(t, err)
 
 	return desc
+}
+
+func writeUnsafeSnapshotTrap(t *testing.T, repoPath string, snapshotID model.SnapshotID) {
+	t.Helper()
+
+	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID))
+	require.NoError(t, os.MkdirAll(snapshotDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(snapshotDir, "file.txt"), []byte("trap payload"), 0644))
+
+	payloadHash, err := integrity.ComputePayloadRootHash(snapshotDir)
+	require.NoError(t, err)
+
+	desc := &model.Descriptor{
+		SnapshotID:      snapshotID,
+		WorktreeName:    "main",
+		CreatedAt:       time.Now().UTC(),
+		Engine:          model.EngineCopy,
+		PayloadRootHash: payloadHash,
+		IntegrityState:  model.IntegrityVerified,
+	}
+	checksum, err := integrity.ComputeDescriptorChecksum(desc)
+	require.NoError(t, err)
+	desc.DescriptorChecksum = checksum
+
+	data, err := json.MarshalIndent(desc, "", "  ")
+	require.NoError(t, err)
+	descriptorPath := filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(descriptorPath), 0755))
+	require.NoError(t, os.WriteFile(descriptorPath, data, 0644))
 }
 
 func TestRestorer_Restore(t *testing.T) {
@@ -59,6 +90,114 @@ func TestRestorer_Restore(t *testing.T) {
 	assert.False(t, cfg.IsDetached())
 	assert.Equal(t, desc.SnapshotID, cfg.HeadSnapshotID)
 	assert.Equal(t, desc.SnapshotID, cfg.LatestSnapshotID)
+	assert.NoFileExists(t, filepath.Join(mainPath, ".READY"))
+	assert.NoFileExists(t, filepath.Join(mainPath, ".READY.gz"))
+}
+
+func TestRestorerRestoreRejectsPathLikeAndNonCanonicalIDsWithoutMaterializing(t *testing.T) {
+	ids := []model.SnapshotID{
+		"../../outside/escape",
+		"/tmp/absolute",
+		"nested/1708300800000-deadbeef",
+		"1708300800000-DEADBEEF",
+		"not-canonical",
+	}
+
+	for _, id := range ids {
+		t.Run(string(id), func(t *testing.T) {
+			repoPath := setupTestRepo(t)
+			mainPath := filepath.Join(repoPath, "main")
+			require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("current payload"), 0644))
+			writeUnsafeSnapshotTrap(t, repoPath, id)
+
+			restorer := restore.NewRestorer(repoPath, model.EngineCopy)
+			err := restorer.Restore("main", id)
+			require.Error(t, err)
+
+			content, readErr := os.ReadFile(filepath.Join(mainPath, "file.txt"))
+			require.NoError(t, readErr)
+			assert.Equal(t, "current payload", string(content))
+		})
+	}
+}
+
+func TestRestorerRestoreRejectsFinalSnapshotSymlinkWithoutMaterializing(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := model.SnapshotID("1708300800000-deadbeef")
+	writeUnsafeSnapshotTrap(t, repoPath, snapshotID)
+
+	mainPath := filepath.Join(repoPath, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("current payload"), 0644))
+
+	outside := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "file.txt"), []byte("trap payload"), 0644))
+	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID))
+	require.NoError(t, os.RemoveAll(snapshotDir))
+	if err := os.Symlink(outside, snapshotDir); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	err := restore.NewRestorer(repoPath, model.EngineCopy).Restore("main", snapshotID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "symlink")
+
+	content, readErr := os.ReadFile(filepath.Join(mainPath, "file.txt"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "current payload", string(content))
+	assert.FileExists(t, filepath.Join(outside, "file.txt"))
+}
+
+func TestRestorerRestoreRejectsSymlinkedWorktreesParentBeforeOutsideMutation(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	desc := createSnapshot(t, repoPath)
+
+	wtMgr := worktree.NewManager(repoPath)
+	const worktreeName = "unsafe"
+	_, err := wtMgr.Create(worktreeName, nil)
+	require.NoError(t, err)
+
+	outsideRoot := t.TempDir()
+	outsidePayload := filepath.Join(outsideRoot, worktreeName)
+	require.NoError(t, os.MkdirAll(outsidePayload, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(outsidePayload, "file.txt"), []byte("outside original"), 0644))
+	require.NoError(t, os.RemoveAll(filepath.Join(repoPath, "worktrees")))
+	if err := os.Symlink(outsideRoot, filepath.Join(repoPath, "worktrees")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	err = restore.NewRestorer(repoPath, model.EngineCopy).Restore(worktreeName, desc.SnapshotID)
+	require.Error(t, err)
+
+	content, readErr := os.ReadFile(filepath.Join(outsidePayload, "file.txt"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "outside original", string(content))
+	assert.NoDirExists(t, filepath.Join(outsideRoot, worktreeName+".restore-backup"))
+}
+
+func TestRestorerRestoreRejectsFinalPayloadSymlinkViaManagerPath(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	desc := createSnapshot(t, repoPath)
+
+	wtMgr := worktree.NewManager(repoPath)
+	const worktreeName = "unsafe"
+	_, err := wtMgr.Create(worktreeName, nil)
+	require.NoError(t, err)
+
+	outsidePayload := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outsidePayload, "file.txt"), []byte("outside original"), 0644))
+	payloadPath := filepath.Join(repoPath, "worktrees", worktreeName)
+	require.NoError(t, os.RemoveAll(payloadPath))
+	if err := os.Symlink(outsidePayload, payloadPath); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	err = restore.NewRestorer(repoPath, model.EngineCopy).Restore(worktreeName, desc.SnapshotID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "worktree payload path")
+
+	content, readErr := os.ReadFile(filepath.Join(outsidePayload, "file.txt"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "outside original", string(content))
 }
 
 func TestRestorer_RestoreToLatest(t *testing.T) {
@@ -296,6 +435,114 @@ func TestRestorer_Restore_VerifySnapshotError(t *testing.T) {
 	err = restorer.Restore("main", desc.SnapshotID)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "verify snapshot")
+}
+
+func TestRestorer_Restore_RefusesTamperedPayload(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	desc := createSnapshot(t, repoPath)
+
+	mainPath := filepath.Join(repoPath, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("working copy"), 0644))
+
+	snapshotFile := filepath.Join(repoPath, ".jvs", "snapshots", string(desc.SnapshotID), "file.txt")
+	require.NoError(t, os.WriteFile(snapshotFile, []byte("tampered payload"), 0644))
+
+	restorer := restore.NewRestorer(repoPath, model.EngineCopy)
+	err := restorer.Restore("main", desc.SnapshotID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "verify snapshot")
+
+	content, readErr := os.ReadFile(filepath.Join(mainPath, "file.txt"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "working copy", string(content))
+}
+
+func TestRestorer_Restore_CompressedSnapshotPreservesUserGzipAndGzipSymlink(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte("snapshot data"), 0644))
+	userGzipContent := []byte("user-owned gzip path")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "archive.gz"), userGzipContent, 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "target.txt"), []byte("target"), 0644))
+	if err := os.Symlink("target.txt", filepath.Join(mainPath, "link.gz")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	creator.SetCompression(6)
+	desc, err := creator.Create("main", "compressed with user gzip paths", nil)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte("modified"), 0644))
+	require.NoError(t, os.Remove(filepath.Join(mainPath, "archive.gz")))
+	require.NoError(t, os.Remove(filepath.Join(mainPath, "link.gz")))
+
+	restorer := restore.NewRestorer(repoPath, model.EngineCopy)
+	err = restorer.Restore("main", desc.SnapshotID)
+	require.NoError(t, err)
+
+	content, err := os.ReadFile(filepath.Join(mainPath, "data.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "snapshot data", string(content))
+	archive, err := os.ReadFile(filepath.Join(mainPath, "archive.gz"))
+	require.NoError(t, err)
+	assert.Equal(t, userGzipContent, archive)
+	info, err := os.Lstat(filepath.Join(mainPath, "link.gz"))
+	require.NoError(t, err)
+	assert.NotZero(t, info.Mode()&os.ModeSymlink)
+	target, err := os.Readlink(filepath.Join(mainPath, "link.gz"))
+	require.NoError(t, err)
+	assert.Equal(t, "target.txt", target)
+}
+
+func TestRestorer_Restore_KeepsCurrentWorkingDirectoryUsable(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte("snapshot data"), 0644))
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	desc, err := creator.Create("main", "cwd restore", nil)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte("modified"), 0644))
+
+	oldwd, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(mainPath))
+	defer os.Chdir(oldwd)
+
+	restorer := restore.NewRestorer(repoPath, model.EngineCopy)
+	err = restorer.Restore("main", desc.SnapshotID)
+	require.NoError(t, err)
+
+	content, err := os.ReadFile("data.txt")
+	require.NoError(t, err)
+	assert.Equal(t, "snapshot data", string(content))
+}
+
+func TestRestorer_Restore_PartialSnapshotOverlaysOnlyIncludedPaths(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "included.txt"), []byte("snapshot included"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "unrelated.txt"), []byte("original unrelated"), 0644))
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	desc, err := creator.CreatePartial("main", "included only", nil, []string{"included.txt"})
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "included.txt"), []byte("modified included"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "unrelated.txt"), []byte("modified unrelated"), 0644))
+
+	restorer := restore.NewRestorer(repoPath, model.EngineCopy)
+	err = restorer.Restore("main", desc.SnapshotID)
+	require.NoError(t, err)
+
+	content, err := os.ReadFile(filepath.Join(mainPath, "included.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "snapshot included", string(content))
+	content, err = os.ReadFile(filepath.Join(mainPath, "unrelated.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "modified unrelated", string(content))
 }
 
 func TestRestorer_RestoreWithReflinkEngine(t *testing.T) {
@@ -760,6 +1007,9 @@ func TestRestorer_Restore_WithCompression(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join(mp, "file.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, "original content", string(content))
+	assert.NoFileExists(t, filepath.Join(mp, "file.txt.gz"))
+	assert.NoFileExists(t, filepath.Join(mp, ".READY"))
+	assert.NoFileExists(t, filepath.Join(mp, ".READY.gz"))
 }
 
 func TestRestorer_Restore_CorruptedSnapshotData(t *testing.T) {

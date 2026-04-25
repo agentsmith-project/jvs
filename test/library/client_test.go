@@ -2,10 +2,14 @@ package library_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/jvs-project/jvs/internal/compression"
+	"github.com/jvs-project/jvs/internal/snapshot"
 	"github.com/jvs-project/jvs/pkg/jvs"
 	"github.com/jvs-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
@@ -22,6 +26,61 @@ func testRepoDir(t *testing.T) string {
 	require.NoError(t, os.MkdirAll(dir, 0755))
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	return dir
+}
+
+func createLibraryWorktree(t *testing.T, client *jvs.Client, name string) string {
+	t.Helper()
+
+	payloadPath := filepath.Join(client.RepoRoot(), "worktrees", name)
+	require.NoError(t, os.MkdirAll(payloadPath, 0755))
+
+	configDir := filepath.Join(client.RepoRoot(), ".jvs", "worktrees", name)
+	require.NoError(t, os.MkdirAll(configDir, 0755))
+
+	cfg := &model.WorktreeConfig{
+		Name:      name,
+		CreatedAt: time.Now().UTC(),
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.json"), data, 0644))
+
+	return payloadPath
+}
+
+func setSnapshotCreatedAt(t *testing.T, client *jvs.Client, snapshotID model.SnapshotID, createdAt time.Time) {
+	t.Helper()
+
+	descriptorPath := filepath.Join(client.RepoRoot(), ".jvs", "descriptors", string(snapshotID)+".json")
+	data, err := os.ReadFile(descriptorPath)
+	require.NoError(t, err)
+
+	var desc model.Descriptor
+	require.NoError(t, json.Unmarshal(data, &desc))
+	desc.CreatedAt = createdAt.UTC()
+
+	data, err = json.MarshalIndent(&desc, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(descriptorPath, data, 0644))
+}
+
+func createOldOrphanSnapshot(t *testing.T, client *jvs.Client, age time.Duration) model.SnapshotID {
+	t.Helper()
+
+	tempPath := createLibraryWorktree(t, client, "temp")
+	require.NoError(t, os.WriteFile(filepath.Join(tempPath, "file.txt"), []byte("temp"), 0644))
+
+	desc, err := client.Snapshot(context.Background(), jvs.SnapshotOptions{
+		WorktreeName: "temp",
+		Note:         "temporary worktree snapshot",
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, os.RemoveAll(filepath.Join(client.RepoRoot(), ".jvs", "worktrees", "temp")))
+	require.NoError(t, os.RemoveAll(tempPath))
+
+	setSnapshotCreatedAt(t, client, desc.SnapshotID, time.Now().Add(-age))
+	return desc.SnapshotID
 }
 
 func TestInit_CreatesNewRepo(t *testing.T) {
@@ -69,6 +128,20 @@ func TestOpenOrInit_OpensWhenExists(t *testing.T) {
 	assert.Equal(t, first.RepoID(), second.RepoID())
 }
 
+func TestOpenOrInit_OpensParentRepoFromMainWorktree(t *testing.T) {
+	dir := testRepoDir(t)
+
+	first, err := jvs.Init(dir, jvs.InitOptions{Name: "test-repo"})
+	require.NoError(t, err)
+
+	second, err := jvs.OpenOrInit(filepath.Join(dir, "main"), jvs.InitOptions{Name: "nested-repo"})
+	require.NoError(t, err)
+
+	assert.Equal(t, first.RepoRoot(), second.RepoRoot())
+	assert.Equal(t, first.RepoID(), second.RepoID())
+	assert.NoDirExists(t, filepath.Join(dir, "main", ".jvs"))
+}
+
 func TestHasSnapshots_FalseOnEmptyRepo(t *testing.T) {
 	dir := testRepoDir(t)
 	client, err := jvs.Init(dir, jvs.InitOptions{Name: "test-repo"})
@@ -108,6 +181,46 @@ func TestSnapshot_CreateAndVerify(t *testing.T) {
 
 	// Verify integrity
 	require.NoError(t, client.Verify(ctx, desc.SnapshotID))
+}
+
+func TestVerify_CompressedSnapshotUsesLogicalPayload(t *testing.T) {
+	dir := testRepoDir(t)
+	client, err := jvs.Init(dir, jvs.InitOptions{Name: "test-repo"})
+	require.NoError(t, err)
+
+	mainDir := client.WorktreePayloadPath("main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainDir, "data.txt"), []byte("compressed data"), 0644))
+
+	creator := snapshot.NewCreator(client.RepoRoot(), model.EngineCopy)
+	creator.SetCompression(compression.LevelDefault)
+	desc, err := creator.Create("main", "compressed", nil)
+	require.NoError(t, err)
+	require.NotNil(t, desc.Compression)
+
+	require.NoError(t, client.Verify(context.Background(), desc.SnapshotID))
+}
+
+func TestSnapshot_FailsInDetachedState(t *testing.T) {
+	dir := testRepoDir(t)
+	client, err := jvs.Init(dir, jvs.InitOptions{Name: "test-repo"})
+	require.NoError(t, err)
+
+	mainDir := client.WorktreePayloadPath("main")
+	ctx := context.Background()
+
+	require.NoError(t, os.WriteFile(filepath.Join(mainDir, "data.txt"), []byte("first"), 0644))
+	first, err := client.Snapshot(ctx, jvs.SnapshotOptions{Note: "first"})
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(mainDir, "data.txt"), []byte("second"), 0644))
+	_, err = client.Snapshot(ctx, jvs.SnapshotOptions{Note: "second"})
+	require.NoError(t, err)
+
+	require.NoError(t, client.Restore(ctx, jvs.RestoreOptions{Target: string(first.SnapshotID)}))
+
+	_, err = client.Snapshot(ctx, jvs.SnapshotOptions{Note: "detached snapshot"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "detached")
 }
 
 func TestSnapshot_RestoreLatest(t *testing.T) {
@@ -268,6 +381,75 @@ func TestGC_DryRun(t *testing.T) {
 	assert.Contains(t, plan.ProtectedSet, plan.ProtectedSet[0])
 }
 
+func TestGCOptions_RetentionAffectsPlans(t *testing.T) {
+	dir := testRepoDir(t)
+	client, err := jvs.Init(dir, jvs.InitOptions{Name: "test-repo"})
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	orphanID := createOldOrphanSnapshot(t, client, 48*time.Hour)
+
+	basePlan, err := client.GC(ctx, jvs.GCOptions{DryRun: true})
+	require.NoError(t, err)
+	assert.Contains(t, basePlan.ToDelete, orphanID)
+
+	countPlan, err := client.GC(ctx, jvs.GCOptions{
+		DryRun:           true,
+		KeepMinSnapshots: 1,
+	})
+	require.NoError(t, err)
+	assert.NotContains(t, countPlan.ToDelete, orphanID)
+	assert.Contains(t, countPlan.ProtectedSet, orphanID)
+	assert.Equal(t, 1, countPlan.RetentionPolicy.KeepMinSnapshots)
+	assert.Equal(t, 1, countPlan.ProtectedByRetention)
+
+	agePlan, err := client.GC(ctx, jvs.GCOptions{
+		DryRun:     true,
+		KeepMinAge: 72 * time.Hour,
+	})
+	require.NoError(t, err)
+	assert.NotContains(t, agePlan.ToDelete, orphanID)
+	assert.Contains(t, agePlan.ProtectedSet, orphanID)
+	assert.Equal(t, 72*time.Hour, agePlan.RetentionPolicy.KeepMinAge)
+	assert.Equal(t, 1, agePlan.ProtectedByRetention)
+}
+
+func TestClientOperations_ReturnContextErrorWhenCanceled(t *testing.T) {
+	dir := testRepoDir(t)
+	client, err := jvs.Init(dir, jvs.InitOptions{Name: "test-repo"})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = client.Snapshot(ctx, jvs.SnapshotOptions{Note: "canceled"})
+	require.ErrorIs(t, err, context.Canceled)
+
+	err = client.Restore(ctx, jvs.RestoreOptions{Target: "HEAD"})
+	require.ErrorIs(t, err, context.Canceled)
+
+	err = client.RestoreLatest(ctx, "main")
+	require.ErrorIs(t, err, context.Canceled)
+
+	_, err = client.History(ctx, "main", 0)
+	require.ErrorIs(t, err, context.Canceled)
+
+	_, err = client.LatestSnapshot(ctx, "main")
+	require.ErrorIs(t, err, context.Canceled)
+
+	_, err = client.HasSnapshots(ctx, "main")
+	require.ErrorIs(t, err, context.Canceled)
+
+	err = client.Verify(ctx, model.SnapshotID("missing"))
+	require.ErrorIs(t, err, context.Canceled)
+
+	_, err = client.GC(ctx, jvs.GCOptions{DryRun: true})
+	require.ErrorIs(t, err, context.Canceled)
+
+	err = client.RunGC(ctx, "missing-plan")
+	require.ErrorIs(t, err, context.Canceled)
+}
+
 func TestWorktreePayloadPath(t *testing.T) {
 	dir := testRepoDir(t)
 	client, err := jvs.Init(dir, jvs.InitOptions{Name: "test-repo"})
@@ -279,6 +461,13 @@ func TestWorktreePayloadPath(t *testing.T) {
 	// Empty defaults to main
 	defaultPath := client.WorktreePayloadPath("")
 	assert.Equal(t, mainPath, defaultPath)
+
+	outside := t.TempDir()
+	require.NoError(t, os.RemoveAll(filepath.Join(dir, "worktrees")))
+	if err := os.Symlink(outside, filepath.Join(dir, "worktrees")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	assert.Empty(t, client.WorktreePayloadPath("unsafe"))
 }
 
 func TestDetectEngine(t *testing.T) {

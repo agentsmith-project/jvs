@@ -4,11 +4,14 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"regexp"
 	"time"
 )
 
 // SnapshotID is the unique identifier for a snapshot: <unix_ms>-<rand8hex>
 type SnapshotID string
+
+var snapshotIDRegex = regexp.MustCompile(`^\d{13}-[0-9a-f]{8}$`)
 
 // NewSnapshotID generates a new unique snapshot ID.
 func NewSnapshotID() SnapshotID {
@@ -32,6 +35,19 @@ func (id SnapshotID) ShortID() string {
 // String returns the full snapshot ID as string.
 func (id SnapshotID) String() string {
 	return string(id)
+}
+
+// Validate rejects non-canonical or path-like snapshot IDs.
+func (id SnapshotID) Validate() error {
+	if !snapshotIDRegex.MatchString(string(id)) {
+		return fmt.Errorf("invalid snapshot ID %q: must match ^\\d{13}-[0-9a-f]{8}$", string(id))
+	}
+	return nil
+}
+
+// IsValid reports whether id is in canonical on-disk snapshot ID form.
+func (id SnapshotID) IsValid() bool {
+	return id.Validate() == nil
 }
 
 // Descriptor is the on-disk snapshot metadata.

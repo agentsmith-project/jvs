@@ -7,8 +7,10 @@ import (
 
 // Pin protects a snapshot from garbage collection.
 type Pin struct {
+	PinID      string     `json:"pin_id,omitempty"`
 	SnapshotID SnapshotID `json:"snapshot_id"`
-	PinnedAt   time.Time  `json:"pinned_at"`
+	PinnedAt   time.Time  `json:"pinned_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at,omitempty"`
 	Reason     string     `json:"reason,omitempty"`
 	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
 }
@@ -32,7 +34,15 @@ type Tombstone struct {
 	SnapshotID  SnapshotID `json:"snapshot_id"`
 	DeletedAt   time.Time  `json:"deleted_at"`
 	Reclaimable bool       `json:"reclaimable"`
+	GCState     string     `json:"gc_state,omitempty"`
+	Reason      string     `json:"reason,omitempty"`
 }
+
+const (
+	GCStateMarked    = "marked"
+	GCStateCommitted = "committed"
+	GCStateFailed    = "failed"
+)
 
 // DefaultRetentionPolicy returns the default retention policy.
 func DefaultRetentionPolicy() RetentionPolicy {

@@ -114,6 +114,30 @@ func TestE2E_Integrity_DetectTampering(t *testing.T) {
 		}
 	})
 
+	t.Run("verify_all_detects_tampering", func(t *testing.T) {
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "verify", "--all")
+		if code == 0 {
+			t.Error("verify --all should fail for tampered snapshot")
+		}
+
+		combined := stdout + stderr
+		if !strings.Contains(combined, "TAMPERED") && !strings.Contains(combined, "tamper") && !strings.Contains(combined, "hash") {
+			t.Logf("Verify --all output for tampered snapshot: stdout=%s, stderr=%s", stdout, stderr)
+		}
+	})
+
+	t.Run("verify_default_detects_tampering", func(t *testing.T) {
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "verify")
+		if code == 0 {
+			t.Error("verify should fail for tampered snapshot")
+		}
+
+		combined := stdout + stderr
+		if !strings.Contains(combined, "TAMPERED") && !strings.Contains(combined, "tamper") && !strings.Contains(combined, "hash") {
+			t.Logf("Verify output for tampered snapshot: stdout=%s, stderr=%s", stdout, stderr)
+		}
+	})
+
 	// JSON output should indicate tampering
 	t.Run("json_output_indicates_tampering", func(t *testing.T) {
 		stdout, _, _ := runJVSInRepo(t, repoPath, "verify", snapID, "--json")

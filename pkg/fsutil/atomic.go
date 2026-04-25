@@ -2,9 +2,51 @@
 package fsutil
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+)
+
+// CommitUncertainError reports that an operation reached the point where its
+// filesystem mutation may be visible, but a post-commit durability step failed.
+type CommitUncertainError struct {
+	Op   string
+	Path string
+	Err  error
+}
+
+func (e *CommitUncertainError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	if e.Path == "" {
+		return fmt.Sprintf("%s commit uncertain: %v", e.Op, e.Err)
+	}
+	return fmt.Sprintf("%s commit uncertain for %s: %v", e.Op, e.Path, e.Err)
+}
+
+func (e *CommitUncertainError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+// IsCommitUncertain reports whether err means the filesystem mutation may have
+// committed even though a later durability/sync step failed.
+func IsCommitUncertain(err error) bool {
+	var uncertain *CommitUncertainError
+	return errors.As(err, &uncertain)
+}
+
+// ErrRenameNoReplaceUnsupported reports that the current platform does not
+// provide an atomic no-replace rename primitive.
+var ErrRenameNoReplaceUnsupported = errors.New("atomic rename no-replace unsupported")
+
+var (
+	fsyncDir          = FsyncDir
+	renameNoReplaceOp = renameNoReplace
 )
 
 // AtomicWrite writes data to a temporary file, fsyncs, then renames to target path.
@@ -41,8 +83,12 @@ func AtomicWrite(path string, data []byte, perm os.FileMode) error {
 	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("atomic write rename: %w", err)
 	}
-	if err := FsyncDir(dir); err != nil {
-		return fmt.Errorf("atomic write fsync dir: %w", err)
+	if err := fsyncDir(dir); err != nil {
+		return &CommitUncertainError{
+			Op:   "atomic write",
+			Path: path,
+			Err:  fmt.Errorf("fsync directory after rename: %w", err),
+		}
 	}
 
 	success = true
@@ -54,7 +100,30 @@ func RenameAndSync(oldpath, newpath string) error {
 	if err := os.Rename(oldpath, newpath); err != nil {
 		return fmt.Errorf("rename: %w", err)
 	}
-	return FsyncDir(filepath.Dir(newpath))
+	if err := fsyncDir(filepath.Dir(newpath)); err != nil {
+		return &CommitUncertainError{
+			Op:   "rename",
+			Path: newpath,
+			Err:  fmt.Errorf("fsync directory after rename: %w", err),
+		}
+	}
+	return nil
+}
+
+// RenameNoReplaceAndSync renames old to new without replacing an existing
+// destination and fsyncs the parent directory.
+func RenameNoReplaceAndSync(oldpath, newpath string) error {
+	if err := renameNoReplaceOp(oldpath, newpath); err != nil {
+		return fmt.Errorf("rename no-replace: %w", err)
+	}
+	if err := fsyncDir(filepath.Dir(newpath)); err != nil {
+		return &CommitUncertainError{
+			Op:   "rename no-replace",
+			Path: newpath,
+			Err:  fmt.Errorf("fsync directory after rename: %w", err),
+		}
+	}
+	return nil
 }
 
 // FsyncDir fsyncs a directory to ensure rename visibility is durable.
@@ -74,8 +143,9 @@ func FsyncTree(root string) error {
 		if err != nil {
 			return err
 		}
-		// Only sync files, not directories (directories are synced via FsyncDir)
-		if !info.IsDir() {
+		// Only sync regular files. Directories are synced via FsyncDir, and
+		// symlink targets may be outside the tree or intentionally dangling.
+		if info.Mode().IsRegular() {
 			f, err := os.Open(path)
 			if err != nil {
 				return fmt.Errorf("open %s for fsync: %w", path, err)

@@ -31,6 +31,7 @@ func (e *CopyEngine) Clone(src, dst string) (*CloneResult, error) {
 	result := &CloneResult{}
 
 	seenInodes := make(map[uint64]string)
+	var dirs []dirMode
 
 	err := filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -56,7 +57,11 @@ func (e *CopyEngine) Clone(src, dst string) (*CloneResult, error) {
 
 		switch {
 		case info.IsDir():
-			return e.copyDir(path, dstPath, info)
+			if err := e.copyDir(path, dstPath, info); err != nil {
+				return err
+			}
+			dirs = append(dirs, dirMode{path: dstPath, mode: info.Mode().Perm()})
+			return nil
 
 		case info.Mode()&os.ModeSymlink != 0:
 			return e.copySymlink(path, dstPath, info)
@@ -70,6 +75,10 @@ func (e *CopyEngine) Clone(src, dst string) (*CloneResult, error) {
 		return nil, fmt.Errorf("copy: %w", err)
 	}
 
+	if err := chmodDirs(dirs); err != nil {
+		return nil, fmt.Errorf("copy: %w", err)
+	}
+
 	if err := fsutil.FsyncDir(dst); err != nil {
 		return nil, fmt.Errorf("fsync dst: %w", err)
 	}
@@ -78,7 +87,7 @@ func (e *CopyEngine) Clone(src, dst string) (*CloneResult, error) {
 }
 
 func (e *CopyEngine) copyDir(src, dst string, info os.FileInfo) error {
-	if err := os.MkdirAll(dst, info.Mode()); err != nil {
+	if err := os.MkdirAll(dst, writableDirMode(info.Mode().Perm())); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dst, err)
 	}
 	return nil
@@ -91,7 +100,8 @@ func (e *CopyEngine) copyFile(src, dst string, info os.FileInfo) error {
 	}
 	defer srcFile.Close()
 
-	dstFile, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+	mode := info.Mode().Perm()
+	dstFile, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
 		return fmt.Errorf("create dst %s: %w", dst, err)
 	}
@@ -106,6 +116,10 @@ func (e *CopyEngine) copyFile(src, dst string, info os.FileInfo) error {
 		return fmt.Errorf("sync %s: %w", dst, err)
 	}
 
+	if err := os.Chmod(dst, mode); err != nil {
+		return fmt.Errorf("chmod %s: %w", dst, err)
+	}
+
 	// Preserve mod time
 	return os.Chtimes(dst, info.ModTime(), info.ModTime())
 }
@@ -116,4 +130,22 @@ func (e *CopyEngine) copySymlink(src, dst string, info os.FileInfo) error {
 		return fmt.Errorf("readlink %s: %w", src, err)
 	}
 	return os.Symlink(target, dst)
+}
+
+type dirMode struct {
+	path string
+	mode os.FileMode
+}
+
+func writableDirMode(mode os.FileMode) os.FileMode {
+	return mode | 0700
+}
+
+func chmodDirs(dirs []dirMode) error {
+	for i := len(dirs) - 1; i >= 0; i-- {
+		if err := os.Chmod(dirs[i].path, dirs[i].mode); err != nil {
+			return fmt.Errorf("chmod dir %s: %w", dirs[i].path, err)
+		}
+	}
+	return nil
 }

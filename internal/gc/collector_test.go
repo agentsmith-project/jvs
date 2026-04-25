@@ -1,16 +1,20 @@
 package gc_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jvs-project/jvs/internal/gc"
 	"github.com/jvs-project/jvs/internal/repo"
+	"github.com/jvs-project/jvs/internal/restore"
 	"github.com/jvs-project/jvs/internal/snapshot"
 	"github.com/jvs-project/jvs/internal/worktree"
+	"github.com/jvs-project/jvs/pkg/errclass"
 	"github.com/jvs-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,6 +29,14 @@ func setupTestRepo(t *testing.T) string {
 	return dir
 }
 
+func requireWorktreePath(t *testing.T, wtMgr *worktree.Manager, name string) string {
+	t.Helper()
+
+	path, err := wtMgr.Path(name)
+	require.NoError(t, err)
+	return path
+}
+
 func createTestSnapshot(t *testing.T, repoPath string) model.SnapshotID {
 	// Add some content
 	mainPath := filepath.Join(repoPath, "main")
@@ -34,6 +46,83 @@ func createTestSnapshot(t *testing.T, repoPath string) model.SnapshotID {
 	desc, err := creator.Create("main", "test", nil)
 	require.NoError(t, err)
 	return desc.SnapshotID
+}
+
+func createRemovedWorktreeSnapshots(t *testing.T, repoPath, worktreeName string, count int) []model.SnapshotID {
+	t.Helper()
+
+	wtMgr := worktree.NewManager(repoPath)
+	_, err := wtMgr.Create(worktreeName, nil)
+	require.NoError(t, err)
+
+	wtPath := requireWorktreePath(t, wtMgr, worktreeName)
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	ids := make([]model.SnapshotID, 0, count)
+	for i := 0; i < count; i++ {
+		require.NoError(t, os.WriteFile(filepath.Join(wtPath, "file.txt"), []byte{byte('a' + i)}, 0644))
+		desc, err := creator.Create(worktreeName, "temp snap", nil)
+		require.NoError(t, err)
+		ids = append(ids, desc.SnapshotID)
+	}
+
+	require.NoError(t, wtMgr.Remove(worktreeName))
+	return ids
+}
+
+func writePin(t *testing.T, repoPath, pinsRelDir string, snapshotID model.SnapshotID) {
+	t.Helper()
+
+	pinsDir := filepath.Join(repoPath, pinsRelDir)
+	require.NoError(t, os.MkdirAll(pinsDir, 0755))
+	pin := map[string]any{
+		"pin_id":      string(snapshotID),
+		"snapshot_id": string(snapshotID),
+		"reason":      "test pin",
+		"created_at":  "2026-04-24T00:00:00Z",
+		"expires_at":  nil,
+	}
+	data, err := json.Marshal(pin)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(pinsDir, string(snapshotID)+".json"), data, 0644))
+}
+
+func writeGCPlan(t *testing.T, repoPath string, plan *model.GCPlan) {
+	t.Helper()
+
+	gcDir := filepath.Join(repoPath, ".jvs", "gc")
+	require.NoError(t, os.MkdirAll(gcDir, 0755))
+	data, err := json.MarshalIndent(plan, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(gcDir, plan.PlanID+".json"), data, 0644))
+}
+
+func writeTombstone(t *testing.T, repoPath string, tombstone model.Tombstone) {
+	t.Helper()
+
+	tombstonesDir := filepath.Join(repoPath, ".jvs", "gc", "tombstones")
+	require.NoError(t, os.MkdirAll(tombstonesDir, 0755))
+	data, err := json.MarshalIndent(tombstone, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(tombstonesDir, string(tombstone.SnapshotID)+".json"), data, 0644))
+}
+
+func assertSnapshotIDsSorted(t *testing.T, ids []model.SnapshotID) {
+	t.Helper()
+
+	require.True(t, sort.SliceIsSorted(ids, func(i, j int) bool {
+		return string(ids[i]) < string(ids[j])
+	}), "snapshot IDs should be sorted: %v", ids)
+}
+
+func requireTombstoneState(t *testing.T, repoPath string, snapshotID model.SnapshotID, expected string) {
+	t.Helper()
+
+	path := filepath.Join(repoPath, ".jvs", "gc", "tombstones", string(snapshotID)+".json")
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var tombstone map[string]any
+	require.NoError(t, json.Unmarshal(data, &tombstone))
+	require.Equal(t, expected, tombstone["gc_state"])
 }
 
 func TestCollector_Plan(t *testing.T) {
@@ -58,6 +147,103 @@ func TestCollector_Plan_WithSnapshots(t *testing.T) {
 	assert.Contains(t, plan.ProtectedSet, snapshotID)
 }
 
+func TestCollector_PlanAndRun_IgnoresSnapshotTmpDirs(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	tmpID := model.SnapshotID("1234567890123-deadbeef.tmp")
+	tmpDir := filepath.Join(repoPath, ".jvs", "snapshots", string(tmpID))
+	require.NoError(t, os.MkdirAll(tmpDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "partial-file.txt"), []byte("in progress"), 0644))
+
+	collector := gc.NewCollector(repoPath)
+	plan, err := collector.PlanWithPolicy(zeroRetention)
+	require.NoError(t, err)
+
+	assert.NotContains(t, plan.ToDelete, tmpID)
+
+	err = collector.Run(plan.PlanID)
+	require.NoError(t, err)
+
+	_, err = os.Stat(tmpDir)
+	require.NoError(t, err, ".tmp snapshot directories must not be deleted by GC")
+
+	_, err = os.Stat(filepath.Join(repoPath, ".jvs", "gc", "tombstones", string(tmpID)+".json"))
+	require.True(t, os.IsNotExist(err), ".tmp snapshot directories must not get tombstoned")
+}
+
+func TestCollector_Plan_ReadyWithoutDescriptorFailsClosed(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := model.NewSnapshotID()
+	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID))
+	require.NoError(t, os.MkdirAll(snapshotDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(snapshotDir, ".READY"), []byte("{}"), 0644))
+
+	collector := gc.NewCollector(repoPath)
+	_, err := collector.PlanWithPolicy(zeroRetention)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "READY snapshot missing descriptor")
+	assert.DirExists(t, snapshotDir, "GC must not silently delete corrupt published state")
+}
+
+func TestCollector_PlanFailsClosedWhenWorktreesDirIsSymlink(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := createTestSnapshot(t, repoPath)
+
+	outside := t.TempDir()
+	require.NoError(t, os.RemoveAll(filepath.Join(repoPath, ".jvs", "worktrees")))
+	if err := os.Symlink(outside, filepath.Join(repoPath, ".jvs", "worktrees")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	collector := gc.NewCollector(repoPath)
+	_, err := collector.PlanWithPolicy(zeroRetention)
+	require.Error(t, err)
+
+	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID)))
+	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json"))
+}
+
+func TestCollector_RunFailsClosedWhenWorktreesDirIsSymlink(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := createTestSnapshot(t, repoPath)
+	plan := &model.GCPlan{
+		PlanID:          "worktrees-symlink",
+		CreatedAt:       time.Now().UTC(),
+		ToDelete:        []model.SnapshotID{snapshotID},
+		RetentionPolicy: zeroRetention,
+	}
+	writeGCPlan(t, repoPath, plan)
+
+	outside := t.TempDir()
+	require.NoError(t, os.RemoveAll(filepath.Join(repoPath, ".jvs", "worktrees")))
+	if err := os.Symlink(outside, filepath.Join(repoPath, ".jvs", "worktrees")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	collector := gc.NewCollector(repoPath)
+	err := collector.Run(plan.PlanID)
+	require.Error(t, err)
+
+	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID)))
+	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json"))
+}
+
+func TestCollector_PlanPropagatesCorruptWorktreeConfig(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := createTestSnapshot(t, repoPath)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(repoPath, ".jvs", "worktrees", "main", "config.json"),
+		[]byte("{not json"),
+		0644,
+	))
+
+	collector := gc.NewCollector(repoPath)
+	_, err := collector.PlanWithPolicy(zeroRetention)
+	require.Error(t, err)
+
+	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID)))
+	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json"))
+}
+
 func TestCollector_Run(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	createTestSnapshot(t, repoPath)
@@ -70,12 +256,390 @@ func TestCollector_Run(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestCollectorRunFailsClosedWhenSnapshotsParentIsSymlink(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := model.SnapshotID("1708300800000-deadbeef")
+
+	outside := t.TempDir()
+	outsideSnapshot := filepath.Join(outside, string(snapshotID))
+	require.NoError(t, os.MkdirAll(outsideSnapshot, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(outsideSnapshot, "secret.txt"), []byte("outside"), 0644))
+
+	snapshotsDir := filepath.Join(repoPath, ".jvs", "snapshots")
+	require.NoError(t, os.RemoveAll(snapshotsDir))
+	if err := os.Symlink(outside, snapshotsDir); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	plan := &model.GCPlan{
+		PlanID:          "symlink-parent",
+		CreatedAt:       time.Now().UTC(),
+		ToDelete:        []model.SnapshotID{snapshotID},
+		RetentionPolicy: zeroRetention,
+	}
+	writeGCPlan(t, repoPath, plan)
+
+	collector := gc.NewCollector(repoPath)
+	err := collector.Run(plan.PlanID)
+	require.Error(t, err)
+
+	assert.DirExists(t, outsideSnapshot, "GC must not delete through a symlinked snapshots parent")
+	assert.FileExists(t, filepath.Join(outsideSnapshot, "secret.txt"))
+}
+
 func TestCollector_Run_InvalidPlanID(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
 	collector := gc.NewCollector(repoPath)
 	err := collector.Run("nonexistent-plan-id")
 	assert.Error(t, err)
+}
+
+func TestCollector_RunRejectsTraversalSnapshotIDAndPreservesVictim(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	victimPath := filepath.Join(repoPath, "victim.txt")
+	require.NoError(t, os.WriteFile(victimPath, []byte("do not delete"), 0644))
+
+	plan := &model.GCPlan{
+		PlanID:          "traversal-plan",
+		CreatedAt:       time.Now().UTC(),
+		ToDelete:        []model.SnapshotID{"../../victim.txt"},
+		RetentionPolicy: zeroRetention,
+	}
+	writeGCPlan(t, repoPath, plan)
+
+	collector := gc.NewCollector(repoPath)
+	err := collector.Run(plan.PlanID)
+	require.Error(t, err)
+
+	content, readErr := os.ReadFile(victimPath)
+	require.NoError(t, readErr)
+	assert.Equal(t, "do not delete", string(content))
+	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "victim.txt.json"))
+}
+
+func TestCollector_RunRejectsInvalidPlannedSnapshotIDs(t *testing.T) {
+	invalidIDs := []model.SnapshotID{
+		"",
+		"/tmp/evil",
+		"safe/evil",
+		"..",
+		"1708300800000-A3F7C1B2",
+	}
+	for _, invalidID := range invalidIDs {
+		t.Run(string(invalidID), func(t *testing.T) {
+			repoPath := setupTestRepo(t)
+			plan := &model.GCPlan{
+				PlanID:          "invalid-plan",
+				CreatedAt:       time.Now().UTC(),
+				ToDelete:        []model.SnapshotID{invalidID},
+				RetentionPolicy: zeroRetention,
+			}
+			writeGCPlan(t, repoPath, plan)
+
+			collector := gc.NewCollector(repoPath)
+			err := collector.Run(plan.PlanID)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestCollector_RunUsesValidatedPendingList(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
+	candidateID := ids[0]
+	alreadyCommittedID := model.SnapshotID("1708300800000-deadbeef")
+	writeTombstone(t, repoPath, model.Tombstone{
+		SnapshotID:  alreadyCommittedID,
+		DeletedAt:   time.Now().UTC(),
+		Reclaimable: true,
+		GCState:     model.GCStateCommitted,
+	})
+
+	plan := &model.GCPlan{
+		PlanID:          "validated-pending",
+		CreatedAt:       time.Now().UTC(),
+		ToDelete:        []model.SnapshotID{candidateID, alreadyCommittedID},
+		RetentionPolicy: zeroRetention,
+	}
+	writeGCPlan(t, repoPath, plan)
+
+	var totals []int
+	collector := gc.NewCollector(repoPath)
+	collector.SetProgressCallback(func(phase string, current, total int, msg string) {
+		totals = append(totals, total)
+	})
+
+	err := collector.Run(plan.PlanID)
+	require.NoError(t, err)
+
+	require.NotEmpty(t, totals)
+	for _, total := range totals {
+		assert.Equal(t, 1, total, "progress should count only validated pending IDs")
+	}
+	requireTombstoneState(t, repoPath, alreadyCommittedID, model.GCStateCommitted)
+	requireTombstoneState(t, repoPath, candidateID, model.GCStateCommitted)
+}
+
+func TestCollector_RunFailsClosedForMissingPlannedSnapshotWithoutTombstoneEvidence(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	missingID := model.SnapshotID("1708300800000-deadbeef")
+	plan := &model.GCPlan{
+		PlanID:          "missing-without-evidence",
+		CreatedAt:       time.Now().UTC(),
+		ToDelete:        []model.SnapshotID{missingID},
+		RetentionPolicy: zeroRetention,
+	}
+	writeGCPlan(t, repoPath, plan)
+
+	collector := gc.NewCollector(repoPath)
+	err := collector.Run(plan.PlanID)
+	require.Error(t, err)
+
+	_, statErr := os.Stat(filepath.Join(repoPath, ".jvs", "gc", plan.PlanID+".json"))
+	require.NoError(t, statErr, "failed closed plan should remain for inspection")
+	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "gc", "tombstones", string(missingID)+".json"))
+}
+
+func TestCollector_RunCompletesMissingSnapshotWithRetryTombstoneEvidence(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		tombstone model.Tombstone
+	}{
+		{name: "marked tombstone", tombstone: model.Tombstone{
+			SnapshotID:  "1708300800000-deadbeef",
+			DeletedAt:   time.Now().UTC(),
+			Reclaimable: false,
+			GCState:     model.GCStateMarked,
+		}},
+		{name: "failed tombstone", tombstone: model.Tombstone{
+			SnapshotID:  "1708300800000-deadbeef",
+			DeletedAt:   time.Now().UTC(),
+			Reclaimable: false,
+			GCState:     model.GCStateFailed,
+			Reason:      "previous failure after deleting payload",
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			repoPath := setupTestRepo(t)
+			missingID := tt.tombstone.SnapshotID
+			writeTombstone(t, repoPath, tt.tombstone)
+			plan := &model.GCPlan{
+				PlanID:          "missing-with-retry-evidence",
+				CreatedAt:       time.Now().UTC(),
+				ToDelete:        []model.SnapshotID{missingID},
+				RetentionPolicy: zeroRetention,
+			}
+			writeGCPlan(t, repoPath, plan)
+
+			collector := gc.NewCollector(repoPath)
+			err := collector.Run(plan.PlanID)
+			require.NoError(t, err)
+
+			requireTombstoneState(t, repoPath, missingID, model.GCStateCommitted)
+			_, statErr := os.Stat(filepath.Join(repoPath, ".jvs", "gc", plan.PlanID+".json"))
+			require.True(t, os.IsNotExist(statErr), "successful idempotent run should delete the plan")
+		})
+	}
+}
+
+func TestCollector_RunCompletesReadyWithoutDescriptorWithRetryTombstoneEvidence(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
+	snapshotID := ids[0]
+	descriptorPath := filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json")
+	require.NoError(t, os.Remove(descriptorPath))
+	writeTombstone(t, repoPath, model.Tombstone{
+		SnapshotID:  snapshotID,
+		DeletedAt:   time.Now().UTC(),
+		Reclaimable: false,
+		GCState:     model.GCStateFailed,
+		Reason:      "previous failure after descriptor removal",
+	})
+	plan := &model.GCPlan{
+		PlanID:          "ready-missing-descriptor-with-evidence",
+		CreatedAt:       time.Now().UTC(),
+		ToDelete:        []model.SnapshotID{snapshotID},
+		RetentionPolicy: zeroRetention,
+	}
+	writeGCPlan(t, repoPath, plan)
+
+	collector := gc.NewCollector(repoPath)
+	err := collector.Run(plan.PlanID)
+	require.NoError(t, err)
+
+	assert.NoDirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID)))
+	assert.NoFileExists(t, descriptorPath)
+	requireTombstoneState(t, repoPath, snapshotID, model.GCStateCommitted)
+}
+
+func TestCollector_RunSkipsMissingCommittedSnapshotIdempotently(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	missingID := model.SnapshotID("1708300800000-deadbeef")
+	writeTombstone(t, repoPath, model.Tombstone{
+		SnapshotID:  missingID,
+		DeletedAt:   time.Now().UTC(),
+		Reclaimable: true,
+		GCState:     model.GCStateCommitted,
+	})
+	plan := &model.GCPlan{
+		PlanID:          "missing-committed",
+		CreatedAt:       time.Now().UTC(),
+		ToDelete:        []model.SnapshotID{missingID},
+		RetentionPolicy: zeroRetention,
+	}
+	writeGCPlan(t, repoPath, plan)
+
+	collector := gc.NewCollector(repoPath)
+	err := collector.Run(plan.PlanID)
+	require.NoError(t, err)
+	requireTombstoneState(t, repoPath, missingID, model.GCStateCommitted)
+
+	_, statErr := os.Stat(filepath.Join(repoPath, ".jvs", "gc", plan.PlanID+".json"))
+	require.True(t, os.IsNotExist(statErr), "successful idempotent run should delete the plan")
+}
+
+func TestCollector_RunCommittedTombstoneWithExistingSnapshotRetriesDeletion(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
+	snapshotID := ids[0]
+	writeTombstone(t, repoPath, model.Tombstone{
+		SnapshotID:  snapshotID,
+		DeletedAt:   time.Now().UTC(),
+		Reclaimable: true,
+		GCState:     model.GCStateCommitted,
+	})
+
+	collector := gc.NewCollector(repoPath)
+	plan, err := collector.PlanWithPolicy(zeroRetention)
+	require.NoError(t, err)
+	require.Contains(t, plan.ToDelete, snapshotID)
+
+	err = collector.Run(plan.PlanID)
+	require.NoError(t, err)
+
+	assert.NoDirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID)))
+	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json"))
+	requireTombstoneState(t, repoPath, snapshotID, model.GCStateCommitted)
+}
+
+func TestCollector_RunCommittedTombstoneWithRemainingDescriptorRetriesDeletion(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
+	snapshotID := ids[0]
+	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID))
+	descriptorPath := filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json")
+	require.NoError(t, os.RemoveAll(snapshotDir))
+	writeTombstone(t, repoPath, model.Tombstone{
+		SnapshotID:  snapshotID,
+		DeletedAt:   time.Now().UTC(),
+		Reclaimable: true,
+		GCState:     model.GCStateCommitted,
+	})
+	plan := &model.GCPlan{
+		PlanID:          "committed-with-descriptor-residue",
+		CreatedAt:       time.Now().UTC(),
+		ToDelete:        []model.SnapshotID{snapshotID},
+		RetentionPolicy: zeroRetention,
+	}
+	writeGCPlan(t, repoPath, plan)
+
+	collector := gc.NewCollector(repoPath)
+	err := collector.Run(plan.PlanID)
+	require.NoError(t, err)
+
+	assert.NoDirExists(t, snapshotDir)
+	assert.NoFileExists(t, descriptorPath)
+	requireTombstoneState(t, repoPath, snapshotID, model.GCStateCommitted)
+}
+
+func TestCollector_PlanRejectsSnapshotLeafSymlink(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := model.SnapshotID("1708300800000-deadbeef")
+	outside := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "file.txt"), []byte("outside"), 0644))
+	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID))
+	if err := os.Symlink(outside, snapshotDir); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	collector := gc.NewCollector(repoPath)
+	_, err := collector.PlanWithPolicy(zeroRetention)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "symlink")
+	assert.FileExists(t, filepath.Join(outside, "file.txt"))
+}
+
+func TestCollector_LoadPlanRejectsFinalPlanSymlink(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	outsidePlan := filepath.Join(t.TempDir(), "outside-plan.json")
+	data, err := json.Marshal(&model.GCPlan{
+		PlanID:    "plan-symlink",
+		CreatedAt: time.Now().UTC(),
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(outsidePlan, data, 0644))
+	planPath := filepath.Join(repoPath, ".jvs", "gc", "plan-symlink.json")
+	if err := os.Symlink(outsidePlan, planPath); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	collector := gc.NewCollector(repoPath)
+	_, err = collector.LoadPlan("plan-symlink")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "symlink")
+	assert.FileExists(t, outsidePlan)
+}
+
+func TestCollector_RunRejectsFinalTombstoneSymlinkBeforeRead(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
+	snapshotID := ids[0]
+
+	outsideTombstone := filepath.Join(t.TempDir(), "outside-tombstone.json")
+	data, err := json.Marshal(&model.Tombstone{
+		SnapshotID:  snapshotID,
+		DeletedAt:   time.Now().UTC(),
+		Reclaimable: true,
+		GCState:     model.GCStateCommitted,
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(outsideTombstone, data, 0644))
+	tombstonePath := filepath.Join(repoPath, ".jvs", "gc", "tombstones", string(snapshotID)+".json")
+	if err := os.Symlink(outsideTombstone, tombstonePath); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	plan := &model.GCPlan{
+		PlanID:          "tombstone-symlink",
+		CreatedAt:       time.Now().UTC(),
+		ToDelete:        []model.SnapshotID{snapshotID},
+		RetentionPolicy: zeroRetention,
+	}
+	writeGCPlan(t, repoPath, plan)
+
+	collector := gc.NewCollector(repoPath)
+	err = collector.Run(plan.PlanID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "symlink")
+	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID)))
+	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json"))
+	assert.FileExists(t, outsideTombstone)
+}
+
+func TestCollector_LoadPlanRejectsTraversalPlanID(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	victimPlan := &model.GCPlan{
+		PlanID:    "victim",
+		CreatedAt: time.Now().UTC(),
+	}
+	data, err := json.Marshal(victimPlan)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(repoPath, "victim.json"), data, 0644))
+
+	collector := gc.NewCollector(repoPath)
+	_, err = collector.LoadPlan("../../victim")
+	require.Error(t, err)
 }
 
 func TestCollector_Plan_WithLineage(t *testing.T) {
@@ -116,7 +680,7 @@ func TestCollector_Run_WithDeletions(t *testing.T) {
 	cfg, err := wtMgr.Create("feature", nil)
 	require.NoError(t, err)
 
-	featurePath := wtMgr.Path("feature")
+	featurePath := requireWorktreePath(t, wtMgr, "feature")
 	os.WriteFile(filepath.Join(featurePath, "file.txt"), []byte("feature content"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -173,7 +737,7 @@ func TestCollector_Plan_WithPins(t *testing.T) {
 	wtMgr := worktree.NewManager(repoPath)
 	cfg, err := wtMgr.Create("temp", nil)
 	require.NoError(t, err)
-	tempPath := wtMgr.Path("temp")
+	tempPath := requireWorktreePath(t, wtMgr, "temp")
 	os.WriteFile(filepath.Join(tempPath, "file.txt"), []byte("temp"), 0644)
 	tempDesc, err := creator.Create("temp", "temp snap", nil)
 	require.NoError(t, err)
@@ -204,6 +768,193 @@ func TestCollector_Plan_WithPins(t *testing.T) {
 	assert.Contains(t, plan.ProtectedSet, tempDesc.SnapshotID)
 }
 
+func TestCollector_Plan_WithDocumentedGCPinsPath(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
+	pinnedID := ids[0]
+
+	writePin(t, repoPath, filepath.Join(".jvs", "gc", "pins"), pinnedID)
+
+	collector := gc.NewCollector(repoPath)
+	plan, err := collector.PlanWithPolicy(zeroRetention)
+	require.NoError(t, err)
+
+	assert.Contains(t, plan.ProtectedSet, pinnedID)
+	assert.NotContains(t, plan.ToDelete, pinnedID)
+	assert.Equal(t, 1, plan.ProtectedByPin)
+}
+
+func TestCollector_Plan_WithLegacyPinsPath(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
+	pinnedID := ids[0]
+
+	writePin(t, repoPath, filepath.Join(".jvs", "pins"), pinnedID)
+
+	collector := gc.NewCollector(repoPath)
+	plan, err := collector.PlanWithPolicy(zeroRetention)
+	require.NoError(t, err)
+
+	assert.Contains(t, plan.ProtectedSet, pinnedID)
+	assert.NotContains(t, plan.ToDelete, pinnedID)
+	assert.Equal(t, 1, plan.ProtectedByPin)
+}
+
+func TestCollector_Plan_FailsClosedWhenGCPinsDirIsSymlink(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
+	candidateID := ids[0]
+
+	pinsDir := filepath.Join(repoPath, ".jvs", "gc", "pins")
+	require.NoError(t, os.RemoveAll(pinsDir))
+	outside := t.TempDir()
+	if err := os.Symlink(outside, pinsDir); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	collector := gc.NewCollector(repoPath)
+	_, err := collector.PlanWithPolicy(zeroRetention)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pins")
+
+	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(candidateID)))
+	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(candidateID)+".json"))
+}
+
+func TestCollector_Run_FailsClosedWhenGCPinsDirBecomesSymlink(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
+	candidateID := ids[0]
+
+	collector := gc.NewCollector(repoPath)
+	plan, err := collector.PlanWithPolicy(zeroRetention)
+	require.NoError(t, err)
+	require.Contains(t, plan.ToDelete, candidateID)
+
+	pinsDir := filepath.Join(repoPath, ".jvs", "gc", "pins")
+	require.NoError(t, os.RemoveAll(pinsDir))
+	outside := t.TempDir()
+	if err := os.Symlink(outside, pinsDir); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	err = collector.Run(plan.PlanID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pins")
+
+	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(candidateID)))
+	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(candidateID)+".json"))
+	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "gc", "tombstones", string(candidateID)+".json"))
+	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "gc", plan.PlanID+".json"))
+}
+
+func TestCollector_Plan_FailsClosedWhenGCPinsDirUnreadable(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
+	candidateID := ids[0]
+
+	pinsDir := filepath.Join(repoPath, ".jvs", "gc", "pins")
+	require.NoError(t, os.Chmod(pinsDir, 0000))
+	t.Cleanup(func() {
+		_ = os.Chmod(pinsDir, 0755)
+	})
+	if _, err := os.ReadDir(pinsDir); err == nil {
+		t.Skip("pin directory permissions are not enforced for this test process")
+	}
+
+	collector := gc.NewCollector(repoPath)
+	_, err := collector.PlanWithPolicy(zeroRetention)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read pin directory")
+
+	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(candidateID)))
+	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(candidateID)+".json"))
+}
+
+func TestCollector_Plan_FailsClosedWhenPinFileIsSymlink(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
+	candidateID := ids[0]
+
+	pinPath := filepath.Join(repoPath, ".jvs", "gc", "pins", string(candidateID)+".json")
+	if err := os.Symlink(filepath.Join(t.TempDir(), "missing-pin.json"), pinPath); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	collector := gc.NewCollector(repoPath)
+	_, err := collector.PlanWithPolicy(zeroRetention)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "symlink")
+
+	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(candidateID)))
+	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(candidateID)+".json"))
+}
+
+func TestCollector_Run_FailsClosedWhenPinFileBecomesSymlink(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
+	candidateID := ids[0]
+
+	collector := gc.NewCollector(repoPath)
+	plan, err := collector.PlanWithPolicy(zeroRetention)
+	require.NoError(t, err)
+	require.Contains(t, plan.ToDelete, candidateID)
+
+	pinPath := filepath.Join(repoPath, ".jvs", "gc", "pins", string(candidateID)+".json")
+	if err := os.Symlink(filepath.Join(t.TempDir(), "missing-pin.json"), pinPath); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	err = collector.Run(plan.PlanID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "symlink")
+
+	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(candidateID)))
+	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(candidateID)+".json"))
+	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "gc", "tombstones", string(candidateID)+".json"))
+	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "gc", plan.PlanID+".json"))
+}
+
+func TestCollector_Plan_FailsClosedWhenPinFileMalformed(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
+	candidateID := ids[0]
+
+	pinPath := filepath.Join(repoPath, ".jvs", "gc", "pins", string(candidateID)+".json")
+	require.NoError(t, os.WriteFile(pinPath, []byte(`{"snapshot_id":`), 0644))
+
+	collector := gc.NewCollector(repoPath)
+	_, err := collector.PlanWithPolicy(zeroRetention)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pin")
+
+	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(candidateID)))
+	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(candidateID)+".json"))
+}
+
+func TestCollector_Run_FailsClosedWhenPinFileBecomesMalformed(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
+	candidateID := ids[0]
+
+	collector := gc.NewCollector(repoPath)
+	plan, err := collector.PlanWithPolicy(zeroRetention)
+	require.NoError(t, err)
+	require.Contains(t, plan.ToDelete, candidateID)
+
+	pinPath := filepath.Join(repoPath, ".jvs", "gc", "pins", string(candidateID)+".json")
+	require.NoError(t, os.WriteFile(pinPath, []byte(`{"snapshot_id":`), 0644))
+
+	err = collector.Run(plan.PlanID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pin")
+
+	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(candidateID)))
+	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(candidateID)+".json"))
+	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "gc", "tombstones", string(candidateID)+".json"))
+	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "gc", plan.PlanID+".json"))
+}
+
 func TestCollector_Plan_ExpiredPin(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
@@ -212,7 +963,7 @@ func TestCollector_Plan_ExpiredPin(t *testing.T) {
 	_, err := wtMgr.Create("temp", nil)
 	require.NoError(t, err)
 
-	tempPath := wtMgr.Path("temp")
+	tempPath := requireWorktreePath(t, wtMgr, "temp")
 	os.WriteFile(filepath.Join(tempPath, "file.txt"), []byte("content"), 0644)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	desc, err := creator.Create("temp", "test", nil)
@@ -233,6 +984,49 @@ func TestCollector_Plan_ExpiredPin(t *testing.T) {
 
 	// Snapshot should NOT be protected by pin since it expired
 	// The pin count should be 0 since the pin is expired
+}
+
+func TestCollector_Plan_SortsPlanSets(t *testing.T) {
+	repoPath := setupTestRepo(t)
+
+	mainPath := filepath.Join(repoPath, "main")
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	for i := 0; i < 6; i++ {
+		require.NoError(t, os.WriteFile(filepath.Join(mainPath, "main.txt"), []byte{byte('0' + i)}, 0644))
+		_, err := creator.Create("main", "main snap", nil)
+		require.NoError(t, err)
+	}
+	createRemovedWorktreeSnapshots(t, repoPath, "temp", 4)
+
+	collector := gc.NewCollector(repoPath)
+	plan, err := collector.PlanWithPolicy(zeroRetention)
+	require.NoError(t, err)
+
+	require.Len(t, plan.ProtectedSet, 6)
+	require.Len(t, plan.ToDelete, 4)
+	assertSnapshotIDsSorted(t, plan.ProtectedSet)
+	assertSnapshotIDsSorted(t, plan.ToDelete)
+}
+
+func TestCollector_Run_PlanMismatchWhenPinAddedAfterPlanning(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
+	candidateID := ids[0]
+
+	collector := gc.NewCollector(repoPath)
+	plan, err := collector.PlanWithPolicy(zeroRetention)
+	require.NoError(t, err)
+	require.Contains(t, plan.ToDelete, candidateID)
+
+	writePin(t, repoPath, filepath.Join(".jvs", "gc", "pins"), candidateID)
+
+	err = collector.Run(plan.PlanID)
+	require.Error(t, err)
+	require.ErrorIs(t, err, errclass.ErrGCPlanMismatch)
+	assert.Contains(t, err.Error(), "E_GC_PLAN_MISMATCH")
+
+	_, statErr := os.Stat(filepath.Join(repoPath, ".jvs", "gc", plan.PlanID+".json"))
+	require.NoError(t, statErr, "mismatched plans should remain for inspection")
 }
 
 func TestCollector_Plan_ProtectedCounts(t *testing.T) {
@@ -270,7 +1064,7 @@ func TestCollector_Run_TombstoneCreation(t *testing.T) {
 	cfg, err := wtMgr.Create("temp", nil)
 	require.NoError(t, err)
 
-	tempPath := wtMgr.Path("temp")
+	tempPath := requireWorktreePath(t, wtMgr, "temp")
 	os.WriteFile(filepath.Join(tempPath, "file.txt"), []byte("temp content"), 0644)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	tempDesc, err := creator.Create("temp", "temp", nil)
@@ -379,6 +1173,109 @@ func TestCollector_Plan_WithOnlyLineage(t *testing.T) {
 	assert.Greater(t, plan.ProtectedByLineage, 0)
 }
 
+func TestCollector_PlanWithPolicy_ProtectsDetachedLatestAndLineage(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("s1"), 0644))
+	desc1, err := creator.Create("main", "s1", nil)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("s2"), 0644))
+	desc2, err := creator.Create("main", "s2", nil)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("s3"), 0644))
+	desc3, err := creator.Create("main", "s3", nil)
+	require.NoError(t, err)
+
+	restorer := restore.NewRestorer(repoPath, model.EngineCopy)
+	require.NoError(t, restorer.Restore("main", desc1.SnapshotID))
+
+	wtMgr := worktree.NewManager(repoPath)
+	cfg, err := wtMgr.Get("main")
+	require.NoError(t, err)
+	require.True(t, cfg.IsDetached())
+	require.Equal(t, desc1.SnapshotID, cfg.HeadSnapshotID)
+	require.Equal(t, desc3.SnapshotID, cfg.LatestSnapshotID)
+
+	collector := gc.NewCollector(repoPath)
+	plan, err := collector.PlanWithPolicy(zeroRetention)
+	require.NoError(t, err)
+
+	assert.Contains(t, plan.ProtectedSet, desc1.SnapshotID)
+	assert.Contains(t, plan.ProtectedSet, desc2.SnapshotID)
+	assert.Contains(t, plan.ProtectedSet, desc3.SnapshotID)
+	assert.NotContains(t, plan.ToDelete, desc3.SnapshotID)
+	assert.NotContains(t, plan.ToDelete, desc2.SnapshotID)
+	assert.Equal(t, 1, plan.ProtectedByLineage)
+}
+
+func TestCollector_Run_PreservesDetachedLatestForRestoreToLatest(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("s1"), 0644))
+	desc1, err := creator.Create("main", "s1", nil)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("s2"), 0644))
+	_, err = creator.Create("main", "s2", nil)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("s3"), 0644))
+	desc3, err := creator.Create("main", "s3", nil)
+	require.NoError(t, err)
+
+	restorer := restore.NewRestorer(repoPath, model.EngineCopy)
+	require.NoError(t, restorer.Restore("main", desc1.SnapshotID))
+
+	collector := gc.NewCollector(repoPath)
+	plan, err := collector.PlanWithPolicy(zeroRetention)
+	require.NoError(t, err)
+
+	require.NoError(t, collector.Run(plan.PlanID))
+	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(desc3.SnapshotID)))
+	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(desc3.SnapshotID)+".json"))
+	require.NoError(t, restorer.RestoreToLatest("main"))
+}
+
+func TestCollector_PlanWithPolicy_ProtectsDetachedLatestInNonMainWorktree(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	wtMgr := worktree.NewManager(repoPath)
+	_, err := wtMgr.Create("feature", nil)
+	require.NoError(t, err)
+
+	featurePath := requireWorktreePath(t, wtMgr, "feature")
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+
+	require.NoError(t, os.WriteFile(filepath.Join(featurePath, "file.txt"), []byte("feature-1"), 0644))
+	desc1, err := creator.Create("feature", "feature 1", nil)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(featurePath, "file.txt"), []byte("feature-2"), 0644))
+	desc2, err := creator.Create("feature", "feature 2", nil)
+	require.NoError(t, err)
+
+	restorer := restore.NewRestorer(repoPath, model.EngineCopy)
+	require.NoError(t, restorer.Restore("feature", desc1.SnapshotID))
+
+	cfg, err := wtMgr.Get("feature")
+	require.NoError(t, err)
+	require.True(t, cfg.IsDetached())
+	require.Equal(t, desc1.SnapshotID, cfg.HeadSnapshotID)
+	require.Equal(t, desc2.SnapshotID, cfg.LatestSnapshotID)
+
+	collector := gc.NewCollector(repoPath)
+	plan, err := collector.PlanWithPolicy(zeroRetention)
+	require.NoError(t, err)
+
+	assert.Contains(t, plan.ProtectedSet, desc2.SnapshotID)
+	assert.NotContains(t, plan.ToDelete, desc2.SnapshotID)
+}
+
 func TestCollector_Plan_WithManySnapshots(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
@@ -418,7 +1315,7 @@ func TestCollector_Plan_ProtectedByPinCount(t *testing.T) {
 	cfg, err := wtMgr.Create("temp", nil)
 	require.NoError(t, err)
 
-	tempPath := wtMgr.Path("temp")
+	tempPath := requireWorktreePath(t, wtMgr, "temp")
 	os.WriteFile(filepath.Join(tempPath, "file.txt"), []byte("temp"), 0644)
 	tempDesc, err := creator.Create("temp", "temp snap", nil)
 	require.NoError(t, err)
@@ -452,7 +1349,7 @@ func TestCollector_Run_DeletesSnapshot(t *testing.T) {
 	cfg, err := wtMgr.Create("temp", nil)
 	require.NoError(t, err)
 
-	tempPath := wtMgr.Path("temp")
+	tempPath := requireWorktreePath(t, wtMgr, "temp")
 	os.WriteFile(filepath.Join(tempPath, "file.txt"), []byte("temp"), 0644)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	tempDesc, err := creator.Create("temp", "temp", nil)
@@ -480,7 +1377,7 @@ func TestCollector_Run_DescriptorRemoval(t *testing.T) {
 	cfg, err := wtMgr.Create("temp", nil)
 	require.NoError(t, err)
 
-	tempPath := wtMgr.Path("temp")
+	tempPath := requireWorktreePath(t, wtMgr, "temp")
 	os.WriteFile(filepath.Join(tempPath, "file.txt"), []byte("temp content"), 0644)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	tempDesc, err := creator.Create("temp", "temp", nil)
@@ -536,7 +1433,40 @@ func TestCollector_ListAllSnapshots_WithNonDirectoryEntries(t *testing.T) {
 	assert.NotEmpty(t, plan.ProtectedSet)
 }
 
-func TestCollector_deleteSnapshot_DescriptorIsDirectory(t *testing.T) {
+func TestCollector_Run_PayloadDeleteFailureKeepsDescriptorAndRetries(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
+	snapshotID := ids[0]
+
+	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID))
+	descriptorPath := filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json")
+	require.NoError(t, os.Chmod(snapshotDir, 0555))
+	t.Cleanup(func() {
+		_ = os.Chmod(snapshotDir, 0755)
+	})
+
+	collector := gc.NewCollector(repoPath)
+	plan, err := collector.PlanWithPolicy(zeroRetention)
+	require.NoError(t, err)
+
+	err = collector.Run(plan.PlanID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "remove snapshot dir")
+
+	assert.FileExists(t, descriptorPath, "descriptor must remain inspectable when payload deletion fails")
+	assert.DirExists(t, snapshotDir)
+	requireTombstoneState(t, repoPath, snapshotID, model.GCStateFailed)
+
+	require.NoError(t, os.Chmod(snapshotDir, 0755))
+	err = collector.Run(plan.PlanID)
+	require.NoError(t, err)
+
+	assert.NoDirExists(t, snapshotDir)
+	assert.NoFileExists(t, descriptorPath)
+	requireTombstoneState(t, repoPath, snapshotID, model.GCStateCommitted)
+}
+
+func TestCollector_PlanFailsClosedWhenDescriptorIsDirectory(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
 	// Create temp worktree with a snapshot
@@ -544,7 +1474,7 @@ func TestCollector_deleteSnapshot_DescriptorIsDirectory(t *testing.T) {
 	cfg, err := wtMgr.Create("temp", nil)
 	require.NoError(t, err)
 
-	tempPath := wtMgr.Path("temp")
+	tempPath := requireWorktreePath(t, wtMgr, "temp")
 	os.WriteFile(filepath.Join(tempPath, "file.txt"), []byte("temp"), 0644)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	tempDesc, err := creator.Create("temp", "temp", nil)
@@ -561,15 +1491,14 @@ func TestCollector_deleteSnapshot_DescriptorIsDirectory(t *testing.T) {
 	require.NoError(t, wtMgr.Remove("temp"))
 
 	collector := gc.NewCollector(repoPath)
-	plan, err := collector.PlanWithPolicy(zeroRetention)
-	require.NoError(t, err)
-
-	err = collector.Run(plan.PlanID)
-	require.NoError(t, err)
+	_, err = collector.PlanWithPolicy(zeroRetention)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not regular file")
 
 	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(tempDesc.SnapshotID))
-	_, err = os.Stat(snapshotDir)
-	assert.True(t, os.IsNotExist(err), "snapshot directory should be deleted")
+	assert.DirExists(t, snapshotDir, "GC must not delete payload when descriptor leaf type is unsafe")
+	assert.DirExists(t, descriptorPath, "descriptor obstacle should remain for inspection")
+	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "gc", "tombstones", string(tempDesc.SnapshotID)+".json"))
 }
 
 func TestCollector_writeTombstone_TombstonesDirIsFile(t *testing.T) {
@@ -580,7 +1509,7 @@ func TestCollector_writeTombstone_TombstonesDirIsFile(t *testing.T) {
 	cfg, err := wtMgr.Create("temp", nil)
 	require.NoError(t, err)
 
-	tempPath := wtMgr.Path("temp")
+	tempPath := requireWorktreePath(t, wtMgr, "temp")
 	os.WriteFile(filepath.Join(tempPath, "file.txt"), []byte("temp"), 0644)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	_, err = creator.Create("temp", "temp", nil)
@@ -589,7 +1518,7 @@ func TestCollector_writeTombstone_TombstonesDirIsFile(t *testing.T) {
 
 	// Make tombstones a file instead of directory (blocking writeTombstone)
 	tombstonesPath := filepath.Join(repoPath, ".jvs", "gc", "tombstones")
-	require.NoError(t, os.MkdirAll(filepath.Dir(tombstonesPath), 0755))
+	require.NoError(t, os.RemoveAll(tombstonesPath))
 	require.NoError(t, os.WriteFile(tombstonesPath, []byte("blocked"), 0644))
 
 	require.NoError(t, wtMgr.Remove("temp"))
@@ -599,44 +1528,90 @@ func TestCollector_writeTombstone_TombstonesDirIsFile(t *testing.T) {
 	require.NoError(t, err)
 
 	err = collector.Run(plan.PlanID)
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tombstone")
+
+	_, err = os.Stat(filepath.Join(repoPath, ".jvs", "gc", plan.PlanID+".json"))
+	require.NoError(t, err, "failed GC runs should keep the plan for retry")
 
 	os.Remove(tombstonesPath)
 	os.MkdirAll(tombstonesPath, 0755)
 }
 
-func TestCollector_Run_DeleteSnapshotError(t *testing.T) {
+func TestCollector_Run_DeleteSucceedsCommittedTombstoneWriteFailsThenRetryCompletes(t *testing.T) {
 	repoPath := setupTestRepo(t)
-
-	// Create a snapshot in main worktree
-	createTestSnapshot(t, repoPath)
-
-	// Create temp worktree with a snapshot
-	wtMgr := worktree.NewManager(repoPath)
-	cfg, err := wtMgr.Create("temp", nil)
-	require.NoError(t, err)
-
-	tempPath := wtMgr.Path("temp")
-	os.WriteFile(filepath.Join(tempPath, "file.txt"), []byte("temp"), 0644)
-	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
-	tempDesc, err := creator.Create("temp", "temp", nil)
-	require.NoError(t, err)
-	_ = cfg
-
-	require.NoError(t, wtMgr.Remove("temp"))
-
-	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(tempDesc.SnapshotID))
-	subDir := filepath.Join(snapshotDir, "subdir")
-	require.NoError(t, os.MkdirAll(subDir, 0000))
+	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
+	snapshotID := ids[0]
+	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID))
+	descriptorPath := filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json")
+	tombstonesDir := filepath.Join(repoPath, ".jvs", "gc", "tombstones")
 
 	collector := gc.NewCollector(repoPath)
 	plan, err := collector.PlanWithPolicy(zeroRetention)
 	require.NoError(t, err)
+	collector.SetProgressCallback(func(string, int, int, string) {
+		require.NoError(t, os.Chmod(tombstonesDir, 0555))
+	})
+	t.Cleanup(func() {
+		_ = os.Chmod(tombstonesDir, 0755)
+	})
 
+	err = collector.Run(plan.PlanID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "write committed tombstone")
+	assert.NoDirExists(t, snapshotDir)
+	assert.NoFileExists(t, descriptorPath)
+	requireTombstoneState(t, repoPath, snapshotID, model.GCStateMarked)
+
+	require.NoError(t, os.Chmod(tombstonesDir, 0755))
+	collector = gc.NewCollector(repoPath)
 	err = collector.Run(plan.PlanID)
 	require.NoError(t, err)
 
-	os.Chmod(subDir, 0755)
+	requireTombstoneState(t, repoPath, snapshotID, model.GCStateCommitted)
+	_, statErr := os.Stat(filepath.Join(repoPath, ".jvs", "gc", plan.PlanID+".json"))
+	require.True(t, os.IsNotExist(statErr), "successful retry should delete the plan")
+}
+
+func TestCollector_Run_DeleteSnapshotErrorKeepsPlan(t *testing.T) {
+	repoPath := setupTestRepo(t)
+
+	createRemovedWorktreeSnapshots(t, repoPath, "temp", 2)
+
+	collector := gc.NewCollector(repoPath)
+	plan, err := collector.PlanWithPolicy(zeroRetention)
+	require.NoError(t, err)
+	require.Len(t, plan.ToDelete, 2)
+
+	failingID := plan.ToDelete[1]
+	descriptorPath := filepath.Join(repoPath, ".jvs", "descriptors", string(failingID)+".json")
+	descriptorData, err := os.ReadFile(descriptorPath)
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(descriptorPath))
+	require.NoError(t, os.MkdirAll(descriptorPath, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(descriptorPath, "blocker"), []byte("x"), 0644))
+
+	err = collector.Run(plan.PlanID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), string(failingID))
+
+	_, statErr := os.Stat(filepath.Join(repoPath, ".jvs", "gc", plan.PlanID+".json"))
+	require.NoError(t, statErr, "failed GC runs should keep the plan for retry")
+
+	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "gc", "tombstones", string(plan.ToDelete[0])+".json"))
+	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(plan.ToDelete[0])))
+	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "gc", "tombstones", string(failingID)+".json"))
+	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(failingID)))
+
+	require.NoError(t, os.RemoveAll(descriptorPath))
+	require.NoError(t, os.WriteFile(descriptorPath, descriptorData, 0644))
+	err = collector.Run(plan.PlanID)
+	require.NoError(t, err)
+
+	_, statErr = os.Stat(filepath.Join(repoPath, ".jvs", "gc", plan.PlanID+".json"))
+	require.True(t, os.IsNotExist(statErr), "successful retry should delete the plan")
+	requireTombstoneState(t, repoPath, plan.ToDelete[0], "committed")
+	requireTombstoneState(t, repoPath, failingID, "committed")
 }
 
 func TestCollector_Plan_WithInvalidPinFile(t *testing.T) {
@@ -652,11 +1627,12 @@ func TestCollector_Plan_WithInvalidPinFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(invalidPinPath, []byte("{invalid json}"), 0644))
 
 	collector := gc.NewCollector(repoPath)
-	plan, err := collector.Plan()
-	require.NoError(t, err)
+	_, err := collector.Plan()
+	require.Error(t, err)
 
-	// Plan should succeed despite invalid pin file
-	assert.NotEmpty(t, plan.ProtectedSet)
+	// Malformed pin state is treated conservatively so GC never plans after
+	// silently dropping possibly-protective metadata.
+	assert.Contains(t, err.Error(), "pin")
 }
 
 func TestCollector_Plan_WithAlreadyProtectedPin(t *testing.T) {
@@ -713,7 +1689,7 @@ func TestCollector_walkLineage_WithMissingDescriptor(t *testing.T) {
 	cfg, err := wtMgr.Create("temp", nil)
 	require.NoError(t, err)
 
-	tempPath := wtMgr.Path("temp")
+	tempPath := requireWorktreePath(t, wtMgr, "temp")
 	os.WriteFile(filepath.Join(tempPath, "file.txt"), []byte("temp"), 0644)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	tempDesc, err := creator.Create("temp", "temp", nil)
@@ -732,7 +1708,7 @@ func TestCollector_walkLineage_WithMissingDescriptor(t *testing.T) {
 	_ = cfg2
 
 	// Manually update the worktree config to point to the orphaned snapshot
-	temp2Path := wtMgr.Path("temp2")
+	temp2Path := requireWorktreePath(t, wtMgr, "temp2")
 	wtConfigPath := filepath.Join(temp2Path, ".jvs-worktree.json")
 	wtConfigContent, _ := os.ReadFile(wtConfigPath)
 	// Update head_snapshot_id
@@ -746,8 +1722,8 @@ func TestCollector_walkLineage_WithMissingDescriptor(t *testing.T) {
 
 	collector := gc.NewCollector(repoPath)
 	_, err = collector.Plan()
-	// Plan should still succeed despite missing descriptor during lineage walk
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "READY snapshot missing descriptor")
 }
 
 func indexOf(s, substr string) int {
@@ -804,7 +1780,7 @@ func TestCollector_PlanWithPolicy_CountRetention(t *testing.T) {
 	_, err := wtMgr.Create("temp", nil)
 	require.NoError(t, err)
 
-	tempPath := wtMgr.Path("temp")
+	tempPath := requireWorktreePath(t, wtMgr, "temp")
 	os.WriteFile(filepath.Join(tempPath, "file.txt"), []byte("temp"), 0644)
 	tempDesc, err := creator.Create("temp", "temp snap", nil)
 	require.NoError(t, err)
@@ -829,7 +1805,7 @@ func TestCollector_PlanWithPolicy_ZeroRetention(t *testing.T) {
 	_, err := wtMgr.Create("temp", nil)
 	require.NoError(t, err)
 
-	tempPath := wtMgr.Path("temp")
+	tempPath := requireWorktreePath(t, wtMgr, "temp")
 	os.WriteFile(filepath.Join(tempPath, "file.txt"), []byte("temp"), 0644)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	tempDesc, err := creator.Create("temp", "temp snap", nil)
@@ -864,7 +1840,7 @@ func TestCollector_SetProgressCallback(t *testing.T) {
 	_, err := wtMgr.Create("temp", nil)
 	require.NoError(t, err)
 
-	tempPath := wtMgr.Path("temp")
+	tempPath := requireWorktreePath(t, wtMgr, "temp")
 	os.WriteFile(filepath.Join(tempPath, "file.txt"), []byte("temp"), 0644)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	_, err = creator.Create("temp", "temp snap", nil)
@@ -908,7 +1884,7 @@ func TestCollector_PlanWithPolicy_CombinedRetention(t *testing.T) {
 	_, err := wtMgr.Create("temp", nil)
 	require.NoError(t, err)
 
-	tempPath := wtMgr.Path("temp")
+	tempPath := requireWorktreePath(t, wtMgr, "temp")
 	os.WriteFile(filepath.Join(tempPath, "file.txt"), []byte("temp"), 0644)
 	tempDesc, err := creator.Create("temp", "temp snap", nil)
 	require.NoError(t, err)

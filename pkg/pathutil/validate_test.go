@@ -69,6 +69,52 @@ func TestValidatePathSafety_NonExistentTarget(t *testing.T) {
 	assert.NoError(t, pathutil.ValidatePathSafety(root, target))
 }
 
+func TestCleanRel(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "plain", path: "models/model.bin", want: filepath.Join("models", "model.bin")},
+		{name: "cleans redundant separators", path: "models/./model.bin", want: filepath.Join("models", "model.bin")},
+		{name: "allows dotdot in filename", path: "models/a..b", want: filepath.Join("models", "a..b")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := pathutil.CleanRel(tt.path)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestCleanRelRejectsUnsafePaths(t *testing.T) {
+	for _, p := range []string{"", ".", "/absolute/path", "../escape", "safe/../still-inside", "safe/../../escape", "safe/.."} {
+		t.Run(p, func(t *testing.T) {
+			_, err := pathutil.CleanRel(p)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestValidateNoSymlinkParents(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "safe"), 0755))
+	require.NoError(t, pathutil.ValidateNoSymlinkParents(root, filepath.Join("safe", "file.txt")))
+
+	outside := filepath.Join(t.TempDir(), "outside")
+	require.NoError(t, os.MkdirAll(outside, 0755))
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	err := pathutil.ValidateNoSymlinkParents(root, filepath.Join("link", "file.txt"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "symlink")
+
+	require.NoError(t, pathutil.ValidateNoSymlinkParents(root, "link"), "final symlink leaf is data, not a traversed parent")
+}
+
 func TestValidateTag_Valid(t *testing.T) {
 	valid := []string{"v1.0", "release", "bugfix-123", "my_tag", "A-Z.test"}
 	for _, tag := range valid {

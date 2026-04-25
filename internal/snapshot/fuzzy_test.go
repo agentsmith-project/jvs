@@ -46,7 +46,7 @@ func setupSnapshotTestRepo(t *testing.T) string {
 			PayloadRootHash: "hash2",
 		},
 		{
-			SnapshotID:      "1771589366482-xyz789a0",
+			SnapshotID:      "1771589366482-abc789a0",
 			WorktreeName:    "main",
 			CreatedAt:       now.Add(-1 * time.Hour),
 			Note:            "bug fixes",

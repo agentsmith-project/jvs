@@ -19,12 +19,12 @@ var verifyCmd = &cobra.Command{
 	Short: "Verify snapshot integrity",
 	Long: `Verify snapshot integrity.
 
-Checks descriptor checksum and optionally payload hash.
+Checks descriptor checksum and logical payload hash.
 
 Examples:
   jvs verify                    # Verify all snapshots
   jvs verify 1771589abc         # Verify specific snapshot
-  jvs verify --all              # Verify all snapshots with payload hash`,
+  jvs verify --all              # Verify all snapshots`,
 	Args: cobra.MaximumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		r := requireRepo()
@@ -32,23 +32,31 @@ Examples:
 		verifier := verify.NewVerifier(r.Root)
 
 		if verifyAll || len(args) == 0 {
-			results, err := verifier.VerifyAll(false)
+			results, err := verifier.VerifyAll(true)
 			if err != nil {
 				fmtErr("verify: %v", err)
 				os.Exit(1)
 			}
 
+			tampered := false
+			for _, res := range results {
+				if res.TamperDetected {
+					tampered = true
+				}
+			}
+
 			if jsonOutput {
 				outputJSON(results)
+				if tampered {
+					os.Exit(1)
+				}
 				return
 			}
 
-			tampered := false
 			for _, res := range results {
 				status := "OK"
 				if res.TamperDetected {
 					status = "TAMPERED"
-					tampered = true
 				}
 				fmt.Printf("%s  %s\n", res.SnapshotID, status)
 			}
@@ -66,6 +74,9 @@ Examples:
 
 			if jsonOutput {
 				outputJSON(result)
+				if result.TamperDetected {
+					os.Exit(1)
+				}
 				return
 			}
 

@@ -4,6 +4,7 @@ package diff
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jvs-project/jvs/internal/engine"
+	"github.com/jvs-project/jvs/internal/repo"
+	"github.com/jvs-project/jvs/internal/snapshot"
+	"github.com/jvs-project/jvs/internal/snapshotpayload"
 	"github.com/jvs-project/jvs/pkg/model"
 )
 
@@ -64,16 +69,49 @@ func NewDiffer(repoRoot string) *Differ {
 // If fromID is empty, compares against an empty snapshot (shows all as added).
 func (d *Differ) Diff(fromID, toID model.SnapshotID) (*DiffResult, error) {
 	fromPath := ""
+	var fromDesc *model.Descriptor
 	if fromID != "" {
-		fromPath = filepath.Join(d.repoRoot, ".jvs", "snapshots", string(fromID))
-		if _, err := os.Stat(fromPath); err != nil {
-			return nil, fmt.Errorf("from snapshot not found: %w", err)
+		var err error
+		fromPath, err = repo.SnapshotPathForRead(d.repoRoot, fromID)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, fmt.Errorf("from snapshot not found: %w", err)
+			}
+			return nil, fmt.Errorf("from snapshot path: %w", err)
+		}
+		fromDesc, err = snapshot.LoadDescriptor(d.repoRoot, fromID)
+		if err != nil {
+			return nil, fmt.Errorf("load from descriptor: %w", err)
 		}
 	}
 
-	toPath := filepath.Join(d.repoRoot, ".jvs", "snapshots", string(toID))
-	if _, err := os.Stat(toPath); err != nil {
-		return nil, fmt.Errorf("to snapshot not found: %w", err)
+	toPath, err := repo.SnapshotPathForRead(d.repoRoot, toID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("to snapshot not found: %w", err)
+		}
+		return nil, fmt.Errorf("to snapshot path: %w", err)
+	}
+	toDesc, err := snapshot.LoadDescriptor(d.repoRoot, toID)
+	if err != nil {
+		return nil, fmt.Errorf("load to descriptor: %w", err)
+	}
+
+	tempRoot, err := os.MkdirTemp("", "jvs-diff-*")
+	if err != nil {
+		return nil, fmt.Errorf("create diff temp dir: %w", err)
+	}
+	defer os.RemoveAll(tempRoot)
+
+	if fromPath != "" {
+		fromPath, err = d.materializeSnapshot(fromPath, filepath.Join(tempRoot, "from"), fromDesc)
+		if err != nil {
+			return nil, fmt.Errorf("materialize from snapshot: %w", err)
+		}
+	}
+	toPath, err = d.materializeSnapshot(toPath, filepath.Join(tempRoot, "to"), toDesc)
+	if err != nil {
+		return nil, fmt.Errorf("materialize to snapshot: %w", err)
 	}
 
 	// Build file trees for comparison
@@ -93,6 +131,10 @@ func (d *Differ) Diff(fromID, toID model.SnapshotID) (*DiffResult, error) {
 	result := &DiffResult{
 		FromSnapshotID: fromID,
 		ToSnapshotID:   toID,
+		ToTime:         toDesc.CreatedAt,
+	}
+	if fromDesc != nil {
+		result.FromTime = fromDesc.CreatedAt
 	}
 
 	// Find added and modified files
@@ -162,12 +204,27 @@ func (f *fileInfo) equals(other *fileInfo) bool {
 	if f.IsSymlink != other.IsSymlink {
 		return false
 	}
+	if f.Mode.Perm() != other.Mode.Perm() {
+		return false
+	}
 	if f.IsSymlink {
 		// For symlinks, we compare the hash which contains the target
 		return f.Hash == other.Hash
 	}
 	// For regular files, compare hash (size is implied by hash)
 	return f.Hash == other.Hash
+}
+
+func (d *Differ) materializeSnapshot(src, dst string, desc *model.Descriptor) (string, error) {
+	if err := snapshotpayload.Materialize(src, dst, snapshotpayload.OptionsFromDescriptor(desc), cloneSnapshotTree); err != nil {
+		return "", err
+	}
+	return dst, nil
+}
+
+func cloneSnapshotTree(src, dst string) error {
+	_, err := engine.NewCopyEngine().Clone(src, dst)
+	return err
 }
 
 // buildTree recursively builds a map of path -> fileInfo for a directory.
@@ -180,11 +237,6 @@ func (d *Differ) buildTree(root, relPath string, tree map[string]*fileInfo) erro
 
 	for _, entry := range entries {
 		name := entry.Name()
-		// Skip .READY marker files
-		if name == ".READY" {
-			continue
-		}
-
 		entryPath := filepath.Join(relPath, name)
 		fullEntryPath := filepath.Join(root, entryPath)
 

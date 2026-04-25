@@ -5,7 +5,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/jvs-project/jvs/internal/compression"
+	"github.com/jvs-project/jvs/internal/engine"
 	"github.com/jvs-project/jvs/internal/repo"
+	"github.com/jvs-project/jvs/internal/snapshot"
 	"github.com/jvs-project/jvs/internal/worktree"
 	"github.com/jvs-project/jvs/pkg/errclass"
 	"github.com/jvs-project/jvs/pkg/model"
@@ -18,6 +21,89 @@ func setupTestRepo(t *testing.T) string {
 	_, err := repo.Init(dir, "test")
 	require.NoError(t, err)
 	return dir
+}
+
+func createManagerSnapshot(t *testing.T, repoPath string) model.SnapshotID {
+	t.Helper()
+	mainPath := filepath.Join(repoPath, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "snapshot.txt"), []byte(t.Name()), 0644))
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	desc, err := creator.Create("main", "manager test snapshot", nil)
+	require.NoError(t, err)
+	return desc.SnapshotID
+}
+
+func assertWorktreeNotCreated(t *testing.T, repoPath, name string) {
+	t.Helper()
+	assert.NoDirExists(t, filepath.Join(repoPath, "worktrees", name))
+	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "worktrees", name, "config.json"))
+}
+
+func assertNoPath(t *testing.T, path string) {
+	t.Helper()
+	_, err := os.Lstat(path)
+	require.True(t, os.IsNotExist(err), "expected path not to exist: %s", path)
+}
+
+func writeSentinel(t *testing.T, path string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0755))
+	require.NoError(t, os.WriteFile(path, []byte("keep"), 0644))
+}
+
+func assertSentinel(t *testing.T, path string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err, "sentinel should remain at %s", path)
+	assert.Equal(t, "keep", string(data))
+}
+
+func assertSymlinkExists(t *testing.T, path string) {
+	t.Helper()
+	info, err := os.Lstat(path)
+	require.NoError(t, err)
+	assert.NotZero(t, info.Mode()&os.ModeSymlink, "expected symlink at %s", path)
+}
+
+func makeResidualPayload(t *testing.T, repoPath, name, kind string) string {
+	t.Helper()
+
+	payloadPath := filepath.Join(repoPath, "worktrees", name)
+	switch kind {
+	case "dir":
+		require.NoError(t, os.MkdirAll(payloadPath, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(payloadPath, "old.txt"), []byte("old"), 0644))
+	case "file":
+		require.NoError(t, os.MkdirAll(filepath.Dir(payloadPath), 0755))
+		require.NoError(t, os.WriteFile(payloadPath, []byte("old"), 0644))
+	case "symlink":
+		outside := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(outside, "outside.txt"), []byte("outside"), 0644))
+		if err := os.Symlink(outside, payloadPath); err != nil {
+			t.Skipf("symlinks not supported: %v", err)
+		}
+		return outside
+	default:
+		t.Fatalf("unknown residual kind %q", kind)
+	}
+	return ""
+}
+
+func runCreateLikeOperation(t *testing.T, mgr *worktree.Manager, op string, snapshotID model.SnapshotID, name string, cloneFunc func(src, dst string) error) (*model.WorktreeConfig, error) {
+	t.Helper()
+
+	switch op {
+	case "create":
+		return mgr.Create(name, nil)
+	case "create-from":
+		return mgr.CreateFromSnapshot(name, snapshotID, cloneFunc)
+	case "fork":
+		return mgr.Fork(snapshotID, name, cloneFunc)
+	default:
+		t.Fatalf("unknown operation %q", op)
+		return nil, nil
+	}
 }
 
 func TestManager_Create(t *testing.T) {
@@ -33,6 +119,85 @@ func TestManager_Create(t *testing.T) {
 
 	// Payload directory exists
 	assert.DirExists(t, filepath.Join(repoPath, "worktrees", "feature"))
+}
+
+func TestManager_CreateLikeRejectsExistingPayloadResiduals(t *testing.T) {
+	for _, op := range []string{"create", "create-from", "fork"} {
+		for _, kind := range []string{"dir", "file", "symlink"} {
+			t.Run(op+"_"+kind, func(t *testing.T) {
+				repoPath := setupTestRepo(t)
+				mgr := worktree.NewManager(repoPath)
+				snapshotID := createManagerSnapshot(t, repoPath)
+				name := "residual-" + kind
+				outside := makeResidualPayload(t, repoPath, name, kind)
+				cloneCalled := false
+
+				_, err := runCreateLikeOperation(t, mgr, op, snapshotID, name, func(src, dst string) error {
+					cloneCalled = true
+					return copySnapshotTree(src, dst)
+				})
+				require.Error(t, err)
+				assert.False(t, cloneCalled, "materialization should not start over an existing final payload")
+				assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "worktrees", name, "config.json"))
+
+				switch kind {
+				case "dir":
+					content, readErr := os.ReadFile(filepath.Join(repoPath, "worktrees", name, "old.txt"))
+					require.NoError(t, readErr)
+					assert.Equal(t, "old", string(content))
+				case "file":
+					content, readErr := os.ReadFile(filepath.Join(repoPath, "worktrees", name))
+					require.NoError(t, readErr)
+					assert.Equal(t, "old", string(content))
+				case "symlink":
+					assert.NoFileExists(t, filepath.Join(outside, "snapshot.txt"))
+					content, readErr := os.ReadFile(filepath.Join(outside, "outside.txt"))
+					require.NoError(t, readErr)
+					assert.Equal(t, "outside", string(content))
+				}
+			})
+		}
+	}
+}
+
+func TestManager_CreateLikeRejectsWorktreesParentSymlink(t *testing.T) {
+	for _, op := range []string{"create", "create-from", "fork"} {
+		t.Run(op, func(t *testing.T) {
+			repoPath := setupTestRepo(t)
+			mgr := worktree.NewManager(repoPath)
+			snapshotID := createManagerSnapshot(t, repoPath)
+			outside := t.TempDir()
+			require.NoError(t, os.RemoveAll(filepath.Join(repoPath, "worktrees")))
+			if err := os.Symlink(outside, filepath.Join(repoPath, "worktrees")); err != nil {
+				t.Skipf("symlinks not supported: %v", err)
+			}
+
+			_, err := runCreateLikeOperation(t, mgr, op, snapshotID, "escape", copySnapshotTree)
+			require.Error(t, err)
+			assert.NoFileExists(t, filepath.Join(outside, "escape", "snapshot.txt"))
+			assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "worktrees", "escape", "config.json"))
+		})
+	}
+}
+
+func TestManager_CreateLikeRejectsFinalPayloadSymlink(t *testing.T) {
+	for _, op := range []string{"create", "create-from", "fork"} {
+		t.Run(op, func(t *testing.T) {
+			repoPath := setupTestRepo(t)
+			mgr := worktree.NewManager(repoPath)
+			snapshotID := createManagerSnapshot(t, repoPath)
+			outside := t.TempDir()
+			name := "final-link"
+			if err := os.Symlink(outside, filepath.Join(repoPath, "worktrees", name)); err != nil {
+				t.Skipf("symlinks not supported: %v", err)
+			}
+
+			_, err := runCreateLikeOperation(t, mgr, op, snapshotID, name, copySnapshotTree)
+			require.Error(t, err)
+			assert.NoFileExists(t, filepath.Join(outside, "snapshot.txt"))
+			assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "worktrees", name, "config.json"))
+		})
+	}
 }
 
 func TestManager_Create_InvalidName(t *testing.T) {
@@ -63,15 +228,87 @@ func TestManager_List(t *testing.T) {
 	assert.True(t, names["feature2"])
 }
 
+func TestManager_ListRejectsInvalidWorktreeDirectoryNames(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mgr := worktree.NewManager(repoPath)
+	_, err := mgr.Create("good", nil)
+	require.NoError(t, err)
+
+	badDir := filepath.Join(repoPath, ".jvs", "worktrees", "bad..name")
+	require.NoError(t, os.MkdirAll(badDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(badDir, "config.json"), []byte(`{"name":"bad..name"}`), 0644))
+
+	_, err = mgr.List()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bad..name")
+}
+
 func TestManager_Path(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	mgr := worktree.NewManager(repoPath)
 
-	mainPath := mgr.Path("main")
+	mainPath, err := mgr.Path("main")
+	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(repoPath, "main"), mainPath)
 
-	featurePath := mgr.Path("feature")
+	featurePath, err := mgr.Path("feature")
+	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(repoPath, "worktrees", "feature"), featurePath)
+}
+
+func TestManager_ListRejectsSymlinkedWorktreesControlDir(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	outside := t.TempDir()
+	require.NoError(t, os.RemoveAll(filepath.Join(repoPath, ".jvs", "worktrees")))
+	if err := os.Symlink(outside, filepath.Join(repoPath, ".jvs", "worktrees")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	mgr := worktree.NewManager(repoPath)
+	_, err := mgr.List()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "worktrees")
+}
+
+func TestManager_PathRejectsUnsafePayloadPaths(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, repoPath string)
+	}{
+		{
+			name: "worktrees parent symlink",
+			setup: func(t *testing.T, repoPath string) {
+				outside := t.TempDir()
+				require.NoError(t, os.RemoveAll(filepath.Join(repoPath, "worktrees")))
+				if err := os.Symlink(outside, filepath.Join(repoPath, "worktrees")); err != nil {
+					t.Skipf("symlinks not supported: %v", err)
+				}
+			},
+		},
+		{
+			name: "final payload symlink",
+			setup: func(t *testing.T, repoPath string) {
+				outside := t.TempDir()
+				payloadPath := filepath.Join(repoPath, "worktrees", "unsafe")
+				require.NoError(t, os.RemoveAll(payloadPath))
+				if err := os.Symlink(outside, payloadPath); err != nil {
+					t.Skipf("symlinks not supported: %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repoPath := setupTestRepo(t)
+			mgr := worktree.NewManager(repoPath)
+			_, err := mgr.Create("unsafe", nil)
+			require.NoError(t, err)
+			tc.setup(t, repoPath)
+
+			path, err := mgr.Path("unsafe")
+			require.Error(t, err)
+			assert.Empty(t, path)
+		})
+	}
 }
 
 func TestManager_Rename(t *testing.T) {
@@ -79,14 +316,17 @@ func TestManager_Rename(t *testing.T) {
 	mgr := worktree.NewManager(repoPath)
 
 	mgr.Create("old-name", nil)
+	require.NoError(t, os.WriteFile(filepath.Join(repoPath, "worktrees", "old-name", "payload.txt"), []byte("payload"), 0644))
 	err := mgr.Rename("old-name", "new-name")
 	require.NoError(t, err)
 
 	// Old should not exist
 	assert.NoDirExists(t, filepath.Join(repoPath, "worktrees", "old-name"))
+	assert.NoDirExists(t, filepath.Join(repoPath, ".jvs", "worktrees", "old-name"))
 
 	// New should exist
 	assert.DirExists(t, filepath.Join(repoPath, "worktrees", "new-name"))
+	assert.FileExists(t, filepath.Join(repoPath, "worktrees", "new-name", "payload.txt"))
 	cfg, err := mgr.Get("new-name")
 	require.NoError(t, err)
 	assert.Equal(t, "new-name", cfg.Name)
@@ -102,6 +342,38 @@ func TestManager_Remove(t *testing.T) {
 
 	assert.NoDirExists(t, filepath.Join(repoPath, "worktrees", "to-delete"))
 	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "worktrees", "to-delete", "config.json"))
+}
+
+func TestManager_RemoveRejectsInvalidNamesBeforeMutation(t *testing.T) {
+	cases := []struct {
+		name string
+	}{
+		{name: "../victim"},
+		{name: "nested/victim"},
+		{name: filepath.Join(string(os.PathSeparator), "abs-victim")},
+		{name: ".."},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repoPath := setupTestRepo(t)
+			mgr := worktree.NewManager(repoPath)
+
+			payloadSentinel := filepath.Join(repoPath, "worktrees", tc.name, "payload-keep.txt")
+			configSentinel := filepath.Join(repoPath, ".jvs", "worktrees", tc.name, "config-keep.txt")
+			outsideSentinel := filepath.Join(t.TempDir(), "outside-keep.txt")
+			writeSentinel(t, payloadSentinel)
+			writeSentinel(t, configSentinel)
+			writeSentinel(t, outsideSentinel)
+
+			err := mgr.Remove(tc.name)
+			require.ErrorIs(t, err, errclass.ErrNameInvalid)
+
+			assertSentinel(t, payloadSentinel)
+			assertSentinel(t, configSentinel)
+			assertSentinel(t, outsideSentinel)
+		})
+	}
 }
 
 func TestManager_UpdateHead(t *testing.T) {
@@ -123,6 +395,17 @@ func TestManager_Get(t *testing.T) {
 	cfg, err := mgr.Get("main")
 	require.NoError(t, err)
 	assert.Equal(t, "main", cfg.Name)
+}
+
+func TestManager_GetRejectsInvalidNameBeforeReadingTraversedConfig(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mgr := worktree.NewManager(repoPath)
+	traversedConfig := filepath.Join(repoPath, ".jvs", "victim", "config.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(traversedConfig), 0755))
+	require.NoError(t, os.WriteFile(traversedConfig, []byte(`{"name":"../victim"}`), 0644))
+
+	_, err := mgr.Get("../victim")
+	require.ErrorIs(t, err, errclass.ErrNameInvalid)
 }
 
 func TestManager_Get_NotFound(t *testing.T) {
@@ -156,15 +439,77 @@ func TestManager_Create_AlreadyExists(t *testing.T) {
 func TestManager_CreateFromSnapshot(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	mgr := worktree.NewManager(repoPath)
+	snapshotID := createManagerSnapshot(t, repoPath)
 
 	cloneFunc := func(src, dst string) error {
 		return nil // mock clone
 	}
 
-	cfg, err := mgr.CreateFromSnapshot("from-snap", "1708300800000-a3f7c1b2", cloneFunc)
+	cfg, err := mgr.CreateFromSnapshot("from-snap", snapshotID, cloneFunc)
 	require.NoError(t, err)
 	assert.Equal(t, "from-snap", cfg.Name)
-	assert.Equal(t, model.SnapshotID("1708300800000-a3f7c1b2"), cfg.BaseSnapshotID)
+	assert.Equal(t, snapshotID, cfg.BaseSnapshotID)
+	assert.Equal(t, snapshotID, cfg.HeadSnapshotID)
+	assert.Equal(t, snapshotID, cfg.LatestSnapshotID)
+}
+
+func TestManager_CreateFromSnapshot_MaterializesCompressedPayload(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("compressed source"), 0644))
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	creator.SetCompression(compression.LevelDefault)
+	desc, err := creator.Create("main", "compressed", nil)
+	require.NoError(t, err)
+
+	mgr := worktree.NewManager(repoPath)
+	cfg, err := mgr.CreateFromSnapshot("from-compressed", desc.SnapshotID, copySnapshotTree)
+	require.NoError(t, err)
+
+	payloadPath := filepath.Join(repoPath, "worktrees", "from-compressed")
+	content, err := os.ReadFile(filepath.Join(payloadPath, "file.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "compressed source", string(content))
+	assert.NoFileExists(t, filepath.Join(payloadPath, "file.txt.gz"))
+	assert.NoFileExists(t, filepath.Join(payloadPath, ".READY"))
+	assert.NoFileExists(t, filepath.Join(payloadPath, ".READY.gz"))
+	assert.Equal(t, desc.SnapshotID, cfg.BaseSnapshotID)
+	assert.Equal(t, desc.SnapshotID, cfg.HeadSnapshotID)
+	assert.Equal(t, desc.SnapshotID, cfg.LatestSnapshotID)
+}
+
+func TestManager_CreateFromSnapshot_FailsWhenDescriptorMissing(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mgr := worktree.NewManager(repoPath)
+	cloneCalled := false
+
+	_, err := mgr.CreateFromSnapshot("from-missing", "missing-snapshot", func(src, dst string) error {
+		cloneCalled = true
+		return nil
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "load snapshot descriptor")
+	assert.False(t, cloneCalled)
+	assertWorktreeNotCreated(t, repoPath, "from-missing")
+}
+
+func TestManager_CreateFromSnapshot_FailsWhenDescriptorCorrupt(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := model.SnapshotID("1708300800000-corrupt")
+	require.NoError(t, os.WriteFile(
+		filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json"),
+		[]byte("{not json"),
+		0644,
+	))
+
+	mgr := worktree.NewManager(repoPath)
+	_, err := mgr.CreateFromSnapshot("from-corrupt", snapshotID, func(src, dst string) error {
+		return nil
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "load snapshot descriptor")
+	assertWorktreeNotCreated(t, repoPath, "from-corrupt")
 }
 
 func TestManager_CreateFromSnapshot_InvalidName(t *testing.T) {
@@ -180,10 +525,11 @@ func TestManager_CreateFromSnapshot_InvalidName(t *testing.T) {
 func TestManager_CreateFromSnapshot_AlreadyExists(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	mgr := worktree.NewManager(repoPath)
+	snapshotID := createManagerSnapshot(t, repoPath)
 
 	cloneFunc := func(src, dst string) error { return nil }
 
-	_, err := mgr.CreateFromSnapshot("feature", "1708300800000-a3f7c1b2", cloneFunc)
+	_, err := mgr.CreateFromSnapshot("feature", snapshotID, cloneFunc)
 	require.NoError(t, err)
 
 	_, err = mgr.CreateFromSnapshot("feature", "1708300900000-b4d8e2c3", cloneFunc)
@@ -208,6 +554,48 @@ func TestManager_Rename_InvalidName(t *testing.T) {
 	mgr.Create("old-name", nil)
 	err := mgr.Rename("old-name", "../evil")
 	require.ErrorIs(t, err, errclass.ErrNameInvalid)
+}
+
+func TestManager_RenameRejectsInvalidOldNameBeforeMutation(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mgr := worktree.NewManager(repoPath)
+
+	oldPayloadSentinel := filepath.Join(repoPath, "victim", "payload-keep.txt")
+	oldConfigDir := filepath.Join(repoPath, ".jvs", "victim")
+	oldConfigSentinel := filepath.Join(oldConfigDir, "config-keep.txt")
+	require.NoError(t, os.MkdirAll(oldConfigDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(oldConfigDir, "config.json"), []byte(`{"name":"../victim"}`), 0644))
+	writeSentinel(t, oldPayloadSentinel)
+	writeSentinel(t, oldConfigSentinel)
+
+	err := mgr.Rename("../victim", "safe")
+	require.ErrorIs(t, err, errclass.ErrNameInvalid)
+
+	assertSentinel(t, oldPayloadSentinel)
+	assertSentinel(t, oldConfigSentinel)
+	assert.NoDirExists(t, filepath.Join(repoPath, "worktrees", "safe"))
+	assert.NoDirExists(t, filepath.Join(repoPath, ".jvs", "worktrees", "safe"))
+}
+
+func TestManager_RenameRejectsInvalidNewNameBeforeMutation(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mgr := worktree.NewManager(repoPath)
+	_, err := mgr.Create("safe", nil)
+	require.NoError(t, err)
+	safePayloadSentinel := filepath.Join(repoPath, "worktrees", "safe", "payload-keep.txt")
+	safeConfigSentinel := filepath.Join(repoPath, ".jvs", "worktrees", "safe", "config-keep.txt")
+	traversedSentinel := filepath.Join(repoPath, ".jvs", "victim", "config-keep.txt")
+	writeSentinel(t, safePayloadSentinel)
+	writeSentinel(t, safeConfigSentinel)
+	writeSentinel(t, traversedSentinel)
+
+	err = mgr.Rename("safe", "../victim")
+	require.ErrorIs(t, err, errclass.ErrNameInvalid)
+
+	assertSentinel(t, safePayloadSentinel)
+	assertSentinel(t, safeConfigSentinel)
+	assertSentinel(t, traversedSentinel)
+	assert.NoDirExists(t, filepath.Join(repoPath, "victim"))
 }
 
 func TestManager_Rename_AlreadyExists(t *testing.T) {
@@ -237,17 +625,98 @@ func TestManager_SetLatest(t *testing.T) {
 func TestManager_Fork(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	mgr := worktree.NewManager(repoPath)
+	snapshotID := createManagerSnapshot(t, repoPath)
 
 	cloneFunc := func(src, dst string) error {
 		return nil // mock clone
 	}
 
-	cfg, err := mgr.Fork("1708300800000-a3f7c1b2", "forked", cloneFunc)
+	cfg, err := mgr.Fork(snapshotID, "forked", cloneFunc)
 	require.NoError(t, err)
 	assert.Equal(t, "forked", cfg.Name)
-	assert.Equal(t, model.SnapshotID("1708300800000-a3f7c1b2"), cfg.HeadSnapshotID)
-	assert.Equal(t, model.SnapshotID("1708300800000-a3f7c1b2"), cfg.LatestSnapshotID)
-	assert.Equal(t, model.SnapshotID("1708300800000-a3f7c1b2"), cfg.BaseSnapshotID)
+	assert.Equal(t, snapshotID, cfg.HeadSnapshotID)
+	assert.Equal(t, snapshotID, cfg.LatestSnapshotID)
+	assert.Equal(t, snapshotID, cfg.BaseSnapshotID)
+}
+
+func TestManager_Fork_MaterializesCleanPayload(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte("fork source"), 0644))
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	desc, err := creator.Create("main", "fork source", nil)
+	require.NoError(t, err)
+
+	mgr := worktree.NewManager(repoPath)
+	_, err = mgr.Fork(desc.SnapshotID, "forked-clean", copySnapshotTree)
+	require.NoError(t, err)
+
+	payloadPath := filepath.Join(repoPath, "worktrees", "forked-clean")
+	content, err := os.ReadFile(filepath.Join(payloadPath, "data.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "fork source", string(content))
+	assert.NoFileExists(t, filepath.Join(payloadPath, ".READY"))
+	assert.NoFileExists(t, filepath.Join(payloadPath, ".READY.gz"))
+}
+
+func TestManager_Fork_MaterializesCompressedPayload(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte("compressed fork source"), 0644))
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	creator.SetCompression(compression.LevelDefault)
+	desc, err := creator.Create("main", "compressed fork source", nil)
+	require.NoError(t, err)
+
+	mgr := worktree.NewManager(repoPath)
+	_, err = mgr.Fork(desc.SnapshotID, "forked-compressed", copySnapshotTree)
+	require.NoError(t, err)
+
+	payloadPath := filepath.Join(repoPath, "worktrees", "forked-compressed")
+	content, err := os.ReadFile(filepath.Join(payloadPath, "data.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "compressed fork source", string(content))
+	assert.NoFileExists(t, filepath.Join(payloadPath, "data.txt.gz"))
+}
+
+func TestManager_Fork_FailsWhenDescriptorMissing(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mgr := worktree.NewManager(repoPath)
+	cloneCalled := false
+
+	_, err := mgr.Fork("missing-snapshot", "fork-missing", func(src, dst string) error {
+		cloneCalled = true
+		return nil
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "load snapshot descriptor")
+	assert.False(t, cloneCalled)
+	assertWorktreeNotCreated(t, repoPath, "fork-missing")
+}
+
+func TestManager_Fork_FailsWhenDescriptorCorrupt(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := model.SnapshotID("1708300800000-corrupt")
+	require.NoError(t, os.WriteFile(
+		filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json"),
+		[]byte("{not json"),
+		0644,
+	))
+
+	mgr := worktree.NewManager(repoPath)
+	_, err := mgr.Fork(snapshotID, "fork-corrupt", func(src, dst string) error {
+		return nil
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "load snapshot descriptor")
+	assertWorktreeNotCreated(t, repoPath, "fork-corrupt")
+}
+
+func copySnapshotTree(src, dst string) error {
+	_, err := engine.NewCopyEngine().Clone(src, dst)
+	return err
 }
 
 func TestManager_Fork_InvalidName(t *testing.T) {
@@ -263,10 +732,11 @@ func TestManager_Fork_InvalidName(t *testing.T) {
 func TestManager_Fork_AlreadyExists(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	mgr := worktree.NewManager(repoPath)
+	snapshotID := createManagerSnapshot(t, repoPath)
 
 	cloneFunc := func(src, dst string) error { return nil }
 
-	_, err := mgr.Fork("1708300800000-a3f7c1b2", "feature", cloneFunc)
+	_, err := mgr.Fork(snapshotID, "feature", cloneFunc)
 	require.NoError(t, err)
 
 	_, err = mgr.Fork("1708300900000-b4d8e2c3", "feature", cloneFunc)
@@ -312,37 +782,39 @@ func TestManager_List_EmptyAdditionalWorktrees(t *testing.T) {
 func TestManager_CreateFromSnapshot_CloneFuncError(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	mgr := worktree.NewManager(repoPath)
+	snapshotID := createManagerSnapshot(t, repoPath)
 
 	// Clone function that fails
 	cloneFunc := func(src, dst string) error {
 		return assert.AnError
 	}
 
-	_, err := mgr.CreateFromSnapshot("from-snap", "1708300800000-a3f7c1b2", cloneFunc)
+	_, err := mgr.CreateFromSnapshot("from-snap", snapshotID, cloneFunc)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "clone snapshot content")
 
 	// Verify cleanup happened - payload directory should not exist
 	payloadPath := filepath.Join(repoPath, "worktrees", "from-snap")
-	assert.NoDirExists(t, payloadPath)
+	assertNoPath(t, payloadPath)
 }
 
 func TestManager_Fork_CloneFuncError(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	mgr := worktree.NewManager(repoPath)
+	snapshotID := createManagerSnapshot(t, repoPath)
 
 	// Clone function that fails
 	cloneFunc := func(src, dst string) error {
 		return assert.AnError
 	}
 
-	_, err := mgr.Fork("1708300800000-a3f7c1b2", "forked", cloneFunc)
+	_, err := mgr.Fork(snapshotID, "forked", cloneFunc)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "clone snapshot content")
 
 	// Verify cleanup happened
 	payloadPath := filepath.Join(repoPath, "worktrees", "forked")
-	assert.NoDirExists(t, payloadPath)
+	assertNoPath(t, payloadPath)
 }
 
 func TestManager_Rename_NonExistentWorktree(t *testing.T) {
@@ -366,17 +838,9 @@ func TestManager_List_WithMalformedWorktreeConfig(t *testing.T) {
 	require.NoError(t, os.MkdirAll(badWorktreeDir, 0755))
 	// Don't create config.json - this will cause LoadWorktreeConfig to fail
 
-	list, err := mgr.List()
-	require.NoError(t, err)
-	// Should skip the malformed worktree and only return main + good
-	assert.Len(t, list, 2)
-	names := make(map[string]bool)
-	for _, cfg := range list {
-		names[cfg.Name] = true
-	}
-	assert.True(t, names["main"])
-	assert.True(t, names["good"])
-	assert.False(t, names["bad"])
+	_, err := mgr.List()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bad")
 }
 
 func TestManager_Create_MkdirPayloadError(t *testing.T) {
@@ -396,9 +860,10 @@ func TestManager_CreateFromSnapshot_WriteConfigError(t *testing.T) {
 	// Skipping for now
 	repoPath := setupTestRepo(t)
 	mgr := worktree.NewManager(repoPath)
+	snapshotID := createManagerSnapshot(t, repoPath)
 
 	cloneFunc := func(src, dst string) error { return nil }
-	cfg, err := mgr.CreateFromSnapshot("test", "1708300800000-a3f7c1b2", cloneFunc)
+	cfg, err := mgr.CreateFromSnapshot("test", snapshotID, cloneFunc)
 	require.NoError(t, err)
 	assert.Equal(t, "test", cfg.Name)
 }
@@ -408,9 +873,10 @@ func TestManager_Fork_WriteConfigError(t *testing.T) {
 	// Skipping for now
 	repoPath := setupTestRepo(t)
 	mgr := worktree.NewManager(repoPath)
+	snapshotID := createManagerSnapshot(t, repoPath)
 
 	cloneFunc := func(src, dst string) error { return nil }
-	cfg, err := mgr.Fork("1708300800000-a3f7c1b2", "test-fork", cloneFunc)
+	cfg, err := mgr.Fork(snapshotID, "test-fork", cloneFunc)
 	require.NoError(t, err)
 	assert.Equal(t, "test-fork", cfg.Name)
 }
@@ -430,25 +896,30 @@ func TestManager_List_ReadDirError(t *testing.T) {
 }
 
 func TestManager_Rename_MainWorktree(t *testing.T) {
-	// Test renaming main worktree (payload doesn't move, only config)
 	repoPath := setupTestRepo(t)
 	mgr := worktree.NewManager(repoPath)
 
-	// Add content to main
 	mainPath := filepath.Join(repoPath, "main")
-	os.WriteFile(filepath.Join(mainPath, "test.txt"), []byte("content"), 0644)
-
-	err := mgr.Rename("main", "renamed-main")
+	mainFile := filepath.Join(mainPath, "test.txt")
+	require.NoError(t, os.WriteFile(mainFile, []byte("content"), 0644))
+	mainConfigPath := filepath.Join(repoPath, ".jvs", "worktrees", "main", "config.json")
+	beforeConfig, err := os.ReadFile(mainConfigPath)
 	require.NoError(t, err)
 
-	// Main payload should still exist at same location
-	_, err = os.Stat(mainPath)
-	require.NoError(t, err)
+	err = mgr.Rename("main", "renamed-main")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "main")
 
-	// Config should be at new location
-	cfg, err := mgr.Get("renamed-main")
+	assert.FileExists(t, mainFile)
+	assert.NoDirExists(t, filepath.Join(repoPath, "worktrees", "renamed-main"))
+	assert.NoDirExists(t, filepath.Join(repoPath, ".jvs", "worktrees", "renamed-main"))
+
+	afterConfig, err := os.ReadFile(mainConfigPath)
 	require.NoError(t, err)
-	assert.Equal(t, "renamed-main", cfg.Name)
+	assert.Equal(t, beforeConfig, afterConfig)
+	cfg, err := mgr.Get("main")
+	require.NoError(t, err)
+	assert.Equal(t, "main", cfg.Name)
 }
 
 func TestManager_Remove_WithContent(t *testing.T) {
@@ -471,6 +942,124 @@ func TestManager_Remove_WithContent(t *testing.T) {
 	assert.NoDirExists(t, contentPath)
 	assert.NoFileExists(t, filepath.Join(contentPath, "file.txt"))
 	assert.NoFileExists(t, filepath.Join(contentPath, "subdir", "nested.txt"))
+}
+
+func TestManager_RemoveRejectsFinalPayloadSymlink(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mgr := worktree.NewManager(repoPath)
+	_, err := mgr.Create("linkpayload", nil)
+	require.NoError(t, err)
+
+	outside := t.TempDir()
+	outsideSentinel := filepath.Join(outside, "outside-keep.txt")
+	writeSentinel(t, outsideSentinel)
+	payloadPath := filepath.Join(repoPath, "worktrees", "linkpayload")
+	require.NoError(t, os.RemoveAll(payloadPath))
+	if err := os.Symlink(outside, payloadPath); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	err = mgr.Remove("linkpayload")
+	require.Error(t, err)
+
+	assertSentinel(t, outsideSentinel)
+	assertSymlinkExists(t, payloadPath)
+	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "worktrees", "linkpayload", "config.json"))
+}
+
+func TestManager_RemoveRejectsFinalConfigSymlinkBeforeRemovingPayload(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mgr := worktree.NewManager(repoPath)
+	_, err := mgr.Create("linkconfig", nil)
+	require.NoError(t, err)
+
+	payloadSentinel := filepath.Join(repoPath, "worktrees", "linkconfig", "payload-keep.txt")
+	writeSentinel(t, payloadSentinel)
+	outside := t.TempDir()
+	outsideSentinel := filepath.Join(outside, "outside-keep.txt")
+	writeSentinel(t, outsideSentinel)
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "config.json"), []byte(`{"name":"linkconfig"}`), 0644))
+	configDir := filepath.Join(repoPath, ".jvs", "worktrees", "linkconfig")
+	require.NoError(t, os.RemoveAll(configDir))
+	if err := os.Symlink(outside, configDir); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	err = mgr.Remove("linkconfig")
+	require.Error(t, err)
+
+	assertSentinel(t, payloadSentinel)
+	assertSentinel(t, outsideSentinel)
+	assertSymlinkExists(t, configDir)
+}
+
+func TestManager_RemoveRejectsFinalConfigFileSymlinkBeforeRemovingPayload(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mgr := worktree.NewManager(repoPath)
+	_, err := mgr.Create("linkconfigfile", nil)
+	require.NoError(t, err)
+
+	payloadSentinel := filepath.Join(repoPath, "worktrees", "linkconfigfile", "payload-keep.txt")
+	writeSentinel(t, payloadSentinel)
+	outsideConfig := filepath.Join(t.TempDir(), "config.json")
+	require.NoError(t, os.WriteFile(outsideConfig, []byte(`{"name":"linkconfigfile"}`), 0644))
+	configPath := filepath.Join(repoPath, ".jvs", "worktrees", "linkconfigfile", "config.json")
+	require.NoError(t, os.Remove(configPath))
+	if err := os.Symlink(outsideConfig, configPath); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	err = mgr.Remove("linkconfigfile")
+	require.Error(t, err)
+
+	assertSentinel(t, payloadSentinel)
+	assertSymlinkExists(t, configPath)
+}
+
+func TestManager_RemoveRejectsPayloadParentSymlink(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mgr := worktree.NewManager(repoPath)
+	name := "escape"
+	outside := t.TempDir()
+	outsidePayloadSentinel := filepath.Join(outside, name, "payload-keep.txt")
+	configSentinel := filepath.Join(repoPath, ".jvs", "worktrees", name, "config-keep.txt")
+	writeSentinel(t, outsidePayloadSentinel)
+	writeSentinel(t, configSentinel)
+	require.NoError(t, os.WriteFile(filepath.Join(repoPath, ".jvs", "worktrees", name, "config.json"), []byte(`{"name":"escape"}`), 0644))
+	require.NoError(t, os.RemoveAll(filepath.Join(repoPath, "worktrees")))
+	if err := os.Symlink(outside, filepath.Join(repoPath, "worktrees")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	err := mgr.Remove(name)
+	require.Error(t, err)
+
+	assertSentinel(t, outsidePayloadSentinel)
+	assertSentinel(t, configSentinel)
+	assertSymlinkExists(t, filepath.Join(repoPath, "worktrees"))
+}
+
+func TestManager_RemoveRejectsConfigParentSymlinkBeforeRemovingPayload(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mgr := worktree.NewManager(repoPath)
+	name := "escape"
+	payloadSentinel := filepath.Join(repoPath, "worktrees", name, "payload-keep.txt")
+	writeSentinel(t, payloadSentinel)
+	outside := t.TempDir()
+	outsideConfigSentinel := filepath.Join(outside, name, "config-keep.txt")
+	writeSentinel(t, outsideConfigSentinel)
+	require.NoError(t, os.WriteFile(filepath.Join(outside, name, "config.json"), []byte(`{"name":"escape"}`), 0644))
+	require.NoError(t, os.RemoveAll(filepath.Join(repoPath, ".jvs", "worktrees")))
+	if err := os.Symlink(outside, filepath.Join(repoPath, ".jvs", "worktrees")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	err := mgr.Remove(name)
+	require.Error(t, err)
+
+	assertSentinel(t, payloadSentinel)
+	assertSentinel(t, outsideConfigSentinel)
+	assertSymlinkExists(t, filepath.Join(repoPath, ".jvs", "worktrees"))
 }
 
 func TestManager_CreateFromSnapshot_MkdirPayloadError(t *testing.T) {
@@ -512,6 +1101,7 @@ func TestManager_CreateFromSnapshot_MkdirConfigError(t *testing.T) {
 	// Test CreateFromSnapshot when MkdirAll fails for config directory
 	repoPath := setupTestRepo(t)
 	mgr := worktree.NewManager(repoPath)
+	snapshotID := createManagerSnapshot(t, repoPath)
 
 	cloneFunc := func(src, dst string) error {
 		// After clone succeeds, config dir creation happens
@@ -523,7 +1113,7 @@ func TestManager_CreateFromSnapshot_MkdirConfigError(t *testing.T) {
 		return nil
 	}
 
-	_, err := mgr.CreateFromSnapshot("test-worktree", "snap-id", cloneFunc)
+	_, err := mgr.CreateFromSnapshot("test-worktree", snapshotID, cloneFunc)
 	assert.Error(t, err)
 }
 
@@ -531,6 +1121,7 @@ func TestManager_Fork_MkdirConfigError(t *testing.T) {
 	// Test Fork when MkdirAll fails for config directory
 	repoPath := setupTestRepo(t)
 	mgr := worktree.NewManager(repoPath)
+	snapshotID := createManagerSnapshot(t, repoPath)
 
 	cloneFunc := func(src, dst string) error {
 		// After clone succeeds, config dir creation happens
@@ -542,7 +1133,7 @@ func TestManager_Fork_MkdirConfigError(t *testing.T) {
 		return nil
 	}
 
-	_, err := mgr.Fork("snap-id", "test-worktree", cloneFunc)
+	_, err := mgr.Fork(snapshotID, "test-worktree", cloneFunc)
 	assert.Error(t, err)
 }
 
@@ -660,4 +1251,125 @@ func TestManager_Rename_PayloadRenameError(t *testing.T) {
 
 	// Cleanup
 	os.Remove(newPayloadPath)
+}
+
+func TestManager_RenameRejectsFinalPayloadSymlinkBeforeMutation(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mgr := worktree.NewManager(repoPath)
+	_, err := mgr.Create("oldlink", nil)
+	require.NoError(t, err)
+
+	outside := t.TempDir()
+	outsideSentinel := filepath.Join(outside, "outside-keep.txt")
+	writeSentinel(t, outsideSentinel)
+	oldPayload := filepath.Join(repoPath, "worktrees", "oldlink")
+	require.NoError(t, os.RemoveAll(oldPayload))
+	if err := os.Symlink(outside, oldPayload); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	err = mgr.Rename("oldlink", "newlink")
+	require.Error(t, err)
+
+	assertSentinel(t, outsideSentinel)
+	assertSymlinkExists(t, oldPayload)
+	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "worktrees", "oldlink", "config.json"))
+	assert.NoDirExists(t, filepath.Join(repoPath, ".jvs", "worktrees", "newlink"))
+}
+
+func TestManager_RenameRejectsFinalConfigSymlinkBeforeMovingPayload(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mgr := worktree.NewManager(repoPath)
+	_, err := mgr.Create("oldconfig", nil)
+	require.NoError(t, err)
+
+	payloadSentinel := filepath.Join(repoPath, "worktrees", "oldconfig", "payload-keep.txt")
+	writeSentinel(t, payloadSentinel)
+	outside := t.TempDir()
+	outsideSentinel := filepath.Join(outside, "outside-keep.txt")
+	writeSentinel(t, outsideSentinel)
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "config.json"), []byte(`{"name":"oldconfig"}`), 0644))
+	oldConfigDir := filepath.Join(repoPath, ".jvs", "worktrees", "oldconfig")
+	require.NoError(t, os.RemoveAll(oldConfigDir))
+	if err := os.Symlink(outside, oldConfigDir); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	err = mgr.Rename("oldconfig", "newconfig")
+	require.Error(t, err)
+
+	assertSentinel(t, payloadSentinel)
+	assertSentinel(t, outsideSentinel)
+	assertSymlinkExists(t, oldConfigDir)
+	assert.NoDirExists(t, filepath.Join(repoPath, ".jvs", "worktrees", "newconfig"))
+}
+
+func TestManager_RenameRejectsFinalConfigFileSymlinkBeforeMovingPayload(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mgr := worktree.NewManager(repoPath)
+	_, err := mgr.Create("oldconfigfile", nil)
+	require.NoError(t, err)
+
+	payloadSentinel := filepath.Join(repoPath, "worktrees", "oldconfigfile", "payload-keep.txt")
+	writeSentinel(t, payloadSentinel)
+	outsideConfig := filepath.Join(t.TempDir(), "config.json")
+	require.NoError(t, os.WriteFile(outsideConfig, []byte(`{"name":"oldconfigfile"}`), 0644))
+	configPath := filepath.Join(repoPath, ".jvs", "worktrees", "oldconfigfile", "config.json")
+	require.NoError(t, os.Remove(configPath))
+	if err := os.Symlink(outsideConfig, configPath); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	err = mgr.Rename("oldconfigfile", "newconfigfile")
+	require.Error(t, err)
+
+	assertSentinel(t, payloadSentinel)
+	assertSymlinkExists(t, configPath)
+	assert.NoDirExists(t, filepath.Join(repoPath, ".jvs", "worktrees", "newconfigfile"))
+}
+
+func TestManager_RenameRejectsPayloadParentSymlinkBeforeOutsideMove(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mgr := worktree.NewManager(repoPath)
+	name := "oldparent"
+	outside := t.TempDir()
+	outsidePayloadSentinel := filepath.Join(outside, name, "payload-keep.txt")
+	writeSentinel(t, outsidePayloadSentinel)
+	require.NoError(t, os.MkdirAll(filepath.Join(repoPath, ".jvs", "worktrees", name), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(repoPath, ".jvs", "worktrees", name, "config.json"), []byte(`{"name":"oldparent"}`), 0644))
+	require.NoError(t, os.RemoveAll(filepath.Join(repoPath, "worktrees")))
+	if err := os.Symlink(outside, filepath.Join(repoPath, "worktrees")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	err := mgr.Rename(name, "newparent")
+	require.Error(t, err)
+
+	assertSentinel(t, outsidePayloadSentinel)
+	assert.NoDirExists(t, filepath.Join(outside, "newparent"))
+	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "worktrees", name, "config.json"))
+}
+
+func TestManager_RenameRejectsConfigParentSymlinkBeforePayloadMove(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mgr := worktree.NewManager(repoPath)
+	name := "oldmeta"
+	payloadSentinel := filepath.Join(repoPath, "worktrees", name, "payload-keep.txt")
+	writeSentinel(t, payloadSentinel)
+	outside := t.TempDir()
+	outsideConfigSentinel := filepath.Join(outside, name, "config-keep.txt")
+	writeSentinel(t, outsideConfigSentinel)
+	require.NoError(t, os.WriteFile(filepath.Join(outside, name, "config.json"), []byte(`{"name":"oldmeta"}`), 0644))
+	require.NoError(t, os.RemoveAll(filepath.Join(repoPath, ".jvs", "worktrees")))
+	if err := os.Symlink(outside, filepath.Join(repoPath, ".jvs", "worktrees")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	err := mgr.Rename(name, "newmeta")
+	require.Error(t, err)
+
+	assertSentinel(t, payloadSentinel)
+	assertSentinel(t, outsideConfigSentinel)
+	assert.NoDirExists(t, filepath.Join(outside, "newmeta"))
+	assertSymlinkExists(t, filepath.Join(repoPath, ".jvs", "worktrees"))
 }

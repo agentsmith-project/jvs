@@ -68,6 +68,9 @@ Use --repair-runtime to execute safe automatic repairs.`,
 
 		if jsonOutput {
 			outputJSON(result)
+			if !result.Healthy {
+				os.Exit(1)
+			}
 			return
 		}
 

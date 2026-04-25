@@ -131,7 +131,8 @@ func TestFind_ByWorktree(t *testing.T) {
 	require.NoError(t, err)
 
 	// Add content to feature worktree
-	featurePath := wtMgr.Path("feature")
+	featurePath, err := wtMgr.Path("feature")
+	require.NoError(t, err)
 	os.WriteFile(filepath.Join(featurePath, "file.txt"), []byte("feature-content"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -559,10 +560,10 @@ func TestLoadDescriptor_CorruptedJSON(t *testing.T) {
 
 	descriptorsDir := filepath.Join(repoPath, ".jvs", "descriptors")
 	require.NoError(t, os.MkdirAll(descriptorsDir, 0755))
-	descriptorPath := filepath.Join(descriptorsDir, "corrupt-snapshot.json")
+	descriptorPath := filepath.Join(descriptorsDir, "1708300800000-deadbeef.json")
 	require.NoError(t, os.WriteFile(descriptorPath, []byte("not valid json at all"), 0644))
 
-	_, err := snapshot.LoadDescriptor(repoPath, "corrupt-snapshot")
+	_, err := snapshot.LoadDescriptor(repoPath, "1708300800000-deadbeef")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "parse descriptor")
 }
@@ -570,7 +571,7 @@ func TestLoadDescriptor_CorruptedJSON(t *testing.T) {
 func TestLoadDescriptor_NonExistent(t *testing.T) {
 	repoPath := setupCatalogTestRepo(t)
 
-	_, err := snapshot.LoadDescriptor(repoPath, "does-not-exist-12345")
+	_, err := snapshot.LoadDescriptor(repoPath, "1708300800000-deadbeef")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }

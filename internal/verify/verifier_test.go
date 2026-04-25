@@ -1,10 +1,14 @@
 package verify_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/jvs-project/jvs/internal/compression"
+	"github.com/jvs-project/jvs/internal/integrity"
 	"github.com/jvs-project/jvs/internal/repo"
 	"github.com/jvs-project/jvs/internal/snapshot"
 	"github.com/jvs-project/jvs/internal/verify"
@@ -30,6 +34,47 @@ func createTestSnapshot(t *testing.T, repoPath string) model.SnapshotID {
 	return desc.SnapshotID
 }
 
+func createCompressedTestSnapshot(t *testing.T, repoPath string) model.SnapshotID {
+	t.Helper()
+	mainPath := filepath.Join(repoPath, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("compressed content"), 0644))
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	creator.SetCompression(compression.LevelDefault)
+	desc, err := creator.Create("main", "compressed", nil)
+	require.NoError(t, err)
+	return desc.SnapshotID
+}
+
+func writeUnsafeSnapshotTrap(t *testing.T, repoPath string, snapshotID model.SnapshotID) {
+	t.Helper()
+
+	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID))
+	require.NoError(t, os.MkdirAll(snapshotDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(snapshotDir, "file.txt"), []byte("trap payload"), 0644))
+
+	payloadHash, err := integrity.ComputePayloadRootHash(snapshotDir)
+	require.NoError(t, err)
+
+	desc := &model.Descriptor{
+		SnapshotID:      snapshotID,
+		WorktreeName:    "main",
+		CreatedAt:       time.Now().UTC(),
+		Engine:          model.EngineCopy,
+		PayloadRootHash: payloadHash,
+		IntegrityState:  model.IntegrityVerified,
+	}
+	checksum, err := integrity.ComputeDescriptorChecksum(desc)
+	require.NoError(t, err)
+	desc.DescriptorChecksum = checksum
+
+	data, err := json.MarshalIndent(desc, "", "  ")
+	require.NoError(t, err)
+	descriptorPath := filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(descriptorPath), 0755))
+	require.NoError(t, os.WriteFile(descriptorPath, data, 0644))
+}
+
 func TestVerifier_VerifySnapshot(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	snapshotID := createTestSnapshot(t, repoPath)
@@ -41,6 +86,89 @@ func TestVerifier_VerifySnapshot(t *testing.T) {
 	assert.True(t, result.ChecksumValid, "checksum should be valid")
 	assert.True(t, result.PayloadHashValid, "payload hash should be valid")
 	assert.False(t, result.TamperDetected, "no tamper should be detected")
+}
+
+func TestVerifier_VerifySnapshotRejectsPathLikeAndNonCanonicalIDs(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	ids := []model.SnapshotID{
+		"../../outside/escape",
+		"/tmp/absolute",
+		"nested/1708300800000-deadbeef",
+		"1708300800000-DEADBEEF",
+		"not-canonical",
+	}
+
+	for _, id := range ids {
+		t.Run(string(id), func(t *testing.T) {
+			writeUnsafeSnapshotTrap(t, repoPath, id)
+
+			v := verify.NewVerifier(repoPath)
+			result, err := v.VerifySnapshot(id, true)
+			require.NoError(t, err)
+			assert.True(t, result.TamperDetected)
+			assert.Equal(t, "critical", result.Severity)
+			assert.NotEmpty(t, result.Error)
+		})
+	}
+}
+
+func TestVerifierVerifySnapshotRejectsFinalSnapshotSymlink(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := model.SnapshotID("1708300800000-deadbeef")
+	writeUnsafeSnapshotTrap(t, repoPath, snapshotID)
+
+	outside := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "file.txt"), []byte("trap payload"), 0644))
+	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID))
+	require.NoError(t, os.RemoveAll(snapshotDir))
+	if err := os.Symlink(outside, snapshotDir); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	result, err := verify.NewVerifier(repoPath).VerifySnapshot(snapshotID, true)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.True(t, result.TamperDetected)
+	assert.Equal(t, "critical", result.Severity)
+	assert.Contains(t, result.Error, "symlink")
+	assert.FileExists(t, filepath.Join(outside, "file.txt"))
+}
+
+func TestVerifier_VerifySnapshot_CompressedPayloadUsesLogicalHash(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := createCompressedTestSnapshot(t, repoPath)
+
+	v := verify.NewVerifier(repoPath)
+	result, err := v.VerifySnapshot(snapshotID, true)
+	require.NoError(t, err)
+
+	assert.True(t, result.ChecksumValid)
+	assert.True(t, result.PayloadHashValid)
+	assert.False(t, result.TamperDetected)
+}
+
+func TestVerifier_VerifySnapshot_DetectsCompressedPayloadTampering(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := createCompressedTestSnapshot(t, repoPath)
+
+	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID))
+	tamperedPath := filepath.Join(snapshotDir, "file.txt.gz")
+	comp := compression.NewCompressor(compression.LevelDefault)
+	plainPath := filepath.Join(snapshotDir, "replacement")
+	require.NoError(t, os.WriteFile(plainPath, []byte("tampered content"), 0644))
+	compressedPath, err := comp.CompressFile(plainPath)
+	require.NoError(t, err)
+	require.NoError(t, os.Rename(compressedPath, tamperedPath))
+	require.NoError(t, os.Remove(plainPath))
+
+	v := verify.NewVerifier(repoPath)
+	result, err := v.VerifySnapshot(snapshotID, true)
+	require.NoError(t, err)
+
+	assert.True(t, result.ChecksumValid)
+	assert.False(t, result.PayloadHashValid)
+	assert.True(t, result.TamperDetected)
+	assert.Equal(t, "critical", result.Severity)
 }
 
 func TestVerifier_VerifyAll(t *testing.T) {
@@ -213,6 +341,20 @@ func TestVerifier_VerifyAll_WithNonDirectoryEntries(t *testing.T) {
 	require.NoError(t, err)
 	// Should only verify the actual snapshot directory, not the file
 	assert.Len(t, results, 1)
+}
+
+func TestVerifier_VerifyAllSkipsTmpAndInvalidSnapshotDirNames(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	validID := createTestSnapshot(t, repoPath)
+
+	writeUnsafeSnapshotTrap(t, repoPath, "1708300800000-deadbeef.tmp")
+	writeUnsafeSnapshotTrap(t, repoPath, "not-canonical")
+
+	v := verify.NewVerifier(repoPath)
+	results, err := v.VerifyAll(false)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, validID, results[0].SnapshotID)
 }
 
 func TestVerifier_VerifyAll_WithDeletedSnapshotsDir(t *testing.T) {

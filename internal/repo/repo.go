@@ -50,6 +50,8 @@ func Init(path string, name string) (*Repo, error) {
 		filepath.Join(jvsDir, "intents"),
 		filepath.Join(jvsDir, "audit"),
 		filepath.Join(jvsDir, "gc"),
+		filepath.Join(jvsDir, "gc", "pins"),
+		filepath.Join(jvsDir, "gc", "tombstones"),
 	}
 
 	for _, dir := range dirs {
@@ -170,13 +172,35 @@ func DiscoverWorktree(cwd string) (*Repo, string, error) {
 }
 
 // WorktreeConfigPath returns the path to a worktree's config.json.
-func WorktreeConfigPath(repoRoot, name string) string {
-	return filepath.Join(repoRoot, JVSDirName, "worktrees", name, "config.json")
+func WorktreeConfigPath(repoRoot, name string) (string, error) {
+	if err := pathutil.ValidateName(name); err != nil {
+		return "", err
+	}
+	return filepath.Join(repoRoot, JVSDirName, "worktrees", name, "config.json"), nil
+}
+
+// WorktreeConfigDirPath returns the metadata directory for a worktree.
+func WorktreeConfigDirPath(repoRoot, name string) (string, error) {
+	if err := pathutil.ValidateName(name); err != nil {
+		return "", err
+	}
+	return filepath.Join(repoRoot, JVSDirName, "worktrees", name), nil
+}
+
+// WorktreesDirPath returns the worktrees control directory after validating it.
+func WorktreesDirPath(repoRoot string) (string, error) {
+	return controlDirPath(repoRoot, "worktrees")
 }
 
 // WriteWorktreeConfig atomically writes a worktree config.
 func WriteWorktreeConfig(repoRoot, name string, cfg *model.WorktreeConfig) error {
-	path := WorktreeConfigPath(repoRoot, name)
+	path, err := safeWorktreeConfigPath(repoRoot, name)
+	if err != nil {
+		return err
+	}
+	if err := rejectSymlinkOrDirLeaf(path); err != nil {
+		return fmt.Errorf("validate worktree config path: %w", err)
+	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal worktree config: %w", err)
@@ -186,7 +210,13 @@ func WriteWorktreeConfig(repoRoot, name string, cfg *model.WorktreeConfig) error
 
 // LoadWorktreeConfig loads a worktree config.
 func LoadWorktreeConfig(repoRoot, name string) (*model.WorktreeConfig, error) {
-	path := WorktreeConfigPath(repoRoot, name)
+	path, err := safeWorktreeConfigPath(repoRoot, name)
+	if err != nil {
+		return nil, err
+	}
+	if err := rejectSymlinkOrDirLeaf(path); err != nil {
+		return nil, fmt.Errorf("read worktree config: %w", err)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read worktree config: %w", err)
@@ -199,11 +229,371 @@ func LoadWorktreeConfig(repoRoot, name string) (*model.WorktreeConfig, error) {
 }
 
 // WorktreePayloadPath returns the payload directory for a worktree.
-func WorktreePayloadPath(repoRoot, name string) string {
-	if name == "main" {
-		return filepath.Join(repoRoot, "main")
+func WorktreePayloadPath(repoRoot, name string) (string, error) {
+	if err := pathutil.ValidateName(name); err != nil {
+		return "", err
 	}
-	return filepath.Join(repoRoot, "worktrees", name)
+	if name == "main" {
+		return filepath.Join(repoRoot, "main"), nil
+	}
+	return filepath.Join(repoRoot, "worktrees", name), nil
+}
+
+func safeWorktreeConfigPath(repoRoot, name string) (string, error) {
+	path, err := WorktreeConfigPath(repoRoot, name)
+	if err != nil {
+		return "", err
+	}
+	if err := validateControlDirs(repoRoot, "worktrees", name); err != nil {
+		return "", fmt.Errorf("validate worktree config path: %w", err)
+	}
+	return path, nil
+}
+
+func rejectSymlinkOrDirLeaf(path string) error {
+	return validateControlLeaf(path, controlLeafRegularFile, true)
+}
+
+// SnapshotsDirPath returns the snapshots control directory after validating it.
+func SnapshotsDirPath(repoRoot string) (string, error) {
+	return controlDirPath(repoRoot, "snapshots")
+}
+
+// IntentsDirPath returns the intents control directory after validating it.
+func IntentsDirPath(repoRoot string) (string, error) {
+	return controlDirPath(repoRoot, "intents")
+}
+
+// DescriptorsDirPath returns the descriptors control directory after validating it.
+func DescriptorsDirPath(repoRoot string) (string, error) {
+	return controlDirPath(repoRoot, "descriptors")
+}
+
+// GCDirPath returns the GC control directory after validating it.
+func GCDirPath(repoRoot string) (string, error) {
+	return controlDirPath(repoRoot, "gc")
+}
+
+// GCTombstonesDirPath returns the tombstones control directory after validating it.
+func GCTombstonesDirPath(repoRoot string) (string, error) {
+	return controlDirPath(repoRoot, "gc", "tombstones")
+}
+
+// GCPinsDirPath returns the documented GC pins control directory after validating it.
+func GCPinsDirPath(repoRoot string) (string, error) {
+	return controlDirPath(repoRoot, "gc", "pins")
+}
+
+// LegacyPinsDirPath returns the legacy pins control directory after validating it.
+func LegacyPinsDirPath(repoRoot string) (string, error) {
+	return controlDirPath(repoRoot, "pins")
+}
+
+// SnapshotPath returns the on-disk snapshot storage path for a canonical ID.
+func SnapshotPath(repoRoot string, snapshotID model.SnapshotID) (string, error) {
+	if err := snapshotID.Validate(); err != nil {
+		return "", err
+	}
+	return controlFilePath(repoRoot, []string{"snapshots"}, string(snapshotID))
+}
+
+// SnapshotPathForRead returns an existing snapshot directory path after
+// rejecting a symlink or wrong-type final leaf.
+func SnapshotPathForRead(repoRoot string, snapshotID model.SnapshotID) (string, error) {
+	path, err := SnapshotPath(repoRoot, snapshotID)
+	if err != nil {
+		return "", err
+	}
+	if err := validateControlLeaf(path, controlLeafDirectory, false); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// SnapshotPathForDelete returns a snapshot directory path after rejecting a
+// symlink or wrong-type final leaf. Missing leaves are allowed for idempotent
+// delete/retry paths.
+func SnapshotPathForDelete(repoRoot string, snapshotID model.SnapshotID) (string, error) {
+	path, err := SnapshotPath(repoRoot, snapshotID)
+	if err != nil {
+		return "", err
+	}
+	if err := validateControlLeaf(path, controlLeafDirectory, true); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// SnapshotTmpPath returns the unpublished temporary snapshot path for a canonical ID.
+func SnapshotTmpPath(repoRoot string, snapshotID model.SnapshotID) (string, error) {
+	if err := snapshotID.Validate(); err != nil {
+		return "", err
+	}
+	return controlFilePath(repoRoot, []string{"snapshots"}, string(snapshotID)+".tmp")
+}
+
+// SnapshotDescriptorPath returns the descriptor path for a canonical snapshot ID.
+func SnapshotDescriptorPath(repoRoot string, snapshotID model.SnapshotID) (string, error) {
+	if err := snapshotID.Validate(); err != nil {
+		return "", err
+	}
+	return controlFilePath(repoRoot, []string{"descriptors"}, string(snapshotID)+".json")
+}
+
+// SnapshotDescriptorPathForRead returns an existing descriptor path after
+// rejecting a symlink or wrong-type final leaf.
+func SnapshotDescriptorPathForRead(repoRoot string, snapshotID model.SnapshotID) (string, error) {
+	path, err := SnapshotDescriptorPath(repoRoot, snapshotID)
+	if err != nil {
+		return "", err
+	}
+	if err := validateControlLeaf(path, controlLeafRegularFile, false); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// SnapshotDescriptorPathForWrite returns a descriptor path after rejecting a
+// symlink or wrong-type existing final leaf. Missing leaves are allowed.
+func SnapshotDescriptorPathForWrite(repoRoot string, snapshotID model.SnapshotID) (string, error) {
+	path, err := SnapshotDescriptorPath(repoRoot, snapshotID)
+	if err != nil {
+		return "", err
+	}
+	if err := validateControlLeaf(path, controlLeafRegularFile, true); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// SnapshotDescriptorPathForDelete returns a descriptor path after rejecting a
+// symlink or wrong-type existing final leaf. Missing leaves are allowed.
+func SnapshotDescriptorPathForDelete(repoRoot string, snapshotID model.SnapshotID) (string, error) {
+	path, err := SnapshotDescriptorPath(repoRoot, snapshotID)
+	if err != nil {
+		return "", err
+	}
+	if err := validateControlLeaf(path, controlLeafRegularFile, true); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// IntentPath returns the intent record path for a canonical snapshot ID.
+func IntentPath(repoRoot string, snapshotID model.SnapshotID) (string, error) {
+	if err := snapshotID.Validate(); err != nil {
+		return "", err
+	}
+	return controlFilePath(repoRoot, []string{"intents"}, string(snapshotID)+".json")
+}
+
+// GCTombstonePath returns the tombstone path for a canonical snapshot ID.
+func GCTombstonePath(repoRoot string, snapshotID model.SnapshotID) (string, error) {
+	if err := snapshotID.Validate(); err != nil {
+		return "", err
+	}
+	return controlFilePath(repoRoot, []string{"gc", "tombstones"}, string(snapshotID)+".json")
+}
+
+// GCTombstonePathForRead returns an existing tombstone path after rejecting a
+// symlink or wrong-type final leaf.
+func GCTombstonePathForRead(repoRoot string, snapshotID model.SnapshotID) (string, error) {
+	path, err := GCTombstonePath(repoRoot, snapshotID)
+	if err != nil {
+		return "", err
+	}
+	if err := validateControlLeaf(path, controlLeafRegularFile, false); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// GCTombstonePathForWrite returns a tombstone path after rejecting a symlink or
+// wrong-type existing final leaf. Missing leaves are allowed.
+func GCTombstonePathForWrite(repoRoot string, snapshotID model.SnapshotID) (string, error) {
+	path, err := GCTombstonePath(repoRoot, snapshotID)
+	if err != nil {
+		return "", err
+	}
+	if err := validateControlLeaf(path, controlLeafRegularFile, true); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// GCTombstonePathForDelete returns a tombstone path after rejecting a symlink or
+// wrong-type existing final leaf. Missing leaves are allowed.
+func GCTombstonePathForDelete(repoRoot string, snapshotID model.SnapshotID) (string, error) {
+	path, err := GCTombstonePath(repoRoot, snapshotID)
+	if err != nil {
+		return "", err
+	}
+	if err := validateControlLeaf(path, controlLeafRegularFile, true); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// GCPinPathForRead returns an existing documented GC pin path after rejecting a
+// symlink or wrong-type final leaf.
+func GCPinPathForRead(repoRoot, pinFileName string) (string, error) {
+	return pinPathForRead(repoRoot, []string{"gc", "pins"}, pinFileName)
+}
+
+// LegacyPinPathForRead returns an existing legacy pin path after rejecting a
+// symlink or wrong-type final leaf.
+func LegacyPinPathForRead(repoRoot, pinFileName string) (string, error) {
+	return pinPathForRead(repoRoot, []string{"pins"}, pinFileName)
+}
+
+func pinPathForRead(repoRoot string, parentComponents []string, pinFileName string) (string, error) {
+	if err := pathutil.ValidateName(pinFileName); err != nil {
+		return "", err
+	}
+	path, err := controlFilePath(repoRoot, parentComponents, pinFileName)
+	if err != nil {
+		return "", err
+	}
+	if err := validateControlLeaf(path, controlLeafRegularFile, false); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// GCPlanPath returns the path for a GC plan ID after rejecting path-like names.
+func GCPlanPath(repoRoot, planID string) (string, error) {
+	if err := pathutil.ValidateName(planID); err != nil {
+		return "", err
+	}
+	return controlFilePath(repoRoot, []string{"gc"}, planID+".json")
+}
+
+// GCPlanPathForRead returns an existing GC plan path after rejecting a symlink
+// or wrong-type final leaf.
+func GCPlanPathForRead(repoRoot, planID string) (string, error) {
+	path, err := GCPlanPath(repoRoot, planID)
+	if err != nil {
+		return "", err
+	}
+	if err := validateControlLeaf(path, controlLeafRegularFile, false); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// GCPlanPathForWrite returns a GC plan path after rejecting a symlink or
+// wrong-type existing final leaf. Missing leaves are allowed.
+func GCPlanPathForWrite(repoRoot, planID string) (string, error) {
+	path, err := GCPlanPath(repoRoot, planID)
+	if err != nil {
+		return "", err
+	}
+	if err := validateControlLeaf(path, controlLeafRegularFile, true); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// GCPlanPathForDelete returns a GC plan path after rejecting a symlink or
+// wrong-type existing final leaf. Missing leaves are allowed.
+func GCPlanPathForDelete(repoRoot, planID string) (string, error) {
+	path, err := GCPlanPath(repoRoot, planID)
+	if err != nil {
+		return "", err
+	}
+	if err := validateControlLeaf(path, controlLeafRegularFile, true); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func controlDirPath(repoRoot string, components ...string) (string, error) {
+	if err := validateControlDirs(repoRoot, components...); err != nil {
+		return "", err
+	}
+	return controlPath(repoRoot, components...), nil
+}
+
+func controlFilePath(repoRoot string, parentComponents []string, leaf string) (string, error) {
+	if err := validateControlDirs(repoRoot, parentComponents...); err != nil {
+		return "", err
+	}
+	parts := append([]string{repoRoot, JVSDirName}, parentComponents...)
+	parts = append(parts, leaf)
+	return filepath.Join(parts...), nil
+}
+
+func controlPath(repoRoot string, components ...string) string {
+	parts := append([]string{repoRoot, JVSDirName}, components...)
+	return filepath.Join(parts...)
+}
+
+type controlLeafKind int
+
+const (
+	controlLeafRegularFile controlLeafKind = iota
+	controlLeafDirectory
+)
+
+func validateControlLeaf(path string, kind controlLeafKind, missingOK bool) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) && missingOK {
+			return nil
+		}
+		return fmt.Errorf("stat control leaf %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("control leaf is symlink: %s", path)
+	}
+
+	switch kind {
+	case controlLeafRegularFile:
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("control leaf is not regular file: %s", path)
+		}
+	case controlLeafDirectory:
+		if !info.IsDir() {
+			return fmt.Errorf("control leaf is not directory: %s", path)
+		}
+	default:
+		return fmt.Errorf("unknown control leaf kind for %s", path)
+	}
+	return nil
+}
+
+func validateControlDirs(repoRoot string, components ...string) error {
+	current := filepath.Clean(repoRoot)
+	if err := validateExistingRealDir(current); err != nil {
+		return err
+	}
+
+	current = filepath.Join(current, JVSDirName)
+	if err := validateExistingRealDir(current); err != nil {
+		return err
+	}
+
+	for _, component := range components {
+		current = filepath.Join(current, component)
+		if err := validateExistingRealDir(current); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateExistingRealDir(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("stat control directory %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("control directory is symlink: %s", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("control path is not directory: %s", path)
+	}
+	return nil
 }
 
 func readFormatVersion(jvsDir string) (int, error) {

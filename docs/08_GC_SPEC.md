@@ -19,7 +19,7 @@ Non-deletable snapshots:
 
 ## Pin model
 
-Note: v0.x does not include a CLI command for pin management. Pins can be created by writing JSON files directly to `.jvs/gc/pins/<pin_id>.json`. A `jvs gc pin/unpin` CLI interface is planned for v1.x.
+Note: v0.x does not include a CLI command for pin management. Pins can be created by writing JSON files directly to `.jvs/gc/pins/<pin_id>.json`. Readers MAY also honor legacy `.jvs/pins/<pin_id>.json` files for backward compatibility, but new pins SHOULD use `.jvs/gc/pins`. A `jvs gc pin/unpin` CLI interface is planned for v1.x.
 
 Pin fields:
 - `pin_id`
@@ -61,3 +61,4 @@ Pin fields:
 - set failed tombstones `gc_state=failed` with reason
 - rerun continues from failed markers safely
 - already deleted items are idempotent, not corruption
+- failed runs MUST return an error and MUST NOT delete the saved plan
