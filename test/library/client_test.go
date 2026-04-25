@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -377,11 +378,12 @@ func TestGC_DryRun(t *testing.T) {
 	plan, err := client.GC(ctx, jvs.GCOptions{DryRun: true})
 	require.NoError(t, err)
 	require.NotNil(t, plan)
-	// HEAD snapshot is protected
-	assert.Contains(t, plan.ProtectedSet, plan.ProtectedSet[0])
+	// Current checkpoint is protected.
+	require.NotEmpty(t, plan.ProtectedCheckpoints)
+	assert.Contains(t, plan.ProtectedCheckpoints, plan.ProtectedCheckpoints[0])
 }
 
-func TestGCOptions_RetentionAffectsPlans(t *testing.T) {
+func TestGC_DryRunPublicJSONHidesV0InternalGCFields(t *testing.T) {
 	dir := testRepoDir(t)
 	client, err := jvs.Init(dir, jvs.InitOptions{Name: "test-repo"})
 	require.NoError(t, err)
@@ -389,29 +391,19 @@ func TestGCOptions_RetentionAffectsPlans(t *testing.T) {
 	ctx := context.Background()
 	orphanID := createOldOrphanSnapshot(t, client, 48*time.Hour)
 
-	basePlan, err := client.GC(ctx, jvs.GCOptions{DryRun: true})
+	plan, err := client.GC(ctx, jvs.GCOptions{DryRun: true})
 	require.NoError(t, err)
-	assert.Contains(t, basePlan.ToDelete, orphanID)
+	assert.Contains(t, plan.ToDelete, orphanID)
 
-	countPlan, err := client.GC(ctx, jvs.GCOptions{
-		DryRun:           true,
-		KeepMinSnapshots: 1,
-	})
+	data, err := json.Marshal(plan)
 	require.NoError(t, err)
-	assert.NotContains(t, countPlan.ToDelete, orphanID)
-	assert.Contains(t, countPlan.ProtectedSet, orphanID)
-	assert.Equal(t, 1, countPlan.RetentionPolicy.KeepMinSnapshots)
-	assert.Equal(t, 1, countPlan.ProtectedByRetention)
-
-	agePlan, err := client.GC(ctx, jvs.GCOptions{
-		DryRun:     true,
-		KeepMinAge: 72 * time.Hour,
-	})
-	require.NoError(t, err)
-	assert.NotContains(t, agePlan.ToDelete, orphanID)
-	assert.Contains(t, agePlan.ProtectedSet, orphanID)
-	assert.Equal(t, 72*time.Hour, agePlan.RetentionPolicy.KeepMinAge)
-	assert.Equal(t, 1, agePlan.ProtectedByRetention)
+	encoded := string(data)
+	assert.Contains(t, encoded, "protected_checkpoints")
+	assert.NotContains(t, encoded, "protected_set")
+	assert.NotContains(t, encoded, "protected_by_pin")
+	assert.NotContains(t, encoded, "protected_by_retention")
+	assert.NotContains(t, encoded, "retention_policy")
+	assert.False(t, strings.Contains(encoded, "keep_min_"))
 }
 
 func TestClientOperations_ReturnContextErrorWhenCanceled(t *testing.T) {

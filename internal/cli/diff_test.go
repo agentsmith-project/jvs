@@ -1,10 +1,10 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -53,15 +53,32 @@ func TestDiff_SimpleIntegration(t *testing.T) {
 	output, err = cmd.CombinedOutput()
 	require.NoError(t, err, "second snapshot failed: %s", output)
 
-	cmd = exec.Command(jvsBin, "history", "--json")
+	cmd = exec.Command(jvsBin, "--json", "checkpoint", "list")
 	cmd.Dir = mainPath
 	output, err = cmd.Output()
-	require.NoError(t, err, "history failed: %s", output)
+	require.NoError(t, err, "checkpoint list failed: %s", output)
 
-	historyLines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	require.GreaterOrEqual(t, len(historyLines), 2)
+	env := decodeContractEnvelope(t, string(output))
+	require.True(t, env.OK, string(output))
+	assert.Equal(t, "checkpoint list", env.Command)
+	assert.NotContains(t, string(env.Data), "snapshot_id")
+	assert.NotContains(t, string(env.Data), "worktree")
 
-	cmd = exec.Command(jvsBin, "diff", "--stat")
+	var checkpoints []publicCheckpointRecord
+	require.NoError(t, json.Unmarshal(env.Data, &checkpoints), string(output))
+	require.GreaterOrEqual(t, len(checkpoints), 2)
+
+	checkpointIDsByNote := make(map[string]string, len(checkpoints))
+	for _, checkpoint := range checkpoints {
+		require.NotEmpty(t, checkpoint.CheckpointID)
+		checkpointIDsByNote[checkpoint.Note] = checkpoint.CheckpointID
+	}
+	firstID := checkpointIDsByNote["first snapshot"]
+	secondID := checkpointIDsByNote["second snapshot"]
+	require.NotEmpty(t, firstID)
+	require.NotEmpty(t, secondID)
+
+	cmd = exec.Command(jvsBin, "diff", "--stat", firstID, secondID)
 	cmd.Dir = mainPath
 	output, err = cmd.CombinedOutput()
 	require.NoError(t, err, "diff failed: %s", output)

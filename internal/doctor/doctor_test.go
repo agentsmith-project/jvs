@@ -893,15 +893,126 @@ func TestDoctor_Check_AuditChain_WithMalformedRecord(t *testing.T) {
 	result, err := doc.Check(true)
 	require.NoError(t, err)
 
-	// Should detect malformed record (warning, not critical)
-	found := false
+	// Should fail closed on malformed audit records.
+	assert.False(t, result.Healthy)
+	assertFindingCode(t, result, "audit", "E_AUDIT_RECORD_MALFORMED")
 	for _, f := range result.Findings {
-		if f.Category == "audit" && f.Severity == "warning" {
-			found = true
+		if f.Category == "audit" && f.ErrorCode == "E_AUDIT_RECORD_MALFORMED" {
+			assert.Equal(t, "critical", f.Severity)
 			assert.Contains(t, f.Description, "malformed record")
+			return
 		}
 	}
-	assert.True(t, found, "expected malformed record finding")
+	t.Fatalf("expected malformed audit finding in %#v", result.Findings)
+}
+
+func TestDoctorStrictAuditVerificationCannotRunIsUnhealthy(t *testing.T) {
+	repoPath := setupTestRepo(t)
+
+	auditPath := filepath.Join(repoPath, ".jvs", "audit", "audit.jsonl")
+	require.NoError(t, os.RemoveAll(auditPath))
+	require.NoError(t, os.Mkdir(auditPath, 0755))
+
+	result, err := doctor.NewDoctor(repoPath).Check(true)
+	require.NoError(t, err)
+
+	assert.False(t, result.Healthy)
+	assertFindingCode(t, result, "audit", "E_AUDIT_SCAN_FAILED")
+	for _, f := range result.Findings {
+		if f.Category == "audit" && f.ErrorCode == "E_AUDIT_SCAN_FAILED" {
+			assert.Equal(t, "error", f.Severity)
+			return
+		}
+	}
+	t.Fatalf("expected audit scan failure finding in %#v", result.Findings)
+}
+
+func TestDoctorStrictUnhealthyFindingsHaveStableErrorCodes(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := createTestSnapshot(t, repoPath)
+	require.NoError(t, os.Remove(filepath.Join(repoPath, ".jvs", "format_version")))
+	require.NoError(t, os.RemoveAll(filepath.Join(repoPath, "main")))
+	require.NoError(t, os.Remove(filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID), ".READY")))
+
+	result, err := doctor.NewDoctor(repoPath).Check(true)
+	require.NoError(t, err)
+	require.False(t, result.Healthy)
+
+	for _, f := range result.Findings {
+		if f.Severity != "error" && f.Severity != "critical" {
+			continue
+		}
+		require.NotEmpty(t, f.ErrorCode, "finding missing error_code: %#v", f)
+	}
+}
+
+func TestDoctorStrictCatchesUnsafeDescriptorEntries(t *testing.T) {
+	tests := []struct {
+		name     string
+		code     string
+		populate func(t *testing.T, descriptorsDir string)
+	}{
+		{
+			name: "invalid_filename",
+			code: "E_DESCRIPTOR_FILENAME_INVALID",
+			populate: func(t *testing.T, descriptorsDir string) {
+				t.Helper()
+				require.NoError(t, os.WriteFile(filepath.Join(descriptorsDir, "not-a-snapshot.json"), []byte("{}"), 0644))
+			},
+		},
+		{
+			name: "symlink",
+			code: "E_DESCRIPTOR_CONTROL_INVALID",
+			populate: func(t *testing.T, descriptorsDir string) {
+				t.Helper()
+				outsideDescriptor := filepath.Join(t.TempDir(), "descriptor.json")
+				require.NoError(t, os.WriteFile(outsideDescriptor, []byte("{}"), 0644))
+				linkPath := filepath.Join(descriptorsDir, string(model.NewSnapshotID())+".json")
+				if err := os.Symlink(outsideDescriptor, linkPath); err != nil {
+					t.Skipf("symlinks not supported: %v", err)
+				}
+			},
+		},
+		{
+			name: "directory",
+			code: "E_DESCRIPTOR_CONTROL_INVALID",
+			populate: func(t *testing.T, descriptorsDir string) {
+				t.Helper()
+				require.NoError(t, os.Mkdir(filepath.Join(descriptorsDir, string(model.NewSnapshotID())+".json"), 0755))
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repoPath := setupTestRepo(t)
+			descriptorsDir := filepath.Join(repoPath, ".jvs", "descriptors")
+			tt.populate(t, descriptorsDir)
+
+			result, err := doctor.NewDoctor(repoPath).Check(true)
+			require.NoError(t, err)
+			assert.False(t, result.Healthy)
+			assertFindingCode(t, result, "descriptor", tt.code)
+		})
+	}
+}
+
+func TestDoctorStrictRejectsSymlinkedIntentsDir(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	outside := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "operation.json"), []byte("{}"), 0644))
+
+	intentsDir := filepath.Join(repoPath, ".jvs", "intents")
+	require.NoError(t, os.RemoveAll(intentsDir))
+	if err := os.Symlink(outside, intentsDir); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	result, err := doctor.NewDoctor(repoPath).Check(true)
+	require.NoError(t, err)
+
+	assert.False(t, result.Healthy)
+	assertFindingCode(t, result, "intent", "E_INTENT_CONTROL_INVALID")
 }
 
 func TestDoctor_Check_AuditChain_NoAuditLog(t *testing.T) {

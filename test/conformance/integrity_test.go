@@ -3,6 +3,8 @@
 package conformance
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -34,6 +36,24 @@ func TestDoctor_Healthy(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "healthy") {
 		t.Errorf("expected 'healthy' in output, got: %s", stdout)
+	}
+}
+
+func TestDoctorStrict_MalformedAuditIsUnhealthy(t *testing.T) {
+	repoPath, _ := initTestRepo(t)
+	runJVSInRepo(t, repoPath, "checkpoint", "audited")
+
+	auditPath := filepath.Join(repoPath, ".jvs", "audit", "audit.jsonl")
+	if err := os.WriteFile(auditPath, []byte("{malformed audit record}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runJVSInRepo(t, repoPath, "doctor", "--strict")
+	if code == 0 {
+		t.Fatalf("doctor --strict accepted malformed audit: stdout=%s stderr=%s", stdout, stderr)
+	}
+	if !strings.Contains(stdout, "E_AUDIT_RECORD_MALFORMED") {
+		t.Fatalf("doctor --strict missing audit error code: %s", stdout)
 	}
 }
 

@@ -1,4 +1,4 @@
-# Security Model (v7.0)
+# Security Model (v0)
 
 ## Scope
 Defines trust, integrity, and operational security requirements for JVS repositories.
@@ -19,16 +19,18 @@ Algorithm identifiers in descriptors MUST match values defined here exactly.
 1. descriptor checksum layer
 2. payload root hash layer
 
-Snapshot integrity requires both layers to pass.
+Checkpoint integrity requires both layers to pass.
 
 ## Verification policy
 - `jvs verify` defaults to strong verification (checksum + payload hash).
+- `jvs verify --all` applies checkpoint-scoped checks to every checkpoint and returns per-checkpoint results.
+- Repository-health checks, including audit chain validation, are performed by `jvs doctor --strict`.
 
 ## Audit requirements
 Every mutating operation MUST append audit record with:
 - actor identity
 - operation type
-- target snapshot/worktree
+- target checkpoint/workspace
 - reason for dangerous operations
 
 ## Audit log format (MUST)
@@ -38,13 +40,13 @@ Path: `.jvs/audit/audit.jsonl`
 
 Format: JSON Lines (one JSON object per line, append-only).
 
-### Record schema (MUST)
+### Internal Record Schema (MUST)
 Each audit record MUST contain:
 - `event_id`: unique event identifier (UUID v4)
 - `timestamp`: ISO 8601 with timezone
 - `operation`: operation type (`snapshot`, `restore`, `gc_run`, `ref_create`, `ref_delete`, `worktree_create`, `worktree_remove`, `worktree_rename`, `doctor_repair`)
 - `actor`: actor identity string
-- `target`: affected snapshot/worktree ID
+- `target`: affected checkpoint/workspace ID
 - `reason`: mandatory for dangerous operations, nullable otherwise
 - `prev_hash`: SHA-256 hash of the previous audit record (empty string for first record)
 - `record_hash`: SHA-256 hash of this record (all fields except `record_hash` itself, serialized as canonical JSON)
@@ -60,11 +62,11 @@ Canonical JSON rules for `record_hash` computation:
 ### Integrity chain (MUST)
 - Each record includes `prev_hash` linking to the prior record, forming a hash chain.
 - `jvs doctor --strict` MUST validate the audit hash chain and report `E_AUDIT_CHAIN_BROKEN` on mismatch.
-- `jvs verify --all` MUST include audit chain integrity in its checks.
+- `jvs verify --all` MUST remain checkpoint-scoped and preserve its per-checkpoint result contract.
 
 ### Rotation (SHOULD)
 - When `audit.jsonl` exceeds 100 MB, rotate to `audit-<timestamp>.jsonl`.
-- Rotated files are portable history state and included in migration.
+- Rotated files are portable audit state and included in migration.
 - Rotation appends a final chain-closing record to the old file and a chain-opening record to the new file with `prev_hash` referencing the old file's last `record_hash`.
 
 ## v0.x accepted risks

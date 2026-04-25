@@ -420,9 +420,75 @@ func TestPublicCLIGCPlanJSONUsesSpecDeletionField(t *testing.T) {
 
 	var plan map[string]any
 	decodePublicData(t, stdout, &plan)
+	assert.Contains(t, plan, "created_at")
+	assert.Contains(t, plan, "protected_checkpoints")
 	assert.Contains(t, plan, "to_delete")
+	assert.IsType(t, []any{}, plan["protected_checkpoints"])
 	assert.IsType(t, []any{}, plan["to_delete"])
 	assert.NotContains(t, plan, "delete_checkpoints")
+	assert.NotContains(t, plan, "protected_by_pin")
+	assert.NotContains(t, plan, "protected_by_retention")
+	assert.NotContains(t, plan, "retention")
+	assert.NotContains(t, plan, "retention_policy")
+}
+
+func TestPublicCLIGCRunJSONMissingPlanUsesStableError(t *testing.T) {
+	repoPath, _ := setupPublicCLIRepo(t, "gcmissingplan")
+
+	stdout, stderr, exitCode := runContractSubprocess(t, repoPath, "--json", "gc", "run", "--plan-id", "missing")
+	require.Equal(t, 1, exitCode, "gc run unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+
+	env := decodeContractEnvelope(t, stdout)
+	assert.False(t, env.OK)
+	assert.Equal(t, "gc run", env.Command)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, "E_GC_PLAN_MISMATCH", env.Error.Code)
+	assert.NotContains(t, env.Error.Message, "control leaf")
+	assert.NotContains(t, env.Error.Message, "stat ")
+	assert.NotContains(t, env.Error.Message, repoPath)
+	assert.NotContains(t, env.Error.Message, ".jvs")
+	assert.JSONEq(t, `null`, string(env.Data))
+}
+
+func TestPublicCLIFullCloneExcludesActiveGCPlans(t *testing.T) {
+	repoPath, mainPath := setupPublicCLIRepo(t, "gcclonesource")
+	require.NoError(t, os.WriteFile("file.txt", []byte("main"), 0644))
+	createCheckpointForPublicCLI(t, "main")
+
+	stdout, err := runPublicCLI(t, "--json", "fork", "old-feature")
+	require.NoError(t, err, stdout)
+	featurePath := filepath.Join(repoPath, "worktrees", "old-feature")
+	require.NoError(t, os.WriteFile(filepath.Join(featurePath, "feature.txt"), []byte("feature"), 0644))
+	require.NoError(t, os.Chdir(featurePath))
+	createCheckpointForPublicCLI(t, "feature")
+	require.NoError(t, os.Chdir(mainPath))
+	stdout, err = runPublicCLI(t, "--json", "workspace", "remove", "old-feature", "--force")
+	require.NoError(t, err, stdout)
+
+	planOut, err := runPublicCLI(t, "--json", "gc", "plan")
+	require.NoError(t, err, planOut)
+	var plan map[string]any
+	decodePublicData(t, planOut, &plan)
+	planID, _ := plan["plan_id"].(string)
+	require.NotEmpty(t, planID)
+	require.NotZero(t, plan["candidate_count"])
+
+	dest := filepath.Join(filepath.Dir(repoPath), "gcclonedest")
+	cloneOut, err := runPublicCLI(t, "--json", "clone", repoPath, dest, "--scope", "full")
+	require.NoError(t, err, cloneOut)
+	require.NoFileExists(t, filepath.Join(dest, ".jvs", "gc", planID+".json"))
+
+	stdout, stderr, exitCode := runContractSubprocess(t, dest, "--json", "gc", "run", "--plan-id", planID)
+	require.Equal(t, 1, exitCode, "cloned gc run unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	env := decodeContractEnvelope(t, stdout)
+	assert.False(t, env.OK)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, "E_GC_PLAN_MISMATCH", env.Error.Code)
+	assert.Contains(t, env.Error.Message, "not found")
+	assert.NotContains(t, env.Error.Message, repoPath)
+	assert.NotContains(t, env.Error.Message, dest)
 }
 
 func TestPublicCLIWorkspaceRemoveRejectsDirtyByDefault(t *testing.T) {
@@ -748,6 +814,9 @@ func assertPublicJSONDataOmitsInternalContractFields(t *testing.T, stdout string
 		"head_snapshot",
 		"latest_snapshot",
 		"keep_min_snapshots",
+		"protected_by_pin",
+		"protected_by_retention",
+		"retention",
 	} {
 		assert.NotContains(t, data, forbidden)
 	}

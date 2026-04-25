@@ -132,8 +132,11 @@ func TestGC_DeterministicPlan(t *testing.T) {
 
 	// Plans should be identical
 	// Compare key fields that should be deterministic
-	if !strings.Contains(plan1Out, `"protected_by_pin"`) || !strings.Contains(plan2Out, `"protected_by_pin"`) {
-		t.Error("plan should contain protected_by_pin field")
+	if strings.Contains(plan1Out, `"protected_by_pin"`) || strings.Contains(plan2Out, `"protected_by_pin"`) {
+		t.Error("v0 plan should not expose protected_by_pin field")
+	}
+	if !strings.Contains(plan1Out, `"protected_by_lineage"`) || !strings.Contains(plan2Out, `"protected_by_lineage"`) {
+		t.Error("plan should contain protected_by_lineage field")
 	}
 
 	// Both should have same candidate count
@@ -277,8 +280,8 @@ func TestGC_PinExpiry(t *testing.T) {
 	}
 }
 
-// TestGC_RetentionPolicy tests GC with retention policy
-func TestGC_RetentionPolicy(t *testing.T) {
+// TestGC_V0LineagePolicy tests v0 GC protection without public retention policy fields.
+func TestGC_V0LineagePolicy(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 	mainPath := filepath.Join(repoPath, "main")
 
@@ -288,20 +291,19 @@ func TestGC_RetentionPolicy(t *testing.T) {
 		runJVSInRepo(t, repoPath, "checkpoint", "checkpoint")
 	}
 
-	// Run GC plan - it should protect recent snapshots
+	// Run GC plan - active workspace lineage should protect these snapshots.
 	planOut, stderr, code := runJVSInRepo(t, repoPath, "gc", "plan", "--json")
 	if code != 0 {
 		t.Fatalf("gc plan failed: %s", stderr)
 	}
 
-	t.Logf("Retention policy GC plan: %s", planOut)
+	t.Logf("v0 lineage GC plan: %s", planOut)
 
 	// The plan should show protection counts
-	if !strings.Contains(planOut, `"protected_by_pin"`) {
-		t.Error("plan should contain protected_by_pin field")
+	if strings.Contains(planOut, `"protected_by_pin"`) || strings.Contains(planOut, `"protected_by_retention"`) || strings.Contains(planOut, `"retention"`) {
+		t.Error("v0 plan should not expose pin or retention policy fields")
 	}
 	if !strings.Contains(planOut, `"protected_by_lineage"`) {
 		t.Error("plan should contain protected_by_lineage field")
 	}
-	// Note: protected_by_retention may be 0 if policy is not configured
 }

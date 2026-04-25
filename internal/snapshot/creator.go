@@ -115,6 +115,9 @@ func (c *Creator) createPartial(worktreeName, note string, tags []string, paths 
 	if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(payloadPath); err != nil {
 		return nil, err
 	}
+	if err := c.auditLogger.EnsureAppendable(); err != nil {
+		return nil, fmt.Errorf("audit log not appendable: %w", err)
+	}
 
 	// Step 3: Create intent record (for crash recovery)
 	intentPath, err := c.writeCreateIntent(snapshotID, worktreeName)
@@ -141,7 +144,9 @@ func (c *Creator) createPartial(worktreeName, note string, tags []string, paths 
 	removeSnapshotIntent(intentPath)
 
 	// Step 16: Write audit log
-	c.appendCreateAudit(worktreeName, snapshotID, note, desc.DescriptorChecksum, partialPaths)
+	if err := c.appendCreateAudit(worktreeName, snapshotID, note, desc.DescriptorChecksum, partialPaths); err != nil {
+		return nil, err
+	}
 
 	return desc, nil
 }
@@ -423,7 +428,7 @@ func removeSnapshotIntent(intentPath string) {
 	}
 }
 
-func (c *Creator) appendCreateAudit(worktreeName string, snapshotID model.SnapshotID, note string, checksum model.HashValue, partialPaths []string) {
+func (c *Creator) appendCreateAudit(worktreeName string, snapshotID model.SnapshotID, note string, checksum model.HashValue, partialPaths []string) error {
 	auditData := map[string]any{
 		"engine":   string(c.engineType),
 		"note":     note,
@@ -433,9 +438,9 @@ func (c *Creator) appendCreateAudit(worktreeName string, snapshotID model.Snapsh
 		auditData["partial_paths"] = partialPaths
 	}
 	if err := c.auditLogger.Append(model.EventTypeSnapshotCreate, worktreeName, snapshotID, auditData); err != nil {
-		// Non-fatal, just log
-		fmt.Fprintf(os.Stderr, "warning: failed to write audit log: %v\n", err)
+		return fmt.Errorf("write audit log: %w", err)
 	}
+	return nil
 }
 
 // validateAndNormalizePaths validates and normalizes the partial snapshot paths.

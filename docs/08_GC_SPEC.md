@@ -1,62 +1,83 @@
-# GC Spec (v7.0)
+# GC Spec (v0)
 
 ## Goal
-Control snapshot storage growth without breaking recoverability.
+Control checkpoint storage growth without breaking recoverability.
+
+v0 GC is deliberately small: it exposes only a two-stage workflow:
+
+```bash
+jvs gc plan
+jvs gc run --plan-id <id>
+```
+
+There are no public pin commands, retention flags, tag-retention rules, partial
+cleanup modes, or compression-specific cleanup modes in v0.
 
 ## Objects
-- snapshot: `.jvs/snapshots/<id>/`
+- checkpoint payload: `.jvs/snapshots/<id>/`
 - descriptor: `.jvs/descriptors/<id>.json`
-- pin: retention protection entry
-- plan: deterministic deletion proposal
-- tombstone: pending-delete marker
+- plan: deletion proposal written under `.jvs/gc/`
+- tombstone: pending or completed delete marker under `.jvs/gc/tombstones/`
 
-## Protection rules (MUST)
-Non-deletable snapshots:
-- current heads of all worktrees
-- ancestors reachable from protected heads
-- pinned snapshots
-- snapshots referenced by active intents
+Active GC plans are runtime state. A plan is bound to the repository identity
+that created it and must not be treated as portable migration state. Full
+repository clone excludes active plan files under `.jvs/gc/*.json`.
 
-## Pin model
+## Protection Rules (MUST)
+Non-deletable checkpoints:
+- current, latest, and base checkpoints of all live workspaces
+- ancestors reachable from those live workspace roots
+- checkpoints referenced by active operation records in `.jvs/intents/`
 
-Note: v0.x does not include a CLI command for pin management. Pins can be created by writing JSON files directly to `.jvs/gc/pins/<pin_id>.json`. Readers MAY also honor legacy `.jvs/pins/<pin_id>.json` files for backward compatibility, but new pins SHOULD use `.jvs/gc/pins`. A `jvs gc pin/unpin` CLI interface is planned for v1.x.
-
-Pin fields:
-- `pin_id`
-- `snapshot_id`
-- `reason`
-- `created_at`
-- `expires_at` (nullable)
-
-## Retention policy
-- `keep_last_n`
-- `keep_days`
-- `keep_tag_prefixes`
-- `max_repo_bytes` (optional)
+Removed workspaces no longer protect their former checkpoint lineage. Such
+orphaned checkpoints can appear in `to_delete` immediately after planning.
 
 ## `jvs gc plan` (MUST)
-- read-only
-- deterministic output for fixed inputs
-- writes plan metadata with `plan_id`
-- JSON includes:
+- accepts no positional arguments
+- computes candidates without deleting data
+- writes a plan with:
+  - schema version
   - `plan_id`
+  - creating `repo_id`
+  - candidate checkpoint IDs
+  - protected lineage count
+  - estimated reclaimable bytes from payload plus descriptor files
+- fails without writing a plan when the audit log cannot be safely extended
+- appends a `gc_plan` audit event after writing a successful plan
+- human output starts with `Plan ID: <id>`
+- JSON `data` includes:
+  - `plan_id`
+  - `created_at`
+  - `protected_checkpoints`
   - `candidate_count`
-  - `protected_by_pin`
   - `protected_by_lineage`
+  - `to_delete`
   - `deletable_bytes_estimate`
 
-## `jvs gc run --plan-id <id>` two-phase protocol (MUST)
+`protected_checkpoints` contains the public checkpoint IDs kept by v0 GC safety
+rules: live workspace roots, their ancestors, and checkpoints referenced by
+active operation records. It is not a pin list and does not imply any public
+retention policy.
+
+Public v0 JSON must not expose pin, retention, or future policy fields.
+
+## `jvs gc run --plan-id <id>` Two-Phase Protocol (MUST)
+`gc run` accepts no positional arguments.
+
 ### Phase A: mark
-1. load accepted plan id
-2. revalidate candidate set equality; else fail `E_GC_PLAN_MISMATCH`
-3. write tombstones with `gc_state=marked`
+1. load the requested plan
+2. verify plan schema, `plan_id`, and repository identity
+3. revalidate candidate set equality; else fail `E_GC_PLAN_MISMATCH`
+4. write tombstones with `gc_state=marked`
 
 ### Phase B: commit
-4. delete snapshot/descriptor pair per tombstone
-5. write commit record with `gc_state=committed`
-6. append batch audit event
+5. delete checkpoint payload and descriptor files for each pending tombstone
+6. write commit record with `gc_state=committed`
+7. append batch audit event
 
-## Failure handling
+## Failure Handling
+- missing, stale, repository-mismatched, or self-mismatched plans fail with
+  `E_GC_PLAN_MISMATCH`
 - if commit fails mid-batch, stop immediately
 - set failed tombstones `gc_state=failed` with reason
 - rerun continues from failed markers safely

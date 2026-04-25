@@ -80,21 +80,13 @@ type publicDoctorRepair struct {
 }
 
 type publicGCPlan struct {
-	PlanID                 string                `json:"plan_id"`
-	CreatedAt              time.Time             `json:"created_at"`
-	ProtectedCheckpoints   []string              `json:"protected_checkpoints"`
-	ProtectedByPin         int                   `json:"protected_by_pin"`
-	ProtectedByLineage     int                   `json:"protected_by_lineage"`
-	ProtectedByRetention   int                   `json:"protected_by_retention"`
-	CandidateCount         int                   `json:"candidate_count"`
-	ToDelete               []string              `json:"to_delete"`
-	DeletableBytesEstimate int64                 `json:"deletable_bytes_estimate"`
-	Retention              publicRetentionPolicy `json:"retention"`
-}
-
-type publicRetentionPolicy struct {
-	KeepMinCheckpoints int    `json:"keep_min_checkpoints"`
-	KeepMinAge         string `json:"keep_min_age"`
+	PlanID                 string    `json:"plan_id"`
+	CreatedAt              time.Time `json:"created_at"`
+	ProtectedCheckpoints   []string  `json:"protected_checkpoints"`
+	ProtectedByLineage     int       `json:"protected_by_lineage"`
+	CandidateCount         int       `json:"candidate_count"`
+	ToDelete               []string  `json:"to_delete"`
+	DeletableBytesEstimate int64     `json:"deletable_bytes_estimate"`
 }
 
 func publicCheckpoint(desc *model.Descriptor) publicCheckpointRecord {
@@ -219,16 +211,10 @@ func publicGC(plan *model.GCPlan) publicGCPlan {
 		PlanID:                 plan.PlanID,
 		CreatedAt:              plan.CreatedAt,
 		ProtectedCheckpoints:   publicCheckpointIDs(plan.ProtectedSet),
-		ProtectedByPin:         plan.ProtectedByPin,
 		ProtectedByLineage:     plan.ProtectedByLineage,
-		ProtectedByRetention:   plan.ProtectedByRetention,
 		CandidateCount:         plan.CandidateCount,
 		ToDelete:               publicCheckpointIDs(plan.ToDelete),
 		DeletableBytesEstimate: plan.DeletableBytesEstimate,
-		Retention: publicRetentionPolicy{
-			KeepMinCheckpoints: plan.RetentionPolicy.KeepMinSnapshots,
-			KeepMinAge:         plan.RetentionPolicy.KeepMinAge.String(),
-		},
 	}
 }
 

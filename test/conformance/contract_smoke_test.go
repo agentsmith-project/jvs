@@ -101,22 +101,12 @@ func TestContract_GCPlanJSONUsesPublicSpecFields(t *testing.T) {
 	}
 	data := decodeContractSmokeDataMap(t, stdout)
 
-	for _, field := range []string{
-		"plan_id",
-		"protected_by_pin",
-		"protected_by_lineage",
-		"to_delete",
-		"deletable_bytes_estimate",
-	} {
-		if _, ok := data[field]; !ok {
-			t.Fatalf("gc plan JSON missing required field %q: %s", field, stdout)
-		}
-	}
+	assertContractGCPlanJSONDataKeys(t, data, stdout)
 	if _, ok := data["to_delete"].([]any); !ok {
 		t.Fatalf("gc plan to_delete must be an array: %#v\n%s", data["to_delete"], stdout)
 	}
-	if _, ok := data["delete_checkpoints"]; ok {
-		t.Fatalf("gc plan JSON exposed non-spec field delete_checkpoints: %s", stdout)
+	if _, ok := data["protected_checkpoints"].([]any); !ok {
+		t.Fatalf("gc plan protected_checkpoints must be an array: %#v\n%s", data["protected_checkpoints"], stdout)
 	}
 }
 
@@ -469,6 +459,48 @@ func TestContract_CloneCurrentJSONSeparatesTransferFromMaterializationEngine(t *
 	}
 }
 
+func TestContract_CloneFullRejectsCorruptedSourceRepository(t *testing.T) {
+	dir := t.TempDir()
+	if stdout, stderr, code := runJVS(t, dir, "init", "source"); code != 0 {
+		t.Fatalf("init source failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	repoPath := filepath.Join(dir, "source")
+	if err := os.WriteFile(filepath.Join(repoPath, "main", "file.txt"), []byte("v1"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	checkpointOut, stderr, code := runJVSInRepo(t, repoPath, "--json", "checkpoint", "source checkpoint")
+	if code != 0 {
+		t.Fatalf("checkpoint failed: stdout=%s stderr=%s", checkpointOut, stderr)
+	}
+	checkpointID, _ := decodeContractSmokeDataMap(t, checkpointOut)["checkpoint_id"].(string)
+	if checkpointID == "" {
+		t.Fatalf("checkpoint output missing checkpoint_id: %s", checkpointOut)
+	}
+	if err := os.WriteFile(filepath.Join(repoPath, ".jvs", "snapshots", checkpointID, "tampered.txt"), []byte("tampered"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	dest := filepath.Join(dir, "dest")
+	stdout, stderr, code := runJVS(t, dir, "--json", "clone", repoPath, dest, "--scope", "full")
+	if code == 0 {
+		t.Fatalf("clone full unexpectedly accepted corrupted source: stdout=%s stderr=%s", stdout, stderr)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("clone full JSON error wrote stderr: %q", stderr)
+	}
+	env := decodeContractSmokeEnvelope(t, stdout)
+	if env.OK {
+		t.Fatalf("clone full corrupted-source returned ok envelope: %s", stdout)
+	}
+	errData, ok := env.Error.(map[string]any)
+	if !ok || errData["code"] != "E_PAYLOAD_HASH_MISMATCH" {
+		t.Fatalf("unexpected clone full corrupted-source error: %#v\n%s", env.Error, stdout)
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatalf("clone full created destination despite corrupted source: %v", err)
+	}
+}
+
 func TestContract_JSONArgValidationReportsCommand(t *testing.T) {
 	stdout, stderr, code := runJVS(t, t.TempDir(), "--json", "diff")
 	if code == 0 {
@@ -654,7 +686,7 @@ func TestContract_CapabilityJSONIncludesMetadataPreservationAndPerformanceClass(
 	if !ok {
 		t.Fatalf("capability metadata_preservation must be an object: %s", stdout)
 	}
-	for _, field := range []string{"symlinks", "hardlinks", "mode", "timestamps", "xattrs", "acls"} {
+	for _, field := range []string{"symlinks", "hardlinks", "mode", "timestamps", "ownership", "xattrs", "acls"} {
 		if value, _ := metadata[field].(string); value == "" {
 			t.Fatalf("capability metadata_preservation.%s must be non-empty: %s", field, stdout)
 		}
@@ -837,11 +869,32 @@ func assertContractDataOmitsInternalFields(t *testing.T, stdout string) {
 		"head_snapshot",
 		"latest_snapshot",
 		"keep_min_snapshots",
+		"protected_by_pin",
+		"protected_by_retention",
+		"retention",
 	} {
 		if strings.Contains(data, forbidden) {
 			t.Fatalf("public JSON leaked %q:\n%s", forbidden, stdout)
 		}
 	}
+}
+
+func assertContractGCPlanJSONDataKeys(t *testing.T, data map[string]any, stdout string) {
+	t.Helper()
+	for _, field := range forbiddenPublicGCJSONFieldNames() {
+		if _, ok := data[field]; ok {
+			t.Fatalf("gc plan JSON exposed non-public field %q: %s", field, stdout)
+		}
+	}
+	assertSameStringSet(t, "gc plan JSON data keys", stringMapKeys(data), publicGCPlanJSONFields())
+}
+
+func stringMapKeys(data map[string]any) []string {
+	keys := make([]string, 0, len(data))
+	for key := range data {
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 func makeDescriptorsOldForContract(t *testing.T, repoPath string) {

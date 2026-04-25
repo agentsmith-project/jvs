@@ -1,90 +1,84 @@
-# Restore Spec (v7.0)
+# Restore Spec (v0)
 
 ## Overview
 
-The `restore` command has a single behavior: **inplace restore** of a worktree to a specific snapshot.
+`jvs restore` materializes a checkpoint into the targeted workspace. Restore is
+in place: it replaces the live workspace contents and moves `current` to the
+requested checkpoint.
 
-After restore, the worktree enters **detached state** (unless restoring to HEAD).
+If `current` differs from `latest` after a historical restore, checkpoint
+creation is blocked to preserve linear workspace lineage. Use `jvs fork` to
+continue from that historical checkpoint in another workspace.
 
 ## Command
 
-```
-jvs restore <snapshot-id>
-jvs restore HEAD
+```bash
+jvs restore <ref|current|latest> [--discard-dirty|--include-working] [--json]
 ```
 
-### Arguments
+## Refs
 
-- `<snapshot-id>`: The snapshot to restore to. Can be:
-  - Full snapshot ID
-  - Short ID prefix
-  - Tag name
-  - Note prefix (fuzzy match)
-- `HEAD`: Special keyword to restore to the latest snapshot (exit detached state)
+`<ref>` may be:
+- `current`
+- `latest`
+- a full checkpoint ID
+- a unique checkpoint ID prefix
+- an exact tag that resolves to one checkpoint
+
+`dirty` is not a checkpoint ref. Notes/messages are not refs.
+
+## Dirty Safety
+
+Restore refuses to overwrite dirty workspace contents by default.
+
+- `--include-working` creates a checkpoint for dirty work before restoring.
+- `--discard-dirty` discards dirty work and restores the target checkpoint.
+- `--include-working` and `--discard-dirty` are mutually exclusive.
 
 ## Behavior
 
-### Default Restore (inplace)
+1. Resolve the requested ref to one checkpoint.
+2. Verify that the checkpoint descriptor exists and passes integrity checks.
+3. Apply dirty-safety handling.
+4. Atomically replace workspace contents with checkpoint contents.
+5. Update the workspace `current` checkpoint to the restored checkpoint.
+6. Leave `latest` as the newest checkpoint on the workspace line.
 
-1. Validate snapshot exists and passes integrity check.
-2. Atomically replace worktree content with snapshot content.
-3. Update worktree's `head_snapshot_id` to the restored snapshot.
-4. Worktree is now in **detached state** (unless this is the latest snapshot).
-
-### Restore HEAD
-
-1. Look up the worktree's `latest_snapshot_id`.
-2. Perform restore to that snapshot.
-3. Worktree is now at **HEAD state**.
-
-## Detached State
-
-A worktree is in **detached state** when `head_snapshot_id != latest_snapshot_id`.
-
-In detached state:
-- **Cannot create snapshots** - must use `worktree fork` first
-- Can still modify files (but cannot save changes via snapshot)
-- Can navigate to other snapshots via `restore`
-- Can return to HEAD via `restore HEAD`
+Restoring `latest` returns the workspace to its newest checkpoint.
 
 ## Safety
 
-Restore is **safe by default**:
-- No data is lost - all snapshots are preserved
-- The lineage chain remains intact
-- GC will not delete snapshots in the lineage
+Restore is safe by default:
+- existing checkpoints are preserved
+- the lineage chain remains intact
+- v0 GC continues to protect checkpoints reachable from live workspace roots
 
 ## Examples
 
 ```bash
-# Restore to specific snapshot
+# Restore to a specific checkpoint
 jvs restore 1771589366482-abc12345
 
-# Restore by tag
+# Restore by exact tag
 jvs restore v1.0
 
-# Return to latest state
-jvs restore HEAD
+# Return to the latest checkpoint
+jvs restore latest
 
-# After restore, create branch if you want to continue working
-jvs restore v1.0              # Now in detached state
-jvs worktree fork hotfix-123  # Create new worktree from here
+# Continue from a historical checkpoint in another workspace
+jvs fork v1.0 hotfix-123
 ```
 
 ## Error Handling
 
 | Error | Cause | Resolution |
 |-------|-------|------------|
-| Snapshot not found | Invalid ID or tag | Use `history` to find valid IDs |
-| Cannot snapshot in detached state | Attempted `snapshot` while detached | Use `worktree fork` or `restore HEAD` |
+| Checkpoint not found | Invalid ID, ambiguous prefix, or unresolved tag | Use `jvs checkpoint list` to find valid IDs |
+| Dirty workspace | Restore would overwrite uncheckpointed changes | Use `--include-working` or `--discard-dirty` intentionally |
+| Current differs from latest | Attempted `jvs checkpoint` after restoring an older checkpoint | Use `jvs restore latest` or create another workspace with `jvs fork` |
 
-## Migration from v6.x
+## v0 Boundaries
 
-In v6.x, `restore` had two modes:
-- Default: created new worktree (`SafeRestore`)
-- `--inplace --force --reason`: overwrote current worktree
-
-In v7.0:
-- `restore` always does inplace
-- Use `worktree fork` to create new worktree from snapshot
-- No more `--inplace`, `--force`, `--reason` flags
+The stable v0 restore contract does not include note-prefix refs, interactive
+restore selection, or legacy restore flags such as `--inplace`, `--force`, and
+`--reason`.

@@ -1,6 +1,6 @@
 # JVS Quick Start: AI Agent Sandbox
 
-**Version:** v7.0
+**Version:** v0 public contract
 **Last Updated:** 2026-02-23
 
 ---
@@ -338,7 +338,7 @@ python agent.py --stage 3
 jvs checkpoint "Stage 3 complete" --tag stage3
 
 # If stage 3 fails, go back to stage 2
-jvs restore --latest-tag stage2
+jvs restore stage2
 # Try different approach...
 ```
 

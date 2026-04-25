@@ -171,7 +171,14 @@ func cloneDirectory(source, dest string, plan *engine.TransferPlan) (*engine.Clo
 
 func createInitialCheckpoint(repoRoot, note string, tags []string) (*model.Descriptor, error) {
 	creator := snapshot.NewCreator(repoRoot, detectEngine(repoRoot))
-	return creator.Create("main", note, tags)
+	desc, err := creator.Create("main", note, tags)
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyLifecycleCheckpoint(repoRoot, desc.SnapshotID); err != nil {
+		return nil, err
+	}
+	return desc, nil
 }
 
 func effectiveTransferMode(engineType model.EngineType, result *engine.CloneResult) string {

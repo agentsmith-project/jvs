@@ -171,7 +171,7 @@ Rename a workspace in the resolved repo.
 ### `jvs workspace remove <name> [--force] [--json]`
 
 Remove a workspace payload and metadata. Checkpoints remain available until
-retention cleanup removes unprotected data. `--force` is required when the
+GC removes unprotected data. `--force` is required when the
 workspace current checkpoint differs from latest.
 
 ## Checkpoint Commands
@@ -254,15 +254,23 @@ available repair actions.
 
 ### `jvs gc plan [--json]`
 
-Compute retention cleanup candidates without deleting them.
+Compute cleanup candidates without deleting them. v0 GC protects live workspace
+lineage and active operation records; it does not expose public pin or retention
+policy fields.
 
 Required `data` fields:
 
 - `plan_id`
-- `protected_by_pin`
+- `created_at`: plan creation timestamp
+- `protected_checkpoints`: checkpoint IDs protected by v0 GC safety rules
+- `candidate_count`
 - `protected_by_lineage`
 - `to_delete`: checkpoint IDs that would be deleted by `gc run`
 - `deletable_bytes_estimate`
+
+`protected_checkpoints` is informational and contains the public checkpoint IDs
+that v0 GC kept because they are reachable from live workspace roots or active
+operation records. It is not a pin, tag-retention, or retention-policy surface.
 
 ### `jvs gc run --plan-id <id>`
 

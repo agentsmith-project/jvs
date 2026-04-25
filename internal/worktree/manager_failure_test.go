@@ -180,6 +180,29 @@ func TestManager_SetLatestPropagatesUncertainConfigWrite(t *testing.T) {
 	assert.Equal(t, snapshotID, cfg.LatestSnapshotID)
 }
 
+func TestManager_RemoveFailsClosedWhenAuditLogMalformed(t *testing.T) {
+	repoPath := setupFailureTestRepo(t)
+	mgr := NewManager(repoPath)
+	_, err := mgr.Create("audit-blocked", nil)
+	require.NoError(t, err)
+
+	payloadPath := filepath.Join(repoPath, "worktrees", "audit-blocked")
+	require.NoError(t, os.WriteFile(filepath.Join(payloadPath, "payload.txt"), []byte("keep"), 0644))
+	configPath := filepath.Join(repoPath, ".jvs", "worktrees", "audit-blocked", "config.json")
+	require.FileExists(t, configPath)
+
+	auditPath := filepath.Join(repoPath, ".jvs", "audit", "audit.jsonl")
+	require.NoError(t, os.MkdirAll(filepath.Dir(auditPath), 0755))
+	require.NoError(t, os.WriteFile(auditPath, []byte("{malformed audit record}\n"), 0644))
+
+	err = mgr.Remove("audit-blocked")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "audit")
+
+	assert.FileExists(t, filepath.Join(payloadPath, "payload.txt"))
+	assert.FileExists(t, configPath)
+}
+
 func TestManager_RenameDefaultRenamePathIsDurableNoReplace(t *testing.T) {
 	fn := runtime.FuncForPC(reflect.ValueOf(renamePath).Pointer())
 	require.NotNil(t, fn)

@@ -32,16 +32,18 @@ type Config struct {
 	// ProgressEnabled enables progress bars by default.
 	ProgressEnabled *bool `yaml:"progress_enabled,omitempty"`
 
-	// Retention configures garbage collection behavior.
+	// Retention preserves legacy YAML compatibility for internal GC policy
+	// conversion. The v0 public CLI does not expose retention configuration.
 	Retention *RetentionPolicy `yaml:"retention,omitempty"`
 }
 
-// RetentionPolicy configures GC retention behavior.
+// RetentionPolicy is a legacy config shape for optional internal GC retention.
+// Unset or invalid values fall back to model.DefaultRetentionPolicy().
 type RetentionPolicy struct {
 	// Keep is the minimum number of snapshots to keep.
 	Keep int `yaml:"keep,omitempty"`
 
-	// Within is the minimum age before snapshots can be pruned (e.g., "24h", "7d").
+	// Within is the minimum age before snapshots can be pruned (e.g., "24h", "168h").
 	Within string `yaml:"within,omitempty"`
 }
 
@@ -166,7 +168,7 @@ func (c *Config) GetProgressEnabled() *bool {
 	return c.ProgressEnabled
 }
 
-// GetRetentionPolicy returns the retention policy as a model.RetentionPolicy.
+// GetRetentionPolicy returns the legacy retention config as a model.RetentionPolicy.
 func (c *Config) GetRetentionPolicy() model.RetentionPolicy {
 	policy := model.DefaultRetentionPolicy()
 

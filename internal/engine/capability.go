@@ -562,6 +562,7 @@ func MetadataPreservationForEngine(engineType model.EngineType) model.MetadataPr
 			Hardlinks:  "identity not guaranteed in v0; files may materialize independently",
 			Mode:       "preserved",
 			Timestamps: "preserved",
+			Ownership:  "filesystem-dependent",
 			Xattrs:     "filesystem-dependent",
 			ACLs:       "filesystem-dependent",
 		}
@@ -571,6 +572,7 @@ func MetadataPreservationForEngine(engineType model.EngineType) model.MetadataPr
 			Hardlinks:  "identity not guaranteed in v0; files may materialize independently",
 			Mode:       "preserved",
 			Timestamps: "preserved",
+			Ownership:  "not preserved",
 			Xattrs:     "not preserved",
 			ACLs:       "not preserved",
 		}
@@ -580,6 +582,7 @@ func MetadataPreservationForEngine(engineType model.EngineType) model.MetadataPr
 			Hardlinks:  "identity not guaranteed in v0; files may materialize independently",
 			Mode:       "preserved",
 			Timestamps: "preserved",
+			Ownership:  "not preserved",
 			Xattrs:     "not preserved",
 			ACLs:       "not preserved",
 		}
@@ -589,6 +592,7 @@ func MetadataPreservationForEngine(engineType model.EngineType) model.MetadataPr
 			Hardlinks:  "unknown",
 			Mode:       "unknown",
 			Timestamps: "unknown",
+			Ownership:  "unknown",
 			Xattrs:     "unknown",
 			ACLs:       "unknown",
 		}

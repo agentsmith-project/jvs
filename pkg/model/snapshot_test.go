@@ -309,7 +309,6 @@ func TestGCPlan_Fields(t *testing.T) {
 		PlanID:                 "plan-123",
 		CreatedAt:              time.Date(2024, 2, 19, 0, 0, 0, 0, time.UTC),
 		ProtectedSet:           []model.SnapshotID{"snap1", "snap2"},
-		ProtectedByPin:         1,
 		ProtectedByLineage:     5,
 		CandidateCount:         10,
 		ToDelete:               []model.SnapshotID{"snap3", "snap4"},
@@ -322,7 +321,6 @@ func TestGCPlan_Fields(t *testing.T) {
 
 	assert.Equal(t, "plan-123", plan.PlanID)
 	assert.Equal(t, 2, len(plan.ProtectedSet))
-	assert.Equal(t, 1, plan.ProtectedByPin)
 	assert.Equal(t, 5, plan.ProtectedByLineage)
 	assert.Equal(t, 10, plan.CandidateCount)
 	assert.Equal(t, 2, len(plan.ToDelete))
@@ -444,7 +442,7 @@ func TestInvalidRetentionPolicyError_Error(t *testing.T) {
 func TestDefaultRetentionPolicy(t *testing.T) {
 	policy := model.DefaultRetentionPolicy()
 	assert.Equal(t, 0, policy.KeepMinSnapshots)
-	assert.Equal(t, 24*time.Hour, policy.KeepMinAge)
+	assert.Equal(t, time.Duration(0), policy.KeepMinAge)
 }
 
 func TestGCPlan_ProtectedByRetention(t *testing.T) {

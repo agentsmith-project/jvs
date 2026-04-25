@@ -5,6 +5,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/jvs-project/jvs/pkg/errclass"
 )
 
 var completionCmd = &cobra.Command{
@@ -52,7 +54,13 @@ PowerShell:
 	DisableFlagsInUseLine: true,
 	ValidArgs:             []string{"bash", "zsh", "fish", "powershell"},
 	Args:                  cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if jsonOutput {
+			return errclass.ErrUsage.
+				WithMessage("--json is not supported for completion script output").
+				WithHint("Run jvs completion <shell> without --json.")
+		}
+
 		shell := args[0]
 
 		var err error
@@ -70,9 +78,9 @@ PowerShell:
 		}
 
 		if err != nil {
-			fmtErr("failed to generate completion for %s: %v", shell, err)
-			os.Exit(1)
+			return fmt.Errorf("failed to generate completion for %s: %w", shell, err)
 		}
+		return nil
 	},
 }
 

@@ -1,10 +1,13 @@
 package integrity_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"testing"
 	"time"
 
 	"github.com/jvs-project/jvs/internal/integrity"
+	"github.com/jvs-project/jvs/pkg/jsonutil"
 	"github.com/jvs-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -243,6 +246,49 @@ func TestComputeDescriptorChecksum_IncludesEngineMetadataFields(t *testing.T) {
 	}
 }
 
+func TestComputeDescriptorChecksum_AcceptsLegacyMetadataWithoutOwnership(t *testing.T) {
+	createdAt := time.Date(2024, 2, 19, 12, 30, 45, 0, time.UTC)
+	desc := &model.Descriptor{
+		SnapshotID:   "1708300800000-a3f7c1b2",
+		WorktreeName: "main",
+		CreatedAt:    createdAt,
+		Engine:       model.EngineCopy,
+		MetadataPreservation: &model.MetadataPreservation{
+			Symlinks:   "preserved",
+			Hardlinks:  "not guaranteed",
+			Mode:       "preserved",
+			Timestamps: "preserved",
+			Xattrs:     "not preserved",
+			ACLs:       "not preserved",
+		},
+		PayloadRootHash: "abc123def456",
+		IntegrityState:  model.IntegrityVerified,
+	}
+
+	legacyCanonicalObject := map[string]any{
+		"snapshot_id":   string(desc.SnapshotID),
+		"worktree_name": desc.WorktreeName,
+		"created_at":    createdAt.Format(time.RFC3339),
+		"engine":        string(desc.Engine),
+		"metadata_preservation": map[string]any{
+			"symlinks":   "preserved",
+			"hardlinks":  "not guaranteed",
+			"mode":       "preserved",
+			"timestamps": "preserved",
+			"xattrs":     "not preserved",
+			"acls":       "not preserved",
+		},
+		"payload_root_hash":   string(desc.PayloadRootHash),
+		"descriptor_checksum": "",
+		"integrity_state":     "",
+	}
+	expected := checksumCanonicalObject(t, legacyCanonicalObject)
+
+	actual, err := integrity.ComputeDescriptorChecksum(desc)
+	require.NoError(t, err)
+	assert.Equal(t, expected, actual, "legacy descriptors written before metadata_preservation.ownership must keep their checksum")
+}
+
 func cloneDescriptorForChecksumTest(desc *model.Descriptor) *model.Descriptor {
 	cloned := *desc
 	cloned.Tags = append([]string(nil), desc.Tags...)
@@ -253,4 +299,13 @@ func cloneDescriptorForChecksumTest(desc *model.Descriptor) *model.Descriptor {
 		cloned.MetadataPreservation = &metadata
 	}
 	return &cloned
+}
+
+func checksumCanonicalObject(t *testing.T, value any) model.HashValue {
+	t.Helper()
+
+	data, err := jsonutil.CanonicalMarshal(value)
+	require.NoError(t, err)
+	hash := sha256.Sum256(data)
+	return model.HashValue(hex.EncodeToString(hash[:]))
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/jvs-project/jvs/internal/snapshot"
 	"github.com/jvs-project/jvs/internal/worktree"
 	"github.com/jvs-project/jvs/pkg/color"
+	"github.com/jvs-project/jvs/pkg/errclass"
 	"github.com/jvs-project/jvs/pkg/model"
 )
 
@@ -39,7 +40,13 @@ Examples:
   jvs history --grep "fix"       # Filter by note substring
   jvs history --tag v1.0         # Filter by tag
   jvs history --all              # Show all snapshots in repo`,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if jsonOutput {
+			return errclass.ErrUsage.
+				WithMessage("legacy command is not available with --json").
+				WithHint("Use jvs checkpoint list --json.")
+		}
+
 		r, wtName := requireWorktree()
 
 		var history []*model.Descriptor
@@ -76,7 +83,7 @@ Examples:
 				} else {
 					fmt.Println("No snapshots yet.")
 				}
-				return
+				return nil
 			}
 
 			currentID := &cfg.HeadSnapshotID
@@ -106,12 +113,12 @@ Examples:
 
 		if jsonOutput {
 			outputJSON(history)
-			return
+			return nil
 		}
 
 		if len(history) == 0 {
 			fmt.Println("No snapshots found.")
-			return
+			return nil
 		}
 
 		// Print history with markers
@@ -157,6 +164,7 @@ Examples:
 				}
 			}
 		}
+		return nil
 	},
 }
 

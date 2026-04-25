@@ -33,7 +33,6 @@ var collectorFsyncDir = fsutil.FsyncDir
 type planInputs struct {
 	protectedSet         []model.SnapshotID
 	protectedByLineage   int
-	protectedByPin       int
 	protectedByRetention int
 	toDelete             []model.SnapshotID
 }
@@ -74,13 +73,24 @@ func (c *Collector) planWithPolicy(policy model.RetentionPolicy) (*model.GCPlan,
 		return nil, err
 	}
 
-	deletableBytes := int64(len(inputs.toDelete)) * 1024 * 1024
+	repoID, err := c.currentRepoID()
+	if err != nil {
+		return nil, err
+	}
+	deletableBytes, err := c.estimateDeletableBytes(inputs.toDelete)
+	if err != nil {
+		return nil, fmt.Errorf("estimate deletable bytes: %w", err)
+	}
+	if err := c.ensureAuditAppendable(); err != nil {
+		return nil, fmt.Errorf("audit log not appendable: %w", err)
+	}
 
 	plan := &model.GCPlan{
+		SchemaVersion:          model.GCPlanSchemaVersion,
+		RepoID:                 repoID,
 		PlanID:                 uuidutil.NewV4(),
 		CreatedAt:              time.Now().UTC(),
 		ProtectedSet:           inputs.protectedSet,
-		ProtectedByPin:         inputs.protectedByPin,
 		ProtectedByLineage:     inputs.protectedByLineage,
 		ProtectedByRetention:   inputs.protectedByRetention,
 		CandidateCount:         len(inputs.toDelete),
@@ -91,6 +101,13 @@ func (c *Collector) planWithPolicy(policy model.RetentionPolicy) (*model.GCPlan,
 
 	if err := c.writePlan(plan); err != nil {
 		return nil, fmt.Errorf("write plan: %w", err)
+	}
+	if err := c.auditLogger.Append(model.EventTypeGCPlan, "", "", map[string]any{
+		"plan_id":         plan.PlanID,
+		"candidate_count": plan.CandidateCount,
+	}); err != nil {
+		c.deletePlan(plan.PlanID)
+		return nil, fmt.Errorf("write audit log: %w", err)
 	}
 
 	return plan, nil
@@ -116,6 +133,9 @@ func (c *Collector) run(planID string) error {
 	pending, err := c.revalidatePlan(plan)
 	if err != nil {
 		return err
+	}
+	if err := c.ensureAuditAppendable(); err != nil {
+		return fmt.Errorf("audit log not appendable: %w", err)
 	}
 	if err := c.markPlan(pending); err != nil {
 		return err
@@ -176,16 +196,30 @@ func (c *Collector) run(planID string) error {
 		c.progressCallback("gc", totalToDelete, totalToDelete, fmt.Sprintf("deleted %d snapshots", deleted))
 	}
 
-	// Cleanup plan
-	c.deletePlan(planID)
-
 	// Audit
-	c.auditLogger.Append(model.EventTypeGCRun, "", "", map[string]any{
+	if err := c.auditLogger.Append(model.EventTypeGCRun, "", "", map[string]any{
 		"plan_id":       planID,
 		"deleted_count": deleted,
-	})
+	}); err != nil {
+		return fmt.Errorf("write audit log: %w", err)
+	}
+
+	// Cleanup plan after the committed run has been audited.
+	c.deletePlan(planID)
 
 	return nil
+}
+
+func (c *Collector) ensureAuditAppendable() error {
+	issues, err := audit.VerifyFile(filepath.Join(c.repoRoot, ".jvs", "audit", "audit.jsonl"))
+	if err != nil {
+		return err
+	}
+	if len(issues) > 0 {
+		issue := issues[0]
+		return fmt.Errorf("%s: %s", issue.ErrorCode, issue.Message)
+	}
+	return c.auditLogger.EnsureAppendable()
 }
 
 func (c *Collector) computePlanInputs(policy model.RetentionPolicy) (*planInputs, error) {
@@ -193,7 +227,7 @@ func (c *Collector) computePlanInputs(policy model.RetentionPolicy) (*planInputs
 }
 
 func (c *Collector) computePlanInputsAllowingReadyMissingDescriptors(policy model.RetentionPolicy, allowReadyMissingDescriptor map[model.SnapshotID]bool) (*planInputs, error) {
-	protectedSet, protectedByLineage, protectedByPin, err := c.computeProtectedSet()
+	protectedSet, protectedByLineage, err := c.computeProtectedSet()
 	if err != nil {
 		return nil, fmt.Errorf("compute protected set: %w", err)
 	}
@@ -268,7 +302,6 @@ func (c *Collector) computePlanInputsAllowingReadyMissingDescriptors(policy mode
 	return &planInputs{
 		protectedSet:         protectedSet,
 		protectedByLineage:   protectedByLineage,
-		protectedByPin:       protectedByPin,
 		protectedByRetention: protectedByRetention,
 		toDelete:             toDelete,
 	}, nil
@@ -382,17 +415,16 @@ func (c *Collector) markPlan(snapshotIDs []model.SnapshotID) error {
 	return nil
 }
 
-func (c *Collector) computeProtectedSet() ([]model.SnapshotID, int, int, error) {
+func (c *Collector) computeProtectedSet() ([]model.SnapshotID, int, error) {
 	protected := make(map[model.SnapshotID]bool)
 	lineageCount := 0
-	pinCount := 0
 
 	// 1. All live worktree roots. Latest remains a live restore target when a
 	// worktree is detached, and Base is conservatively treated as live.
 	wtMgr := worktree.NewManager(c.repoRoot)
 	wtList, err := wtMgr.List()
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, 0, err
 	}
 	roots := make(map[model.SnapshotID]bool)
 	addRoot := func(id model.SnapshotID) {
@@ -425,12 +457,12 @@ func (c *Collector) computeProtectedSet() ([]model.SnapshotID, int, int, error) 
 	intentsDir, err := repo.IntentsDirPath(c.repoRoot)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
-			return nil, 0, 0, fmt.Errorf("read intents directory: %w", err)
+			return nil, 0, fmt.Errorf("read intents directory: %w", err)
 		}
 	} else {
 		entries, err := os.ReadDir(intentsDir)
 		if err != nil {
-			return nil, 0, 0, fmt.Errorf("read intents directory: %w", err)
+			return nil, 0, fmt.Errorf("read intents directory: %w", err)
 		}
 		for _, entry := range entries {
 			name := entry.Name()
@@ -440,94 +472,12 @@ func (c *Collector) computeProtectedSet() ([]model.SnapshotID, int, int, error) 
 		}
 	}
 
-	// 4. All pins. The documented v0.x path is .jvs/gc/pins. The legacy
-	// .jvs/pins directory remains supported when present, but is validated and
-	// read with the same fail-closed rules.
-	pinCount, err = c.addPinsToProtectedSet(protected)
-	if err != nil {
-		return nil, 0, 0, err
-	}
-
 	var result []model.SnapshotID
 	for id := range protected {
 		result = append(result, id)
 	}
 	sortSnapshotIDs(result)
-	return result, lineageCount, pinCount, nil
-}
-
-type pinDirReader struct {
-	label       string
-	optional    bool
-	dirPath     func(string) (string, error)
-	pinFilePath func(string, string) (string, error)
-}
-
-func (c *Collector) addPinsToProtectedSet(protected map[model.SnapshotID]bool) (int, error) {
-	readers := []pinDirReader{
-		{
-			label:       ".jvs/gc/pins",
-			dirPath:     repo.GCPinsDirPath,
-			pinFilePath: repo.GCPinPathForRead,
-		},
-		{
-			label:       ".jvs/pins",
-			optional:    true,
-			dirPath:     repo.LegacyPinsDirPath,
-			pinFilePath: repo.LegacyPinPathForRead,
-		},
-	}
-
-	pinCount := 0
-	now := time.Now()
-	for _, reader := range readers {
-		pinsDir, err := reader.dirPath(c.repoRoot)
-		if err != nil {
-			if reader.optional && errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return 0, fmt.Errorf("validate pin directory %s: %w", reader.label, err)
-		}
-
-		pinEntries, err := os.ReadDir(pinsDir)
-		if err != nil {
-			if reader.optional && errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return 0, fmt.Errorf("read pin directory %s: %w", reader.label, err)
-		}
-
-		for _, entry := range pinEntries {
-			name := entry.Name()
-			if !strings.HasSuffix(name, ".json") {
-				continue
-			}
-
-			pinPath, err := reader.pinFilePath(c.repoRoot, name)
-			if err != nil {
-				return 0, fmt.Errorf("validate pin file %s/%s: %w", reader.label, name, err)
-			}
-			data, err := os.ReadFile(pinPath)
-			if err != nil {
-				return 0, fmt.Errorf("read pin file %s/%s: %w", reader.label, name, err)
-			}
-			var pin model.Pin
-			if err := json.Unmarshal(data, &pin); err != nil {
-				return 0, fmt.Errorf("parse pin file %s/%s: %w", reader.label, name, err)
-			}
-			if err := pin.SnapshotID.Validate(); err != nil {
-				return 0, fmt.Errorf("validate pin file %s/%s snapshot_id: %w", reader.label, name, err)
-			}
-			if pin.ExpiresAt != nil && pin.ExpiresAt.Before(now) {
-				continue
-			}
-			if !protected[pin.SnapshotID] {
-				protected[pin.SnapshotID] = true
-				pinCount++
-			}
-		}
-	}
-	return pinCount, nil
+	return result, lineageCount, nil
 }
 
 func (c *Collector) walkLineage(snapshotID model.SnapshotID, protected map[model.SnapshotID]bool) int {
@@ -622,6 +572,69 @@ func regularFileExists(path string) bool {
 	return err == nil && info.Mode().IsRegular()
 }
 
+func (c *Collector) currentRepoID() (string, error) {
+	r, err := repo.Discover(c.repoRoot)
+	if err != nil {
+		return "", errclass.ErrGCPlanMismatch.WithMessage("cannot read current repository identity")
+	}
+	if r.RepoID == "" {
+		return "", errclass.ErrGCPlanMismatch.WithMessage("current repository identity is missing")
+	}
+	return r.RepoID, nil
+}
+
+func (c *Collector) estimateDeletableBytes(snapshotIDs []model.SnapshotID) (int64, error) {
+	var total int64
+	for _, snapshotID := range snapshotIDs {
+		snapshotDir, err := repo.SnapshotPathForRead(c.repoRoot, snapshotID)
+		if err == nil {
+			size, err := regularTreeSize(snapshotDir)
+			if err != nil {
+				return 0, fmt.Errorf("snapshot %s: %w", snapshotID, err)
+			}
+			total += size
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return 0, err
+		}
+
+		descriptorPath, err := repo.SnapshotDescriptorPathForRead(c.repoRoot, snapshotID)
+		if err == nil {
+			info, err := os.Lstat(descriptorPath)
+			if err != nil {
+				if !errors.Is(err, os.ErrNotExist) {
+					return 0, err
+				}
+			} else if info.Mode().IsRegular() {
+				total += info.Size()
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return 0, err
+		}
+	}
+	return total, nil
+}
+
+func regularTreeSize(root string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total, err
+}
+
 type deletionResidue struct {
 	snapshotExists   bool
 	descriptorExists bool
@@ -703,15 +716,34 @@ func (c *Collector) writePlan(plan *model.GCPlan) error {
 func (c *Collector) LoadPlan(planID string) (*model.GCPlan, error) {
 	path, err := repo.GCPlanPathForRead(c.repoRoot, planID)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, errclass.ErrGCPlanMismatch.WithMessagef("gc plan %q not found", planID)
+		}
+		return nil, errclass.ErrGCPlanMismatch.WithMessagef("gc plan %q is not readable", planID)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, errclass.ErrGCPlanMismatch.WithMessagef("gc plan %q not found", planID)
+		}
+		return nil, errclass.ErrGCPlanMismatch.WithMessagef("gc plan %q is not readable", planID)
 	}
 	var plan model.GCPlan
 	if err := json.Unmarshal(data, &plan); err != nil {
+		return nil, errclass.ErrGCPlanMismatch.WithMessagef("gc plan %q is not valid JSON", planID)
+	}
+	if plan.SchemaVersion != model.GCPlanSchemaVersion {
+		return nil, errclass.ErrGCPlanMismatch.WithMessagef("gc plan %q has unsupported schema version", planID)
+	}
+	if plan.PlanID != planID {
+		return nil, errclass.ErrGCPlanMismatch.WithMessagef("gc plan %q plan_id does not match request", planID)
+	}
+	repoID, err := c.currentRepoID()
+	if err != nil {
 		return nil, err
+	}
+	if plan.RepoID != repoID {
+		return nil, errclass.ErrGCPlanMismatch.WithMessagef("gc plan %q belongs to a different repository", planID)
 	}
 	return &plan, nil
 }

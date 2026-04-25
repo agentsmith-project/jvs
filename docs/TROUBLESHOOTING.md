@@ -1,6 +1,6 @@
 # JVS Troubleshooting Guide
 
-**Version:** v7.0
+**Version:** v0
 **Last Updated:** 2026-02-23
 
 ---
@@ -103,7 +103,7 @@ Error: partial checkpoint detected - .READY file missing
 Error: cannot create checkpoint: workspace has uncommitted changes
 ```
 
-**Note:** This is not a JVS error in v7.0. JVS creates checkpoints of whatever state exists.
+**Note:** This is not a JVS error in v0. JVS creates checkpoints of whatever state exists.
 
 **Solution:** If you want to clean up before snapshotting:
 ```bash
@@ -139,9 +139,9 @@ Error: descriptor not found: abc123
    jvs restore abc  # Will search for checkpoints starting with "abc"
    ```
 
-3. **Restore by tag:**
+3. **Restore by exact tag:**
    ```bash
-   jvs restore --latest-tag stable
+   jvs restore stable
    ```
 
 ---
@@ -226,10 +226,11 @@ Error: payload root hash mismatch for checkpoint abc123
 
 **Symptom:**
 ```
-Error: GC plan not found: plan-123
+Error: E_GC_PLAN_MISMATCH: gc plan "plan-123" not found
 ```
 
-**Cause:** Plan expired or was already executed.
+**Cause:** The plan is missing, was already executed, was copied from another
+repository, or no longer matches the repository state.
 
 **Solution:**
 ```bash
@@ -248,20 +249,17 @@ Error: cannot delete checkpoint: checkpoint is protected
 
 **Cause:** Checkpoint is protected by:
 - Being the latest checkpoint
-- Having a protection pin
-- Matching retention policy
+- Being in the lineage of a live workspace root
+- Being referenced by an active operation record
 
 **Solutions:**
 
-1. **Check protection status:**
-   ```bash
-   jvs checkpoint list --json | jq '.protection'
-   ```
-
-2. **Review the retention plan:**
+1. **Review the GC plan:**
    ```bash
    jvs gc plan
    ```
+
+2. **Remove only workspaces you no longer need, then create a fresh plan.**
 
 ---
 
@@ -488,14 +486,14 @@ Error: juicefs-clone failed: operation not permitted
 
 1. **Verify specific checkpoints:**
    ```bash
-   jvs verify abc123 --no-payload  # Skip hash computation
+   jvs verify abc123
    ```
 
 2. **Run during off-peak hours**
 
-3. **Use verify for recent checkpoints only:**
+3. **Verify all checkpoints after scheduled maintenance:**
    ```bash
-   jvs verify --since "2026-02-20"
+   jvs verify --all
    ```
 
 ---
@@ -546,7 +544,7 @@ jvs doctor --strict --repair-runtime
 
 2. **Check known issues:**
    - [GitHub Issues](https://github.com/jvs-project/jvs/issues)
-   - [FAQ](README.md#faq)
+   - [FAQ](FAQ.md)
 
 3. **Report a bug:**
    - See [CONTRIBUTING.md](../CONTRIBUTING.md)
@@ -567,7 +565,7 @@ jvs doctor --strict --repair-runtime
 | `E_PAYLOAD_HASH_MISMATCH` | Payload hash mismatch | Identify changed files |
 | `E_LINEAGE_BROKEN` | Parent checkpoint missing | Check history, rebuild index |
 | `E_PARTIAL_SNAPSHOT` | Incomplete checkpoint | Run `jvs doctor --repair-runtime` |
-| `E_GC_PLAN_MISMATCH` | GC plan ID mismatch | Create new plan |
+| `E_GC_PLAN_MISMATCH` | Missing, stale, mismatched, or wrong-repo GC plan | Create new plan |
 | `E_FORMAT_UNSUPPORTED` | Format version too old/new | Upgrade JVS |
 | `E_AUDIT_CHAIN_BROKEN` | Audit hash chain broken | Run `jvs doctor --repair-runtime` |
 

@@ -1,25 +1,60 @@
 # JVS Go Library API Documentation
 
-**Version:** v7.0
+**Version:** v0 public contract
 **Last Updated:** 2026-02-23
 
 ---
 
 ## Overview
 
-JVS can be used as a Go library for programmatic workspace versioning. The public API is organized under `pkg/` packages:
+JVS can be used as a Go library for programmatic workspace versioning. The
+stable v0 Go facade is `pkg/jvs`; other importable `pkg/` packages are support
+packages for returned types, error classes, and internal compatibility.
 
 | Package | Purpose |
 |---------|---------|
-| `pkg/model` | Core data models for checkpoints, workspaces, and GC |
-| `pkg/config` | Configuration file handling |
+| `pkg/jvs` | Stable v0 client facade |
+| `pkg/model` | Returned data types and internal compatibility records |
+| `pkg/config` | Internal compatibility configuration handling |
 | `pkg/errclass` | Stable error classes |
-| `pkg/uuidutil` | UUID generation utilities |
-| `pkg/pathutil` | Path validation utilities |
-| `pkg/fsutil` | Atomic file operations |
-| `pkg/jsonutil` | Canonical JSON serialization |
-| `pkg/logging` | Structured logging |
-| `pkg/progress` | Progress reporting |
+| `pkg/uuidutil` | Support utility |
+| `pkg/pathutil` | Support utility |
+| `pkg/fsutil` | Support utility |
+| `pkg/jsonutil` | Support utility |
+| `pkg/logging` | Support utility |
+| `pkg/progress` | Support utility |
+
+---
+
+## Stable v0 Go Facade: pkg/jvs
+
+### Garbage Collection
+
+The v0 library facade matches the v0 CLI contract: GC protects live workspace
+lineage and active operation records. It does not expose pin or retention knobs.
+
+```go
+type GCOptions struct {
+    DryRun bool
+}
+
+type GCPlan struct {
+    PlanID                 string             `json:"plan_id"`
+    CreatedAt              time.Time          `json:"created_at"`
+    ProtectedCheckpoints   []model.SnapshotID `json:"protected_checkpoints"`
+    ProtectedByLineage     int                `json:"protected_by_lineage"`
+    CandidateCount         int                `json:"candidate_count"`
+    ToDelete               []model.SnapshotID `json:"to_delete"`
+    DeletableBytesEstimate int64              `json:"deletable_bytes_estimate"`
+}
+```
+
+Public JSON fields: `plan_id`, `created_at`, `protected_checkpoints`,
+`protected_by_lineage`, `candidate_count`, `to_delete`, and
+`deletable_bytes_estimate`.
+
+Use `Client.GC(ctx, jvs.GCOptions{DryRun: true})` to preview a plan and
+`Client.RunGC(ctx, planID)` to execute an existing plan.
 
 ---
 
@@ -29,15 +64,34 @@ JVS can be used as a Go library for programmatic workspace versioning. The publi
 package main
 
 import (
+    "context"
     "fmt"
-    "github.com/jvs-project/jvs/pkg/model"
+    "os"
+
+    "github.com/jvs-project/jvs/pkg/jvs"
 )
 
 func main() {
-    // Generate a new checkpoint ID
-    id := model.NewSnapshotID()
-    fmt.Printf("Checkpoint ID: %s\n", id.String())
-    fmt.Printf("Short ID: %s\n", id.ShortID())
+    ctx := context.Background()
+    workspacePath := "."
+    if len(os.Args) > 1 {
+        workspacePath = os.Args[1]
+    }
+
+    client, err := jvs.OpenOrInit(workspacePath, jvs.InitOptions{Name: "workspace"})
+    if err != nil {
+        panic(err)
+    }
+
+    desc, err := client.Snapshot(ctx, jvs.SnapshotOptions{
+        Note: "initial checkpoint",
+    })
+    if err != nil {
+        panic(err)
+    }
+
+    fmt.Printf("Checkpoint ID: %s\n", desc.SnapshotID.String())
+    fmt.Printf("Short ID: %s\n", desc.SnapshotID.ShortID())
 }
 ```
 
@@ -208,41 +262,36 @@ type WorktreeConfig struct {
 
 ## Internal Compatibility: pkg/model GC Storage
 
-### GCPolicy
-
-Garbage collection retention policy.
+### GC Protection
 
 ```go
-type GCPolicy struct {
-    KeepMinSnapshots int           `json:"keep_min_snapshots"`
-    KeepMinAge       time.Duration `json:"keep_min_age"`
-    KeepTagged       bool           `json:"keep_tagged"`
-    KeepPinned       []SnapshotID   `json:"keep_pinned"`
-}
+// v0 public GC protects live workspace lineage and active operation records.
 ```
 
-**Fields:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `KeepMinSnapshots` | `int` | Minimum snapshots to retain regardless of age |
-| `KeepMinAge` | `time.Duration` | Minimum age before GC consideration |
-| `KeepTagged` | `bool` | Protect tagged snapshots |
-| `KeepPinned` | `[]SnapshotID` | Explicitly protected snapshots |
+The public CLI does not expose GC pin APIs, tag retention, or retention policy
+flags in v0.
 
 ---
 
 ### GCPlan
 
-Garbage collection plan with tombstones.
+Garbage collection plan storage. Active plans are bound to the repository
+identity that created them and are not portable migration state.
+This storage record is an internal compatibility shape; the v0 public Go facade
+uses `pkg/jvs.GCPlan` and `protected_checkpoints` to match the CLI JSON
+contract.
 
 ```go
 type GCPlan struct {
-    PlanID     string       `json:"plan_id"`
-    CreatedAt  time.Time    `json:"created_at"`
-    Policy     GCPolicy     `json:"policy"`
-    Tombstones []Tombstone   `json:"tombstones"`
-    TotalBytes int64        `json:"total_bytes"`
+    SchemaVersion          int          `json:"schema_version"`
+    RepoID                 string       `json:"repo_id"`
+    PlanID                 string       `json:"plan_id"`
+    CreatedAt              time.Time    `json:"created_at"`
+    ProtectedSet           []SnapshotID `json:"protected_set"`
+    ProtectedByLineage     int          `json:"protected_by_lineage"`
+    CandidateCount         int          `json:"candidate_count"`
+    ToDelete               []SnapshotID `json:"to_delete"`
+    DeletableBytesEstimate int64        `json:"deletable_bytes_estimate"`
 }
 
 type Tombstone struct {
@@ -283,7 +332,6 @@ JVS configuration from `.jvs/config.yaml`.
 ```go
 type Config struct {
     Engine          string                `yaml:"engine"`
-    RetentionPolicy RetentionPolicyConfig `yaml:"retention_policy"`
     Logging         LoggingConfig         `yaml:"logging"`
 }
 ```
@@ -339,7 +387,7 @@ type JVSError struct {
 | `E_PAYLOAD_HASH_MISMATCH` | Payload hash verification failed |
 | `E_LINEAGE_BROKEN` | Snapshot lineage inconsistency |
 | `E_PARTIAL_SNAPSHOT` | Incomplete snapshot detected |
-| `E_GC_PLAN_MISMATCH` | GC plan ID mismatch |
+| `E_GC_PLAN_MISMATCH` | GC plan missing, stale, self-mismatched, or bound to another repo |
 | `E_FORMAT_UNSUPPORTED` | Format version not supported |
 | `E_AUDIT_CHAIN_BROKEN` | Audit hash chain validation failed |
 
@@ -529,47 +577,27 @@ Creating a checkpoint programmatically:
 package main
 
 import (
-    "github.com/jvs-project/jvs/pkg/model"
-    "github.com/jvs-project/jvs/pkg/errclass"
-    "github.com/jvs-project/jvs/pkg/fsutil"
-    "github.com/jvs-project/jvs/pkg/jsonutil"
+    "context"
+    "fmt"
+
+    "github.com/jvs-project/jvs/pkg/jvs"
 )
 
-func CreateCheckpoint(workspacePath, note string, tags []string) (*model.Descriptor, error) {
-    // 1. Generate checkpoint ID
-    id := model.NewSnapshotID()
-
-    // 2. Create intent record (for crash recovery)
-    intent := &model.IntentRecord{
-        SnapshotID:   id,
-        WorktreeName: "main",
-        StartedAt:    time.Now(),
-        Engine:       model.EngineJuiceFSClone,
-    }
-
-    // 3. Build descriptor
-    desc := &model.Descriptor{
-        SnapshotID:   id,
-        WorktreeName: "main",
-        CreatedAt:    time.Now(),
-        Note:         note,
-        Tags:         tags,
-        Engine:       model.EngineJuiceFSClone,
-    }
-
-    // 4. Serialize descriptor
-    data, err := jsonutil.CanonicalMarshal(desc)
+func CreateCheckpoint(ctx context.Context, workspacePath, note string, tags []string) (string, error) {
+    client, err := jvs.OpenOrInit(workspacePath, jvs.InitOptions{Name: "workspace"})
     if err != nil {
-        return nil, err
+        return "", fmt.Errorf("open or initialize JVS repository: %w", err)
     }
 
-    // 5. Write descriptor atomically
-    descPath := fmt.Sprintf(".jvs/descriptors/%s.json", id)
-    if err := fsutil.AtomicWrite(descPath, data); err != nil {
-        return nil, errclass.ErrDescriptorCorrupt.WithMessage(err.Error())
+    desc, err := client.Snapshot(ctx, jvs.SnapshotOptions{
+        Note: note,
+        Tags: tags,
+    })
+    if err != nil {
+        return "", fmt.Errorf("create checkpoint: %w", err)
     }
 
-    return desc, nil
+    return desc.SnapshotID.String(), nil
 }
 ```
 
@@ -577,19 +605,26 @@ func CreateCheckpoint(workspacePath, note string, tags []string) (*model.Descrip
 
 ## Best Practices
 
-1. **Error Handling**: Always use `errclass` errors for user-facing issues
-2. **Atomic Operations**: Use `fsutil.AtomicWrite` for all metadata
-3. **Canonical JSON**: Use `jsonutil.CanonicalMarshal` for hashing
-4. **Path Validation**: Always validate names with `pathutil.ValidateName`
-5. **Logging**: Use structured logging for operational visibility
+1. **Repository Mutation**: Use `pkg/jvs` client methods for init, checkpoint,
+   restore, fork, and GC operations
+2. **Metadata Safety**: Treat `.jvs/` as implementation-owned storage; do not
+   construct intents, descriptors, or GC records directly
+3. **Error Handling**: Use `errclass` checks for stable user-facing error
+   classification
+4. **Context Handling**: Pass cancellation-aware contexts into client methods
+5. **Path Validation**: Validate user-supplied names before passing them into
+   JVS operations
 
 ---
 
 ## Stability Guarantees
 
-- **Stable**: Public APIs in `pkg/` will follow Semantic Versioning
+- **Stable**: The v0 public Go facade in `pkg/jvs` and stable error classes
+  follow the release contract
+- **Internal Compatibility**: `pkg/model`, `pkg/config`, and support utilities
+  are importable implementation support and may change before v1 unless a type
+  is explicitly returned by `pkg/jvs`
 - **Experimental**: `internal/` packages are not for external use
-- **Error Classes**: Error codes are stable (v7.x)
 
 ---
 

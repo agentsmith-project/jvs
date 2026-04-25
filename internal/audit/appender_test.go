@@ -4,12 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jvs-project/jvs/internal/audit"
 	"github.com/jvs-project/jvs/pkg/model"
@@ -108,6 +108,61 @@ func TestVerifyFileDetectsRecordHashTamper(t *testing.T) {
 	require.Len(t, issues, 1)
 	assert.Equal(t, "E_AUDIT_RECORD_HASH_MISMATCH", issues[0].ErrorCode)
 	assert.Equal(t, 1, issues[0].Line)
+}
+
+func TestFileAppender_EnsureAppendableRejectsWellFormedTamper(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		tamper   func(t *testing.T, records []model.AuditRecord) []model.AuditRecord
+		wantCode string
+		wantLine int
+	}{
+		{
+			name: "chain break",
+			tamper: func(t *testing.T, records []model.AuditRecord) []model.AuditRecord {
+				t.Helper()
+				require.Len(t, records, 2)
+				return []model.AuditRecord{records[1], records[0]}
+			},
+			wantCode: audit.ErrorCodeAuditChainBroken,
+			wantLine: 1,
+		},
+		{
+			name: "record hash mismatch",
+			tamper: func(t *testing.T, records []model.AuditRecord) []model.AuditRecord {
+				t.Helper()
+				require.NotEmpty(t, records)
+				records[0].Details["note"] = "tampered"
+				return records
+			},
+			wantCode: audit.ErrorCodeAuditRecordHashMismatch,
+			wantLine: 1,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			logPath := filepath.Join(dir, "audit.jsonl")
+			appender := audit.NewFileAppender(logPath)
+
+			require.NoError(t, appender.Append(model.EventTypeSnapshotCreate, "main", "1708300800000-a3f7c1b2", map[string]any{
+				"note": "original",
+			}))
+			require.NoError(t, appender.Append(model.EventTypeWorktreeCreate, "feature", "", map[string]any{
+				"base": "main",
+			}))
+
+			records := readAuditRecordsForTest(t, logPath)
+			writeAuditRecordsForTest(t, logPath, tt.tamper(t, records))
+
+			err := appender.EnsureAppendable()
+			require.Error(t, err)
+
+			var integrityErr *audit.IntegrityError
+			require.True(t, errors.As(err, &integrityErr), "expected audit integrity error, got %T: %v", err, err)
+			assert.Equal(t, tt.wantCode, integrityErr.Code)
+			assert.Equal(t, tt.wantLine, integrityErr.Line)
+		})
+	}
 }
 
 func TestFileAppender_ConcurrentAppends(t *testing.T) {
@@ -224,48 +279,48 @@ func TestFileAppender_HashChainConsistent(t *testing.T) {
 	assert.Equal(t, records[1].RecordHash, records[2].PrevHash)
 }
 
-func TestFileAppender_MalformedLinesSkipped(t *testing.T) {
+func TestFileAppender_GetLastRecordHashFailsClosedOnMalformedLine(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "audit.jsonl")
 
-	// Create a file with some valid and malformed lines
-	require.NoError(t, os.MkdirAll(filepath.Dir(logPath), 0755))
-	file, err := os.Create(logPath)
-	require.NoError(t, err)
-
-	// Write a valid record
-	validRecord := model.AuditRecord{
-		Timestamp:    time.Now(),
-		EventType:    model.EventTypeSnapshotCreate,
-		SnapshotID:   "snap1",
-		WorktreeName: "main",
-		RecordHash:   "hash1",
-	}
-	validLine, _ := json.Marshal(validRecord)
-	file.Write(append(validLine, '\n'))
-
-	// Write a malformed line
-	file.Write([]byte("not valid json\n"))
-
-	// Write another valid record
-	validRecord2 := model.AuditRecord{
-		Timestamp:    time.Now(),
-		EventType:    model.EventTypeRestore,
-		SnapshotID:   "snap2",
-		WorktreeName: "main",
-		RecordHash:   "hash2",
-		PrevHash:     "hash1",
-	}
-	validLine2, _ := json.Marshal(validRecord2)
-	file.Write(append(validLine2, '\n'))
-
-	file.Close()
-
-	// GetLastRecordHash should skip malformed line and return last valid hash
 	appender := audit.NewFileAppender(logPath)
-	hash, err := appender.GetLastRecordHash()
+	require.NoError(t, appender.Append(model.EventTypeSnapshotCreate, "main", "snap1", nil))
+
+	file, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0644)
 	require.NoError(t, err)
-	assert.Equal(t, model.HashValue("hash2"), hash)
+	_, err = file.Write([]byte("not valid json\n"))
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+
+	// GetLastRecordHash must fail closed so future appends cannot silently
+	// continue an audit chain with an unknowable segment.
+	hash, err := appender.GetLastRecordHash()
+	require.Error(t, err)
+	assert.Equal(t, model.HashValue(""), hash)
+
+	var integrityErr *audit.IntegrityError
+	require.True(t, errors.As(err, &integrityErr), "expected audit integrity error, got %T: %v", err, err)
+	assert.Equal(t, audit.ErrorCodeAuditRecordMalformed, integrityErr.Code)
+	assert.Equal(t, 2, integrityErr.Line)
+}
+
+func TestFileAppender_AppendFailsClosedOnMalformedExistingLog(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "audit.jsonl")
+	require.NoError(t, os.WriteFile(logPath, []byte("{malformed audit record}\n"), 0644))
+
+	appender := audit.NewFileAppender(logPath)
+	err := appender.Append(model.EventTypeSnapshotCreate, "main", "1708300800000-a3f7c1b2", nil)
+	require.Error(t, err)
+
+	var integrityErr *audit.IntegrityError
+	require.True(t, errors.As(err, &integrityErr), "expected audit integrity error, got %T: %v", err, err)
+	assert.Equal(t, audit.ErrorCodeAuditRecordMalformed, integrityErr.Code)
+	assert.Equal(t, 1, integrityErr.Line)
+
+	data, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	assert.Equal(t, "{malformed audit record}\n", string(data), "append must not mutate a malformed audit log")
 }
 
 func TestFileAppender_ConcurrentWithHashChain(t *testing.T) {
@@ -690,4 +745,35 @@ func TestFileAppender_RapidSequentialAppends(t *testing.T) {
 		count++
 	}
 	assert.Equal(t, 100, count)
+}
+
+func readAuditRecordsForTest(t *testing.T, path string) []model.AuditRecord {
+	t.Helper()
+
+	file, err := os.Open(path)
+	require.NoError(t, err)
+	defer file.Close()
+
+	var records []model.AuditRecord
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var record model.AuditRecord
+		require.NoError(t, json.Unmarshal(scanner.Bytes(), &record))
+		records = append(records, record)
+	}
+	require.NoError(t, scanner.Err())
+	return records
+}
+
+func writeAuditRecordsForTest(t *testing.T, path string, records []model.AuditRecord) {
+	t.Helper()
+
+	var data bytes.Buffer
+	for _, record := range records {
+		line, err := json.Marshal(record)
+		require.NoError(t, err)
+		data.Write(line)
+		data.WriteByte('\n')
+	}
+	require.NoError(t, os.WriteFile(path, data.Bytes(), 0644))
 }

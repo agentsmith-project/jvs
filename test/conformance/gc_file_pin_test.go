@@ -9,9 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/jvs-project/jvs/internal/integrity"
-	"github.com/jvs-project/jvs/pkg/model"
 )
 
 func createOldOrphanedSnapshot(t *testing.T, repoPath string) string {
@@ -44,39 +41,11 @@ func createOldOrphanedSnapshot(t *testing.T, repoPath string) string {
 		t.Fatalf("temp snapshot id not found in output: %s", tempOut)
 	}
 
-	ageSnapshotDescriptor(t, repoPath, tempID)
 	_, stderr, code = runJVSInRepo(t, repoPath, "workspace", "remove", "temp")
 	if code != 0 {
 		t.Fatalf("worktree remove failed: %s", stderr)
 	}
 	return tempID
-}
-
-func ageSnapshotDescriptor(t *testing.T, repoPath, snapshotID string) {
-	t.Helper()
-
-	descriptorPath := filepath.Join(repoPath, ".jvs", "descriptors", snapshotID+".json")
-	data, err := os.ReadFile(descriptorPath)
-	if err != nil {
-		t.Fatalf("read descriptor: %v", err)
-	}
-	var descriptor model.Descriptor
-	if err := json.Unmarshal(data, &descriptor); err != nil {
-		t.Fatalf("parse descriptor: %v", err)
-	}
-	descriptor.CreatedAt = time.Now().Add(-48 * time.Hour).UTC()
-	checksum, err := integrity.ComputeDescriptorChecksum(&descriptor)
-	if err != nil {
-		t.Fatalf("compute descriptor checksum: %v", err)
-	}
-	descriptor.DescriptorChecksum = checksum
-	data, err = json.MarshalIndent(descriptor, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal descriptor: %v", err)
-	}
-	if err := os.WriteFile(descriptorPath, data, 0644); err != nil {
-		t.Fatalf("write descriptor: %v", err)
-	}
 }
 
 func writeDocumentedGCPin(t *testing.T, repoPath, snapshotID string) {
@@ -110,7 +79,7 @@ func requireWriteFile(t *testing.T, path, content string) {
 	}
 }
 
-func TestGC_FilePinAtDocumentedPathProtectsSnapshot(t *testing.T) {
+func TestGC_FilePinAtDocumentedPathDoesNotProtectV0Snapshot(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 	snapshotID := createOldOrphanedSnapshot(t, repoPath)
 	writeDocumentedGCPin(t, repoPath, snapshotID)
@@ -120,15 +89,18 @@ func TestGC_FilePinAtDocumentedPathProtectsSnapshot(t *testing.T) {
 		t.Fatalf("gc plan failed: %s", stderr)
 	}
 
-	if got := extractJSONField(planOut, "candidate_count"); got != "0" {
-		t.Fatalf("expected file-pinned snapshot to be protected, candidate_count=%s plan=%s", got, planOut)
+	if got := extractJSONField(planOut, "candidate_count"); got != "1" {
+		t.Fatalf("expected file pin to be ignored in v0, candidate_count=%s plan=%s", got, planOut)
 	}
-	if got := extractJSONField(planOut, "protected_by_pin"); got != "1" {
-		t.Fatalf("expected protected_by_pin=1, got %s plan=%s", got, planOut)
+	if !strings.Contains(planOut, snapshotID) {
+		t.Fatalf("expected GC plan to include orphan %s, plan=%s", snapshotID, planOut)
+	}
+	if strings.Contains(planOut, "protected_by_pin") || strings.Contains(planOut, "retention") {
+		t.Fatalf("v0 GC plan exposed pin or retention policy fields: %s", planOut)
 	}
 }
 
-func TestGC_RunFailsWhenPinProtectsPlannedCandidate(t *testing.T) {
+func TestGC_RunIgnoresFilePinAddedAfterPlanningInV0(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 	snapshotID := createOldOrphanedSnapshot(t, repoPath)
 
@@ -147,10 +119,7 @@ func TestGC_RunFailsWhenPinProtectsPlannedCandidate(t *testing.T) {
 	writeDocumentedGCPin(t, repoPath, snapshotID)
 
 	_, stderr, code = runJVSInRepo(t, repoPath, "gc", "run", "--plan-id", planID)
-	if code == 0 {
-		t.Fatalf("gc run should fail after candidate becomes pinned")
-	}
-	if !strings.Contains(stderr, "E_GC_PLAN_MISMATCH") {
-		t.Fatalf("expected E_GC_PLAN_MISMATCH, stderr=%s", stderr)
+	if code != 0 {
+		t.Fatalf("gc run should ignore v0 file pin and succeed: %s", stderr)
 	}
 }

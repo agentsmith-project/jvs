@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -256,6 +257,30 @@ func TestGCCommand_Plan(t *testing.T) {
 	require.NoError(t, err)
 
 	os.Chdir(originalWd)
+}
+
+func TestGCCommand_RejectsExtraArgs(t *testing.T) {
+	dir := t.TempDir()
+	originalWd, _ := os.Getwd()
+	defer os.Chdir(originalWd)
+
+	require.NoError(t, os.Chdir(dir))
+	_, err := executeCommand(createTestRootCmd(), "init", "testrepo")
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo")))
+
+	_, err = executeCommand(createTestRootCmd(), "gc", "plan", "extra")
+	require.Error(t, err)
+
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "gc", "plan")
+	require.NoError(t, err)
+	data := decodeJSONDataForTest(t, stdout)
+	planID, ok := data["plan_id"].(string)
+	require.True(t, ok)
+	require.NotEmpty(t, planID)
+
+	_, err = executeCommand(createTestRootCmd(), "gc", "run", "--plan-id", planID, "extra")
+	require.Error(t, err)
 }
 
 func TestOutputJSON(t *testing.T) {
@@ -601,11 +626,17 @@ func TestRestoreCommand(t *testing.T) {
 	cmd3 := createTestRootCmd()
 	executeCommand(cmd3, "snapshot", "second")
 
-	// Get history to find snapshot ID
+	// Verify the public JSON checkpoint list can see the created checkpoints.
 	cmd4 := createTestRootCmd()
-	stdout, _ := executeCommand(cmd4, "history", "--json")
-	// The test passes if we can run the history command
-	_ = stdout
+	stdout, err := executeCommand(cmd4, "--json", "checkpoint", "list")
+	require.NoError(t, err)
+	env := decodeContractEnvelope(t, stdout)
+	require.True(t, env.OK, stdout)
+	assert.Equal(t, "checkpoint list", env.Command)
+
+	var checkpoints []publicCheckpointRecord
+	require.NoError(t, json.Unmarshal(env.Data, &checkpoints), stdout)
+	require.GreaterOrEqual(t, len(checkpoints), 2)
 
 	os.Chdir(originalWd)
 }

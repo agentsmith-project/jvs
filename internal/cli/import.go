@@ -42,7 +42,7 @@ var importCmd = &cobra.Command{
 		note := fmt.Sprintf("initial import from %s", source)
 		desc, err := createInitialCheckpoint(r.Root, note, []string{"import"})
 		if err != nil {
-			return fmt.Errorf("create initial checkpoint: %w", err)
+			return fmt.Errorf("create initial checkpoint: %w", cleanupLifecycleDestination(r.Root, err))
 		}
 
 		output := map[string]any{

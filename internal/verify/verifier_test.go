@@ -1,6 +1,8 @@
 package verify_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 	"github.com/jvs-project/jvs/internal/repo"
 	"github.com/jvs-project/jvs/internal/snapshot"
 	"github.com/jvs-project/jvs/internal/verify"
+	"github.com/jvs-project/jvs/pkg/jsonutil"
 	"github.com/jvs-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -274,6 +277,18 @@ func TestVerifier_VerifySnapshot_NoPayloadHash(t *testing.T) {
 	assert.False(t, result.TamperDetected)
 }
 
+func TestVerifier_VerifySnapshot_AcceptsLegacyMetadataWithoutOwnership(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := createTestSnapshot(t, repoPath)
+	rewriteDescriptorAsLegacyNoOwnership(t, repoPath, snapshotID)
+
+	v := verify.NewVerifier(repoPath)
+	result, err := v.VerifySnapshot(snapshotID, false)
+	require.NoError(t, err)
+	assert.True(t, result.ChecksumValid)
+	assert.False(t, result.TamperDetected)
+}
+
 func TestVerifier_VerifySnapshot_ChecksumTampering(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	snapshotID := createTestSnapshot(t, repoPath)
@@ -320,6 +335,32 @@ func replaceJSONField(json, old, new string) string {
 		}
 	}
 	return result
+}
+
+func rewriteDescriptorAsLegacyNoOwnership(t *testing.T, repoPath string, snapshotID model.SnapshotID) {
+	t.Helper()
+
+	descriptorPath := filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json")
+	data, err := os.ReadFile(descriptorPath)
+	require.NoError(t, err)
+
+	var descriptor map[string]any
+	require.NoError(t, json.Unmarshal(data, &descriptor))
+	metadata, ok := descriptor["metadata_preservation"].(map[string]any)
+	require.True(t, ok, "test snapshot descriptor must include metadata_preservation: %s", data)
+	delete(metadata, "ownership")
+
+	descriptor["descriptor_checksum"] = ""
+	descriptor["integrity_state"] = ""
+	canonical, err := jsonutil.CanonicalMarshal(descriptor)
+	require.NoError(t, err)
+	sum := sha256.Sum256(canonical)
+	descriptor["descriptor_checksum"] = hex.EncodeToString(sum[:])
+	descriptor["integrity_state"] = string(model.IntegrityVerified)
+
+	legacyData, err := json.MarshalIndent(descriptor, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(descriptorPath, legacyData, 0644))
 }
 
 func TestVerifier_VerifySnapshot_PayloadTampering(t *testing.T) {

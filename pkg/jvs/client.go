@@ -46,9 +46,18 @@ type RestoreOptions struct {
 
 // GCOptions configures garbage collection.
 type GCOptions struct {
-	KeepMinSnapshots int           // Overrides default minimum snapshot retention when non-zero
-	KeepMinAge       time.Duration // Overrides default age retention when non-zero
-	DryRun           bool
+	DryRun bool
+}
+
+// GCPlan is the public library view of a garbage collection plan.
+type GCPlan struct {
+	PlanID                 string             `json:"plan_id"`
+	CreatedAt              time.Time          `json:"created_at"`
+	ProtectedCheckpoints   []model.SnapshotID `json:"protected_checkpoints"`
+	ProtectedByLineage     int                `json:"protected_by_lineage"`
+	CandidateCount         int                `json:"candidate_count"`
+	ToDelete               []model.SnapshotID `json:"to_delete"`
+	DeletableBytesEstimate int64              `json:"deletable_bytes_estimate"`
 }
 
 func (o *SnapshotOptions) worktree() string {
@@ -285,35 +294,31 @@ func (c *Client) Verify(ctx context.Context, snapshotID model.SnapshotID) error 
 
 // GC creates and optionally executes a garbage collection plan.
 // If DryRun is true, returns the plan without deleting anything.
-func (c *Client) GC(ctx context.Context, opts GCOptions) (*model.GCPlan, error) {
+func (c *Client) GC(ctx context.Context, opts GCOptions) (*GCPlan, error) {
 	if err := checkContext(ctx); err != nil {
-		return nil, err
-	}
-
-	policy, err := retentionPolicyFromOptions(opts)
-	if err != nil {
 		return nil, err
 	}
 
 	collector := gc.NewCollector(c.repoRoot)
 
-	plan, err := collector.PlanWithPolicy(policy)
+	plan, err := collector.Plan()
 	if err != nil {
 		return nil, fmt.Errorf("gc plan: %w", err)
 	}
+	publicPlan := publicGCPlan(plan)
 
 	if opts.DryRun {
-		return plan, nil
+		return publicPlan, nil
 	}
 	if err := checkContext(ctx); err != nil {
-		return plan, err
+		return publicPlan, err
 	}
 
 	if err := collector.Run(plan.PlanID); err != nil {
-		return plan, fmt.Errorf("gc run: %w", err)
+		return publicPlan, fmt.Errorf("gc run: %w", err)
 	}
 
-	return plan, nil
+	return publicPlan, nil
 }
 
 // RunGC executes a previously created GC plan by ID.
@@ -369,18 +374,19 @@ func checkContext(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func retentionPolicyFromOptions(opts GCOptions) (model.RetentionPolicy, error) {
-	policy := model.DefaultRetentionPolicy()
-	if opts.KeepMinSnapshots != 0 {
-		policy.KeepMinSnapshots = opts.KeepMinSnapshots
+func publicGCPlan(plan *model.GCPlan) *GCPlan {
+	if plan == nil {
+		return nil
 	}
-	if opts.KeepMinAge != 0 {
-		policy.KeepMinAge = opts.KeepMinAge
+	return &GCPlan{
+		PlanID:                 plan.PlanID,
+		CreatedAt:              plan.CreatedAt,
+		ProtectedCheckpoints:   append([]model.SnapshotID(nil), plan.ProtectedSet...),
+		ProtectedByLineage:     plan.ProtectedByLineage,
+		CandidateCount:         plan.CandidateCount,
+		ToDelete:               append([]model.SnapshotID(nil), plan.ToDelete...),
+		DeletableBytesEstimate: plan.DeletableBytesEstimate,
 	}
-	if err := policy.Validate(); err != nil {
-		return model.RetentionPolicy{}, err
-	}
-	return policy, nil
 }
 
 func isNoRepoError(err error) bool {

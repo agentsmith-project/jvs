@@ -1,466 +1,424 @@
 # JVS Architecture
 
-**Version:** v7.0
-**Last Updated:** 2026-02-23
+**Version:** v0 public contract
+**Last Updated:** 2026-04-25
 **Status:** Active
 
 ---
 
 ## Overview
 
-JVS (Juicy Versioned Workspaces) is a **snapshot-first, filesystem-native versioning layer** built on JuiceFS. It provides O(1) workspace snapshots through Copy-on-Write (CoW) while maintaining a clear separation between control plane metadata and user payload data.
+JVS (Juicy Versioned Workspaces) is a filesystem-native checkpoint layer for
+real workspace directories. It keeps control-plane metadata under the repo root
+and leaves workspace payload directories as ordinary files that existing tools
+can read and write directly.
 
-### Key Design Principles
+JVS chooses the best available materialization engine for the target
+filesystem: JuiceFS clone when supported, reflink copy when available, and
+portable recursive copy everywhere else. Public performance claims are scoped
+to the selected engine and filesystem capability.
 
-1. **Control/Data Plane Separation** - Metadata lives in `.jvs/`; payload is pure data
-2. **Filesystem as Source of Truth** - No virtualization, real directories
-3. **Snapshot-First** - Complete workspace states, not diffs
-4. **Local-First** - No remote protocol; JuiceFS handles transport
+### Design Principles
+
+1. **Control/data separation** - Metadata lives under `.jvs/`; workspace
+   payload roots contain user data only.
+2. **Filesystem-native operation** - Workspaces are normal directories, not a
+   virtual filesystem or hidden index.
+3. **Checkpoint-first history** - The stable versioned unit is a complete
+   workspace tree at one point in time.
+4. **Local-first behavior** - JVS does not require a server or remote protocol.
+5. **Verifiable state** - Descriptor checksums, payload hashes, doctor checks,
+   and audit records make repository state inspectable.
+
+---
+
+## Public Surface
+
+The v0 public contract uses these terms consistently:
+
+| Term | Meaning |
+| --- | --- |
+| `repo` | A repository root containing `.jvs/` metadata plus one or more workspaces. |
+| `workspace` | A real payload directory registered in the repo. |
+| `checkpoint` | An immutable full-tree record of a workspace. |
+| `current` | The checkpoint currently materialized in a workspace according to JVS metadata. |
+| `latest` | The newest checkpoint on the workspace's active line. |
+| `dirty` | Live workspace files differ from `current`, or JVS cannot prove they match. |
+
+Stable user-facing commands are organized around setup, checkpointing,
+workspace targeting, verification, doctor checks, and two-phase cleanup:
+
+```text
+init, import, clone, capability
+info, status
+checkpoint, checkpoint list, diff, restore
+fork, workspace list, workspace path, workspace rename, workspace remove
+verify, doctor, gc plan, gc run
+```
+
+`restore current` and `restore latest` are the public refs for restoring the
+materialized checkpoint or returning to the latest checkpoint. No other
+restoration mode is part of the v0 CLI contract.
 
 ---
 
 ## System Components
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         JVS CLI Layer                           │
-├─────────────────────────────────────────────────────────────────┤
-│  Commands: init, snapshot, restore, worktree, verify, doctor, gc │
-└────────────────────┬────────────────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────────────────┐
-│                      Internal Packages                          │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │
-│  │   snapshot  │  │   restore   │  │  worktree   │             │
-│  │   creator   │  │  restorer   │  │   manager   │             │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘             │
-│         │                │                │                     │
-│  ┌──────▼────────────────▼────────────────▼──────┐             │
-│  │              repo (Repository)                 │             │
-│  │         - Descriptor management                │             │
-│  │         - Lineage tracking                     │             │
-│  │         - Worktree registry                    │             │
-│  └──────┬─────────────────────────────────────────┘             │
-│         │                                                       │
-│  ┌──────▼────────────┐  ┌──────────────────────────────────┐  │
-│  │     engine        │  │          integrity               │  │
-│  │  (abstraction)    │  │    - Checksum verification       │  │
-│  │  - juicefs-clone  │  │    - Payload hash computation    │  │
-│  │  - reflink        │  │    - Two-layer integrity         │  │
-│  │  - copy           │  └──────────────────────────────────┘  │
-│  └───────────────────┘                                       │
-├─────────────────────────────────────────────────────────────────┤
-│                    Supporting Packages                          │
-│  ┌────────────┐  ┌────────────┐  ┌────────────┐               │
-│  │   doctor   │  │     gc     │  │   verify   │               │
-│  │  - health  │  │  - collector│  │  - checker │               │
-│  │  - repair  │  │  - planner │  │            │               │
-│  └────────────┘  └────────────┘  └────────────┘               │
-└─────────────────────────────────────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────────────────┐
-│                    Storage Layer                                │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────┐         ┌─────────────────┐               │
-│  │    Control      │         │     Data        │               │
-│  │     Plane       │         │     Plane       │               │
-│  │     .jvs/       │         │   main/         │               │
-│  │                 │         │   worktrees/    │               │
-│  │  - descriptors  │         │                 │               │
-│  │  - snapshots    │         │   User Payload  │               │
-│  │  - worktrees/   │         │                 │               │
-│  │  - audit/       │         │                 │               │
-│  │  - gc/          │         │                 │               │
-│  └─────────────────┘         └─────────────────┘               │
-└─────────────────────────────────────────────────────────────────┘
-                     │
-┌────────────────────▼────────────────────────────────────────────┐
-│                 Filesystem (JuiceFS or any FS)                  │
-└─────────────────────────────────────────────────────────────────┘
+```text
++------------------------------------------------------------------+
+|                            JVS CLI                               |
+| init, checkpoint, restore, fork, workspace, verify, doctor, gc    |
++-------------------------------+----------------------------------+
+                                |
++-------------------------------v----------------------------------+
+|                       Public output facade                       |
+| text output, JSON envelopes, stable error codes, progress policy |
++-------------------------------+----------------------------------+
+                                |
++-------------------------------v----------------------------------+
+|                         Core services                            |
+| checkpoint creation | restore | workspace lifecycle | repository |
++-------------------------------+----------------------------------+
+                                |
++-------------------------------v----------------------------------+
+|                    Engines and verification                      |
+| juicefs-clone | reflink-copy | copy | checksums | payload hashes |
++-------------------------------+----------------------------------+
+                                |
++-------------------------------v----------------------------------+
+|                        Storage boundary                          |
+| .jvs control plane + workspace payload directories               |
++------------------------------------------------------------------+
 ```
 
 ---
 
-## Component Responsibilities
+## CLI Layer
 
-### CLI Layer (`internal/cli/`)
+**Package:** `internal/cli/`
 
-**Purpose:** User-facing command interface
+The CLI layer owns user-facing behavior:
 
-**Responsibilities:**
-- Parse command-line arguments and flags
-- Validate user input
-- Format output (text, JSON)
-- Return appropriate error classes
-- Progress reporting for long operations
+- Parse commands, global targeting flags, and command-specific flags.
+- Resolve the repo and workspace deterministically.
+- Enforce dirty-state safety before destructive operations.
+- Render human output and JSON envelopes.
+- Map failures to stable error classes and hints.
 
-**Key Commands:**
-- `jvs init` - Repository initialization
-- `jvs snapshot` - Create workspace snapshot
-- `jvs restore` - Restore to previous snapshot
-- `jvs worktree` - Worktree management
-- `jvs verify` - Integrity verification
-- `jvs doctor` - Health checks and repair
-- `jvs gc` - Garbage collection
+The CLI should speak public v0 vocabulary even when it calls packages whose
+names retain older implementation terminology.
 
 ---
 
-### Snapshot Creator (`internal/snapshot/`)
+## Checkpoint Lifecycle
 
-**Purpose:** Create snapshots with proper integrity guarantees
+Checkpoint creation captures the targeted workspace payload and publishes it
+atomically. A successful checkpoint must not become visible until both payload
+and descriptor durability requirements are complete.
 
-**Responsibilities:**
-- Execute 12-step atomic publish protocol
-- Compute descriptor checksum
-- Compute payload root hash
-- Generate snapshot ID
-- Append audit record
-- Handle `.READY` file as publish gate
+High-level flow:
 
-**Protocol Flow:**
-1. Validate worktree state
-2. Generate snapshot UUID
-3. Create intent record
-4. Trigger engine snapshot
-5. Compute payload hash
-6. Build descriptor
-7. Write descriptor with checksum
-8. Verify integrity
-9. Write `.READY` file (atomic publish)
-10. Update lineage (HEAD pointer)
-11. Append audit record
-12. Cleanup intent
-
----
-
-### Restore Restorer (`internal/restore/`)
-
-**Purpose:** Restore worktree to a previous snapshot state
-
-**Responsibilities:**
-- Validate snapshot exists and is verified
-- Handle in-place restore (modifies worktree directly)
-- Enter detached state when restoring to non-HEAD
-- Support fuzzy snapshot lookup (ID, tag, note)
-- Preserve worktree configuration
-
-**Detached State Model:**
-- `jvs restore <id>` puts worktree in detached state
-- `jvs restore HEAD` returns to latest state
-- `jvs worktree fork` creates new branch from current state
-
----
-
-### Worktree Manager (`internal/worktree/`)
-
-**Purpose:** Manage worktree lifecycle and discovery
-
-**Responsibilities:**
-- Create and delete worktrees
-- Track worktree configuration in `.jvs/worktrees/<name>/config.json`
-- Discover worktree from current directory
-- Validate worktree invariants
-- Handle worktree renaming
-
-**Worktree Discovery:**
-1. Walk up from CWD to find `.jvs/` (repo root)
-2. Compute relative path within repo
-3. Map to worktree name: `main/...` → `main`, `worktrees/<name>/...` → `<name>`
-4. Load worktree configuration
-
----
-
-### Repository Package (`internal/repo/`)
-
-**Purpose:** Core repository operations and metadata management
-
-**Responsibilities:**
-- Descriptor CRUD operations
-- Lineage tracking (parent-child relationships)
-- Worktree registry management
-- HEAD pointer management
-- Format version validation
-
----
-
-### Engine Abstraction (`internal/engine/`)
-
-**Purpose:** Abstract snapshot engines for different filesystem capabilities
-
-**Interface:**
-```go
-type Engine interface {
-    Snapshot(src, dst string) error
-    IsAvailable() bool
-    Name() string
-}
+```text
+User: jvs checkpoint "fixed bug"
+        |
+        v
+CLI validates targeting and dirty state
+        |
+        v
+Creator materializes payload through selected engine
+        |
+        v
+Payload hash and descriptor checksum are computed
+        |
+        v
+Checkpoint is published atomically
+        |
+        v
+Workspace current/latest metadata and audit log are updated
 ```
 
-**Implementations:**
+User-visible rules:
 
-| Engine | Description | Performance | Requirement |
-|--------|-------------|-------------|-------------|
-| `juicefs-clone` | JuiceFS clone ioctl | O(1) | JuiceFS mounted |
-| `reflink` | Copy-on-write via reflink | O(1) | CoW filesystem (btrfs, xfs) |
-| `copy` | Recursive file copy | O(n) | Fallback |
-
----
-
-### Integrity Package (`internal/integrity/`)
-
-**Purpose:** Two-layer integrity verification
-
-**Components:**
-
-1. **Descriptor Checksum**
-   - SHA-256 hash of entire descriptor JSON
-   - Detects descriptor corruption/tampering
-   - Stored in descriptor file
-
-2. **Payload Root Hash**
-   - SHA-256 hash of complete payload tree
-   - Detects payload corruption/tampering
-   - Independent of descriptor (cross-layer validation)
-
-**Verification Modes:**
-- `jvs verify` - Strong verification (checksum + payload hash)
-- `jvs verify --all` - Verify all snapshots
+- A checkpoint captures exactly one workspace payload root.
+- Published checkpoints are immutable.
+- A new checkpoint advances only from the workspace's latest checkpoint.
+- Checkpoint refs are `current`, `latest`, full IDs, unique prefixes, and
+  unambiguous tags.
 
 ---
 
-### Doctor (`internal/doctor/`)
+## Restore Lifecycle
 
-**Purpose:** Repository health checks and repair
+Restore replaces the live workspace contents with a referenced checkpoint.
 
-**Checks:**
-- Layout validation (format version, directory structure)
-- Lineage integrity (parent-child consistency)
-- Descriptor checksums
-- Runtime state (orphan intents)
-- Audit chain integrity
+High-level flow:
 
-**Repair Actions:**
-- `clean_tmp` - Remove orphan `.tmp` files
-- `advance_head` - Advance HEAD to latest READY snapshot
-- `rebuild_index` - Regenerate `index.sqlite`
-- `audit_repair` - Recompute audit hash chain
+```text
+User: jvs restore latest
+        |
+        v
+CLI resolves the checkpoint ref
+        |
+        v
+Dirty-state policy is enforced
+        |
+        v
+Descriptor and payload integrity are checked
+        |
+        v
+Workspace payload is replaced from checkpoint storage
+        |
+        v
+Workspace current metadata is updated
+```
+
+Restoring an older checkpoint makes `current` older than `latest`. Users return
+to the normal advance point with `jvs restore latest` or create a separate
+workspace with `jvs fork`.
 
 ---
 
-### Garbage Collection (`internal/gc/`)
+## Workspace Lifecycle
 
-**Purpose:** Reclaim storage from unreferenced snapshots
+The default workspace is `main`. Additional workspaces are created with
+`jvs fork` and managed with `jvs workspace ...` commands.
 
-**Process:**
-1. `jvs gc plan` - Preview what would be deleted
-2. `jvs gc run --plan-id <id>` - Execute plan
+Responsibilities:
 
-**Protection Rules:**
-- HEAD snapshot always protected
-- Tagged snapshots protected (default policy)
-- Explicit pins override default protection
-- Minimum retention period
+- Create a workspace from `current`, `latest`, or an explicit checkpoint ref.
+- List, rename, remove, and resolve workspace payload paths.
+- Preserve payload/control-plane separation.
+- Refuse unsafe removal unless the user explicitly forces it.
 
-**Two-Phase Protocol:**
-- Phase 1: Plan generation (plan ID)
-- Phase 2: Execution with confirmation
+Switching workspaces is done by changing directories or by targeting with
+`--workspace`. JVS does not virtualize the current directory.
 
 ---
 
-### Audit Package (`internal/audit/`)
+## Repository Model
 
-**Purpose:** Tamper-evident operation history
+The repository coordinates checkpoint descriptors, workspace metadata, runtime
+operation records, audit records, and cleanup plans.
 
-**Audit Record Schema:**
-```json
-{
-  "event_id": "uuid",
-  "timestamp": "ISO-8601",
-  "operation": "snapshot|restore|gc_run|...",
-  "actor": "user@host",
-  "target": "snapshot-id",
-  "reason": "explanation",
-  "prev_hash": "SHA-256(previous_record)",
-  "record_hash": "SHA-256(this_record)"
-}
-```
+Responsibilities:
 
-**Hash Chain:** Each record hashes the previous, creating a tamper-evident chain.
+- Maintain repo identity and format version.
+- Load and validate checkpoint descriptors.
+- Maintain per-workspace `current` and `latest` metadata.
+- Resolve checkpoint refs.
+- Protect active lineage during storage cleanup.
+- Keep runtime state separate from durable published state.
 
 ---
 
-## Data Flows
+## Engine Model
 
-### Snapshot Creation Flow
+JVS materializes checkpoint payloads through an engine abstraction. Engine
+selection is automatic and visible to users through setup output, `jvs info`,
+`jvs capability`, and checkpoint metadata.
 
-```
-User: jvs snapshot "fixed bug"
-         │
-         ▼
-┌─────────────────┐
-│  CLI (snapshot) │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────────┐
-│ Snapshot Creator    │◄─────┐
-└────────┬────────────┘      │
-         │                   │
-         ├──► Validate       │
-         │                   │
-         ├──► Generate UUID  │
-         │                   │
-         ├──► Create Intent  │
-         │                   │
-         ▼                   │
-┌─────────────────┐          │
-│     Engine      │          │
-│  (juicefs-clone)│          │
-└────────┬────────┘          │
-         │                   │
-         ▼                   │
-┌─────────────────┐          │
-│  Compute Hash   │          │
-└────────┬────────┘          │
-         │                   │
-         ▼                   │
-┌─────────────────┐          │
-│ Build Descriptor│          │
-└────────┬────────┘          │
-         │                   │
-         ▼                   │
-┌─────────────────┐          │
-│   Write +       │          │
-│  Verify Checksum│          │
-└────────┬────────┘          │
-         │                   │
-         ▼                   │
-┌─────────────────┐          │
-│ Write .READY    │          │
-│  (Atomic Publish)│          │
-└────────┬────────┘          │
-         │                   │
-         ├──► Update Lineage │
-         │                   │
-         ▼                   │
-┌─────────────────┐          │
-│  Append Audit   │──────────┘
-└─────────────────┘
-```
+| Engine | Public class | Requirement |
+| --- | --- | --- |
+| `juicefs-clone` | Constant-time metadata clone when supported | JuiceFS mount plus successful clone support |
+| `reflink-copy` | Tree walk with copy-on-write data sharing where supported | Filesystem reflink support |
+| `copy` | Portable recursive copy | Any supported filesystem |
 
-### Restore Flow
-
-```
-User: jvs restore abc123
-         │
-         ▼
-┌─────────────────┐
-│  CLI (restore)  │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────────┐
-│ Restore Restorer    │
-└────────┬────────────┘
-         │
-         ├──► Lookup snapshot (fuzzy match)
-         │
-         ├──► Verify integrity
-         │
-         ├──► Clear worktree (preserving .jvs/)
-         │
-         ├──► Engine: copy snapshot to worktree
-         │
-         ├──► Update worktree state
-         │
-         └──► Enter detached state (if not HEAD)
-```
+Engine metadata must report the effective engine, performance class,
+metadata-preservation behavior, and degradation reasons when fallback occurs.
 
 ---
 
-## Trust Boundaries
+## Integrity Model
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      TRUSTED BOUNDARY                       │
-│                    (User's Machine)                         │
-│                                                             │
-│  ┌──────────────┐         ┌──────────────┐                 │
-│  │    JVS CLI   │────────▶│  .jvs/ Dir   │                 │
-│  └──────────────┘         │  (Metadata)  │                 │
-│                           └──────────────┘                 │
-│                                                                 │
-│  ┌──────────────────────────────────────────────┐             │
-│  │            Payload Directories               │             │
-│  │      (User-modified, untrusted content)      │             │
-│  │  main/  worktrees/<name>/                   │             │
-│  └──────────────────────────────────────────────┘             │
-└─────────────────────────────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   FILESYSTEM BOUNDARY                        │
-│              (JuiceFS, NFS, local FS, etc.)                  │
-└─────────────────────────────────────────────────────────────┘
+JVS uses two checkpoint integrity layers:
+
+- **Descriptor checksum:** SHA-256 over canonical descriptor fields, excluding
+  mutable verification state.
+- **Payload root hash:** Deterministic SHA-256 over the materialized checkpoint
+  payload tree.
+
+`jvs verify` checks descriptor and payload integrity for one checkpoint or all
+checkpoints. `jvs doctor --strict` additionally validates repository layout,
+publish state, workspace lineage, runtime hygiene, and audit-chain health.
+
+---
+
+## Doctor And Repair
+
+Doctor checks repository health and reports findings with stable severity and
+machine-readable IDs.
+
+Checks include:
+
+- Control-plane layout and format version.
+- Checkpoint descriptor and payload consistency.
+- Atomic publish state.
+- Workspace `current`/`latest` metadata consistency.
+- Runtime operation leftovers.
+- Audit-chain integrity in strict mode.
+
+The stable public automatic repair surface is intentionally narrow:
+
+- `clean_locks`
+- `clean_runtime_tmp`
+- `clean_runtime_operations`
+
+Repairs that rewrite lineage, rebuild durable indexes, or rewrite audit history
+are outside the v0 stable public repair surface.
+
+---
+
+## Storage Cleanup
+
+Storage cleanup is two phase:
+
+```text
+jvs gc plan
+jvs gc run --plan-id <id>
 ```
 
-**Trust Assumptions:**
-- User's machine is trusted for JVS operations
-- Payload content is user-controlled and may be untrusted
-- Filesystem permissions provide access control
-- No in-JVS authentication/authorization (delegated to OS/JuiceFS)
+Protection rules:
+
+- Checkpoints reachable from active workspace lineage are protected.
+- Checkpoints referenced by active runtime operation records are protected.
+- Tags are metadata only for v0 cleanup and do not create protection.
+- v0 publishes no pin command, tag-retention rule, or minimum-age policy.
+
+The plan output is the public contract for automation. The run step must use a
+previous plan ID so deletion decisions are reviewable before execution.
+
+---
+
+## Audit Boundary
+
+Audit records make operation history tamper-evident by linking each record to
+the previous record hash. The audit chain is checked by `jvs doctor --strict`.
+
+Representative event classes include checkpoint creation, restore, workspace
+management, verification, doctor checks, and cleanup runs. Signing, external
+trust policy, and key management are future directions, not v0 stable commands.
+
+---
+
+## On-Disk Compatibility Layout
+
+This section describes internal storage names that remain for compatibility.
+They are not public CLI vocabulary.
+
+```text
+repo/
+|-- .jvs/
+|   |-- descriptors/
+|   |-- snapshots/
+|   |-- worktrees/
+|   |-- audit/
+|   |-- gc/
+|   `-- intents/
+|-- main/
+`-- worktrees/
+    `-- <name>/
+```
+
+Compatibility notes:
+
+- Checkpoint payloads are stored under `.jvs/snapshots/<id>/`.
+- Workspace metadata is stored under `.jvs/worktrees/<name>/config.json`.
+- Additional workspace payloads currently live under `repo/worktrees/<name>/`.
+- Some internal JSON fields retain historical names such as `snapshot_id`,
+  `worktree_name`, and `head_snapshot_id`; public JSON facades should expose
+  checkpoint/workspace/current/latest terms where feasible.
+
+---
+
+## Internal Package Map
+
+This section is implementation-facing and may use package names that preserve
+historical terminology.
+
+| Package | Responsibility |
+| --- | --- |
+| `internal/cli` | CLI commands, targeting, JSON facade, error rendering. |
+| `internal/snapshot` | Checkpoint creation and atomic publish implementation. |
+| `internal/restore` | Workspace payload replacement from checkpoint storage. |
+| `internal/worktree` | Workspace metadata and on-disk compatibility paths. |
+| `internal/repo` | Repository discovery, identity, format, and path helpers. |
+| `internal/engine` | JuiceFS clone, reflink, and copy materialization engines. |
+| `internal/integrity` | Descriptor checksums and payload hashing. |
+| `internal/verify` | Checkpoint verification and lineage helpers. |
+| `internal/doctor` | Repository health checks and safe runtime repair. |
+| `internal/gc` | Plan/run storage cleanup implementation. |
+| `internal/audit` | Tamper-evident audit append and verification helpers. |
+
+---
+
+## Internal Publish Protocol
+
+The checkpoint creator follows a durable publish protocol:
+
+1. Validate source workspace and targeting preconditions.
+2. Create a runtime operation record and fsync it.
+3. Materialize payload into a temporary checkpoint directory.
+4. Compute the payload root hash.
+5. Fsync materialized files and directories.
+6. Build and fsync the descriptor temporary file.
+7. Write and fsync the READY marker.
+8. Atomically rename payload and descriptor into published locations.
+9. Update workspace current/latest metadata last.
+10. Complete runtime cleanup and append the audit event.
+
+Crash recovery treats incomplete runtime records and temporary payloads as
+non-visible until doctor reports or safely cleans them.
 
 ---
 
 ## Extension Points
 
-### Adding a New Snapshot Engine
+### Adding A Materialization Engine
 
-1. Implement `Engine` interface in `internal/engine/`
-2. Register in engine factory
-3. Add auto-detection logic
-4. Update `05_SNAPSHOT_ENGINE_SPEC.md`
+1. Implement the engine interface in `internal/engine/`.
+2. Register detection and fallback behavior in the engine factory.
+3. Declare metadata-preservation and performance-class behavior.
+4. Update `05_SNAPSHOT_ENGINE_SPEC.md` and conformance coverage.
 
-### Adding a New Command
+### Adding A Public Command
 
-1. Create command handler in `internal/cli/`
-2. Define error classes in `pkg/errclass/`
-3. Add conformance test in `test/conformance/`
-4. Update `02_CLI_SPEC.md`
+1. Define the user-facing contract in `02_CLI_SPEC.md`.
+2. Implement command handling in `internal/cli/`.
+3. Add error classes and JSON envelope coverage.
+4. Add conformance tests and docs-contract examples.
 
-### Adding Audit Event Types
+### Adding Audit Events
 
-1. Define new event type in `pkg/model/audit.go`
-2. Append record in operation
-3. Update `09_SECURITY_MODEL.md`
-4. Add conformance test for audit trail
+1. Define the event type in `pkg/model/audit.go`.
+2. Append records from the operation boundary.
+3. Update `09_SECURITY_MODEL.md`.
+4. Add strict doctor or audit-chain conformance coverage.
 
 ---
 
 ## Performance Characteristics
 
-| Operation | Complexity (juicefs-clone) | Complexity (copy) |
-|-----------|---------------------------|-------------------|
-| Snapshot  | O(1)                      | O(n)              |
-| Restore   | O(1)                      | O(n)              |
-| Verify    | O(n)                      | O(n)              |
-| GC Plan   | O(m) where m = snapshots  | O(m)              |
+| Operation | `juicefs-clone` on supported JuiceFS | `reflink-copy` when supported | `copy` fallback |
+| --- | --- | --- | --- |
+| Checkpoint materialization | Constant-time metadata clone | Linear tree walk with shared data blocks | Linear data copy |
+| Restore materialization | Constant-time metadata clone where available | Linear tree walk with shared data blocks | Linear data copy |
+| Verify | Linear in payload size | Linear in payload size | Linear in payload size |
+| Cleanup planning | Linear in checkpoint graph size | Linear in checkpoint graph size | Linear in checkpoint graph size |
 
-Where `n` is payload size and `m` is number of snapshots.
+JVS must report engine fallback and degradation reasons so automation can avoid
+assuming constant-time behavior when the filesystem cannot provide it.
 
 ---
 
 ## Related Documents
 
 - [CONSTITUTION.md](CONSTITUTION.md) - Core principles and non-goals
-- [00_OVERVIEW.md](00_OVERVIEW.md) - Frozen design decisions
-- [01_REPO_LAYOUT_SPEC.md](01_REPO_LAYOUT_SPEC.md) - On-disk structure
-- [02_CLI_SPEC.md](02_CLI_SPEC.md) - Command contract
+- [00_OVERVIEW.md](00_OVERVIEW.md) - Product overview
+- [01_REPO_LAYOUT_SPEC.md](01_REPO_LAYOUT_SPEC.md) - Repository layout
+- [02_CLI_SPEC.md](02_CLI_SPEC.md) - Stable command contract
+- [03_WORKTREE_SPEC.md](03_WORKTREE_SPEC.md) - On-disk workspace compatibility
+- [04_SNAPSHOT_SCOPE_AND_LINEAGE_SPEC.md](04_SNAPSHOT_SCOPE_AND_LINEAGE_SPEC.md) - Checkpoint scope and lineage
 - [05_SNAPSHOT_ENGINE_SPEC.md](05_SNAPSHOT_ENGINE_SPEC.md) - Engine details
+- [08_GC_SPEC.md](08_GC_SPEC.md) - Storage cleanup
 - [09_SECURITY_MODEL.md](09_SECURITY_MODEL.md) - Integrity and audit
 - [10_THREAT_MODEL.md](10_THREAT_MODEL.md) - Threat analysis
-
----
-
-*This architecture document covers the high-level design of JVS. For implementation details, see the Go package documentation and code comments.*

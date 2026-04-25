@@ -28,8 +28,10 @@ Before any pre-release or v0 tag:
    metadata.
 5. Lint and build pass without ignored failures.
 6. Coverage meets the repository threshold enforced by `make test-cover`.
-7. `jvs doctor --strict` passes on a representative repo.
-8. `jvs verify --all` passes on the same representative repo.
+7. `jvs doctor --strict` passes on a representative repo, including audit
+   chain validation.
+8. `jvs verify --all` passes on the same representative repo, covering
+   checkpoint descriptor and payload integrity.
 
 CI enforces the same release gate for publishing paths. A `v*` tag push or
 manual `workflow_dispatch` release for an existing `v*` tag must pass the
@@ -77,14 +79,14 @@ release artifacts.
 - Document the rationale and affected user-visible behavior.
 - Update `docs/02_CLI_SPEC.md` and any affected tutorials before tagging.
 - Add or adjust conformance tests before implementation is considered done.
-- Describe migration impact, recovery expectations, and known limitations in
-  the release notes.
+- Describe migration impact, recovery expectations, known limitations, and
+  risk labels in the release notes.
 
 ## Required Release Artifacts
 
 - Updated spec set and tutorials.
 - Conformance and regression summaries.
 - Coverage result from the release gate.
-- Changelog entry with date, tag, highlights, breaking changes, and known
-  limitations.
+- Changelog entry with date, tag, highlights, breaking changes, known
+  limitations, risk labels, and migration notes.
 - Runbook references for verification, diagnosis, and recovery.

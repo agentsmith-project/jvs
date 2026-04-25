@@ -10,8 +10,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jvs-project/jvs/internal/doctor"
 	"github.com/jvs-project/jvs/internal/engine"
 	"github.com/jvs-project/jvs/internal/repo"
+	"github.com/jvs-project/jvs/internal/verify"
+	"github.com/jvs-project/jvs/pkg/errclass"
 	"github.com/jvs-project/jvs/pkg/fsutil"
 	"github.com/jvs-project/jvs/pkg/model"
 	"github.com/jvs-project/jvs/pkg/uuidutil"
@@ -20,6 +23,8 @@ import (
 var cloneScope string
 
 const fullCloneCopyMode = "full-repository"
+
+var verifyLifecycleCheckpoint = verifyInitialCheckpoint
 
 var cloneCmd = &cobra.Command{
 	Use:   "clone <source-repo> <dest-repo>",
@@ -53,6 +58,9 @@ func runCloneFull(sourceArg, destArg string) error {
 	var transferResult *engine.CloneResult
 	var transferEngine model.EngineType
 	if err := repo.WithMutationLock(sourceRoot, "clone full", func() error {
+		if err := verifyFullCloneSource(sourceRoot); err != nil {
+			return err
+		}
 		var err error
 		transferResult, transferEngine, err = cloneFullRepository(sourceRoot, destRoot)
 		return err
@@ -68,7 +76,7 @@ func runCloneFull(sourceArg, destArg string) error {
 		return fmt.Errorf("probe destination capabilities: %w", err)
 	}
 	warnings := appendUniqueStrings(
-		[]string{"full clone uses byte copy; runtime lock and intent state are excluded"},
+		[]string{"full clone uses byte copy; runtime lock, intent, and active GC plan state are excluded"},
 		capabilities.Warnings...,
 	)
 	degraded := degradedReasons(transferResult)
@@ -158,7 +166,7 @@ func runCloneCurrent(sourceArg, destArg string) error {
 	note := fmt.Sprintf("initial clone from %s workspace %s", sourceRepo.Root, sourceWorkspaceName)
 	desc, err := createInitialCheckpoint(r.Root, note, []string{"clone"})
 	if err != nil {
-		return fmt.Errorf("create initial checkpoint: %w", err)
+		return fmt.Errorf("create initial checkpoint: %w", cleanupLifecycleDestination(r.Root, err))
 	}
 
 	output := map[string]any{
@@ -308,7 +316,17 @@ func fullCloneRuntimeStatePath(rel string) bool {
 	return rel == ".jvs/locks" ||
 		strings.HasPrefix(rel, ".jvs/locks/") ||
 		rel == ".jvs/intents" ||
-		strings.HasPrefix(rel, ".jvs/intents/")
+		strings.HasPrefix(rel, ".jvs/intents/") ||
+		fullCloneActiveGCPlanPath(rel)
+}
+
+func fullCloneActiveGCPlanPath(rel string) bool {
+	const gcPrefix = ".jvs/gc/"
+	if !strings.HasPrefix(rel, gcPrefix) {
+		return false
+	}
+	name := strings.TrimPrefix(rel, gcPrefix)
+	return !strings.Contains(name, "/") && strings.HasSuffix(name, ".json")
 }
 
 func rebuildFullCloneRuntimeState(repoRoot string) error {
@@ -377,6 +395,67 @@ func copyCloneFile(src, dst string, info fs.FileInfo) error {
 type cloneDirMode struct {
 	path string
 	mode os.FileMode
+}
+
+func verifyInitialCheckpoint(repoRoot string, snapshotID model.SnapshotID) error {
+	result, err := verify.NewVerifier(repoRoot).VerifySnapshot(snapshotID, true)
+	if err != nil {
+		return errclass.ErrDescriptorCorrupt.WithMessagef("verify checkpoint %s: %v", snapshotID, err)
+	}
+	if result == nil {
+		return errclass.ErrDescriptorCorrupt.WithMessage("initial checkpoint verification returned no result")
+	}
+	if !result.TamperDetected && result.Error == "" {
+		return nil
+	}
+	return verifyResultError(result, "initial checkpoint failed verification")
+}
+
+func verifyFullCloneSource(sourceRoot string) error {
+	result, err := doctor.NewDoctor(sourceRoot).Check(true)
+	if err != nil {
+		return errclass.ErrDescriptorCorrupt.WithMessagef("verify source repository: %v", err)
+	}
+	if result == nil || result.Healthy {
+		return nil
+	}
+	for _, finding := range result.Findings {
+		if finding.Severity != "error" && finding.Severity != "critical" {
+			continue
+		}
+		code := finding.ErrorCode
+		if code == "" {
+			code = errclass.ErrDescriptorCorrupt.Code
+		}
+		message := finding.Description
+		if message == "" {
+			message = "source repository failed verification"
+		}
+		return &errclass.JVSError{Code: code, Message: message}
+	}
+	return errclass.ErrDescriptorCorrupt.WithMessage("source repository failed verification")
+}
+
+func verifyResultError(result *verify.Result, fallback string) error {
+	code := result.ErrorCode
+	if code == "" {
+		code = errclass.ErrDescriptorCorrupt.Code
+	}
+	message := result.Error
+	if message == "" {
+		message = fallback
+	}
+	return &errclass.JVSError{Code: code, Message: message}
+}
+
+func cleanupLifecycleDestination(repoRoot string, cause error) error {
+	if repoRoot == "" {
+		return cause
+	}
+	if err := os.RemoveAll(repoRoot); err != nil {
+		return fmt.Errorf("%w; cleanup destination %s: %v", cause, repoRoot, err)
+	}
+	return cause
 }
 
 func rewriteRepoID(repoRoot string) (string, error) {

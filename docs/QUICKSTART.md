@@ -158,7 +158,7 @@ jvs clone ./myproject ./current-only-copy --scope current
 | `jvs workspace path [name]` | Print a workspace path | `jvs workspace path main` |
 | `jvs verify [--all]` | Verify integrity | `jvs verify --all` |
 | `jvs doctor [--strict]` | Diagnose repository health | `jvs doctor --strict` |
-| `jvs gc plan` | Preview retention cleanup | `jvs gc plan` |
+| `jvs gc plan` | Preview two-phase storage cleanup | `jvs gc plan` |
 
 ## Tips
 

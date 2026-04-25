@@ -204,7 +204,7 @@ jobs:
           GOOS=darwin GOARCH=arm64 go build -o bin/jvs-darwin-arm64 ./cmd/jvs
           GOOS=windows GOARCH=amd64 go build -o bin/jvs-windows-amd64.exe ./cmd/jvs
 
-      - name: Generate build artifacts summary
+      - name: Generate release notes
         run: |
           echo "## Build Artifacts" > release-notes.md
           echo "" >> release-notes.md
@@ -222,6 +222,18 @@ jobs:
           echo "  --certificate-identity=https://github.com/jvs-project/jvs/.github/workflows/ci.yml@${GITHUB_REF} \\ " >> release-notes.md
           echo "  --certificate-oidc-issuer=https://token.actions.githubusercontent.com" >> release-notes.md
           echo "\`\`\`" >> release-notes.md
+          echo "" >> release-notes.md
+          echo "## Known limitations" >> release-notes.md
+          echo "- v0 does not include remote push/pull, signing commands, merge/rebase, or complex retention policy flags." >> release-notes.md
+          echo "- Full verification reads checkpoint payloads and can be I/O intensive on large workspaces." >> release-notes.md
+          echo "" >> release-notes.md
+          echo "## Risk labels" >> release-notes.md
+          echo "- integrity: descriptor checksum and payload hash detect independent corruption; coordinated descriptor-plus-checksum rewrite remains a v0 residual risk." >> release-notes.md
+          echo "- migration: runtime operation state must be rebuilt at the destination with jvs doctor --strict --repair-runtime." >> release-notes.md
+          echo "" >> release-notes.md
+          echo "## Migration notes" >> release-notes.md
+          echo "- Existing repositories do not need an on-disk migration for this release." >> release-notes.md
+          echo "- After upgrading, run jvs doctor --strict and jvs verify --all on a representative repo." >> release-notes.md
 
       - name: Sign binaries with cosign
         run: |

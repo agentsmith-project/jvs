@@ -20,7 +20,7 @@ func TestGC_Plan(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("gc plan failed: %s", stderr)
 	}
-	if !strings.Contains(stdout, "GC Plan") {
+	if !strings.Contains(stdout, "Plan ID:") {
 		t.Errorf("expected plan output, got: %s", stdout)
 	}
 }

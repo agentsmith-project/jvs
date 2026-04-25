@@ -1,4 +1,4 @@
-# Migration & Backup (v7.0)
+# Migration & Backup (v0)
 
 JVS does not provide remote replication. Use JuiceFS replication tools.
 
@@ -13,11 +13,12 @@ Use `juicefs sync` for repository migration.
 jvs doctor --strict
 jvs verify --all
 ```
-4. take final snapshots for critical worktrees
+4. create final checkpoints for critical workspaces
 
 ## Runtime-state policy (MUST)
 Runtime state is non-portable and must not be migrated as authoritative state:
 - active `.jvs/intents/`
+- active `.jvs/gc/<plan_id>.json` plans
 
 Destination MUST rebuild runtime state:
 ```bash
@@ -30,6 +31,7 @@ jvs doctor --strict --repair-runtime
 ```bash
 juicefs sync /mnt/src/myrepo/ /mnt/dst/myrepo/ \
   --exclude '.jvs/intents/**' \
+  --exclude '.jvs/gc/*.json' \
   --update --threads 16
 ```
 3. validate destination
@@ -37,24 +39,29 @@ juicefs sync /mnt/src/myrepo/ /mnt/dst/myrepo/ \
 cd /mnt/dst/myrepo/main
 jvs doctor --strict --repair-runtime
 jvs verify --all
-jvs history --limit 10
+jvs checkpoint list --json | jq '.data[:10]'
 ```
 
 ## What to sync
-Portable history state:
+Portable checkpoint state:
 - `.jvs/format_version`
 - `.jvs/worktrees/`
 - `.jvs/snapshots/`
 - `.jvs/descriptors/`
 - `.jvs/audit/`
-- `.jvs/gc/`
+- `.jvs/gc/tombstones/`
+
+Active GC plans are repository-bound runtime state. Full repository clone and
+the recommended sync exclusions leave them behind. If a plan is copied
+out-of-band, it will fail safe with `E_GC_PLAN_MISMATCH`; create a new plan
+after migration.
 
 Optional payload state:
 - `main/`
-- selected `worktrees/`
+- selected workspace payload directories
 
 ## Restore drill (SHOULD)
 1. restore backup to fresh volume
 2. run strict doctor + verify
-3. restore at least one historical snapshot into new worktree
+3. restore at least one older checkpoint into a new workspace
 4. record drill result in operations log

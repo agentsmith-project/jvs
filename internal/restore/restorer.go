@@ -107,6 +107,9 @@ func (r *Restorer) restore(worktreeName string, snapshotID model.SnapshotID) err
 	if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(payloadPath); err != nil {
 		return err
 	}
+	if err := r.auditLogger.EnsureAppendable(); err != nil {
+		return fmt.Errorf("audit log not appendable: %w", err)
+	}
 
 	// Create backup directory for rollback while keeping payloadPath itself in place.
 	backupPath := payloadPath + ".restore-backup-" + uuidutil.NewV4()[:8]
@@ -164,9 +167,11 @@ func (r *Restorer) restore(worktreeName string, snapshotID model.SnapshotID) err
 	isDetached := snapshotID != cfg.LatestSnapshotID
 
 	// Audit log
-	r.auditLogger.Append(model.EventTypeRestore, worktreeName, snapshotID, map[string]any{
+	if err := r.auditLogger.Append(model.EventTypeRestore, worktreeName, snapshotID, map[string]any{
 		"detached": isDetached,
-	})
+	}); err != nil {
+		return fmt.Errorf("write audit log: %w", err)
+	}
 
 	return nil
 }

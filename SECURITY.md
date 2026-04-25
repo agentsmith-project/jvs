@@ -2,12 +2,13 @@
 
 ## Supported Versions
 
-The JVS project maintains security updates for the current major version (v7.x).
+JVS is currently governed by the v0 public contract. Security fixes target
+supported pre-release and v0 tags for that contract.
 
 | Version | Supported |
 |---------|-----------|
-| v7.x | :white_check_mark: Yes |
-| v6.x and earlier | :x: No |
+| Current pre-release and v0 tags | :white_check_mark: Yes |
+| Superseded historical tags | :x: No |
 
 ## Reporting a Vulnerability
 
@@ -32,12 +33,12 @@ Instead, please report vulnerabilities responsibly by:
 
 ## Security Model Overview
 
-JVS is designed with a **snapshot-first, filesystem-native** security architecture:
+JVS is designed with a **checkpoint-first, filesystem-native** security architecture:
 
 ### Integrity Protection (Two-Layer Model)
 
-1. **Descriptor Checksum**: Each snapshot descriptor includes a SHA-256 checksum covering all descriptor fields
-2. **Payload Root Hash**: Each snapshot includes a SHA-256 hash of the complete payload directory tree
+1. **Descriptor Checksum**: Each checkpoint descriptor includes a SHA-256 checksum covering all descriptor fields
+2. **Payload Root Hash**: Each checkpoint includes a SHA-256 hash of the complete payload directory tree
 
 Verification requires both layers to pass:
 ```bash
@@ -72,7 +73,7 @@ JVS v0.x intentionally defers some security features to v1.x:
 JVS relies on OS-level filesystem permissions for access control:
 
 - **Repository access**: Controlled by filesystem permissions on `.jvs/` directory
-- **Snapshot isolation**: Worktrees are separate directories with standard filesystem permissions
+- **Workspace isolation**: Workspaces are separate directories with standard filesystem permissions
 - **JuiceFS integration**: Access control delegated to JuiceFS authentication layer
 
 **Recommendation**: Run `jvs init` in directories with appropriate POSIX permissions (e.g., `0700` for single-user, `0750` for team access).
@@ -85,9 +86,9 @@ JVS relies on OS-level filesystem permissions for access control:
 
 3. **JuiceFS Dependency**: Ensure JuiceFS mount points are properly secured. Refer to [JuiceFS security documentation](https://juicefs.com/docs/community/security/) for best practices.
 
-4. **Path Traversal Protection**: JVS validates all worktree and snapshot names to prevent path escape attacks. Rejects `..`, `/`, `\`, and absolute paths.
+4. **Path Traversal Protection**: JVS validates all workspace and checkpoint names to prevent path escape attacks. Rejects `..`, `/`, `\`, and absolute paths.
 
-5. **Crash Safety**: Snapshot publish uses a 12-step atomic protocol with `.READY` file as publish gate. Crashes before `.READY` are ignored; crashes after `.READY` may leave partial snapshots (detectable via `jvs doctor`).
+5. **Crash Safety**: Checkpoint publish uses a 12-step atomic protocol with `.READY` file as publish gate. Crashes before `.READY` are ignored; crashes after `.READY` may leave partial checkpoints (detectable via `jvs doctor`).
 
 ## Security Best Practices for Users
 
@@ -121,7 +122,9 @@ JVS relies on OS-level filesystem permissions for access control:
 
 ## Release Verification
 
-All JVS releases are cryptographically signed using Sigstore/cosign. Before using any downloaded binary, verify its authenticity:
+Release signing is not part of the stable v0 public contract yet. If a release
+channel publishes Sigstore/cosign artifacts, verify the downloaded binary before
+using it:
 
 ```bash
 cosign verify-blob jvs-linux-amd64 \
@@ -129,7 +132,8 @@ cosign verify-blob jvs-linux-amd64 \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-See [docs/SIGNING.md](docs/SIGNING.md) for complete verification instructions.
+See [docs/SIGNING.md](docs/SIGNING.md) for verification instructions when
+signature artifacts are available.
 
 ---
 

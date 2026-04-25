@@ -89,6 +89,33 @@ const (
 	RepairCleanRuntimeOperations = "clean_runtime_operations"
 )
 
+const (
+	ErrorCodeFormatVersionMissing        = "E_FORMAT_VERSION_MISSING"
+	ErrorCodeFormatVersionInvalid        = "E_FORMAT_VERSION_INVALID"
+	ErrorCodeFormatVersionUnsupported    = "E_FORMAT_VERSION_UNSUPPORTED"
+	ErrorCodeWorktreeListFailed          = "E_WORKTREE_LIST_FAILED"
+	ErrorCodeWorktreePayloadInvalid      = "E_WORKTREE_PAYLOAD_INVALID"
+	ErrorCodeWorktreePayloadMissing      = "E_WORKTREE_PAYLOAD_MISSING"
+	ErrorCodeWorktreeHeadMissing         = "E_WORKTREE_HEAD_MISSING"
+	ErrorCodeWorktreeHeadInvalid         = "E_WORKTREE_HEAD_INVALID"
+	ErrorCodeWorktreeInvalidSnapshotID   = "E_WORKTREE_INVALID_SNAPSHOT_ID"
+	ErrorCodeWorktreeHeadLatestMismatch  = "E_WORKTREE_HEAD_LATEST_MISMATCH"
+	ErrorCodeDescriptorControlInvalid    = "E_DESCRIPTOR_CONTROL_INVALID"
+	ErrorCodeDescriptorFilenameInvalid   = "E_DESCRIPTOR_FILENAME_INVALID"
+	ErrorCodeLineageDescriptorListFailed = "E_LINEAGE_DESCRIPTOR_LIST_FAILED"
+	ErrorCodeIntentControlInvalid        = "E_INTENT_CONTROL_INVALID"
+	ErrorCodeIntentOrphan                = "E_INTENT_ORPHAN"
+	ErrorCodeReadyControlInvalid         = "E_READY_CONTROL_INVALID"
+	ErrorCodeReadyInvalidSnapshotID      = "E_READY_INVALID_SNAPSHOT_ID"
+	ErrorCodeReadyDescriptorInvalid      = "E_READY_DESCRIPTOR_INVALID"
+	ErrorCodeReadyDescriptorMissing      = "E_READY_DESCRIPTOR_MISSING"
+	ErrorCodeReadyMissing                = "E_READY_MISSING"
+	ErrorCodeStrictVerifyFailed          = "E_STRICT_VERIFY_FAILED"
+	ErrorCodeTmpControlInvalid           = "E_TMP_CONTROL_INVALID"
+	ErrorCodeTmpOrphan                   = "E_TMP_ORPHAN"
+	ErrorCodeAuditScanFailed             = "E_AUDIT_SCAN_FAILED"
+)
+
 var repairRegistry = []repairActionDef{
 	{
 		RepairAction: RepairAction{
@@ -762,6 +789,7 @@ func (d *Doctor) checkFormatVersion(result *Result) {
 			Category:    "format",
 			Description: "format_version file missing or unreadable",
 			Severity:    "critical",
+			ErrorCode:   ErrorCodeFormatVersionMissing,
 			Path:        versionPath,
 		})
 		result.Healthy = false
@@ -774,6 +802,7 @@ func (d *Doctor) checkFormatVersion(result *Result) {
 			Category:    "format",
 			Description: fmt.Sprintf("format_version file contains invalid content: %q", strings.TrimSpace(string(data))),
 			Severity:    "critical",
+			ErrorCode:   ErrorCodeFormatVersionInvalid,
 			Path:        versionPath,
 		})
 		result.Healthy = false
@@ -785,6 +814,7 @@ func (d *Doctor) checkFormatVersion(result *Result) {
 			Category:    "format",
 			Description: fmt.Sprintf("format version %d > supported %d", version, repo.FormatVersion),
 			Severity:    "critical",
+			ErrorCode:   ErrorCodeFormatVersionUnsupported,
 		})
 		result.Healthy = false
 	}
@@ -798,6 +828,7 @@ func (d *Doctor) checkWorktrees(result *Result) {
 			Category:    "worktree",
 			Description: fmt.Sprintf("cannot list worktrees: %v", err),
 			Severity:    "error",
+			ErrorCode:   ErrorCodeWorktreeListFailed,
 		})
 		return
 	}
@@ -810,12 +841,14 @@ func (d *Doctor) checkWorktrees(result *Result) {
 				Category:    "worktree",
 				Description: fmt.Sprintf("worktree '%s' payload path invalid: %v", cfg.Name, err),
 				Severity:    "error",
+				ErrorCode:   ErrorCodeWorktreePayloadInvalid,
 			})
 		} else if _, err := os.Stat(payloadPath); os.IsNotExist(err) {
 			result.Findings = append(result.Findings, Finding{
 				Category:    "worktree",
 				Description: fmt.Sprintf("worktree '%s' payload directory missing", cfg.Name),
 				Severity:    "error",
+				ErrorCode:   ErrorCodeWorktreePayloadMissing,
 				Path:        payloadPath,
 			})
 		}
@@ -833,6 +866,7 @@ func (d *Doctor) checkWorktrees(result *Result) {
 						Category:    "worktree",
 						Description: fmt.Sprintf("worktree '%s' head snapshot %s not found", cfg.Name, cfg.HeadSnapshotID),
 						Severity:    "warning",
+						ErrorCode:   ErrorCodeWorktreeHeadMissing,
 					})
 					continue
 				}
@@ -840,6 +874,7 @@ func (d *Doctor) checkWorktrees(result *Result) {
 					Category:    "worktree",
 					Description: fmt.Sprintf("worktree '%s' head snapshot %s path invalid: %v", cfg.Name, cfg.HeadSnapshotID, err),
 					Severity:    "error",
+					ErrorCode:   ErrorCodeWorktreeHeadInvalid,
 				})
 			}
 		}
@@ -855,7 +890,7 @@ func (d *Doctor) checkWorktreeSnapshotRef(result *Result, worktreeName, field st
 		Category:    "worktree",
 		Description: fmt.Sprintf("worktree '%s' %s %s invalid: %v", worktreeName, field, id, err),
 		Severity:    "error",
-		ErrorCode:   "E_WORKTREE_INVALID_SNAPSHOT_ID",
+		ErrorCode:   ErrorCodeWorktreeInvalidSnapshotID,
 	})
 	return false
 }
@@ -889,18 +924,18 @@ func (d *Doctor) checkWorktreeLineagePosition(result *Result, cfg *model.Worktre
 		Category:    "worktree",
 		Description: fmt.Sprintf("worktree '%s' head snapshot %s is not in latest snapshot %s lineage", cfg.Name, cfg.HeadSnapshotID, cfg.LatestSnapshotID),
 		Severity:    "error",
-		ErrorCode:   "E_WORKTREE_HEAD_LATEST_MISMATCH",
+		ErrorCode:   ErrorCodeWorktreeHeadLatestMismatch,
 	})
 }
 
 func (d *Doctor) checkLineage(result *Result) {
-	ids, err := d.listDescriptorSnapshotIDs()
+	ids, err := d.listDescriptorSnapshotIDs(result)
 	if err != nil {
 		result.Findings = append(result.Findings, Finding{
 			Category:    "lineage",
 			Description: fmt.Sprintf("cannot list descriptors: %v", err),
 			Severity:    "error",
-			ErrorCode:   "E_LINEAGE_DESCRIPTOR_LIST_FAILED",
+			ErrorCode:   ErrorCodeLineageDescriptorListFailed,
 		})
 		return
 	}
@@ -917,7 +952,7 @@ func (d *Doctor) checkLineage(result *Result) {
 	}
 }
 
-func (d *Doctor) listDescriptorSnapshotIDs() ([]model.SnapshotID, error) {
+func (d *Doctor) listDescriptorSnapshotIDs(result *Result) ([]model.SnapshotID, error) {
 	descriptorsDir, err := repo.DescriptorsDirPath(d.repoRoot)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -938,15 +973,36 @@ func (d *Doctor) listDescriptorSnapshotIDs() ([]model.SnapshotID, error) {
 		if !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		_, info, err := safeControlChildInfo(descriptorsDir, entry.Name())
+		entryPath, info, err := safeControlChildInfo(descriptorsDir, entry.Name())
 		if err != nil {
-			return nil, err
+			result.Findings = append(result.Findings, Finding{
+				Category:    "descriptor",
+				Description: fmt.Sprintf("descriptor entry %s invalid: %v", entry.Name(), err),
+				Severity:    "error",
+				ErrorCode:   ErrorCodeDescriptorControlInvalid,
+				Path:        filepath.Join(descriptorsDir, entry.Name()),
+			})
+			continue
 		}
 		if !info.Mode().IsRegular() {
+			result.Findings = append(result.Findings, Finding{
+				Category:    "descriptor",
+				Description: fmt.Sprintf("descriptor entry %s is not a regular file", entry.Name()),
+				Severity:    "error",
+				ErrorCode:   ErrorCodeDescriptorControlInvalid,
+				Path:        entryPath,
+			})
 			continue
 		}
 		id := model.SnapshotID(strings.TrimSuffix(entry.Name(), ".json"))
 		if !id.IsValid() {
+			result.Findings = append(result.Findings, Finding{
+				Category:    "descriptor",
+				Description: fmt.Sprintf("descriptor filename %s does not contain a valid snapshot ID", entry.Name()),
+				Severity:    "error",
+				ErrorCode:   ErrorCodeDescriptorFilenameInvalid,
+				Path:        entryPath,
+			})
 			continue
 		}
 		ids = append(ids, id)
@@ -955,18 +1011,63 @@ func (d *Doctor) listDescriptorSnapshotIDs() ([]model.SnapshotID, error) {
 }
 
 func (d *Doctor) checkOrphanIntents(result *Result) {
-	intentsDir := filepath.Join(d.repoRoot, ".jvs", "intents")
+	intentsDir, err := repo.IntentsDirPath(d.repoRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return
+		}
+		result.Findings = append(result.Findings, Finding{
+			Category:    "intent",
+			Description: fmt.Sprintf("cannot read intents directory: %v", err),
+			Severity:    "error",
+			ErrorCode:   ErrorCodeIntentControlInvalid,
+			Path:        filepath.Join(d.repoRoot, ".jvs", "intents"),
+		})
+		return
+	}
 	entries, err := os.ReadDir(intentsDir)
 	if err != nil {
-		return // directory doesn't exist, that's fine
+		if os.IsNotExist(err) {
+			return
+		}
+		result.Findings = append(result.Findings, Finding{
+			Category:    "intent",
+			Description: fmt.Sprintf("cannot read intents directory: %v", err),
+			Severity:    "error",
+			ErrorCode:   ErrorCodeIntentControlInvalid,
+			Path:        intentsDir,
+		})
+		return
 	}
 
 	for _, entry := range entries {
+		intentPath, info, err := safeControlChildInfo(intentsDir, entry.Name())
+		if err != nil {
+			result.Findings = append(result.Findings, Finding{
+				Category:    "intent",
+				Description: fmt.Sprintf("intent entry %s invalid: %v", entry.Name(), err),
+				Severity:    "error",
+				ErrorCode:   ErrorCodeIntentControlInvalid,
+				Path:        filepath.Join(intentsDir, entry.Name()),
+			})
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			result.Findings = append(result.Findings, Finding{
+				Category:    "intent",
+				Description: fmt.Sprintf("intent entry %s is not a regular file", entry.Name()),
+				Severity:    "error",
+				ErrorCode:   ErrorCodeIntentControlInvalid,
+				Path:        intentPath,
+			})
+			continue
+		}
 		result.Findings = append(result.Findings, Finding{
 			Category:    "intent",
 			Description: fmt.Sprintf("orphan intent file: %s", entry.Name()),
 			Severity:    "warning",
-			Path:        filepath.Join(intentsDir, entry.Name()),
+			ErrorCode:   ErrorCodeIntentOrphan,
+			Path:        intentPath,
 		})
 	}
 }
@@ -981,6 +1082,7 @@ func (d *Doctor) checkReadyMarkers(result *Result, strict bool) {
 			Category:    "snapshot",
 			Description: fmt.Sprintf("cannot read snapshots directory: %v", err),
 			Severity:    "error",
+			ErrorCode:   ErrorCodeReadyControlInvalid,
 		})
 		return
 	}
@@ -994,6 +1096,7 @@ func (d *Doctor) checkReadyMarkers(result *Result, strict bool) {
 			Category:    "snapshot",
 			Description: fmt.Sprintf("cannot read snapshots directory: %v", err),
 			Severity:    "error",
+			ErrorCode:   ErrorCodeReadyControlInvalid,
 			Path:        snapshotsDir,
 		})
 		return
@@ -1010,7 +1113,7 @@ func (d *Doctor) checkReadyMarkers(result *Result, strict bool) {
 				Category:    "snapshot",
 				Description: fmt.Sprintf("snapshot entry %s invalid: %v", entry.Name(), err),
 				Severity:    "error",
-				ErrorCode:   "E_READY_CONTROL_INVALID",
+				ErrorCode:   ErrorCodeReadyControlInvalid,
 			})
 			continue
 		}
@@ -1024,7 +1127,7 @@ func (d *Doctor) checkReadyMarkers(result *Result, strict bool) {
 				Category:    "snapshot",
 				Description: fmt.Sprintf("snapshot entry %s invalid: %v", entry.Name(), err),
 				Severity:    "error",
-				ErrorCode:   "E_READY_INVALID_SNAPSHOT_ID",
+				ErrorCode:   ErrorCodeReadyInvalidSnapshotID,
 				Path:        entryPath,
 			})
 			continue
@@ -1036,7 +1139,7 @@ func (d *Doctor) checkReadyMarkers(result *Result, strict bool) {
 				Category:    "snapshot",
 				Description: fmt.Sprintf("snapshot %s path invalid: %v", snapshotID, err),
 				Severity:    "error",
-				ErrorCode:   "E_READY_CONTROL_INVALID",
+				ErrorCode:   ErrorCodeReadyControlInvalid,
 				Path:        entryPath,
 			})
 			continue
@@ -1048,7 +1151,7 @@ func (d *Doctor) checkReadyMarkers(result *Result, strict bool) {
 				Category:    "snapshot",
 				Description: fmt.Sprintf("snapshot %s READY marker invalid: %v", snapshotID, err),
 				Severity:    "error",
-				ErrorCode:   "E_READY_CONTROL_INVALID",
+				ErrorCode:   ErrorCodeReadyControlInvalid,
 				Path:        snapshotDir,
 			})
 			continue
@@ -1068,7 +1171,7 @@ func (d *Doctor) checkReadyMarkers(result *Result, strict bool) {
 					Category:    "snapshot",
 					Description: fmt.Sprintf("snapshot %s READY descriptor path invalid: %v", snapshotID, err),
 					Severity:    "error",
-					ErrorCode:   "E_READY_DESCRIPTOR_INVALID",
+					ErrorCode:   ErrorCodeReadyDescriptorInvalid,
 					Path:        descriptorPath,
 				})
 				continue
@@ -1081,7 +1184,7 @@ func (d *Doctor) checkReadyMarkers(result *Result, strict bool) {
 				Category:    "snapshot",
 				Description: fmt.Sprintf("snapshot %s READY marker present but descriptor missing", snapshotID),
 				Severity:    severity,
-				ErrorCode:   "E_READY_DESCRIPTOR_MISSING",
+				ErrorCode:   ErrorCodeReadyDescriptorMissing,
 				Path:        descriptorPath,
 			})
 			continue
@@ -1091,7 +1194,7 @@ func (d *Doctor) checkReadyMarkers(result *Result, strict bool) {
 			Category:    "snapshot",
 			Description: fmt.Sprintf("snapshot %s READY marker missing", snapshotID),
 			Severity:    "error",
-			ErrorCode:   "E_READY_MISSING",
+			ErrorCode:   ErrorCodeReadyMissing,
 			Path:        filepath.Join(snapshotDir, ".READY"),
 		})
 	}
@@ -1131,6 +1234,7 @@ func (d *Doctor) checkSnapshotIntegrity(result *Result) {
 			Category:    "integrity",
 			Description: fmt.Sprintf("verification failed: %v", err),
 			Severity:    "error",
+			ErrorCode:   ErrorCodeStrictVerifyFailed,
 		})
 		return
 	}
@@ -1145,11 +1249,15 @@ func (d *Doctor) checkSnapshotIntegrity(result *Result) {
 			if r.Error != "" {
 				description = fmt.Sprintf("snapshot %s: %s", r.SnapshotID, r.Error)
 			}
+			errorCode := r.ErrorCode
+			if errorCode == "" {
+				errorCode = ErrorCodeStrictVerifyFailed
+			}
 			result.Findings = append(result.Findings, Finding{
 				Category:    "integrity",
 				Description: description,
 				Severity:    severity,
-				ErrorCode:   r.ErrorCode,
+				ErrorCode:   errorCode,
 			})
 		}
 	}
@@ -1167,6 +1275,7 @@ func (d *Doctor) checkOrphanTmp(result *Result) {
 				Category:    "tmp",
 				Description: fmt.Sprintf("orphan temp file: %s", name),
 				Severity:    "info",
+				ErrorCode:   ErrorCodeTmpOrphan,
 				Path:        filepath.Join(d.repoRoot, name),
 			})
 		}
@@ -1182,7 +1291,7 @@ func (d *Doctor) checkOrphanTmp(result *Result) {
 			Category:    "tmp",
 			Description: fmt.Sprintf("cannot read snapshots directory: %v", err),
 			Severity:    "error",
-			ErrorCode:   "E_TMP_CONTROL_INVALID",
+			ErrorCode:   ErrorCodeTmpControlInvalid,
 			Path:        filepath.Join(d.repoRoot, ".jvs", "snapshots"),
 		})
 		return
@@ -1196,7 +1305,7 @@ func (d *Doctor) checkOrphanTmp(result *Result) {
 			Category:    "tmp",
 			Description: fmt.Sprintf("cannot read snapshots directory: %v", err),
 			Severity:    "error",
-			ErrorCode:   "E_TMP_CONTROL_INVALID",
+			ErrorCode:   ErrorCodeTmpControlInvalid,
 			Path:        snapshotsDir,
 		})
 		return
@@ -1209,7 +1318,7 @@ func (d *Doctor) checkOrphanTmp(result *Result) {
 				Category:    "tmp",
 				Description: fmt.Sprintf("snapshot tmp entry %s invalid: %v", entry.Name(), err),
 				Severity:    "error",
-				ErrorCode:   "E_TMP_CONTROL_INVALID",
+				ErrorCode:   ErrorCodeTmpControlInvalid,
 			})
 			continue
 		}
@@ -1218,6 +1327,7 @@ func (d *Doctor) checkOrphanTmp(result *Result) {
 				Category:    "tmp",
 				Description: fmt.Sprintf("orphan snapshot tmp directory: %s", entry.Name()),
 				Severity:    "warning",
+				ErrorCode:   ErrorCodeTmpOrphan,
 				Path:        entryPath,
 			})
 		}
@@ -1232,7 +1342,8 @@ func (d *Doctor) checkAuditChain(result *Result) {
 		result.Findings = append(result.Findings, Finding{
 			Category:    "audit",
 			Description: fmt.Sprintf("cannot verify audit log: %v", err),
-			Severity:    "warning",
+			Severity:    "error",
+			ErrorCode:   ErrorCodeAuditScanFailed,
 			Path:        auditPath,
 		})
 		return

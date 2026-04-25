@@ -112,7 +112,7 @@ is `current`, and which checkpoint is `latest`.
 | `jvs workspace list\|path\|rename\|remove` | Inspect and manage workspaces |
 | `jvs verify [<checkpoint-id>\|--all]` | Verify descriptor and payload integrity |
 | `jvs doctor [--strict]` | Check repository health |
-| `jvs gc plan` / `jvs gc run --plan-id ID` | Plan and run retention cleanup |
+| `jvs gc plan` / `jvs gc run --plan-id ID` | Plan and run two-phase storage cleanup |
 
 Commands that overwrite or remove workspace files refuse dirty state by
 default. Use `--include-working` to checkpoint dirty work before `restore` or

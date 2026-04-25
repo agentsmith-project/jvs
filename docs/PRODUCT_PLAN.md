@@ -47,7 +47,23 @@ docs and examples must use the public terms above.
 
 ## Repository and Workspace Model
 
-The repo root is not the workspace payload. The current layout is:
+The repo root is not the workspace payload. The default workspace is `main`.
+Additional workspaces are real directories resolved through JVS metadata and
+public `workspace` commands.
+
+Invariants:
+
+- `.jvs/` is never inside a workspace payload and is never checkpointed.
+- Workspace payload roots contain zero control-plane artifacts.
+- A checkpoint captures exactly one workspace payload root.
+- Published checkpoints are immutable. Mutation after publication is
+  corruption.
+- JVS does not implement push, pull, merge, rebase, or server-side auth.
+
+## Internal On-Disk Compatibility Layout
+
+This section describes physical storage names retained for compatibility. They
+are not public CLI vocabulary. The current layout is:
 
 ```text
 repo/
@@ -59,15 +75,6 @@ repo/
 
 The physical `worktrees/` directory name is an on-disk compatibility detail.
 Public commands and docs should say workspace.
-
-Invariants:
-
-- `.jvs/` is never inside a workspace payload and is never checkpointed.
-- Workspace payload roots contain zero control-plane artifacts.
-- A checkpoint captures exactly one workspace payload root.
-- Published checkpoints are immutable. Mutation after publication is
-  corruption.
-- JVS does not implement push, pull, merge, rebase, or server-side auth.
 
 ## Targeting Rules
 
@@ -115,7 +122,7 @@ Resolution rules:
 ## v0 Stable CLI Contract
 
 The stable public CLI is organized around repos, workspaces, checkpoints,
-verification, doctor checks, and retention cleanup.
+verification, doctor checks, and two-phase storage cleanup.
 
 ### Setup
 
@@ -219,7 +226,7 @@ Rules:
 - Removing a workspace never removes its checkpoints; retention is controlled
   by `gc`.
 
-### Verification, Doctor, and Retention
+### Verification, Doctor, and Storage Cleanup
 
 ```bash
 jvs verify [<checkpoint-id>] [--all]
@@ -234,7 +241,7 @@ Rules:
 - `doctor --strict` validates layout, publish state, lineage, runtime hygiene,
   and integrity.
 - `doctor --repair-runtime` is limited to safe runtime cleanup.
-- Retention cleanup is two phase in v0: `gc plan` first, then
+- Storage cleanup is two phase in v0: `gc plan` first, then
   `gc run --plan-id <id>`.
 - v0 does not include complex retention policy flags.
 

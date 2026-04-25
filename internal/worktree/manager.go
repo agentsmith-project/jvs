@@ -360,8 +360,24 @@ func (m *Manager) remove(name string) error {
 		return errors.New("cannot remove main worktree")
 	}
 
-	// Get config before removal for audit logging
-	cfg, _ := repo.LoadWorktreeConfig(m.repoRoot, name)
+	cfg, err := repo.LoadWorktreeConfig(m.repoRoot, name)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			absent, absentErr := m.removeTargetAbsent(name)
+			if absentErr != nil {
+				return absentErr
+			}
+			if absent {
+				return nil
+			}
+		}
+		return fmt.Errorf("load config before remove: %w", err)
+	}
+	auditPath := filepath.Join(m.repoRoot, ".jvs", "audit", "audit.jsonl")
+	auditLogger := audit.NewFileAppender(auditPath)
+	if err := auditLogger.EnsureAppendable(); err != nil {
+		return fmt.Errorf("audit log not appendable: %w", err)
+	}
 
 	payloadPath, err := m.payloadPathForMutation(name)
 	if err != nil {
@@ -381,15 +397,44 @@ func (m *Manager) remove(name string) error {
 	}
 
 	// Audit log the removal
-	if cfg != nil {
-		auditPath := filepath.Join(m.repoRoot, ".jvs", "audit", "audit.jsonl")
-		auditLogger := audit.NewFileAppender(auditPath)
-		auditLogger.Append(model.EventTypeWorktreeRemove, name, "", map[string]any{
-			"head_snapshot_id": string(cfg.HeadSnapshotID),
-		})
+	if err := auditLogger.Append(model.EventTypeWorktreeRemove, name, "", map[string]any{
+		"head_snapshot_id": string(cfg.HeadSnapshotID),
+	}); err != nil {
+		return fmt.Errorf("write audit log: %w", err)
 	}
 
 	return nil
+}
+
+func (m *Manager) removeTargetAbsent(name string) (bool, error) {
+	payloadPath, err := m.payloadPathForMutation(name)
+	if err != nil {
+		return false, err
+	}
+	configDir, err := m.configDirForMutation(name)
+	if err != nil {
+		return false, err
+	}
+
+	payloadExists, err := pathExists(payloadPath)
+	if err != nil {
+		return false, fmt.Errorf("stat payload: %w", err)
+	}
+	configExists, err := pathExists(configDir)
+	if err != nil {
+		return false, fmt.Errorf("stat config: %w", err)
+	}
+	return !payloadExists && !configExists, nil
+}
+
+func pathExists(path string) (bool, error) {
+	if _, err := os.Lstat(path); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // UpdateHead atomically updates the head snapshot ID for a worktree.

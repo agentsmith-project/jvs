@@ -432,13 +432,7 @@ func TestGetRetentionPolicy(t *testing.T) {
 	t.Run("Returns default policy when retention is nil", func(t *testing.T) {
 		cfg := &Config{Retention: nil}
 		policy := cfg.GetRetentionPolicy()
-		// Default should be 0 KeepMinSnapshots and 24h KeepMinAge
-		if policy.KeepMinSnapshots != 0 {
-			t.Errorf("expected 0 KeepMinSnapshots, got %d", policy.KeepMinSnapshots)
-		}
-		if policy.KeepMinAge == 0 {
-			t.Error("expected non-zero KeepMinAge")
-		}
+		assert.Equal(t, model.DefaultRetentionPolicy(), policy)
 	})
 
 	t.Run("Returns configured policy when retention is set", func(t *testing.T) {
@@ -470,10 +464,7 @@ func TestGetRetentionPolicy(t *testing.T) {
 		if policy.KeepMinSnapshots != 5 {
 			t.Errorf("expected 5 KeepMinSnapshots, got %d", policy.KeepMinSnapshots)
 		}
-		// KeepMinAge should be default since Within is empty
-		if policy.KeepMinAge == 0 {
-			t.Error("expected non-zero default KeepMinAge")
-		}
+		assert.Equal(t, model.DefaultRetentionPolicy().KeepMinAge, policy.KeepMinAge)
 	})
 
 	t.Run("Only Within set uses default for Keep", func(t *testing.T) {
@@ -502,10 +493,8 @@ func TestGetRetentionPolicy(t *testing.T) {
 			},
 		}
 		policy := cfg.GetRetentionPolicy()
-		// Should fall back to default when parsing fails
-		if policy.KeepMinAge == 0 {
-			t.Error("expected non-zero default KeepMinAge")
-		}
+		// Invalid legacy config values fall back to the v0 default: no age retention.
+		assert.Equal(t, model.DefaultRetentionPolicy(), policy)
 	})
 }
 
@@ -783,11 +772,10 @@ retention:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Getting the retention policy should use defaults for invalid values
+	// Getting the retention policy should use v0 defaults for invalid values:
+	// no count retention and no age retention.
 	policy := cfg.GetRetentionPolicy()
-	if policy.KeepMinAge == 0 {
-		t.Error("expected default KeepMinAge for invalid duration")
-	}
+	assert.Equal(t, model.DefaultRetentionPolicy(), policy)
 }
 
 func TestLoad_CorruptedYAML(t *testing.T) {

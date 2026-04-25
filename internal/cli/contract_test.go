@@ -404,6 +404,57 @@ func TestCLIJSONErrorEnvelope_ArgValidationReportsCommand(t *testing.T) {
 	assert.JSONEq(t, `null`, string(env.Data))
 }
 
+func TestCLIJSONErrorEnvelope_UnknownCommandIsSingleObject(t *testing.T) {
+	stdout, stderr, exitCode := runContractSubprocess(t, t.TempDir(), "--json", "histroy")
+
+	require.Equal(t, 1, exitCode)
+	assert.Empty(t, strings.TrimSpace(stderr))
+
+	env := decodeContractEnvelope(t, stdout)
+	assert.False(t, env.OK)
+	assert.Equal(t, "histroy", env.Command)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, "E_USAGE", env.Error.Code)
+	assert.Contains(t, env.Error.Message, "unknown command")
+	assert.JSONEq(t, `null`, string(env.Data))
+}
+
+func TestCLIJSONErrorEnvelope_CompletionRejectsScriptOutput(t *testing.T) {
+	stdout, stderr, exitCode := runContractSubprocess(t, t.TempDir(), "--json", "completion", "bash")
+
+	require.Equal(t, 1, exitCode)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	assert.NotContains(t, stdout, "bash completion for")
+	assert.NotContains(t, stdout, "complete -")
+
+	env := decodeContractEnvelope(t, stdout)
+	assert.False(t, env.OK)
+	assert.Equal(t, "completion", env.Command)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, "E_USAGE", env.Error.Code)
+	assert.Contains(t, env.Error.Message, "--json")
+	assert.JSONEq(t, `null`, string(env.Data))
+}
+
+func TestCLIJSONErrorEnvelope_HiddenHistoryRejectedUnderJSON(t *testing.T) {
+	stdout, stderr, exitCode := runContractSubprocess(t, t.TempDir(), "--json", "history")
+
+	require.Equal(t, 1, exitCode)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	assert.NotContains(t, stdout, "snapshot_id")
+	assert.NotContains(t, stdout, "worktree")
+	assert.NotContains(t, stdout, "HEAD")
+
+	env := decodeContractEnvelope(t, stdout)
+	assert.False(t, env.OK)
+	assert.Equal(t, "history", env.Command)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, "E_USAGE", env.Error.Code)
+	assert.Contains(t, env.Error.Hint, "jvs checkpoint list --json")
+	assertPublicErrorOmitsLegacyVocabulary(t, env.Error)
+	assert.JSONEq(t, `null`, string(env.Data))
+}
+
 func TestDoctorRepairRuntimeRejectsPositionalArgs(t *testing.T) {
 	dir := t.TempDir()
 	repoPath := filepath.Join(dir, "testrepo")
@@ -505,6 +556,61 @@ func TestVerifyAllRejectsCheckpointArg(t *testing.T) {
 	assert.JSONEq(t, `null`, string(env.Data))
 }
 
+func TestVerifyAllIsCheckpointScopedAndDoctorStrictOwnsAuditChain(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "testrepo")
+	mainPath := filepath.Join(repoPath, "main")
+	originalWd, _ := os.Getwd()
+	defer os.Chdir(originalWd)
+	require.NoError(t, os.Chdir(dir))
+	cmd := createTestRootCmd()
+	_, err := executeCommand(cmd, "init", "testrepo")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("checkpoint payload"), 0644))
+
+	stdout, stderr, exitCode := runContractSubprocess(t, mainPath, "--json", "checkpoint", "audit contract")
+	require.Equal(t, 0, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+
+	auditPath := filepath.Join(repoPath, ".jvs", "audit", "audit.jsonl")
+	require.NoError(t, os.WriteFile(auditPath, []byte("{malformed audit record}\n"), 0644))
+
+	stdout, stderr, exitCode = runContractSubprocess(t, mainPath, "--json", "verify", "--all")
+	require.Equal(t, 0, exitCode, "verify --all stays checkpoint-scoped: stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	env := decodeContractEnvelope(t, stdout)
+	assert.True(t, env.OK)
+	assert.Equal(t, "verify", env.Command)
+	var verifyResults []map[string]any
+	require.NoError(t, json.Unmarshal(env.Data, &verifyResults), stdout)
+	require.NotEmpty(t, verifyResults)
+	for _, result := range verifyResults {
+		assert.NotContains(t, fmt.Sprint(result["error_code"]), "AUDIT")
+	}
+
+	stdout, stderr, exitCode = runContractSubprocess(t, mainPath, "--json", "doctor", "--strict")
+	require.Equal(t, 1, exitCode, "doctor --strict must own audit-chain failures: stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	env = decodeContractEnvelope(t, stdout)
+	assert.True(t, env.OK)
+	assert.Equal(t, "doctor", env.Command)
+	var doctorData map[string]any
+	require.NoError(t, json.Unmarshal(env.Data, &doctorData), stdout)
+	assert.Equal(t, false, doctorData["healthy"])
+	findings, ok := doctorData["findings"].([]any)
+	require.True(t, ok, stdout)
+	foundAudit := false
+	for _, raw := range findings {
+		finding, ok := raw.(map[string]any)
+		require.True(t, ok)
+		if finding["error_code"] == "E_AUDIT_RECORD_MALFORMED" {
+			foundAudit = true
+			break
+		}
+	}
+	assert.True(t, foundAudit, "doctor --strict must report malformed audit chain: %s", stdout)
+}
+
 func TestVerifyPayloadMismatchHasErrorCodeAndNonzeroExit(t *testing.T) {
 	dir := t.TempDir()
 	repoPath := filepath.Join(dir, "testrepo")
@@ -559,6 +665,7 @@ func TestCLIContractSubprocess(t *testing.T) {
 
 	cmd := createTestRootCmd()
 	cmd.SetArgs(args)
+	primeJSONOutputFromArgs(args)
 	executedCmd, err := cmd.ExecuteC()
 	if err != nil {
 		reportCommandErrorForCommand(executedCmd, err)

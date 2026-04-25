@@ -1,372 +1,268 @@
 # JVS Constitution
-## Juicy Versioned Workspaces — Core Principles, Philosophy, and Scope
 
-Version: 1.2
-Status: Foundational  
-Scope: Architecture, Product Philosophy, and Design Governance  
-
----
-
-# 1. Core Mission（核心使命）
-
-JVS is a **workspace-native, snapshot-first versioning system** built on top of a mounted filesystem (preferably JuiceFS), designed to provide:
-
-- Safe, versioned workspaces for humans and agents
-- O(1) large-scale snapshots via CoW (graceful O(n) fallback when CoW is unavailable)
-- Predictable, filesystem-aligned UX
-- Zero coupling to backend storage services
-
-JVS is **not** a Git replacement.  
-JVS is a **Workspace Versioning Layer**.
+Version: v0 public contract
+Status: Active release-facing governance
+Scope: Architecture, product philosophy, and design governance
 
 ---
 
-# 2. Foundational Philosophy（基础哲学）
+## 1. Core Mission
 
-## 2.1 Snapshot First, Not Diff First
-JVS treats the **entire workspace state** as the primary version unit.
+JVS is a filesystem-native checkpoint system for real workspace directories.
+It gives humans and automation a local-first way to create, inspect, verify,
+restore, and clean up checkpointed workspace state without a server, staging
+area, merge engine, or remote protocol.
 
-> A snapshot represents a complete, reproducible filesystem state, not a textual delta.
+JVS is not a Git replacement. It is a workspace checkpoint layer.
+
+---
+
+## 2. Foundational Principles
+
+### 2.1 Checkpoint First, Not Diff First
+
+The primary versioned unit is a complete workspace tree.
 
 Implications:
-- No staging area
-- No patch/diff object store
-- No blob graph complexity
-- No content-addressed DAG requirement (v0.x)
 
----
+- No staging area.
+- No merge or rebase model.
+- No text-patch object store.
+- No mandatory content-addressed object graph for v0.
 
-## 2.2 Filesystem as Source of Truth（文件系统即权威）
-The filesystem is the authoritative state container.
+### 2.2 Filesystem As Source Of Truth
 
-JVS:
-- Does not virtualize the workspace
-- Does not remap directories dynamically
-- Does not maintain shadow working trees
+A workspace is a real directory. Tools read and write ordinary files.
 
-Instead:
-> Real directories = Real workspaces = Real state
+JVS must not:
 
-This ensures:
-- Agent determinism
-- Toolchain compatibility
-- POSIX predictability
+- Virtualize the workspace.
+- Hide alternate working states behind path remapping.
+- Require users to switch state through an in-process shell.
 
----
+Users and agents select workspaces by changing directories or by using
+explicit targeting flags.
 
-## 2.3 Control Plane vs Data Plane Separation（控制面与数据面分离）
-JVS strictly separates:
+### 2.3 Control Plane And Payload Separation
+
+JVS separates metadata from user payload:
 
 | Layer | Responsibility |
-|-------|---------------|
-Control Plane (`.jvs/`) | All metadata: snapshots, descriptors, worktree config, audit trail |
-Data Plane (worktrees) | User workspace payload files only |
+| --- | --- |
+| Control plane | `.jvs/` metadata, descriptors, audit records, cleanup plans, and runtime records |
+| Payload | Workspace files that users and tools modify |
 
 Critical rules:
-> `.jvs/` MUST NEVER be part of snapshot payload.
-> Worktree payload roots MUST contain zero control-plane artifacts.
+
+- `.jvs/` must never be checkpointed as payload.
+- Workspace payload roots must contain no control-plane artifacts.
+- A checkpoint captures exactly one workspace payload root.
+
+### 2.4 Local First
+
+JVS assumes the filesystem already exists and is mounted. It may benefit from
+JuiceFS, reflink-capable filesystems, or plain local disks, but it does not
+manage object storage, credentials, or replication.
 
 ---
 
-## 2.4 JuiceFS as Infrastructure, Not Coupling
-JVS assumes:
-- Storage backend is already mounted (JuiceFS or any filesystem)
-- Backend lifecycle is managed externally
+## 3. Public Vocabulary
 
-JVS:
-- DOES NOT manage credentials
-- DOES NOT configure object storage
-- DOES NOT implement remote replication
+Release-facing docs, CLI help, examples, and stable JSON should use:
 
-This enforces:
-> Single responsibility: workspace versioning only.
+| Term | Meaning |
+| --- | --- |
+| `repo` | Repository root containing `.jvs/` plus registered workspaces. |
+| `workspace` | Real payload directory managed by JVS. |
+| `checkpoint` | Immutable full-tree record of one workspace. |
+| `current` | Checkpoint currently materialized in the targeted workspace. |
+| `latest` | Newest checkpoint on that workspace's active line. |
+| `dirty` | Live files differ from `current`, or JVS cannot prove they match. |
 
----
-
-# 3. System Scope Definition（系统范围定义）
-
-## 3.1 What JVS IS
-JVS is:
-- A workspace snapshot manager
-- A history lineage tracker
-- A reproducibility tool for agents and engineers
-- A filesystem-native versioning system
-- A large-file friendly alternative to Git-like workflows
+Historical implementation terms may remain in package names, storage paths, or
+compatibility JSON only when explicitly scoped as internal/on-disk details.
 
 ---
 
-## 3.2 What JVS IS NOT (Hard Non-Goals)
-JVS explicitly rejects:
+## 4. Public CLI Shape
 
-- Git compatibility layer
-- Text merge engine
-- Remote/push/pull/mirror protocols
-- Centralized server orchestration (v0.x)
-- Object storage reimplementation
-- Diff-first architecture
+The stable command surface is:
 
-These are considered **out-of-scope by design**, not missing features.
+```text
+jvs init <repo-path>
+jvs import <source-dir> <repo-path>
+jvs clone <source-repo> <dest-repo> [--scope full|current]
+jvs capability <target-path> [--write-probe]
+
+jvs info
+jvs status
+jvs checkpoint [message] [--tag tag]...
+jvs checkpoint list
+jvs diff <from-ref> <to-ref> [--stat]
+jvs restore <ref|current|latest> [--discard-dirty|--include-working]
+jvs fork [<ref> <name>|<name>] [--from <ref>]
+jvs workspace list
+jvs workspace path [<name>]
+jvs workspace rename <old> <new>
+jvs workspace remove <name> [--force]
+jvs verify [<checkpoint-id>|--all]
+jvs doctor [--strict] [--repair-runtime] [--repair-list]
+jvs gc plan
+jvs gc run --plan-id <id>
+```
+
+Commands that overwrite or remove workspace files must refuse dirty state by
+default. The accepted bypasses are explicit: `--discard-dirty` and
+`--include-working`.
 
 ---
 
-# 4. Architectural Core Model（核心架构模型）
+## 5. Repository And Workspace Model
 
-## 4.1 Volume ≠ Repository
-A mounted filesystem (e.g., JuiceFS volume) may contain multiple repositories.
+The repo root is the control plane plus workspace container. It is not itself
+the default payload root.
 
+```text
+repo/
+|-- .jvs/
+|-- main/
+`-- workspaces managed by JVS
 ```
-Volume (mounted FS)
-└── repo/
-    ├── .jvs/
-    ├── main/
-    └── worktrees/
-```
+
+The default workspace is `main`. Additional workspaces are real directories
+resolved by JVS metadata and exposed through `jvs workspace path`.
 
 ---
 
-## 4.2 Main Worktree Design (Critical Rule)
-The repository root is NOT the main workspace payload.
+## 6. Checkpoint Model
 
-Instead:
-```
-repo/main/ = Main Worktree (payload root)
-repo/.jvs/ = Control plane
-```
+A checkpoint must capture only the targeted workspace payload. It must not
+include:
 
-Rationale:
-- JuiceFS clone lacks exclude filters — payload roots must be free of control-plane artifacts
-- Worktree metadata lives under `.jvs/worktrees/<name>/`, not inside payload
-- Enables clean snapshot source with zero exclusion logic
+- The `.jvs/` control plane.
+- Other workspace payload roots.
+- Runtime locks, temporary operation records, or cleanup plans.
 
----
+After publication:
 
-## 4.3 Worktree = Real Directory (No Virtual Switching)
-JVS does not implement virtual workspace switching.
-
-Users and agents select workspaces via:
-```
-cd repo/main
-cd repo/worktrees/<name>
-```
-
-This guarantees:
-- Absolute path stability
-- No hidden state
-- Agent-safe execution environments
+- The checkpoint payload is immutable.
+- The descriptor is immutable.
+- Detected mutation is repository corruption.
 
 ---
 
-# 5. Snapshot Model Constitution（快照模型宪章）
+## 7. Engine Principle
 
-## 5.1 Snapshot Scope (Immutable Rule)
-A snapshot MUST capture:
-> Only the current worktree payload root.
+JVS adapts to filesystem capability:
 
-Never:
-- Entire repo
-- Other worktrees
-- `.jvs/` directory (which includes all control-plane state)
+| Engine | Behavior |
+| --- | --- |
+| `juicefs-clone` | Metadata clone when supported by a JuiceFS mount. |
+| `reflink-copy` | Tree walk with copy-on-write data sharing where supported. |
+| `copy` | Portable recursive copy fallback. |
 
----
-
-## 5.2 Snapshot Storage Strategy
-All snapshots MUST be stored as full directory trees:
-```
-.jvs/snapshots/<snapshot-id>/
-```
-
-Design Choice:
-- Full tree clone (JuiceFS CoW or FS CoW)
-- Not object graph
-- Not delta storage
-
-Optimized for:
-- Large datasets
-- Deterministic restore
-- Simplicity
+Same public workflow, different materialization engine. Engine choice,
+fallback, performance class, and metadata-preservation behavior must be visible
+to users and automation.
 
 ---
 
-## 5.3 Immutable Snapshot Principle
-Once marked READY:
-- Snapshot content MUST be immutable
-- Mutation is considered repository corruption
+## 8. Safety And Determinism
+
+Required behavior:
+
+- Every command targets one resolved repo and, where relevant, one workspace.
+- `status` exposes `current`, `latest`, and `dirty`.
+- Restore uses explicit refs such as checkpoint IDs, tags, `current`, and
+  `latest`.
+- Creating a new checkpoint is allowed only from the workspace's latest point.
+- Users create another workspace with `jvs fork` when they need a separate
+  line of work.
+
+JVS should prefer refusal with a clear error over guessing the user's intent.
 
 ---
 
-# 6. Engine Abstraction Principle（引擎抽象原则）
+## 9. Integrity And Audit
 
-JVS supports adaptive snapshot engines:
-
-| Engine | Condition |
-|--------|----------|
-| juicefs-clone | Preferred — O(1) CoW metadata operation |
-| reflink-copy | CoW filesystems (ZFS, Btrfs, XFS) — no data duplication |
-| copy | Generic fallback — O(n) deep copy |
-
-Key Principle:
-> Same UX, different engines.  
-> Capability adapts to filesystem, not user commands.
-
----
-
-# 7. Safety and Determinism Principles（安全与确定性）
-
-## 7.1 Detached State Model
-Restore always operates inplace:
-- `jvs restore <id>` restores worktree to the specified snapshot
-- After restore, worktree enters **detached state** if not at HEAD
-- In detached state, cannot create new snapshots (must fork first)
-
-Return to HEAD state:
-```
-jvs restore HEAD
-```
-
-Create branch from historical point:
-```
-jvs worktree fork <snapshot-id> <new-worktree-name>
-```
-
----
-
-## 7.2 Atomic Visibility (READY Protocol)
-A snapshot is only visible when:
-```
-snapshot/.READY exists
-```
-
-Before READY:
-- Snapshot is treated as incomplete
-- Ignored by history and restore
-
----
-
-## 7.3 SWMR (Single Writer Multiple Reader)
-Default isolation:
-- Exclusive worktree write lock
-- Unlimited readers
-- Agent-safe concurrency model
-
-Exception:
-- `shared` mode exists as an explicit, opt-in downgrade with no SWMR guarantee.
-- `shared` MUST be risk-labeled and documented as high-risk.
-
----
-
-## 7.4 Integrity and Verifiability
-Snapshot history MUST be verifiable and tamper-evident.
+Checkpoint history must be verifiable and tamper-evident.
 
 Required properties:
-- Each snapshot carries a cryptographic integrity proof (checksum + payload hash)
-- History lineage is auditable and append-only
-- Tampering is detectable, not merely preventable
 
-This justifies:
-- Descriptor signing and trust policy
-- Audit trail with integrity chain
-- Strong-by-default verification
+- Descriptors carry checksums.
+- Payloads carry deterministic root hashes.
+- `jvs verify` validates checkpoint integrity.
+- `jvs doctor --strict` validates repository layout, publish state, lineage,
+  runtime hygiene, and audit-chain health.
+- Audit records form a hash chain.
 
----
-
-# 8. UX & Mental Model Principles（用户心智模型）
-
-## 8.1 Git-like Familiarity, Not Git Complexity
-JVS borrows:
-- History concept
-- Version lineage
-
-But rejects:
-- Index
-- Rebase
-- Merge conflicts
-- Detached HEAD semantics
+Signing, trust policy, and key management are future directions and are not v0
+stable commands.
 
 ---
 
-## 8.2 Directory-Oriented Interaction
-Primary workflow:
-```
-cd workspace
-modify files
-jvs snapshot
+## 10. Storage Cleanup
+
+Cleanup is two phase:
+
+```text
+jvs gc plan
+jvs gc run --plan-id <id>
 ```
 
-Not:
-```
-stage → commit → push
-```
+The v0 public contract protects active workspace lineage and active runtime
+operation records. It does not publish pin commands, tag-retention rules, or
+minimum-age retention flags.
 
 ---
 
-## 8.3 Agent-First Design
-JVS is optimized for:
-- Cloud agents (Codex, Claude Code, etc.)
-- Sandboxed execution
-- Reproducible workspace states
-- Absolute path stability
+## 11. Internal And On-Disk Compatibility
+
+This section is implementation-facing and may use historical terms.
+
+Compatibility paths and fields include:
+
+- `.jvs/snapshots/<checkpoint-id>/` for checkpoint payload storage.
+- `.jvs/worktrees/<name>/config.json` for workspace metadata.
+- Internal field names such as `snapshot_id`, `worktree_name`, and
+  `head_snapshot_id`.
+- Package names such as `internal/snapshot` and `internal/worktree`.
+
+These names are compatibility details, not public CLI vocabulary.
 
 ---
 
-# 9. Migration & Portability Principle（迁移原则）
+## 12. Non-Goals
 
-JVS does not implement replication protocols.
+JVS must not add these to the v0 stable contract:
 
-Official migration method:
-```
-juicefs sync <repo> <target>
-```
+- Git-compatible commit graph, staging, merge, or rebase.
+- Built-in remote hosting, push, pull, or credential management.
+- File locking or distributed collaboration coordination.
+- Partial checkpoint contracts.
+- Ignore-file contracts.
+- Compression contracts.
+- Complex retention policies beyond two-phase cleanup.
+- Hidden virtual workspaces or path remapping.
+- Built-in container, scheduler, editor, or database integrations.
 
-Rationale:
-- Reuse mature storage tooling
-- Avoid protocol duplication
-- Preserve single-dependency architecture
-
----
-
-# 10. Governance & Evolution Rules（演进治理规则）
-
-Future features MUST NOT:
-- Introduce hidden workspace states
-- Break filesystem transparency
-- Couple to specific storage vendors
-- Replace snapshot-first with diff-first architecture
-- Introduce mandatory server components
-
-Any violation requires:
-> Constitution Amendment (major version RFC)
+Any future feature that violates these boundaries requires an explicit product
+contract change before implementation.
 
 ---
 
-# 11. Target Users（目标用户）
+## 13. Design Style
 
-Primary:
-- ACD (AI / Code / Data engineers)
-- Cloud agent users
-- Platform & infra teams
-- Large dataset workflows
+JVS favors:
 
-Secondary:
-- JuiceFS users
-- CoW filesystem users (ZFS/Btrfs/XFS)
-- Reproducible research pipelines
+- Determinism over guesswork.
+- Filesystem realism over virtual abstraction.
+- Visible engine behavior over hidden fallback.
+- Small stable contracts over broad feature promises.
+- External integration over owning unrelated infrastructure.
 
 ---
 
-# 12. Design Style Declaration（设计风格声明）
+## 14. Motto
 
-JVS follows:
-- Minimalism over feature richness
-- Determinism over abstraction
-- Filesystem realism over virtual layers
-- Infrastructure reuse over reinvention
-- Explicit behavior over hidden magic
-
----
-
-# 13. Final Architectural Motto
-
-> Real directories.  
-> Real snapshots.  
-> Zero magic.  
-> Filesystem-native versioning for the AI era.
+Real directories. Real checkpoints. Explicit state.

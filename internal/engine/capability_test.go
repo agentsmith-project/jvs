@@ -57,6 +57,20 @@ func TestMetadataPreservationContractDoesNotPromiseHardlinkOccurrenceReporting(t
 	}
 }
 
+func TestMetadataPreservationContractDeclaresOwnership(t *testing.T) {
+	for _, engineType := range []model.EngineType{
+		model.EngineJuiceFSClone,
+		model.EngineReflinkCopy,
+		model.EngineCopy,
+		model.EngineType("unknown"),
+	} {
+		t.Run(string(engineType), func(t *testing.T) {
+			metadata := engine.MetadataPreservationForEngine(engineType)
+			require.NotEmpty(t, metadata.Ownership)
+		})
+	}
+}
+
 func TestTransferPlanner_DegradesReflinkPairOnce(t *testing.T) {
 	prober := &fakeCapabilityProber{
 		report: &engine.CapabilityReport{

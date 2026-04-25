@@ -1,6 +1,6 @@
 # JVS FAQ (Frequently Asked Questions)
 
-**Version:** v7.0
+**Version:** v0
 **Last Updated:** 2026-02-23
 
 ---
@@ -173,8 +173,8 @@ jvs checkpoint "v1.0 release" --tag release --tag v1.0 --tag stable
 # By checkpoint ID (full or prefix)
 jvs restore abc123
 
-# By tag
-jvs restore --latest-tag stable
+# By exact tag
+jvs restore stable
 
 # Back to latest
 jvs restore latest
@@ -190,8 +190,8 @@ jvs checkpoint list
 # Filter by tag
 jvs checkpoint list | grep stable
 
-# Show all checkpoints across all workspaces
-jvs checkpoint list --all
+# From a repo root, list checkpoints across workspaces
+jvs checkpoint list
 ```
 
 ---
@@ -226,57 +226,14 @@ storage layer for compression decisions, and rely on `jvs capability`,
 
 ---
 
-### How do I configure JVS defaults?
+### How do I choose defaults?
 
-JVS supports configuration via `.jvs/config.yaml` for repository-specific settings. This allows you to set defaults like:
+Use the stable CLI flags and environment for v0:
 
 - **Engine visibility** - Check the selected engine with `jvs info`
-- **Default tags** - Automatically add tags to every checkpoint
-- **Output format** - Always use JSON output if preferred
-- **Progress bars** - Enable/disable progress bar display
-
-**Show current configuration:**
-```bash
-jvs config show
-```
-
-**Set a configuration value:**
-```bash
-# Set default engine
-jvs config set default_engine juicefs-clone
-
-# Set default tags (YAML list format)
-jvs config set default_tags '["dev", "experimental"]'
-
-# Set JSON output by default
-jvs config set output_format json
-
-# Disable progress bars
-jvs config set progress_enabled false
-```
-
-**Get a single value:**
-```bash
-jvs config get default_engine
-jvs config get default_tags
-```
-
-**Example config.yaml:**
-```yaml
-# .jvs/config.yaml
-default_engine: juicefs-clone
-default_tags:
-  - auto
-  - v1.0
-output_format: text
-progress_enabled: true
-```
-
-**Important notes:**
-- Config is per-repository (stored in `.jvs/config.yaml`)
-- Command-line flags override config values
-- Default tags are combined with tags specified via `--tag`
-- If the config file doesn't exist, JVS uses sensible defaults
+- **Tags** - Add important labels with `jvs checkpoint "note" --tag stable`
+- **JSON output** - Pass `--json` on commands that need machine-readable output
+- **Progress bars** - Pass `--no-progress` for scripts
 
 ---
 
@@ -334,7 +291,7 @@ Both must pass for verification to succeed.
 
 ### Can JVS handle concurrent access?
 
-JVS v7.0 is designed for **single-writer** scenarios. Concurrent access from multiple processes is not supported and may cause:
+JVS v0 is designed for **single-writer** scenarios. Concurrent access from multiple processes is not supported and may cause:
 - Corrupted checkpoints
 - Lost updates
 - Audit inconsistencies
@@ -450,7 +407,7 @@ With JuiceFS CoW:
 
 ### Is JVS production-ready?
 
-**Yes.** JVS v7.0 is used in production for:
+**Yes.** The v0 public contract is used in production for:
 - ML experiment tracking
 - CI/CD environment versioning
 - Agent workflow sandboxes
@@ -459,7 +416,7 @@ Key production features:
 - Strong integrity verification
 - Tamper-evident audit trail
 - Health checks (`jvs doctor`)
-- Garbage collection with retention policies
+- Two-phase garbage collection with protected checkpoint reporting
 
 ---
 
@@ -564,7 +521,7 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for details.
 
 ### What's the current roadmap?
 
-See the [changelog](docs/99_CHANGELOG.md) for recent releases. Current focus areas:
+See the [changelog](99_CHANGELOG.md) for recent releases. Current focus areas:
 - Integration with agentsmith platform
 - Performance optimization for large workspaces
 

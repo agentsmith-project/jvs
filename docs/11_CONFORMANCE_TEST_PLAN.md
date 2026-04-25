@@ -124,8 +124,9 @@ The `release` profile is mandatory before any pre-release or v0 tag.
 
 - `jvs verify [checkpoint-id]` and `jvs verify --all` detect descriptor and
   payload integrity failures and return structured result fields.
-- `jvs doctor --strict` includes full integrity verification and reports
-  actionable repair information without inventing public state terms.
+- `jvs doctor --strict` includes full checkpoint integrity and audit chain
+  verification, and reports actionable repair information without inventing
+  public state terms.
 - `jvs gc plan` returns a stable plan ID, protection reasons, deletion
   candidates, and an estimated byte count.
 - `jvs gc run --plan-id <id>` rejects mismatched or stale plan IDs.

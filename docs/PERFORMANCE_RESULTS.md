@@ -186,7 +186,7 @@ Realistic workloads with varying file sizes:
 | Find (By workspace) | 21K | 61 µs | 19.1 KB | 250 |
 | FindByTag | 179K | 7.9 µs | 2.11 KB | 33 |
 
-### Workspace Fork Benchmarks
+### Fork Benchmarks
 
 | Benchmark | Size/Count | Ops/sec | Time/op | Memory/op | Allocs/op |
 |----------|------------|---------|---------|-----------|-----------|

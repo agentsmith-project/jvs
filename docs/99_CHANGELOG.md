@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased - Release Readiness
+
+### Highlights
+
+- Public CLI JSON errors now use the stable envelope for unknown commands,
+  utility commands, and hidden legacy command paths.
+- Public examples use v0-stable commands and refs: `checkpoint`, `workspace`,
+  `current`, `latest`, exact tags, and full or unique checkpoint IDs.
+- Release artifacts include explicit readiness notes for limitations, risk
+  labels, and migration impact.
+
+### Known limitations
+
+- v0 does not include remote push/pull, signing commands, partial checkpoint
+  contracts, merge/rebase, or complex retention policy flags.
+- Full verification reads checkpoint payloads and can be I/O intensive on large
+  workspaces.
+
+### Risk labels
+
+- `integrity`: descriptor checksum and payload hash detect independent
+  corruption; coordinated descriptor-plus-checksum rewrite remains a v0
+  residual risk.
+- `migration`: runtime operation state must be rebuilt at the destination with
+  `jvs doctor --strict --repair-runtime`.
+
+### Migration notes
+
+- Existing repositories do not need an on-disk migration for this readiness
+  update; descriptors written before `metadata_preservation.ownership` remain
+  checksum-compatible.
+- After upgrading, run `jvs doctor --strict` and `jvs verify --all` on a
+  representative repo before publishing release artifacts.
+
+# Legacy/Internal Changelog Archive
+
 ## v8.2 — 2026-02-28
 
 ### Housekeeping: remove stale artifacts and aspirational docs

@@ -1,6 +1,6 @@
 # JVS Quick Start: Game Development
 
-**Version:** v7.0
+**Version:** v0 public contract
 **Last Updated:** 2026-02-23
 
 ---
@@ -93,7 +93,7 @@ jvs checkpoint "Character model v2: added armor details" --tag character --tag v
 
 ```bash
 # Oops, made a mistake? Restore to previous state
-jvs restore --latest-tag prework
+jvs restore prework
 
 # Or restore to a specific checkpoint
 jvs restore abc123  # Use checkpoint ID from jvs checkpoint list
@@ -290,7 +290,7 @@ cd /mnt/juicefs/game-projects/mygame/main
 jvs checkpoint "Character model ready for review" --tag review --tag character
 
 # Artist B: Review asset
-jvs restore --latest-tag review
+jvs restore review
 # Review in Unity...
 jvs checkpoint "Character model approved" --tag approved --tag character
 ```

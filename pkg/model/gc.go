@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+const GCPlanSchemaVersion = 1
+
 // Pin protects a snapshot from garbage collection.
 type Pin struct {
 	PinID      string     `json:"pin_id,omitempty"`
@@ -17,16 +19,17 @@ type Pin struct {
 
 // GCPlan is the output of gc plan phase.
 type GCPlan struct {
+	SchemaVersion          int             `json:"schema_version"`
+	RepoID                 string          `json:"repo_id"`
 	PlanID                 string          `json:"plan_id"`
 	CreatedAt              time.Time       `json:"created_at"`
 	ProtectedSet           []SnapshotID    `json:"protected_set"`
-	ProtectedByPin         int             `json:"protected_by_pin"`
 	ProtectedByLineage     int             `json:"protected_by_lineage"`
-	ProtectedByRetention   int             `json:"protected_by_retention"`
 	CandidateCount         int             `json:"candidate_count"`
 	ToDelete               []SnapshotID    `json:"to_delete"`
 	DeletableBytesEstimate int64           `json:"deletable_bytes_estimate"`
-	RetentionPolicy        RetentionPolicy `json:"retention_policy"`
+	ProtectedByRetention   int             `json:"-"`
+	RetentionPolicy        RetentionPolicy `json:"-"`
 }
 
 // Tombstone marks a snapshot as deleted but not yet reclaimed.
@@ -47,25 +50,27 @@ const (
 // DefaultRetentionPolicy returns the default retention policy.
 func DefaultRetentionPolicy() RetentionPolicy {
 	return RetentionPolicy{
-		KeepMinSnapshots: 0, // No minimum - rely on lineage and pins
-		KeepMinAge:       24 * time.Hour,
+		KeepMinSnapshots: 0,
+		KeepMinAge:       0,
 	}
 }
 
-// RetentionPolicy configures which snapshots to keep during GC.
+// RetentionPolicy configures internal compatibility retention rules. The v0
+// public CLI does not expose retention flags; default GC protection is live
+// workspace lineage plus in-progress operation intents.
+//
 // Snapshots are protected if they match ANY of these rules:
 // - Within the last N snapshots (KeepMinSnapshots)
 // - Created within the last duration (KeepMinAge)
-// - Pinned explicitly
 // - Part of a worktree's lineage
 type RetentionPolicy struct {
 	// KeepMinSnapshots ensures at least N snapshots are always kept.
 	// The most recent snapshots by creation time are protected.
-	KeepMinSnapshots int `json:"keep_min_snapshots"`
+	KeepMinSnapshots int `json:"-"`
 
 	// KeepMinAge protects snapshots younger than this duration.
 	// Snapshots created within this time window are never deleted.
-	KeepMinAge time.Duration `json:"keep_min_age"`
+	KeepMinAge time.Duration `json:"-"`
 }
 
 // Validate checks if the retention policy is valid.

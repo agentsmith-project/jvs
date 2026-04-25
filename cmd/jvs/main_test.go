@@ -243,17 +243,17 @@ func TestBinarySnapshotFlow(t *testing.T) {
 	err = os.WriteFile(testFile, []byte("hello world"), 0644)
 	require.NoError(t, err)
 
-	// Create snapshot
-	cmd = exec.Command(binPath, "snapshot", "test snapshot")
+	// Create checkpoint
+	cmd = exec.Command(binPath, "checkpoint", "test checkpoint")
 	cmd.Dir = mainPath
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err)
-	assert.Contains(t, string(out), "snapshot")
+	assert.Contains(t, string(out), "checkpoint")
 
-	// Check history
-	cmd = exec.Command(binPath, "history")
+	// Check checkpoint list
+	cmd = exec.Command(binPath, "checkpoint", "list")
 	cmd.Dir = mainPath
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err)
-	assert.Contains(t, string(out), "snapshot")
+	assert.Contains(t, string(out), "checkpoint")
 }

@@ -1,6 +1,6 @@
 # JVS Performance Tuning Guide
 
-**Version:** v7.0
+**Version:** v0 public contract
 **Last Updated:** 2026-02-23
 
 ---
@@ -279,7 +279,8 @@ echo cfq | sudo tee /sys/block/sdX/queue/scheduler
 
 **Solutions:**
 - Keep descriptor count manageable (GC regularly)
-- Use retention policies to limit checkpoints
+- Run `jvs gc plan` and `jvs gc run --plan-id <plan-id>` after old checkpoints
+  are no longer referenced by active workspaces
 
 ---
 
@@ -327,11 +328,10 @@ jvs doctor --json | jq '.timing'
 
 - [ ] Use JuiceFS with juicefs-clone engine
 - [ ] Run on SSD or fast network storage
-- [ ] Configure appropriate retention policies
+- [ ] Schedule GC during off-peak hours
 - [ ] Test with actual workload size
 - [ ] Run `jvs doctor --strict` to verify health
 - [ ] Verify IOPS and throughput meet requirements
-- [ ] Schedule GC during off-peak hours
 - [ ] Enable JuiceFS client caching
 - [ ] Configure appropriate logging level
 
@@ -355,12 +355,12 @@ jvs doctor --json | jq '.timing'
 
 **More checkpoints?**
 - Use tags to mark important checkpoints
-- More aggressive GC policies
+- Run two-phase GC cleanup more frequently
 - Consider splitting into multiple repositories
 
 ### Concurrent Operations
 
-**JVS v7.0:** Single writer model
+**JVS v0:** Single writer model
 
 **For concurrent access:**
 - Use external coordination (locks, queues)
@@ -415,9 +415,9 @@ jvs doctor --json | grep engine
 
 **This is expected** - verify reads and hashes every file. Optimization:
 
-1. Verify fewer checkpoints:
+1. Run full verification during a maintenance window:
    ```bash
-   jvs verify --since "2026-02-20"
+   jvs verify --all
    ```
 
 2. Run during off-peak hours

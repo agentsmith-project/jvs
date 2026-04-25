@@ -89,6 +89,7 @@ func TestCreator_CreateRecordsCloneResultMetadata(t *testing.T) {
 	require.Contains(t, desc.DegradedReasons, "hardlink")
 	require.NotNil(t, desc.MetadataPreservation)
 	require.NotEmpty(t, desc.MetadataPreservation.Hardlinks)
+	require.NotEmpty(t, desc.MetadataPreservation.Ownership)
 	require.Equal(t, "linear-data-copy", desc.PerformanceClass)
 }
 
@@ -513,22 +514,53 @@ func TestCreator_CreateWithParent(t *testing.T) {
 	assert.Equal(t, desc1.SnapshotID, *desc2.ParentID)
 }
 
-func TestCreator_AuditLogFailureNonFatal(t *testing.T) {
+func TestCreator_CreateFailsClosedWhenAuditLogMalformed(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
 	mainPath := filepath.Join(repoPath, "main")
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
 
+	auditPath := filepath.Join(repoPath, ".jvs", "audit", "audit.jsonl")
+	require.NoError(t, os.MkdirAll(filepath.Dir(auditPath), 0755))
+	require.NoError(t, os.WriteFile(auditPath, []byte("{malformed audit record}\n"), 0644))
+
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	desc, err := creator.Create("main", "test", nil)
+	require.Error(t, err)
+	assert.Nil(t, desc)
+	assert.Contains(t, err.Error(), "audit")
 
-	// Make audit directory non-writable to trigger audit write failure
-	auditDir := filepath.Join(repoPath, ".jvs", "audit")
-	require.NoError(t, os.MkdirAll(auditDir, 0400))
-	defer os.Chmod(auditDir, 0755)
+	cfg, cfgErr := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, cfgErr)
+	assert.Empty(t, cfg.HeadSnapshotID)
+	assert.Empty(t, cfg.LatestSnapshotID)
+	assert.Empty(t, readDirNames(t, filepath.Join(repoPath, ".jvs", "snapshots")))
+}
 
-	// Create should succeed despite audit failure
-	_, err := creator.Create("main", "test", nil)
-	assert.NoError(t, err)
+func TestCreator_CreateFailsClosedWhenAuditRecordHashMismatches(t *testing.T) {
+	repoPath := setupTestRepo(t)
+
+	mainPath := filepath.Join(repoPath, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("v1"), 0644))
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	first, err := creator.Create("main", "first", nil)
+	require.NoError(t, err)
+
+	auditPath := filepath.Join(repoPath, ".jvs", "audit", "audit.jsonl")
+	tamperFirstAuditRecordForCreatorTest(t, auditPath)
+
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("v2"), 0644))
+	desc, err := creator.Create("main", "second", nil)
+	require.Error(t, err)
+	assert.Nil(t, desc)
+	assert.Contains(t, err.Error(), "E_AUDIT_RECORD_HASH_MISMATCH")
+
+	cfg, cfgErr := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, cfgErr)
+	assert.Equal(t, first.SnapshotID, cfg.HeadSnapshotID)
+	assert.Equal(t, first.SnapshotID, cfg.LatestSnapshotID)
+	assert.Len(t, readDirNames(t, filepath.Join(repoPath, ".jvs", "snapshots")), 1)
 }
 
 func TestCreator_CreateWithNonExistentRepo(t *testing.T) {
@@ -1178,4 +1210,22 @@ func copySnapshotTreeForCreatorTest(src, dst string) error {
 			return os.WriteFile(target, data, info.Mode().Perm())
 		}
 	})
+}
+
+func tamperFirstAuditRecordForCreatorTest(t *testing.T, auditPath string) {
+	t.Helper()
+
+	data, err := os.ReadFile(auditPath)
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	require.NotEmpty(t, lines)
+
+	var record map[string]any
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &record))
+	record["event_type"] = "restore"
+	line, err := json.Marshal(record)
+	require.NoError(t, err)
+	lines[0] = string(line)
+
+	require.NoError(t, os.WriteFile(auditPath, []byte(strings.Join(lines, "\n")+"\n"), 0644))
 }

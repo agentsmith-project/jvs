@@ -1,16 +1,22 @@
 # JVS Release Signing
 
-All JVS releases are cryptographically signed using [Sigstore/cosign](https://github.com/sigstore/cosign) to provide authenticity and integrity verification.
+Official tagged JVS release artifacts produced by the release workflow are signed
+with [Sigstore/cosign](https://github.com/sigstore/cosign) to provide
+distribution authenticity and integrity verification.
+
+Release artifact signing is separate from the v0 JVS repository format.
+Descriptor signing, signer trust policy, and in-JVS key management are not part
+of the stable v0 public contract.
 
 ## What is Signed?
 
-Each release includes:
+Each signed release includes:
 
 1. **Binaries** - Pre-built executables for multiple platforms
-2. **Signatures** - `.sig` files containing digital signatures for each binary
-3. **Certificates** - `.pem` files containing X.509 certificates from the signing workflow
-4. **Checksums** - `SHA256SUMS` file containing SHA256 hashes of all binaries
-5. **Checksums signature** - `SHA256SUMS.sig` and `SHA256SUMS.pem` for the checksums file itself
+2. **Binary signatures** - `.sig` files containing signatures for each binary
+3. **Binary certificates** - `.pem` files containing X.509 certificates from the signing workflow
+4. **Checksums** - `SHA256SUMS` containing SHA-256 hashes for the published `jvs-*` artifacts
+5. **Checksums signature** - `SHA256SUMS.sig` and `SHA256SUMS.pem` for the checksums file
 
 ## Verification
 
@@ -30,7 +36,8 @@ go install github.com/sigstore/cosign/v2/cmd/cosign@latest
 
 ### Verifying a Binary
 
-To verify a downloaded binary:
+To verify a downloaded binary, download the binary and its matching `.sig` and
+`.pem` sidecar files from the same release:
 
 ```bash
 # Download the binary, signature, and certificate
@@ -77,24 +84,28 @@ sha256sum -c --ignore-missing SHA256SUMS
 
 ## Certificate Identity
 
-All JVS releases are signed with the following certificate identity:
+The release workflow signs artifacts with the following certificate identity:
 
 - **Identity**: `https://github.com/jvs-project/jvs/.github/workflows/ci.yml@refs/tags/vX.Y.Z`
 - **Issuer**: `https://token.actions.githubusercontent.com`
 
 This ensures the binary was built and signed by the official JVS CI workflow running on GitHub Actions.
 
-## Manual Verification (without cosign)
+## Checksum Verification Without Signature Validation
 
-If you prefer manual verification using GPG:
+If cosign is not available, checksum validation can detect download corruption
+but does not prove release authenticity:
 
 1. Download the `SHA256SUMS` file
 2. Download your binary
 3. Compare the SHA256 hash:
 
 ```bash
-sha256sum -c SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
 ```
+
+Treat a release artifact as unsigned if the matching `.sig` and `.pem` files are
+not present.
 
 ## Security Considerations
 

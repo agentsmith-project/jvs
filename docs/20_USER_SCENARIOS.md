@@ -20,10 +20,10 @@ EMPTY ──[checkpoint]──► latest ◄──[restore latest]──► hist
                           │     [restore <id>]      │
                           └────────────────────────►│
                           │                         │
-                          │    [workspace fork]      │
+                          │       [jvs fork]         │
                           │◄────────────────────────┤
                           │                         │
-                          │   [workspace fork]       │
+                          │      [jvs fork]          │
                           └──────► NEW latest ◄───────┘
 ```
 
@@ -151,7 +151,7 @@ Created checkpoint 1771590-aaa11111
 
 **Key Behaviors**:
 - Cannot create checkpoints in current differs from latest (prevents history corruption)
-- Must use `workspace fork` to create a new branch
+- Must use `jvs fork` to create a new branch
 - Fork from current position by omitting checkpoint ID
 
 ---
@@ -178,8 +178,8 @@ experiment-v2     /path/from/workspace/path   latest at 1771587
 ```
 
 **Key Behaviors**:
-- `workspace fork <id> <name>` - fork from specific checkpoint
-- `workspace fork <name>` - fork from current position (convenient shorthand)
+- `jvs fork <id> <name>` - fork from specific checkpoint
+- `jvs fork <name>` - fork from current position (convenient shorthand)
 - New workspace is always at latest state (can checkpoint immediately)
 
 ---

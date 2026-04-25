@@ -15,6 +15,7 @@ type MetadataPreservation struct {
 	Hardlinks  string `json:"hardlinks"`
 	Mode       string `json:"mode"`
 	Timestamps string `json:"timestamps"`
+	Ownership  string `json:"ownership,omitempty"`
 	Xattrs     string `json:"xattrs"`
 	ACLs       string `json:"acls"`
 }

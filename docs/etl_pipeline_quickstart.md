@@ -1,6 +1,6 @@
 # JVS Quick Start: Data ETL Pipelines
 
-**Version:** v7.0
+**Version:** v0 public contract
 **Last Updated:** 2026-02-23
 
 ---
@@ -444,7 +444,7 @@ python migrate_v2_to_v3.py
 jvs checkpoint "Schema v3: normalized phone format, added created_at" --tag schema --tag v3
 
 # To rollback to v2:
-jvs restore --latest-tag v2
+jvs restore v2
 ```
 
 ### Workflow 3: Multi-Region Data Sync

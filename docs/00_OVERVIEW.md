@@ -1,6 +1,6 @@
 # Overview
 
-**Document set:** JVS v7.0 (JuiceFS-first, checkpoint-first)
+**Document set:** JVS v0 (JuiceFS-first, checkpoint-first)
 **Date:** 2026-02-22
 
 ## Core idea
@@ -10,7 +10,7 @@ JVS versions workspaces by full checkpoints of a single workspace payload root.
 1. No remote replication features in JVS; JuiceFS handles transport.
 2. Main payload root is `repo/main/`.
 3. Checkpoint publish is READY-based and auditable.
-4. Restore is always inplace; use `workspace fork` to create branches.
+4. Restore is always inplace; use `jvs fork` to create branches.
 5. Verification default is strong: checksum + payload hash. Signature/trust chain deferred to v1.x.
 6. Runtime state (active `intents`) is non-portable and rebuilt after migration.
 

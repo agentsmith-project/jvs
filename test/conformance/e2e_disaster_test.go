@@ -125,6 +125,51 @@ func TestE2E_Disaster_DetectAndRepair(t *testing.T) {
 	})
 }
 
+func TestE2E_Disaster_AuditVerificationFailureBlocksStrictDoctorAndFullClone(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "audit-source")
+	runJVS(t, dir, "init", "audit-source")
+
+	if err := os.WriteFile(filepath.Join(repoPath, "main", "file.txt"), []byte("content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "audited")
+	if code != 0 {
+		t.Fatalf("checkpoint failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+
+	auditPath := filepath.Join(repoPath, ".jvs", "audit", "audit.jsonl")
+	if err := os.RemoveAll(auditPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(auditPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code = runJVSInRepo(t, repoPath, "doctor", "--strict")
+	if code == 0 {
+		t.Fatalf("doctor --strict accepted unreadable audit log: stdout=%s stderr=%s", stdout, stderr)
+	}
+	if !strings.Contains(stdout, "E_AUDIT_SCAN_FAILED") {
+		t.Fatalf("doctor --strict missing audit scan error code: %s", stdout)
+	}
+
+	dest := filepath.Join(dir, "audit-clone")
+	stdout, stderr, code = runJVS(t, dir, "--json", "clone", repoPath, dest, "--scope", "full")
+	if code == 0 {
+		t.Fatalf("clone full accepted source whose audit verification cannot run: stdout=%s stderr=%s", stdout, stderr)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("clone full JSON error wrote stderr: %q", stderr)
+	}
+	if !strings.Contains(stdout, "E_AUDIT_SCAN_FAILED") {
+		t.Fatalf("clone full missing audit scan error code: %s", stdout)
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatalf("clone full created destination despite audit verification failure: %v", err)
+	}
+}
+
 // TestE2E_Disaster_OrphanIntents tests detecting and cleaning orphan intent files
 func TestE2E_Disaster_OrphanIntents(t *testing.T) {
 	repoPath, _ := initTestRepo(t)

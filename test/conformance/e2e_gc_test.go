@@ -136,6 +136,38 @@ func TestE2E_GC_CommitsDeletionAndTombstone(t *testing.T) {
 	requireCommittedTombstone(t, repoPath, snapshotID)
 }
 
+func TestE2E_GCPlanFailsClosedOnAuditHashMismatch(t *testing.T) {
+	repoPath, _ := initTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+	if err := os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("audited"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "audited"); code != 0 {
+		t.Fatalf("checkpoint failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+
+	auditPath := filepath.Join(repoPath, ".jvs", "audit", "audit.jsonl")
+	tamperFirstAuditRecordForGCConformance(t, auditPath)
+
+	stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "gc", "plan")
+	if code == 0 {
+		t.Fatalf("gc plan accepted tampered audit chain: stdout=%s stderr=%s", stdout, stderr)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("gc plan JSON error wrote stderr: %q", stderr)
+	}
+	if !strings.Contains(stdout, "E_AUDIT_RECORD_HASH_MISMATCH") {
+		t.Fatalf("gc plan error missing audit hash mismatch code: %s", stdout)
+	}
+	plans, err := filepath.Glob(filepath.Join(repoPath, ".jvs", "gc", "*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plans) != 0 {
+		t.Fatalf("gc plan left active plan despite audit failure: %v", plans)
+	}
+}
+
 func requirePathMissing(t *testing.T, path string) {
 	t.Helper()
 
@@ -161,6 +193,32 @@ func requireCommittedTombstone(t *testing.T, repoPath, snapshotID string) {
 	}
 	if tombstone["reclaimable"] != true {
 		t.Fatalf("expected reclaimable tombstone, got %v in %s", tombstone["reclaimable"], string(data))
+	}
+}
+
+func tamperFirstAuditRecordForGCConformance(t *testing.T, auditPath string) {
+	t.Helper()
+
+	data, err := os.ReadFile(auditPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) == 0 {
+		t.Fatalf("audit log is empty: %s", auditPath)
+	}
+	var record map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &record); err != nil {
+		t.Fatal(err)
+	}
+	record["event_type"] = "restore"
+	line, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines[0] = string(line)
+	if err := os.WriteFile(auditPath, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -37,9 +37,40 @@ type Issue struct {
 	Message   string
 }
 
+// IntegrityError is returned when an audit log cannot be safely extended.
+type IntegrityError struct {
+	Code    string
+	Line    int
+	Message string
+}
+
+func (e *IntegrityError) Error() string {
+	if e.Line > 0 {
+		return fmt.Sprintf("%s at line %d: %s", e.Code, e.Line, e.Message)
+	}
+	return fmt.Sprintf("%s: %s", e.Code, e.Message)
+}
+
 // NewFileAppender creates a new FileAppender.
 func NewFileAppender(path string) *FileAppender {
 	return &FileAppender{path: path}
+}
+
+// EnsureAppendable verifies that the audit log can be safely extended.
+func (a *FileAppender) EnsureAppendable() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	file, err := a.openAppendableLocked()
+	if err != nil {
+		return err
+	}
+	defer closeLockedAuditFile(file)
+
+	if _, err := a.getLastRecordHashLocked(file); err != nil {
+		return fmt.Errorf("get last record hash: %w", err)
+	}
+	return nil
 }
 
 // Append adds a new audit record to the log.
@@ -47,21 +78,38 @@ func (a *FileAppender) Append(eventType model.AuditEventType, worktreeName strin
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	file, err := a.openAppendableLocked()
+	if err != nil {
+		return err
+	}
+	defer closeLockedAuditFile(file)
+
+	return a.appendLocked(file, eventType, worktreeName, snapshotID, details)
+}
+
+func (a *FileAppender) openAppendableLocked() (*os.File, error) {
 	if err := os.MkdirAll(filepath.Dir(a.path), 0755); err != nil {
-		return fmt.Errorf("create audit dir: %w", err)
+		return nil, fmt.Errorf("create audit dir: %w", err)
 	}
 
 	file, err := os.OpenFile(a.path, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
-		return fmt.Errorf("open audit log: %w", err)
+		return nil, fmt.Errorf("open audit log: %w", err)
 	}
-	defer file.Close()
 
 	if err := lockFile(file); err != nil {
-		return fmt.Errorf("flock audit log: %w", err)
+		_ = file.Close()
+		return nil, fmt.Errorf("flock audit log: %w", err)
 	}
-	defer unlockFile(file)
+	return file, nil
+}
 
+func closeLockedAuditFile(file *os.File) {
+	unlockFile(file)
+	_ = file.Close()
+}
+
+func (a *FileAppender) appendLocked(file *os.File, eventType model.AuditEventType, worktreeName string, snapshotID model.SnapshotID, details map[string]any) error {
 	// Get previous record hash
 	prevHash, err := a.getLastRecordHashLocked(file)
 	if err != nil {
@@ -143,7 +191,7 @@ func VerifyFile(path string) ([]Issue, error) {
 		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
 			issues = append(issues, Issue{
 				Line:      lineNum,
-				Severity:  "warning",
+				Severity:  "critical",
 				ErrorCode: ErrorCodeAuditRecordMalformed,
 				Message:   fmt.Sprintf("malformed record at line %d", lineNum),
 			})
@@ -191,13 +239,43 @@ func (a *FileAppender) getLastRecordHashLocked(file *os.File) (model.HashValue, 
 	}
 
 	var lastHash model.HashValue
+	var expectedPrevHash model.HashValue
 	scanner := bufio.NewScanner(file)
+	lineNum := 0
 	for scanner.Scan() {
+		lineNum++
 		var record model.AuditRecord
 		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
-			continue // skip malformed lines
+			return "", &IntegrityError{
+				Code:    ErrorCodeAuditRecordMalformed,
+				Line:    lineNum,
+				Message: fmt.Sprintf("malformed record: %v", err),
+			}
+		}
+		if record.PrevHash != expectedPrevHash {
+			return "", &IntegrityError{
+				Code:    ErrorCodeAuditChainBroken,
+				Line:    lineNum,
+				Message: fmt.Sprintf("audit hash chain broken: prev_hash %q does not match expected %q", record.PrevHash, expectedPrevHash),
+			}
+		}
+		computedHash, err := computeRecordHash(&record)
+		if err != nil {
+			return "", &IntegrityError{
+				Code:    ErrorCodeAuditRecordHashRecompute,
+				Line:    lineNum,
+				Message: fmt.Sprintf("cannot recompute audit record hash: %v", err),
+			}
+		}
+		if computedHash != record.RecordHash {
+			return "", &IntegrityError{
+				Code:    ErrorCodeAuditRecordHashMismatch,
+				Line:    lineNum,
+				Message: fmt.Sprintf("record_hash %q does not match computed hash %q", record.RecordHash, computedHash),
+			}
 		}
 		lastHash = record.RecordHash
+		expectedPrevHash = record.RecordHash
 	}
 
 	if err := scanner.Err(); err != nil {

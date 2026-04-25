@@ -1067,6 +1067,37 @@ func TestRestorer_Restore_CreatesAuditLogEntry(t *testing.T) {
 	assert.Contains(t, string(content), "\"restore\"")
 }
 
+func TestRestorer_RestoreFailsClosedWhenAuditLogMalformed(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("v1"), 0644))
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	desc1, err := creator.Create("main", "v1", nil)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("v2"), 0644))
+	desc2, err := creator.Create("main", "v2", nil)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("current"), 0644))
+	auditPath := filepath.Join(repoPath, ".jvs", "audit", "audit.jsonl")
+	require.NoError(t, os.WriteFile(auditPath, []byte("{malformed audit record}\n"), 0644))
+
+	err = restore.NewRestorer(repoPath, model.EngineCopy).Restore("main", desc1.SnapshotID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "audit")
+
+	content, readErr := os.ReadFile(filepath.Join(mainPath, "file.txt"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "current", string(content))
+
+	cfg, cfgErr := worktree.NewManager(repoPath).Get("main")
+	require.NoError(t, cfgErr)
+	assert.Equal(t, desc2.SnapshotID, cfg.HeadSnapshotID)
+	assert.Equal(t, desc2.SnapshotID, cfg.LatestSnapshotID)
+}
+
 func TestRestorer_Restore_DetachedStateInAuditLog(t *testing.T) {
 	// Test that detached state is recorded in audit log
 	repoPath := setupTestRepo(t)

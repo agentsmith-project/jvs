@@ -1,6 +1,6 @@
 # JVS Example Workflows & Use Cases
 
-**Version:** v7.0
+**Version:** v0
 **Last Updated:** 2026-02-23
 
 ---
@@ -88,8 +88,8 @@ jvs checkpoint "v1.0 candidate" --tag stable --tag v1.0
 # Find all stable experiments
 jvs checkpoint list | grep stable
 
-# Restore to latest stable
-jvs restore --latest-tag stable
+# Restore by exact tag
+jvs restore stable
 ```
 
 ### What You Achieve
@@ -179,7 +179,7 @@ go test -run TestNullPointer
 # 1. Rollback production environment to last known good
 ssh production-server
 cd /app
-jvs restore --latest-tag stable
+jvs restore stable
 systemctl restart myservice
 
 # 2. Create hotfix branch
@@ -231,7 +231,7 @@ cd critical-app/main
 # 0 2 * * 0 cd /production/workspace/critical-app/main && jvs checkpoint "Weekly backup $(date +%Y-%m-%d)" --tag weekly
 ```
 
-### Checkpoint Retention with GC
+### Checkpoint Cleanup with GC
 
 ```bash
 # Review plan
@@ -239,9 +239,12 @@ jvs gc plan
 # Output shows what will be deleted
 
 # Execute when ready
-PLAN_ID=$(jvs gc plan | grep "Plan ID:" | cut -d: -f2)
+PLAN_ID=$(jvs gc plan | awk -F': ' '/^Plan ID:/ {print $2}')
 jvs gc run --plan-id "$PLAN_ID"
 ```
+
+v0 GC is two phase. Plans are revalidated before deletion and are bound to the
+repository that created them.
 
 ### Cross-Machine Backup
 
@@ -299,7 +302,7 @@ jvs doctor --strict --repair-runtime
 |---------|--------------|
 | Incremental backup | JuiceFS handles data, JVS handles metadata |
 | Point-in-time recovery | Restore any checkpoint in O(1) |
-| Space-efficient | GC with retention policies |
+| Space-efficient | Two-phase GC for unprotected checkpoints |
 | Disaster recovery | Separated metadata/payload |
 | Verification integrity | Two-layer verification detects corruption |
 
@@ -544,7 +547,7 @@ jvs checkpoint "Production v1.1: Database update" --tag production --tag stable
 cd "$(jvs workspace path production)"
 
 # Rollback to previous stable immediately
-jvs restore --latest-tag stable
+jvs restore stable
 # O(1) rollback, minimal downtime
 
 # Investigate in separate workspace

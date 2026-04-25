@@ -2,6 +2,11 @@
 
 **Version:** v7.0
 **Last Updated:** 2026-02-23
+**Status:** Archived, non-release-facing
+
+> Archived note: this historical template proposal is not part of the v0 public contract.
+> v0 does not publish an ignore-file or partial checkpoint contract, so commands
+> and examples below are retained only as non-current design context.
 
 ---
 

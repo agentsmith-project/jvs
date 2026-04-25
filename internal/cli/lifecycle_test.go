@@ -84,6 +84,30 @@ func TestImportCommand_CopiesSourceCreatesInitialCheckpoint(t *testing.T) {
 	require.Equal(t, snaps[0].SnapshotID, cfg.LatestSnapshotID)
 }
 
+func TestImportCommand_VerifiesInitialCheckpointAndCleansUpOnFailure(t *testing.T) {
+	base := t.TempDir()
+	source := filepath.Join(base, "source")
+	dest := filepath.Join(base, "imported", "repo")
+	require.NoError(t, os.MkdirAll(source, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(source, "file.txt"), []byte("hello"), 0644))
+
+	oldVerify := verifyLifecycleCheckpoint
+	verifyCalls := 0
+	verifyLifecycleCheckpoint = func(repoRoot string, snapshotID model.SnapshotID) error {
+		verifyCalls++
+		require.Equal(t, dest, repoRoot)
+		require.NotEmpty(t, snapshotID)
+		return errclass.ErrPayloadHashMismatch.WithMessage("forced lifecycle verification failure")
+	}
+	t.Cleanup(func() { verifyLifecycleCheckpoint = oldVerify })
+
+	_, err := executeCommand(createTestRootCmd(), "import", source, dest)
+	require.Error(t, err)
+	require.ErrorIs(t, err, errclass.ErrPayloadHashMismatch)
+	require.Equal(t, 1, verifyCalls)
+	require.NoDirExists(t, dest)
+}
+
 func TestImportCommand_RejectsSourceContainingJVS(t *testing.T) {
 	base := t.TempDir()
 	source := filepath.Join(base, "source")
@@ -143,6 +167,35 @@ func TestCloneCommand_FullCopiesHistoryAndCreatesNewIdentity(t *testing.T) {
 	require.Len(t, destSnaps, len(sourceSnaps))
 }
 
+func TestCloneCommand_FullRejectsCorruptedSourceRepository(t *testing.T) {
+	base := t.TempDir()
+	source := filepath.Join(base, "source")
+	dest := filepath.Join(base, "dest")
+	_, err := executeCommand(createTestRootCmd(), "init", source)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(source, "main", "file.txt"), []byte("v1"), 0644))
+
+	originalWd, _ := os.Getwd()
+	require.NoError(t, os.Chdir(filepath.Join(source, "main")))
+	_, err = executeCommand(createTestRootCmd(), "snapshot", "source checkpoint")
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(originalWd))
+
+	sourceSnaps, err := snapshot.ListAll(source)
+	require.NoError(t, err)
+	require.Len(t, sourceSnaps, 1)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(source, ".jvs", "snapshots", string(sourceSnaps[0].SnapshotID), "tampered.txt"),
+		[]byte("tampered"),
+		0644,
+	))
+
+	_, err = executeCommand(createTestRootCmd(), "clone", source, dest, "--scope", "full")
+	require.Error(t, err)
+	require.ErrorIs(t, err, errclass.ErrPayloadHashMismatch)
+	require.NoDirExists(t, dest)
+}
+
 func TestCloneCommand_FullRejectsPhysicalOverlapViaSymlinkParent(t *testing.T) {
 	base := t.TempDir()
 	source := filepath.Join(base, "source")
@@ -160,7 +213,7 @@ func TestCloneCommand_FullRejectsPhysicalOverlapViaSymlinkParent(t *testing.T) {
 	require.NoDirExists(t, filepath.Join(source, "main", "repo", ".jvs"))
 }
 
-func TestCloneCommand_FullExcludesRuntimeLockState(t *testing.T) {
+func TestCloneCommand_FullExcludesRuntimeState(t *testing.T) {
 	base := t.TempDir()
 	source := filepath.Join(base, "source")
 	dest := filepath.Join(base, "dest")
@@ -171,6 +224,10 @@ func TestCloneCommand_FullExcludesRuntimeLockState(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(sourceLocks, "stale.lock"), []byte("runtime"), 0600))
 	sourceIntents := filepath.Join(source, ".jvs", "intents")
 	require.NoError(t, os.WriteFile(filepath.Join(sourceIntents, "orphan.json"), []byte("{}"), 0600))
+	sourceGC := filepath.Join(source, ".jvs", "gc")
+	require.NoError(t, os.WriteFile(filepath.Join(sourceGC, "active-plan.json"), []byte(`{"plan_id":"active-plan"}`), 0600))
+	require.NoError(t, os.MkdirAll(filepath.Join(sourceGC, "tombstones"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(sourceGC, "tombstones", "retained.json"), []byte(`{"gc_state":"committed"}`), 0600))
 
 	stdout, err := executeCommand(createTestRootCmd(), "--json", "clone", source, dest, "--scope", "full")
 	require.NoError(t, err)
@@ -190,6 +247,8 @@ func TestCloneCommand_FullExcludesRuntimeLockState(t *testing.T) {
 	require.NoDirExists(t, filepath.Join(dest, ".jvs", "locks", "repo.lock"))
 	require.DirExists(t, filepath.Join(dest, ".jvs", "intents"))
 	require.NoFileExists(t, filepath.Join(dest, ".jvs", "intents", "orphan.json"))
+	require.NoFileExists(t, filepath.Join(dest, ".jvs", "gc", "active-plan.json"))
+	require.FileExists(t, filepath.Join(dest, ".jvs", "gc", "tombstones", "retained.json"))
 
 	lock, err := repo.AcquireMutationLock(dest, "post-clone check")
 	require.NoError(t, err)
@@ -279,6 +338,31 @@ func TestCloneCommand_CurrentCopiesWorkspaceAndDisconnectsHistory(t *testing.T) 
 	require.Nil(t, destSnaps[0].ParentID)
 	require.Contains(t, []model.EngineType{model.EngineCopy, model.EngineReflinkCopy, model.EngineJuiceFSClone}, destSnaps[0].Engine)
 	require.Contains(t, destSnaps[0].Note, "clone")
+}
+
+func TestCloneCommand_CurrentVerifiesInitialCheckpointAndCleansUpOnFailure(t *testing.T) {
+	base := t.TempDir()
+	source := filepath.Join(base, "source")
+	dest := filepath.Join(base, "dest")
+	_, err := executeCommand(createTestRootCmd(), "init", source)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(source, "main", "file.txt"), []byte("working state"), 0644))
+
+	oldVerify := verifyLifecycleCheckpoint
+	verifyCalls := 0
+	verifyLifecycleCheckpoint = func(repoRoot string, snapshotID model.SnapshotID) error {
+		verifyCalls++
+		require.Equal(t, dest, repoRoot)
+		require.NotEmpty(t, snapshotID)
+		return errclass.ErrPayloadHashMismatch.WithMessage("forced lifecycle verification failure")
+	}
+	t.Cleanup(func() { verifyLifecycleCheckpoint = oldVerify })
+
+	_, err = executeCommand(createTestRootCmd(), "clone", source, dest, "--scope", "current")
+	require.Error(t, err)
+	require.ErrorIs(t, err, errclass.ErrPayloadHashMismatch)
+	require.Equal(t, 1, verifyCalls)
+	require.NoDirExists(t, dest)
 }
 
 func TestCloneCurrentJSONSeparatesTransferFromMaterializationEngine(t *testing.T) {
@@ -400,7 +484,7 @@ func TestCapabilityJSONIncludesMetadataPreservationAndPerformanceClass(t *testin
 	require.NotEmpty(t, got["performance_class"])
 	metadata, ok := got["metadata_preservation"].(map[string]any)
 	require.True(t, ok, "metadata_preservation must be an object: %s", stdout)
-	for _, field := range []string{"symlinks", "hardlinks", "mode", "timestamps", "xattrs", "acls"} {
+	for _, field := range []string{"symlinks", "hardlinks", "mode", "timestamps", "ownership", "xattrs", "acls"} {
 		require.NotEmpty(t, metadata[field], "metadata_preservation.%s must be set", field)
 	}
 }

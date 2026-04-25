@@ -21,6 +21,7 @@ var gcCmd = &cobra.Command{
 var gcPlanCmd = &cobra.Command{
 	Use:   "plan",
 	Short: "Create a GC plan",
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		r, err := discoverRequiredRepo()
 		if err != nil {
@@ -37,11 +38,10 @@ var gcPlanCmd = &cobra.Command{
 			return outputJSON(publicGC(plan))
 		}
 
-		fmt.Printf("GC Plan: %s\n", plan.PlanID)
+		fmt.Printf("Plan ID: %s\n", plan.PlanID)
 		fmt.Printf("  Protected by lineage: %d checkpoints\n", plan.ProtectedByLineage)
-		fmt.Printf("  Protected by pin: %d checkpoints\n", plan.ProtectedByPin)
 		fmt.Printf("  To delete: %d checkpoints\n", len(plan.ToDelete))
-		fmt.Printf("  Estimated reclaim: ~%d MB\n", plan.DeletableBytesEstimate/1024/1024)
+		fmt.Printf("  Estimated reclaim: %d bytes\n", plan.DeletableBytesEstimate)
 		fmt.Println()
 		fmt.Printf("Run: jvs gc run --plan-id %s\n", plan.PlanID)
 		return nil
@@ -51,6 +51,7 @@ var gcPlanCmd = &cobra.Command{
 var gcRunCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Execute a GC plan",
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		r, err := discoverRequiredRepo()
 		if err != nil {

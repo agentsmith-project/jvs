@@ -1,4 +1,4 @@
-# Operation Runbook (v7.0)
+# Operation Runbook (v0)
 
 ## Daily checks
 1. run `jvs doctor --strict`
@@ -10,32 +10,33 @@
 3. classify failure: checksum, payload hash
 4. escalate tamper events and preserve evidence
 
-## Incident: partial snapshot artifacts
+## Incident: partial checkpoint artifacts
 1. run `jvs doctor --strict --json`
-2. apply recommended repair actions:
-   - `clean_tmp`: remove orphan `.tmp` snapshot/descriptor files
-   - `advance_head`: advance head to latest READY snapshot if head is stale
-   - `rebuild_index`: regenerate `index.sqlite`
-   - `audit_repair`: recompute audit hash chain
-3. rerun verify
+2. run `jvs doctor --repair-list` and confirm only public runtime repairs are available
+3. run `jvs doctor --strict --repair-runtime`, which may execute:
+   - `clean_locks`: removes stale repository mutation locks
+   - `clean_runtime_tmp`: removes stale JVS runtime temporary files
+   - `clean_runtime_operations`: removes abandoned operation records
+4. rerun `jvs doctor --strict` and `jvs verify --all`
 
 ## Incident: audit chain broken
 1. run `jvs doctor --strict --json`, look for `E_AUDIT_CHAIN_BROKEN`
-2. apply `audit_repair` to recompute chain hashes from existing records
+2. freeze writers and preserve `.jvs/audit/audit.jsonl` as evidence
 3. investigate cause (truncation, manual edit, migration error)
-4. escalate if records are missing (indicates potential tampering)
+4. restore from trusted backup or escalate for manual forensic remediation
 
 ## Migration runbook
 1. freeze writers
 2. doctor + verify pass on source
-3. sync excluding `.jvs/intents/**`
+3. sync repository data while excluding transient operation records
 4. run `jvs doctor --strict --repair-runtime` on destination, which:
-   - `clean_intents`: removes abandoned intent files from source
-   - `rebuild_index`: regenerates `index.sqlite`
+   - `clean_locks`: removes stale repository mutation locks
+   - `clean_runtime_tmp`: removes stale JVS runtime temporary files
+   - `clean_runtime_operations`: removes abandoned operation records
 5. run `jvs verify --all` and recovery drill
 
 ## GC runbook
 1. run `jvs gc plan` and review `plan_id`
 2. execute `jvs gc run --plan-id <id>`
 3. if failure, inspect failed tombstones and retry safely
-4. verify lineage/head integrity after gc batch
+4. verify lineage/current integrity after gc batch

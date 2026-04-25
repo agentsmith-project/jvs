@@ -134,6 +134,23 @@ func TestWorkflowUsesPinnedLintTools(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowNotesIncludeReadinessSections(t *testing.T) {
+	root := repoRoot(t)
+	workflow := readWorkflow(t, root)
+	jobs := requireMappingValue(t, workflow, "jobs")
+	release := requireMappingValue(t, jobs, "release")
+	notes := requireStepNamed(t, release, "Generate release notes")
+	run := scalarValue(t, requireMappingValue(t, notes, "run"))
+
+	for _, required := range []string{
+		"## Known limitations",
+		"## Risk labels",
+		"## Migration notes",
+	} {
+		requireContains(t, run, required)
+	}
+}
+
 func TestMakefilePinsGolangCILintTooling(t *testing.T) {
 	root := repoRoot(t)
 	data, err := os.ReadFile(filepath.Join(root, "Makefile"))

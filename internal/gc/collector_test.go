@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -89,6 +90,15 @@ func writePin(t *testing.T, repoPath, pinsRelDir string, snapshotID model.Snapsh
 func writeGCPlan(t *testing.T, repoPath string, plan *model.GCPlan) {
 	t.Helper()
 
+	if plan.SchemaVersion == 0 {
+		plan.SchemaVersion = model.GCPlanSchemaVersion
+	}
+	if plan.RepoID == "" {
+		r, err := repo.Discover(repoPath)
+		require.NoError(t, err)
+		plan.RepoID = r.RepoID
+	}
+
 	gcDir := filepath.Join(repoPath, ".jvs", "gc")
 	require.NoError(t, os.MkdirAll(gcDir, 0755))
 	data, err := json.MarshalIndent(plan, "", "  ")
@@ -132,7 +142,34 @@ func TestCollector_Plan(t *testing.T) {
 	plan, err := collector.Plan()
 	require.NoError(t, err)
 	assert.NotEmpty(t, plan.PlanID)
+	assert.Equal(t, model.GCPlanSchemaVersion, plan.SchemaVersion)
+	assert.NotEmpty(t, plan.RepoID)
 	// Fresh repo has no snapshots, so protected set may be empty
+}
+
+func TestCollector_PlanDefaultDeletesRemovedWorkspaceSnapshotImmediately(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
+
+	collector := gc.NewCollector(repoPath)
+	plan, err := collector.Plan()
+	require.NoError(t, err)
+
+	assert.Contains(t, plan.ToDelete, ids[0])
+	assert.Equal(t, 1, plan.CandidateCount)
+}
+
+func TestCollector_PlanUsesPayloadAndDescriptorSizeEstimate(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
+
+	collector := gc.NewCollector(repoPath)
+	plan, err := collector.Plan()
+	require.NoError(t, err)
+	require.Len(t, plan.ToDelete, 1)
+
+	assert.Greater(t, plan.DeletableBytesEstimate, int64(0))
+	assert.NotEqual(t, int64(1024*1024), plan.DeletableBytesEstimate)
 }
 
 func TestCollectorRunReturnsRepoBusyWhenMutationLockHeld(t *testing.T) {
@@ -265,6 +302,78 @@ func TestCollector_Run(t *testing.T) {
 
 	err = collector.Run(plan.PlanID)
 	require.NoError(t, err)
+}
+
+func TestCollector_RunFailsClosedWhenAuditLogMalformed(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	ids := createRemovedWorktreeSnapshots(t, repoPath, "audit-blocked", 1)
+	snapshotID := ids[0]
+
+	collector := gc.NewCollector(repoPath)
+	plan, err := collector.PlanWithPolicy(zeroRetention)
+	require.NoError(t, err)
+	require.Contains(t, plan.ToDelete, snapshotID)
+
+	auditPath := filepath.Join(repoPath, ".jvs", "audit", "audit.jsonl")
+	require.NoError(t, os.WriteFile(auditPath, []byte("{malformed audit record}\n"), 0644))
+
+	err = collector.Run(plan.PlanID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "audit")
+
+	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID)))
+	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json"))
+	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "gc", plan.PlanID+".json"))
+	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "gc", "tombstones", string(snapshotID)+".json"))
+}
+
+func TestCollector_PlanFailsClosedWhenAuditRecordHashMismatches(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	createRemovedWorktreeSnapshots(t, repoPath, "audit-plan-blocked", 1)
+
+	auditPath := filepath.Join(repoPath, ".jvs", "audit", "audit.jsonl")
+	tamperFirstAuditRecordForGCTest(t, auditPath)
+
+	collector := gc.NewCollector(repoPath)
+	plan, err := collector.PlanWithPolicy(zeroRetention)
+	require.Error(t, err)
+	assert.Nil(t, plan)
+	assert.Contains(t, err.Error(), "E_AUDIT_RECORD_HASH_MISMATCH")
+	assert.Empty(t, gcPlanFiles(t, repoPath), "failed plan must not leave an unaudited active plan")
+}
+
+func TestCollector_PlanFailsClosedWhenAuditLogMalformed(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	createRemovedWorktreeSnapshots(t, repoPath, "audit-plan-malformed", 1)
+
+	auditPath := filepath.Join(repoPath, ".jvs", "audit", "audit.jsonl")
+	require.NoError(t, os.WriteFile(auditPath, []byte("{malformed audit record}\n"), 0644))
+
+	collector := gc.NewCollector(repoPath)
+	plan, err := collector.PlanWithPolicy(zeroRetention)
+	require.Error(t, err)
+	assert.Nil(t, plan)
+	assert.Contains(t, err.Error(), "E_AUDIT_RECORD_MALFORMED")
+	assert.Empty(t, gcPlanFiles(t, repoPath), "failed plan must not leave an unaudited active plan")
+}
+
+func TestCollector_PlanAppendsAuditEvent(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	createRemovedWorktreeSnapshots(t, repoPath, "audit-plan", 1)
+	auditPath := filepath.Join(repoPath, ".jvs", "audit", "audit.jsonl")
+	before := readAuditRecordsForGCTest(t, auditPath)
+
+	collector := gc.NewCollector(repoPath)
+	plan, err := collector.PlanWithPolicy(zeroRetention)
+	require.NoError(t, err)
+
+	after := readAuditRecordsForGCTest(t, auditPath)
+	require.Len(t, after, len(before)+1)
+	record := after[len(after)-1]
+	assert.Equal(t, model.EventTypeGCPlan, record.EventType)
+	require.NotNil(t, record.Details)
+	assert.Equal(t, plan.PlanID, record.Details["plan_id"])
+	assert.Equal(t, float64(plan.CandidateCount), record.Details["candidate_count"])
 }
 
 func TestCollectorRunFailsClosedWhenSnapshotsParentIsSymlink(t *testing.T) {
@@ -729,272 +838,20 @@ func TestCollector_Plan_EmptyRepo(t *testing.T) {
 	assert.Empty(t, plan.ToDelete)
 }
 
-func TestCollector_Plan_WithPins(t *testing.T) {
+func TestCollector_Plan_IgnoresLegacyPinFilesInV0(t *testing.T) {
 	repoPath := setupTestRepo(t)
+	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
+	candidateID := ids[0]
 
-	// Create first snapshot in main
-	mainPath := filepath.Join(repoPath, "main")
-	os.WriteFile(filepath.Join(mainPath, "file1.txt"), []byte("content1"), 0644)
-	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
-	desc1, err := creator.Create("main", "first", nil)
-	require.NoError(t, err)
-
-	// Create second snapshot
-	os.WriteFile(filepath.Join(mainPath, "file2.txt"), []byte("content2"), 0644)
-	_, err = creator.Create("main", "second", nil)
-	require.NoError(t, err)
-
-	// Create a third snapshot then delete its worktree to make it eligible for GC
-	wtMgr := worktree.NewManager(repoPath)
-	cfg, err := wtMgr.Create("temp", nil)
-	require.NoError(t, err)
-	tempPath := requireWorktreePath(t, wtMgr, "temp")
-	os.WriteFile(filepath.Join(tempPath, "file.txt"), []byte("temp"), 0644)
-	tempDesc, err := creator.Create("temp", "temp snap", nil)
-	require.NoError(t, err)
-	_ = cfg
-
-	// Pin the first snapshot
-	pinsDir := filepath.Join(repoPath, ".jvs", "pins")
-	require.NoError(t, os.MkdirAll(pinsDir, 0755))
-	pinContent := `{"snapshot_id":"` + string(desc1.SnapshotID) + `","pinned_at":"2024-01-01T00:00:00Z","reason":"important"}`
-	require.NoError(t, os.WriteFile(filepath.Join(pinsDir, string(desc1.SnapshotID)+".json"), []byte(pinContent), 0644))
-
-	// Also pin the temp snapshot (even though worktree is deleted, pin protects it)
-	pinContent2 := `{"snapshot_id":"` + string(tempDesc.SnapshotID) + `","pinned_at":"2024-01-01T00:00:00Z","reason":"pinned"}`
-	require.NoError(t, os.WriteFile(filepath.Join(pinsDir, string(tempDesc.SnapshotID)+".json"), []byte(pinContent2), 0644))
-
-	// Delete the temp worktree
-	require.NoError(t, wtMgr.Remove("temp"))
+	writePin(t, repoPath, filepath.Join(".jvs", "gc", "pins"), candidateID)
+	writePin(t, repoPath, filepath.Join(".jvs", "pins"), candidateID)
 
 	collector := gc.NewCollector(repoPath)
 	plan, err := collector.Plan()
 	require.NoError(t, err)
 
-	// First snapshot should be protected by pin
-	assert.Contains(t, plan.ProtectedSet, desc1.SnapshotID)
-	assert.Greater(t, plan.ProtectedByPin, 0)
-
-	// Temp snapshot should also be protected by pin despite no worktree
-	assert.Contains(t, plan.ProtectedSet, tempDesc.SnapshotID)
-}
-
-func TestCollector_Plan_WithDocumentedGCPinsPath(t *testing.T) {
-	repoPath := setupTestRepo(t)
-	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
-	pinnedID := ids[0]
-
-	writePin(t, repoPath, filepath.Join(".jvs", "gc", "pins"), pinnedID)
-
-	collector := gc.NewCollector(repoPath)
-	plan, err := collector.PlanWithPolicy(zeroRetention)
-	require.NoError(t, err)
-
-	assert.Contains(t, plan.ProtectedSet, pinnedID)
-	assert.NotContains(t, plan.ToDelete, pinnedID)
-	assert.Equal(t, 1, plan.ProtectedByPin)
-}
-
-func TestCollector_Plan_WithLegacyPinsPath(t *testing.T) {
-	repoPath := setupTestRepo(t)
-	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
-	pinnedID := ids[0]
-
-	writePin(t, repoPath, filepath.Join(".jvs", "pins"), pinnedID)
-
-	collector := gc.NewCollector(repoPath)
-	plan, err := collector.PlanWithPolicy(zeroRetention)
-	require.NoError(t, err)
-
-	assert.Contains(t, plan.ProtectedSet, pinnedID)
-	assert.NotContains(t, plan.ToDelete, pinnedID)
-	assert.Equal(t, 1, plan.ProtectedByPin)
-}
-
-func TestCollector_Plan_FailsClosedWhenGCPinsDirIsSymlink(t *testing.T) {
-	repoPath := setupTestRepo(t)
-	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
-	candidateID := ids[0]
-
-	pinsDir := filepath.Join(repoPath, ".jvs", "gc", "pins")
-	require.NoError(t, os.RemoveAll(pinsDir))
-	outside := t.TempDir()
-	if err := os.Symlink(outside, pinsDir); err != nil {
-		t.Skipf("symlinks not supported: %v", err)
-	}
-
-	collector := gc.NewCollector(repoPath)
-	_, err := collector.PlanWithPolicy(zeroRetention)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "pins")
-
-	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(candidateID)))
-	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(candidateID)+".json"))
-}
-
-func TestCollector_Run_FailsClosedWhenGCPinsDirBecomesSymlink(t *testing.T) {
-	repoPath := setupTestRepo(t)
-	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
-	candidateID := ids[0]
-
-	collector := gc.NewCollector(repoPath)
-	plan, err := collector.PlanWithPolicy(zeroRetention)
-	require.NoError(t, err)
-	require.Contains(t, plan.ToDelete, candidateID)
-
-	pinsDir := filepath.Join(repoPath, ".jvs", "gc", "pins")
-	require.NoError(t, os.RemoveAll(pinsDir))
-	outside := t.TempDir()
-	if err := os.Symlink(outside, pinsDir); err != nil {
-		t.Skipf("symlinks not supported: %v", err)
-	}
-
-	err = collector.Run(plan.PlanID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "pins")
-
-	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(candidateID)))
-	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(candidateID)+".json"))
-	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "gc", "tombstones", string(candidateID)+".json"))
-	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "gc", plan.PlanID+".json"))
-}
-
-func TestCollector_Plan_FailsClosedWhenGCPinsDirUnreadable(t *testing.T) {
-	repoPath := setupTestRepo(t)
-	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
-	candidateID := ids[0]
-
-	pinsDir := filepath.Join(repoPath, ".jvs", "gc", "pins")
-	require.NoError(t, os.Chmod(pinsDir, 0000))
-	t.Cleanup(func() {
-		_ = os.Chmod(pinsDir, 0755)
-	})
-	if _, err := os.ReadDir(pinsDir); err == nil {
-		t.Skip("pin directory permissions are not enforced for this test process")
-	}
-
-	collector := gc.NewCollector(repoPath)
-	_, err := collector.PlanWithPolicy(zeroRetention)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "read pin directory")
-
-	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(candidateID)))
-	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(candidateID)+".json"))
-}
-
-func TestCollector_Plan_FailsClosedWhenPinFileIsSymlink(t *testing.T) {
-	repoPath := setupTestRepo(t)
-	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
-	candidateID := ids[0]
-
-	pinPath := filepath.Join(repoPath, ".jvs", "gc", "pins", string(candidateID)+".json")
-	if err := os.Symlink(filepath.Join(t.TempDir(), "missing-pin.json"), pinPath); err != nil {
-		t.Skipf("symlinks not supported: %v", err)
-	}
-
-	collector := gc.NewCollector(repoPath)
-	_, err := collector.PlanWithPolicy(zeroRetention)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "symlink")
-
-	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(candidateID)))
-	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(candidateID)+".json"))
-}
-
-func TestCollector_Run_FailsClosedWhenPinFileBecomesSymlink(t *testing.T) {
-	repoPath := setupTestRepo(t)
-	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
-	candidateID := ids[0]
-
-	collector := gc.NewCollector(repoPath)
-	plan, err := collector.PlanWithPolicy(zeroRetention)
-	require.NoError(t, err)
-	require.Contains(t, plan.ToDelete, candidateID)
-
-	pinPath := filepath.Join(repoPath, ".jvs", "gc", "pins", string(candidateID)+".json")
-	if err := os.Symlink(filepath.Join(t.TempDir(), "missing-pin.json"), pinPath); err != nil {
-		t.Skipf("symlinks not supported: %v", err)
-	}
-
-	err = collector.Run(plan.PlanID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "symlink")
-
-	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(candidateID)))
-	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(candidateID)+".json"))
-	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "gc", "tombstones", string(candidateID)+".json"))
-	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "gc", plan.PlanID+".json"))
-}
-
-func TestCollector_Plan_FailsClosedWhenPinFileMalformed(t *testing.T) {
-	repoPath := setupTestRepo(t)
-	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
-	candidateID := ids[0]
-
-	pinPath := filepath.Join(repoPath, ".jvs", "gc", "pins", string(candidateID)+".json")
-	require.NoError(t, os.WriteFile(pinPath, []byte(`{"snapshot_id":`), 0644))
-
-	collector := gc.NewCollector(repoPath)
-	_, err := collector.PlanWithPolicy(zeroRetention)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "pin")
-
-	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(candidateID)))
-	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(candidateID)+".json"))
-}
-
-func TestCollector_Run_FailsClosedWhenPinFileBecomesMalformed(t *testing.T) {
-	repoPath := setupTestRepo(t)
-	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
-	candidateID := ids[0]
-
-	collector := gc.NewCollector(repoPath)
-	plan, err := collector.PlanWithPolicy(zeroRetention)
-	require.NoError(t, err)
-	require.Contains(t, plan.ToDelete, candidateID)
-
-	pinPath := filepath.Join(repoPath, ".jvs", "gc", "pins", string(candidateID)+".json")
-	require.NoError(t, os.WriteFile(pinPath, []byte(`{"snapshot_id":`), 0644))
-
-	err = collector.Run(plan.PlanID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "pin")
-
-	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(candidateID)))
-	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(candidateID)+".json"))
-	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "gc", "tombstones", string(candidateID)+".json"))
-	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "gc", plan.PlanID+".json"))
-}
-
-func TestCollector_Plan_ExpiredPin(t *testing.T) {
-	repoPath := setupTestRepo(t)
-
-	// Create a temporary worktree with a snapshot
-	wtMgr := worktree.NewManager(repoPath)
-	_, err := wtMgr.Create("temp", nil)
-	require.NoError(t, err)
-
-	tempPath := requireWorktreePath(t, wtMgr, "temp")
-	os.WriteFile(filepath.Join(tempPath, "file.txt"), []byte("content"), 0644)
-	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
-	desc, err := creator.Create("temp", "test", nil)
-	require.NoError(t, err)
-
-	// Create an expired pin
-	pinsDir := filepath.Join(repoPath, ".jvs", "pins")
-	require.NoError(t, os.MkdirAll(pinsDir, 0755))
-	pinContent := `{"snapshot_id":"` + string(desc.SnapshotID) + `","pinned_at":"2024-01-01T00:00:00Z","expires_at":"2024-01-02T00:00:00Z"}`
-	require.NoError(t, os.WriteFile(filepath.Join(pinsDir, string(desc.SnapshotID)+".json"), []byte(pinContent), 0644))
-
-	// Delete worktree to make snapshot eligible for GC
-	require.NoError(t, wtMgr.Remove("temp"))
-
-	collector := gc.NewCollector(repoPath)
-	_, err = collector.Plan()
-	require.NoError(t, err)
-
-	// Snapshot should NOT be protected by pin since it expired
-	// The pin count should be 0 since the pin is expired
+	assert.Contains(t, plan.ToDelete, candidateID)
+	assert.NotContains(t, plan.ProtectedSet, candidateID)
 }
 
 func TestCollector_Plan_SortsPlanSets(t *testing.T) {
@@ -1019,7 +876,7 @@ func TestCollector_Plan_SortsPlanSets(t *testing.T) {
 	assertSnapshotIDsSorted(t, plan.ToDelete)
 }
 
-func TestCollector_Run_PlanMismatchWhenPinAddedAfterPlanning(t *testing.T) {
+func TestCollector_Run_IgnoresPinAddedAfterPlanningInV0(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
 	candidateID := ids[0]
@@ -1032,12 +889,11 @@ func TestCollector_Run_PlanMismatchWhenPinAddedAfterPlanning(t *testing.T) {
 	writePin(t, repoPath, filepath.Join(".jvs", "gc", "pins"), candidateID)
 
 	err = collector.Run(plan.PlanID)
-	require.Error(t, err)
-	require.ErrorIs(t, err, errclass.ErrGCPlanMismatch)
-	assert.Contains(t, err.Error(), "E_GC_PLAN_MISMATCH")
+	require.NoError(t, err)
 
 	_, statErr := os.Stat(filepath.Join(repoPath, ".jvs", "gc", plan.PlanID+".json"))
-	require.NoError(t, statErr, "mismatched plans should remain for inspection")
+	require.True(t, os.IsNotExist(statErr), "successful GC should delete the plan")
+	requireTombstoneState(t, repoPath, candidateID, model.GCStateCommitted)
 }
 
 func TestCollector_Plan_ProtectedCounts(t *testing.T) {
@@ -1111,6 +967,9 @@ func TestCollector_LoadPlan_Invalid(t *testing.T) {
 	collector := gc.NewCollector(repoPath)
 	_, err := collector.LoadPlan("nonexistent-plan")
 	assert.Error(t, err)
+	assert.ErrorIs(t, err, errclass.ErrGCPlanMismatch)
+	assert.NotContains(t, err.Error(), "control leaf")
+	assert.NotContains(t, err.Error(), repoPath)
 }
 
 func TestCollector_LoadPlan_InvalidJSON(t *testing.T) {
@@ -1125,6 +984,48 @@ func TestCollector_LoadPlan_InvalidJSON(t *testing.T) {
 	collector := gc.NewCollector(repoPath)
 	_, err := collector.LoadPlan("invalid-plan")
 	assert.Error(t, err)
+	assert.ErrorIs(t, err, errclass.ErrGCPlanMismatch)
+}
+
+func TestCollector_LoadPlanRejectsPlanIDMismatch(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	r, err := repo.Discover(repoPath)
+	require.NoError(t, err)
+
+	plan := &model.GCPlan{
+		SchemaVersion: model.GCPlanSchemaVersion,
+		RepoID:        r.RepoID,
+		PlanID:        "other-plan",
+		CreatedAt:     time.Now().UTC(),
+	}
+	data, err := json.MarshalIndent(plan, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(repoPath, ".jvs", "gc", "requested-plan.json"), data, 0644))
+
+	collector := gc.NewCollector(repoPath)
+	_, err = collector.LoadPlan("requested-plan")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errclass.ErrGCPlanMismatch)
+	assert.Contains(t, err.Error(), "plan_id")
+	assert.NotContains(t, err.Error(), repoPath)
+}
+
+func TestCollector_LoadPlanRejectsRepoMismatch(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	plan := &model.GCPlan{
+		SchemaVersion: model.GCPlanSchemaVersion,
+		RepoID:        "different-repo",
+		PlanID:        "repo-mismatch",
+		CreatedAt:     time.Now().UTC(),
+	}
+	writeGCPlan(t, repoPath, plan)
+
+	collector := gc.NewCollector(repoPath)
+	_, err := collector.LoadPlan(plan.PlanID)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errclass.ErrGCPlanMismatch)
+	assert.Contains(t, err.Error(), "repository")
+	assert.NotContains(t, err.Error(), repoPath)
 }
 
 func TestCollector_Plan_WritePlanError(t *testing.T) {
@@ -1311,7 +1212,7 @@ func TestCollector_Plan_WithManySnapshots(t *testing.T) {
 	assert.Equal(t, 0, plan.CandidateCount)
 }
 
-func TestCollector_Plan_ProtectedByPinCount(t *testing.T) {
+func TestCollector_Plan_IgnoresPinFilesInV0(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
 	// Create snapshot in main
@@ -1345,8 +1246,7 @@ func TestCollector_Plan_ProtectedByPinCount(t *testing.T) {
 	plan, err := collector.Plan()
 	require.NoError(t, err)
 
-	// Should have 1 protected by pin
-	assert.Equal(t, 1, plan.ProtectedByPin)
+	assert.Contains(t, plan.ToDelete, tempDesc.SnapshotID)
 }
 
 func TestCollector_Run_DeletesSnapshot(t *testing.T) {
@@ -1625,7 +1525,7 @@ func TestCollector_Run_DeleteSnapshotErrorKeepsPlan(t *testing.T) {
 	requireTombstoneState(t, repoPath, failingID, "committed")
 }
 
-func TestCollector_Plan_WithInvalidPinFile(t *testing.T) {
+func TestCollector_Plan_IgnoresInvalidPinFilesInV0(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
 	// Create a snapshot
@@ -1638,15 +1538,12 @@ func TestCollector_Plan_WithInvalidPinFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(invalidPinPath, []byte("{invalid json}"), 0644))
 
 	collector := gc.NewCollector(repoPath)
-	_, err := collector.Plan()
-	require.Error(t, err)
-
-	// Malformed pin state is treated conservatively so GC never plans after
-	// silently dropping possibly-protective metadata.
-	assert.Contains(t, err.Error(), "pin")
+	plan, err := collector.Plan()
+	require.NoError(t, err)
+	require.NotNil(t, plan)
 }
 
-func TestCollector_Plan_WithAlreadyProtectedPin(t *testing.T) {
+func TestCollector_Plan_PinFileDoesNotAffectAlreadyProtectedSnapshotInV0(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
 	// Create a snapshot
@@ -1666,8 +1563,7 @@ func TestCollector_Plan_WithAlreadyProtectedPin(t *testing.T) {
 	plan, err := collector.Plan()
 	require.NoError(t, err)
 
-	// The pin count should be 0 since the snapshot is already protected by worktree
-	assert.Equal(t, 0, plan.ProtectedByPin)
+	assert.Contains(t, plan.ProtectedSet, desc.SnapshotID)
 }
 
 func TestCollector_Plan_WithIntents(t *testing.T) {
@@ -1914,4 +1810,48 @@ func TestCollector_PlanWithPolicy_CombinedRetention(t *testing.T) {
 	assert.Contains(t, plan.ProtectedSet, tempDesc.SnapshotID)
 	assert.Empty(t, plan.ToDelete)
 	assert.Greater(t, plan.ProtectedByRetention, 0)
+}
+
+func readAuditRecordsForGCTest(t *testing.T, auditPath string) []model.AuditRecord {
+	t.Helper()
+
+	data, err := os.ReadFile(auditPath)
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	records := make([]model.AuditRecord, 0, len(lines))
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		var record model.AuditRecord
+		require.NoError(t, json.Unmarshal([]byte(line), &record))
+		records = append(records, record)
+	}
+	return records
+}
+
+func tamperFirstAuditRecordForGCTest(t *testing.T, auditPath string) {
+	t.Helper()
+
+	data, err := os.ReadFile(auditPath)
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	require.NotEmpty(t, lines)
+
+	var record map[string]any
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &record))
+	record["event_type"] = "restore"
+	line, err := json.Marshal(record)
+	require.NoError(t, err)
+	lines[0] = string(line)
+
+	require.NoError(t, os.WriteFile(auditPath, []byte(strings.Join(lines, "\n")+"\n"), 0644))
+}
+
+func gcPlanFiles(t *testing.T, repoPath string) []string {
+	t.Helper()
+
+	matches, err := filepath.Glob(filepath.Join(repoPath, ".jvs", "gc", "*.json"))
+	require.NoError(t, err)
+	return matches
 }

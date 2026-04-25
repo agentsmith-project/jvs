@@ -19,7 +19,7 @@ Thank you for your interest in contributing to JVS (Juicy Versioned Workspaces)!
 
 - **Go**: Version 1.25.6 or later
 - **Operating System**: Linux, macOS, or Windows (with WSL2)
-- **Storage**: JuiceFS mount (optional but recommended for O(1) snapshots)
+- **Storage**: JuiceFS mount (optional but recommended for O(1) checkpoints)
 
 ### Building
 
@@ -53,7 +53,7 @@ make verify
 
 JVS maintains a target of **80%+ test coverage** for production readiness.
 
-- Overall coverage: **77.6%** (as of v7.0)
+- Overall coverage: target **80%+** for the v0 line
 - Critical paths must have higher coverage
 - New features must include tests
 - Use `go test -cover ./...` to check coverage
@@ -91,7 +91,7 @@ Example:
 ```go
 // TestRegression_123_GarbageCollectionLeak tests GC cleanup.
 //
-// Bug: GC was not cleaning up orphaned snapshots when parent was deleted
+// Bug: GC was not cleaning up orphaned checkpoints when parent was deleted
 // Fixed: 2024-02-20, PR #456
 // Issue: #123
 func TestRegression_123_GarbageCollectionLeak(t *testing.T) {
@@ -120,7 +120,7 @@ JVS uses stable error classes for user-facing errors:
 import "github.com/jvs-project/jvs/pkg/errclass"
 
 // Use predefined error classes
-return errclass.ErrNameInvalid.WithMessage("worktree name cannot be empty")
+return errclass.ErrNameInvalid.WithMessage("workspace name cannot be empty")
 
 // For internal errors, wrap with context
 return fmt.Errorf("failed to read descriptor: %w", err)
@@ -131,8 +131,8 @@ return fmt.Errorf("failed to read descriptor: %w", err)
 - `ErrPathEscape` - Path traversal attempt
 - `ErrDescriptorCorrupt` - Descriptor checksum failed
 - `ErrPayloadHashMismatch` - Payload hash verification failed
-- `ErrLineageBroken` - Snapshot lineage inconsistency
-- `ErrPartialSnapshot` - Incomplete snapshot detected
+- `ErrLineageBroken` - Checkpoint lineage inconsistency
+- `ErrPartialSnapshot` - Incomplete checkpoint detected
 - `ErrGCPlanMismatch` - GC plan ID mismatch
 - `ErrFormatUnsupported` - Format version not supported
 - `ErrAuditChainBroken` - Audit hash chain validation failed
@@ -167,9 +167,9 @@ git commit -m "feat: add new feature" --signoff
 The sign-off line will look like:
 
 ```
-feat(snapshot): add --tag flag for snapshot tagging
+feat(checkpoint): add --tag flag for checkpoint tagging
 
-Users can now attach tags during snapshot creation.
+Users can now attach tags during checkpoint creation.
 
 Signed-off-by: Your Name <your.email@example.com>
 ```
@@ -214,25 +214,25 @@ JVS follows a structured commit message format:
 ### Examples
 
 ```
-feat(snapshot): add --tag flag for snapshot tagging
+feat(checkpoint): add --tag flag for checkpoint tagging
 
-Users can now attach tags during snapshot creation:
-  jvs snapshot "initial setup" --tag v1.0 --tag stable
+Users can now attach tags during checkpoint creation:
+  jvs checkpoint "initial setup" --tag v1.0 --tag stable
 
-Tags are stored in the snapshot descriptor and can be used
-for filtering in jvs history --tag <tag>.
+Tags are stored in the checkpoint descriptor and appear in
+`jvs checkpoint list` output.
 
 Fixes #123
 ```
 
 ```
-fix(restore): prevent snapshot creation in detached state
+fix(restore): prevent checkpoint creation from historical state
 
-Previously, users could create snapshots while in detached state,
-leading to unclear lineage. Now snapshot command returns an
-error when worktree is detached.
+Previously, users could create checkpoints after restoring an older
+checkpoint, leading to unclear lineage. Now `jvs checkpoint` returns an
+error when the workspace is not at its latest checkpoint.
 
-Users must run `jvs restore HEAD` or `jvs worktree fork` first.
+Users must run `jvs restore latest` or `jvs fork <name>` first.
 
 Closes #145
 ```
@@ -293,14 +293,14 @@ jvs/
 │   ├── audit/         # Audit logging
 │   ├── cli/           # CLI command handlers
 │   ├── doctor/        # Repository health checks
-│   ├── engine/        # Snapshot engine abstraction
+│   ├── engine/        # Checkpoint engine abstraction
 │   ├── gc/            # Garbage collection
 │   ├── integrity/     # Checksum and hash verification
 │   ├── repo/          # Repository management
 │   ├── restore/       # Restore operations
-│   ├── snapshot/      # Snapshot creation
+│   ├── snapshot/      # Checkpoint creation
 │   ├── verify/        # Verification commands
-│   └── worktree/      # Worktree management
+│   └── worktree/      # Workspace management
 ├── pkg/               # Public libraries
 │   ├── config/        # Configuration
 │   ├── errclass/      # Stable error classes
@@ -329,9 +329,9 @@ Before modifying behavior, review the relevant spec:
 | `01_REPO_LAYOUT_SPEC.md` | On-disk structure |
 | `02_CLI_SPEC.md` | Command contract and error classes |
 | `03_WORKTREE_SPEC.md` | Worktree lifecycle |
-| `04_SNAPSHOT_SCOPE_AND_LINEAGE_SPEC.md` | Snapshot identity |
+| `04_SNAPSHOT_SCOPE_AND_LINEAGE_SPEC.md` | Checkpoint identity |
 | `05_SNAPSHOT_ENGINE_SPEC.md` | Engine selection (juicefs-clone/reflink/copy) |
-| `06_RESTORE_SPEC.md` | Restore and detached state |
+| `06_RESTORE_SPEC.md` | Restore semantics |
 | `11_CONFORMANCE_TEST_PLAN.md` | Mandatory test requirements |
 
 ## Questions?

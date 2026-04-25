@@ -63,6 +63,7 @@ func init() {
 
 // Execute runs the root command.
 func Execute() {
+	primeJSONOutputFromArgs(os.Args[1:])
 	cmd, err := rootCmd.ExecuteC()
 	if err != nil {
 		reportCommandErrorForCommand(cmd, err)
@@ -418,7 +419,7 @@ func isASCIIUpper(value byte) bool {
 }
 
 func reportCommandErrorForCommand(cmd *cobra.Command, err error) {
-	recordValidationCommand(cmd)
+	recordValidationCommand(cmd, err)
 	cliErr := commandError(err)
 	if jsonOutput {
 		_ = outputJSONError(cliErr)
@@ -430,11 +431,20 @@ func reportCommandErrorForCommand(cmd *cobra.Command, err error) {
 	printCLIError(cliErr)
 }
 
-func recordValidationCommand(cmd *cobra.Command) {
+func recordValidationCommand(cmd *cobra.Command, err error) {
 	if activeCommandName != "" || cmd == nil {
 		return
 	}
-	beginCLICommand(cmd)
+	if commandName(cmd) != "" {
+		beginCLICommand(cmd)
+		return
+	}
+	if name := unknownCommandName(err); name != "" {
+		activeCommandName = name
+		resolvedRepoRoot = ""
+		resolvedWorkspace = ""
+		jsonErrorEmitted = false
+	}
 }
 
 func commandError(err error) error {
@@ -462,6 +472,45 @@ func printCommandErrorSpecificMessage(err error) bool {
 
 func isGenericNotRepoMessage(message string) bool {
 	return message == "" || message == "not a JVS repository (or any parent)"
+}
+
+func primeJSONOutputFromArgs(args []string) {
+	for _, arg := range args {
+		if arg == "--" {
+			return
+		}
+		switch {
+		case arg == "--json":
+			jsonOutput = true
+		case strings.HasPrefix(arg, "--json="):
+			value := strings.TrimPrefix(arg, "--json=")
+			jsonOutput = value == "1" || strings.EqualFold(value, "true")
+		}
+	}
+}
+
+func unknownCommandName(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	const prefix = "unknown command "
+	idx := strings.Index(msg, prefix)
+	if idx < 0 {
+		return ""
+	}
+	rest := msg[idx+len(prefix):]
+	if strings.HasPrefix(rest, "\"") {
+		rest = rest[1:]
+		if end := strings.Index(rest, "\""); end >= 0 {
+			return rest[:end]
+		}
+	}
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
 }
 
 func cliPersistentPreRun(cmd *cobra.Command, args []string) {
