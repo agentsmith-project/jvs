@@ -89,6 +89,13 @@ Required `data` semantics:
 - workspace count
 - checkpoint count
 
+## Utility Commands
+
+### `jvs completion <bash|zsh|fish|powershell>`
+
+Generate a shell completion script for the requested shell. This command does
+not require a repo or workspace and does not define JSON output.
+
 ## Workspace Commands
 
 ### `jvs status [--json]`
@@ -212,7 +219,7 @@ Required `data` fields:
 - `plan_id`
 - `protected_by_pin`
 - `protected_by_lineage`
-- `to_delete`
+- `to_delete`: checkpoint IDs that would be deleted by `gc run`
 - `deletable_bytes_estimate`
 
 ### `jvs gc run --plan-id <id>`

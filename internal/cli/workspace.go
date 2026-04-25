@@ -99,6 +99,9 @@ var workspaceRenameCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if err := validatePublicWorkspaceName(args[1]); err != nil {
+			return err
+		}
 		if err := worktree.NewManager(r.Root).Rename(args[0], args[1]); err != nil {
 			return err
 		}
@@ -246,6 +249,9 @@ func parseForkArgs(repoRoot, workspaceName string, args []string) (targetRef str
 		if len(args) != 1 {
 			return "", "", false, fmt.Errorf("fork --from requires exactly one workspace name")
 		}
+		if err := validatePublicWorkspaceName(args[0]); err != nil {
+			return "", "", false, err
+		}
 		return forkFromRef, args[0], false, nil
 	}
 
@@ -253,6 +259,9 @@ func parseForkArgs(repoRoot, workspaceName string, args []string) (targetRef str
 	case 0:
 		return "current", "", true, nil
 	case 1:
+		if err := validatePublicWorkspaceName(args[0]); err != nil {
+			return "", "", false, err
+		}
 		if _, err := resolveCheckpointRef(repoRoot, workspaceName, args[0]); err == nil {
 			return "", "", false, fmt.Errorf("ambiguous fork argument %q: provide a workspace name, or use 'jvs fork %s <name>'", args[0], args[0])
 		} else if !checkpointRefNotFound(err) {
@@ -260,6 +269,9 @@ func parseForkArgs(repoRoot, workspaceName string, args []string) (targetRef str
 		}
 		return "current", args[0], true, nil
 	case 2:
+		if err := validatePublicWorkspaceName(args[1]); err != nil {
+			return "", "", false, err
+		}
 		return args[0], args[1], false, nil
 	default:
 		return "", "", false, fmt.Errorf("too many arguments")

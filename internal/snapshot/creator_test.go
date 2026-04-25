@@ -101,6 +101,33 @@ func TestCreator_ReadyProtocol(t *testing.T) {
 	assert.Equal(t, desc.SnapshotID, marker.SnapshotID)
 }
 
+func TestCreator_CreateRejectsReservedWorkspaceRootPayloadNames(t *testing.T) {
+	for _, name := range []string{".READY", ".READY.gz"} {
+		t.Run(name, func(t *testing.T) {
+			repoPath := setupTestRepo(t)
+			mainPath := filepath.Join(repoPath, "main")
+			reservedPath := filepath.Join(mainPath, name)
+			require.NoError(t, os.WriteFile(reservedPath, []byte("user data"), 0644))
+
+			creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+			desc, err := creator.Create("main", "reserved root path", nil)
+			require.Error(t, err)
+			assert.Nil(t, desc)
+			assert.Contains(t, err.Error(), "reserved")
+			assert.Contains(t, err.Error(), name)
+
+			content, readErr := os.ReadFile(reservedPath)
+			require.NoError(t, readErr)
+			assert.Equal(t, "user data", string(content))
+
+			cfg, cfgErr := repo.LoadWorktreeConfig(repoPath, "main")
+			require.NoError(t, cfgErr)
+			assert.Empty(t, cfg.HeadSnapshotID)
+			assert.Empty(t, cfg.LatestSnapshotID)
+		})
+	}
+}
+
 func TestCreator_UpdatesHead(t *testing.T) {
 	repoPath := setupTestRepo(t)
 

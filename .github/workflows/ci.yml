@@ -6,23 +6,28 @@ on:
     tags: ['v*']
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v* tag to release
+        required: true
+        type: string
 
 jobs:
   build:
     name: Build and Test
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ['1.25']
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', github.event.inputs.tag) || github.ref }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version-file: go.mod
 
       - name: Download dependencies
         run: go mod download
@@ -32,6 +37,9 @@ jobs:
 
       - name: Run unit tests
         run: make test
+
+      - name: Run CI workflow contract
+        run: make ci-contract
 
       - name: Run conformance tests
         run: make conformance
@@ -43,17 +51,21 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', github.event.inputs.tag) || github.ref }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version-file: go.mod
 
       - name: Install golangci-lint
-        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+        run: |
+          go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: golangci-lint
-        run: golangci-lint run --timeout=5m
+        run: make lint
 
   security:
     name: Security Scan
@@ -62,11 +74,13 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', github.event.inputs.tag) || github.ref }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version-file: go.mod
 
       - name: Install gosec
         run: go install github.com/securego/gosec/v2/cmd/gosec@latest
@@ -120,11 +134,54 @@ jobs:
           fi
           echo "✓ All commits have proper DCO sign-offs"
 
+  release-gate:
+    name: Release Gate
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Validate manual release tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_SERVER_URL: ${{ github.server_url }}
+          RELEASE_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          case "$RELEASE_TAG" in
+            v*) ;;
+            *) echo "workflow_dispatch release tag must start with v" && exit 1 ;;
+          esac
+          git check-ref-format "refs/tags/$RELEASE_TAG"
+          git -c "http.${RELEASE_SERVER_URL}/.extraheader=AUTHORIZATION: bearer ${GITHUB_TOKEN}" \
+            ls-remote --exit-code --refs "${RELEASE_SERVER_URL}/${RELEASE_REPOSITORY}.git" "refs/tags/$RELEASE_TAG" >/dev/null
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', github.event.inputs.tag) || github.ref }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Install golangci-lint
+        run: |
+          go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Run release gate
+        run: make release-gate
+
   release:
     name: Release
-    needs: [build, lint, security]
+    needs: [build, lint, security, release-gate]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     permissions:
       contents: write
       id-token: write
@@ -132,11 +189,13 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', github.event.inputs.tag) || github.ref }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version-file: go.mod
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
@@ -164,7 +223,7 @@ jobs:
           echo "All binaries are signed using Sigstore/cosign. To verify:" >> release-notes.md
           echo "\`\`\`bash" >> release-notes.md
           echo "cosign verify-blob jvs-linux-amd64 \\ " >> release-notes.md
-          echo "  --certificate-identity=https://github.com/jvs-project/jvs/.github/workflows/ci.yml@refs/tags/${{ github.ref_name }} \\ " >> release-notes.md
+          echo "  --certificate-identity=https://github.com/jvs-project/jvs/.github/workflows/ci.yml@${GITHUB_REF} \\ " >> release-notes.md
           echo "  --certificate-oidc-issuer=https://token.actions.githubusercontent.com" >> release-notes.md
           echo "\`\`\`" >> release-notes.md
 
@@ -189,5 +248,6 @@ jobs:
         with:
           files: bin/*
           body_path: release-notes.md
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
           draft: false
           prerelease: false

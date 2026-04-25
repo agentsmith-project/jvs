@@ -1,4 +1,4 @@
-.PHONY: build test library lint conformance regression contract-check verify security sec fuzz test-race test-cover test-all integration release-gate clean
+.PHONY: build test library lint conformance regression contract-check ci-contract verify security sec fuzz test-race test-cover test-all integration release-gate clean
 
 build:
 	go build -o bin/jvs ./cmd/jvs
@@ -18,6 +18,9 @@ regression:
 contract-check: build
 	go test -count=1 ./internal/repo ./internal/snapshot ./internal/restore ./internal/worktree ./internal/gc ./internal/doctor ./internal/verify
 	go test -tags conformance -count=1 -run 'TestContract_' -v ./test/conformance/...
+
+ci-contract:
+	go test -count=1 ./test/ci/...
 
 lint:
 	golangci-lint run ./...
@@ -53,7 +56,7 @@ test-all: test conformance regression fuzz
 
 integration: build conformance
 
-release-gate: test-race test-cover lint build conformance library regression fuzz
+release-gate: ci-contract test-race test-cover lint build conformance library regression fuzz
 	@echo "RELEASE GATE PASSED"
 
 clean:

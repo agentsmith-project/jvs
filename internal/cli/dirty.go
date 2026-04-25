@@ -7,6 +7,7 @@ import (
 
 	"github.com/jvs-project/jvs/internal/integrity"
 	"github.com/jvs-project/jvs/internal/snapshot"
+	"github.com/jvs-project/jvs/internal/snapshotpayload"
 	"github.com/jvs-project/jvs/internal/worktree"
 	"github.com/jvs-project/jvs/pkg/model"
 )
@@ -20,6 +21,9 @@ func workspaceDirty(repoRoot, workspaceName string) (bool, error) {
 	payloadPath, err := mgr.Path(workspaceName)
 	if err != nil {
 		return false, fmt.Errorf("workspace path: %w", err)
+	}
+	if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(payloadPath); err != nil {
+		return false, err
 	}
 
 	if cfg.HeadSnapshotID == "" {

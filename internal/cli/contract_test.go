@@ -119,6 +119,71 @@ func TestCLITargetingWorkspaceFlag_HistoryFromRepoRoot(t *testing.T) {
 	assert.JSONEq(t, `[]`, string(env.Data))
 }
 
+func TestCLITargetingRepoFlag_StatusInfersWorkspaceFromRealCWD(t *testing.T) {
+	dir := t.TempDir()
+	originalWd, _ := os.Getwd()
+	defer os.Chdir(originalWd)
+
+	require.NoError(t, os.Chdir(dir))
+	cmd := createTestRootCmd()
+	_, err := executeCommand(cmd, "init", "repoA")
+	require.NoError(t, err)
+
+	repoRoot := filepath.Join(dir, "repoA")
+	require.NoError(t, os.Chdir(filepath.Join(repoRoot, "main")))
+
+	cmd = createTestRootCmd()
+	stdout, err := executeCommand(cmd, "--json", "--repo", repoRoot, "status")
+	require.NoError(t, err, stdout)
+
+	env := decodeContractEnvelope(t, stdout)
+	assert.True(t, env.OK)
+	assert.Equal(t, "status", env.Command)
+	require.NotNil(t, env.RepoRoot)
+	assert.Equal(t, repoRoot, *env.RepoRoot)
+	require.NotNil(t, env.Workspace)
+	assert.Equal(t, "main", *env.Workspace)
+
+	var data map[string]any
+	require.NoError(t, json.Unmarshal(env.Data, &data))
+	assert.Equal(t, "main", data["workspace"])
+	assert.Equal(t, repoRoot, data["repo"])
+}
+
+func TestCLITargetingRepoFlag_StatusRejectsWorkspaceFromDifferentRepo(t *testing.T) {
+	dir := t.TempDir()
+	originalWd, _ := os.Getwd()
+	defer os.Chdir(originalWd)
+
+	require.NoError(t, os.Chdir(dir))
+	cmd := createTestRootCmd()
+	_, err := executeCommand(cmd, "init", "repoA")
+	require.NoError(t, err)
+	cmd = createTestRootCmd()
+	_, err = executeCommand(cmd, "init", "repoB")
+	require.NoError(t, err)
+
+	repoA := filepath.Join(dir, "repoA")
+	repoBMain := filepath.Join(dir, "repoB", "main")
+	stdout, stderr, exitCode := runContractSubprocess(t, repoBMain, "--json", "--repo", repoA, "status")
+
+	require.Equal(t, 1, exitCode)
+	assert.Empty(t, strings.TrimSpace(stderr))
+
+	env := decodeContractEnvelope(t, stdout)
+	assert.False(t, env.OK)
+	assert.Equal(t, "status", env.Command)
+	require.NotNil(t, env.RepoRoot)
+	assert.Equal(t, repoA, *env.RepoRoot)
+	assert.Nil(t, env.Workspace)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, "E_TARGET_MISMATCH", env.Error.Code)
+	assert.Contains(t, env.Error.Message, "targeting mismatch")
+	assert.Contains(t, env.Error.Message, repoA)
+	assert.Contains(t, env.Error.Message, filepath.Join(dir, "repoB"))
+	assert.JSONEq(t, `null`, string(env.Data))
+}
+
 func TestCLIJSONErrorEnvelope_NotRepo(t *testing.T) {
 	stdout, stderr, exitCode := runContractSubprocess(t, t.TempDir(), "--json", "info")
 

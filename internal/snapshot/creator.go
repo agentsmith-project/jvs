@@ -112,6 +112,9 @@ func (c *Creator) createPartial(worktreeName, note string, tags []string, paths 
 	if err != nil {
 		return nil, fmt.Errorf("worktree payload path: %w", err)
 	}
+	if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(payloadPath); err != nil {
+		return nil, err
+	}
 
 	// Step 3: Create intent record (for crash recovery)
 	intentPath, err := c.writeCreateIntent(snapshotID, worktreeName)

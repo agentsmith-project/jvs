@@ -58,6 +58,64 @@ func TestRestore_Inplace(t *testing.T) {
 	requireWorkspaceCurrentLatest(t, repoPath, firstSnapshot, latestSnapshot, false)
 }
 
+func TestRestore_InplaceKeepsCallerCwdUsable(t *testing.T) {
+	repoPath, _ := initTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+	dataPath := filepath.Join(mainPath, "data.txt")
+
+	os.WriteFile(dataPath, []byte("original"), 0644)
+	runJVSInRepo(t, repoPath, "checkpoint", "v1")
+	os.WriteFile(dataPath, []byte("modified"), 0644)
+	runJVSInRepo(t, repoPath, "checkpoint", "v2")
+
+	stdout, _, _ := runJVSInRepo(t, repoPath, "--json", "checkpoint", "list")
+	snapshots := extractAllSnapshotIDs(stdout)
+	if len(snapshots) < 2 {
+		t.Fatal("expected at least 2 snapshots")
+	}
+	firstSnapshot := snapshots[len(snapshots)-1]
+
+	beforeRoot, err := os.Stat(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(mainPath); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(oldwd)
+
+	_, stderr, code := runJVS(t, mainPath, "restore", firstSnapshot)
+	if code != 0 {
+		t.Fatalf("restore failed: %s", stderr)
+	}
+
+	content, err := os.ReadFile("data.txt")
+	if err != nil {
+		t.Fatalf("read restored file from caller cwd: %v", err)
+	}
+	if string(content) != "original" {
+		t.Errorf("expected 'original', got '%s'", string(content))
+	}
+	cwdRoot, err := os.Stat(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterRoot, err := os.Stat(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(beforeRoot, afterRoot) {
+		t.Fatal("restore replaced the workspace root directory")
+	}
+	if !os.SameFile(cwdRoot, afterRoot) {
+		t.Fatal("caller cwd no longer points at the restored workspace root")
+	}
+}
+
 // Test 7: Restore latest returns to the newest checkpoint.
 func TestRestore_Latest(t *testing.T) {
 	repoPath, _ := initTestRepo(t)

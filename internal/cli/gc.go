@@ -34,7 +34,7 @@ var gcPlanCmd = &cobra.Command{
 		}
 
 		if jsonOutput {
-			return outputJSON(plan)
+			return outputJSON(publicGC(plan))
 		}
 
 		fmt.Printf("GC Plan: %s\n", plan.PlanID)

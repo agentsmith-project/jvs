@@ -6,6 +6,7 @@ import (
 
 	"github.com/jvs-project/jvs/internal/snapshot"
 	"github.com/jvs-project/jvs/internal/worktree"
+	"github.com/jvs-project/jvs/pkg/errclass"
 	"github.com/jvs-project/jvs/pkg/model"
 )
 
@@ -23,6 +24,13 @@ func isReservedCheckpointRef(ref string) bool {
 func validateCheckpointRefName(name string) error {
 	if isReservedCheckpointRef(name) {
 		return fmt.Errorf("%q is a reserved ref", name)
+	}
+	return nil
+}
+
+func validatePublicWorkspaceName(name string) error {
+	if isReservedCheckpointRef(name) {
+		return errclass.ErrNameInvalid.WithMessagef("%q is a reserved ref and cannot be used as a workspace name", name)
 	}
 	return nil
 }

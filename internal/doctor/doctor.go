@@ -84,6 +84,7 @@ func NewDoctor(repoRoot string) *Doctor {
 // ListRepairActions returns all available repair actions.
 func (d *Doctor) ListRepairActions() []RepairAction {
 	return []RepairAction{
+		{ID: "clean_locks", Description: "Remove safely stale repository mutation locks", AutoSafe: true},
 		{ID: "clean_tmp", Description: "Remove orphan .tmp files and directories", AutoSafe: true},
 		{ID: "clean_intents", Description: "Remove completed/abandoned intent files", AutoSafe: true},
 		{ID: "rebuild_index", Description: "Rebuild index from snapshot state", AutoSafe: false},
@@ -95,9 +96,23 @@ func (d *Doctor) ListRepairActions() []RepairAction {
 // Repair executes the specified repair actions.
 func (d *Doctor) Repair(actions []string) ([]RepairResult, error) {
 	var results []RepairResult
+	var lockedActions []string
+	for _, action := range actions {
+		if action == "clean_locks" {
+			results = append(results, d.repairCleanLocks())
+			continue
+		}
+		lockedActions = append(lockedActions, action)
+	}
+	if len(lockedActions) == 0 {
+		return results, nil
+	}
+
 	err := repo.WithMutationLock(d.repoRoot, "doctor repair", func() error {
 		var err error
-		results, err = d.repair(actions)
+		var lockedResults []RepairResult
+		lockedResults, err = d.repair(lockedActions)
+		results = append(results, lockedResults...)
 		return err
 	})
 	return results, err
@@ -107,6 +122,8 @@ func (d *Doctor) repair(actions []string) ([]RepairResult, error) {
 	results := []RepairResult{}
 	for _, action := range actions {
 		switch action {
+		case "clean_locks":
+			results = append(results, d.repairCleanLocks())
 		case "clean_tmp":
 			results = append(results, d.repairCleanTmp())
 		case "clean_intents":
@@ -122,6 +139,33 @@ func (d *Doctor) repair(actions []string) ([]RepairResult, error) {
 		}
 	}
 	return results, nil
+}
+
+func (d *Doctor) repairCleanLocks() RepairResult {
+	inspection, removed, err := repo.RemoveStaleMutationLock(d.repoRoot)
+	if err != nil {
+		return RepairResult{Action: "clean_locks", Success: false, Message: err.Error()}
+	}
+	if removed {
+		return RepairResult{
+			Action:  "clean_locks",
+			Success: true,
+			Message: "cleaned 1 stale repository lock",
+			Cleaned: 1,
+		}
+	}
+	if inspection.Status == repo.MutationLockInvalid {
+		return RepairResult{
+			Action:  "clean_locks",
+			Success: false,
+			Message: fmt.Sprintf("retained repository lock: %s", inspection.Reason),
+		}
+	}
+	return RepairResult{
+		Action:  "clean_locks",
+		Success: true,
+		Message: "cleaned 0 stale repository locks",
+	}
 }
 
 func (d *Doctor) repairCleanTmp() RepairResult {
@@ -558,31 +602,65 @@ func (d *Doctor) Check(strict bool) (*Result, error) {
 	// 1. Check format version
 	d.checkFormatVersion(result)
 
-	// 2. Check worktrees
+	// 2. Check repository mutation lock state
+	d.checkMutationLock(result)
+
+	// 3. Check worktrees
 	d.checkWorktrees(result)
 
-	// 3. Check snapshot completion markers
+	// 4. Check snapshot completion markers
 	d.checkReadyMarkers(result, strict)
 
-	// 4. Check descriptor parent links and worktree head/latest reachability
+	// 5. Check descriptor parent links and worktree head/latest reachability
 	d.checkLineage(result)
 
-	// 5. Check for orphan intents
+	// 6. Check for orphan intents
 	d.checkOrphanIntents(result)
 
-	// 6. Check snapshot integrity (if strict)
+	// 7. Check snapshot integrity (if strict)
 	if strict {
 		d.checkSnapshotIntegrity(result)
-		// 7. Check audit chain (if strict)
+		// 8. Check audit chain (if strict)
 		d.checkAuditChain(result)
 	}
 
-	// 8. Check for orphan tmp files
+	// 9. Check for orphan tmp files
 	d.checkOrphanTmp(result)
 
 	result.updateHealthFromFindings()
 
 	return result, nil
+}
+
+func (d *Doctor) checkMutationLock(result *Result) {
+	inspection, err := repo.InspectMutationLock(d.repoRoot)
+	if err != nil {
+		result.Findings = append(result.Findings, Finding{
+			Category:    "lock",
+			Description: fmt.Sprintf("cannot inspect repository mutation lock: %v", err),
+			Severity:    "error",
+			ErrorCode:   "E_REPO_LOCK_INSPECT_FAILED",
+		})
+		return
+	}
+	switch inspection.Status {
+	case repo.MutationLockStale:
+		result.Findings = append(result.Findings, Finding{
+			Category:    "lock",
+			Description: fmt.Sprintf("stale repository mutation lock: %s", inspection.Reason),
+			Severity:    "error",
+			ErrorCode:   "E_REPO_LOCK_STALE",
+			Path:        inspection.Path,
+		})
+	case repo.MutationLockInvalid:
+		result.Findings = append(result.Findings, Finding{
+			Category:    "lock",
+			Description: fmt.Sprintf("repository mutation lock owner invalid: %s", inspection.Reason),
+			Severity:    "error",
+			ErrorCode:   "E_REPO_LOCK_OWNER_INVALID",
+			Path:        inspection.OwnerPath,
+		})
+	}
 }
 
 func (d *Doctor) checkFormatVersion(result *Result) {

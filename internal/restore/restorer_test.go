@@ -95,6 +95,27 @@ func TestRestorer_Restore(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(mainPath, ".READY.gz"))
 }
 
+func TestRestorerRestoreRejectsReservedWorkspaceRootPayloadNames(t *testing.T) {
+	for _, name := range []string{".READY", ".READY.gz"} {
+		t.Run(name, func(t *testing.T) {
+			repoPath := setupTestRepo(t)
+			desc := createSnapshot(t, repoPath)
+			mainPath := filepath.Join(repoPath, "main")
+			reservedPath := filepath.Join(mainPath, name)
+			require.NoError(t, os.WriteFile(reservedPath, []byte("user data"), 0644))
+
+			err := restore.NewRestorer(repoPath, model.EngineCopy).Restore("main", desc.SnapshotID)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "reserved")
+			assert.Contains(t, err.Error(), name)
+
+			content, readErr := os.ReadFile(reservedPath)
+			require.NoError(t, readErr)
+			assert.Equal(t, "user data", string(content))
+		})
+	}
+}
+
 func TestRestorerRestoreReturnsRepoBusyWhenMutationLockHeld(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	desc := createSnapshot(t, repoPath)
@@ -513,11 +534,14 @@ func TestRestorer_Restore_KeepsCurrentWorkingDirectoryUsable(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	mainPath := filepath.Join(repoPath, "main")
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte("snapshot data"), 0644))
+	beforeRoot, err := os.Stat(mainPath)
+	require.NoError(t, err)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	desc, err := creator.Create("main", "cwd restore", nil)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte("modified"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "current-only.txt"), []byte("remove me"), 0644))
 
 	oldwd, err := os.Getwd()
 	require.NoError(t, err)
@@ -531,6 +555,53 @@ func TestRestorer_Restore_KeepsCurrentWorkingDirectoryUsable(t *testing.T) {
 	content, err := os.ReadFile("data.txt")
 	require.NoError(t, err)
 	assert.Equal(t, "snapshot data", string(content))
+	assert.NoFileExists(t, "current-only.txt")
+
+	cwdRoot, err := os.Stat(".")
+	require.NoError(t, err)
+	afterRoot, err := os.Stat(mainPath)
+	require.NoError(t, err)
+	assert.True(t, os.SameFile(beforeRoot, afterRoot), "restore must keep the workspace root directory in place")
+	assert.True(t, os.SameFile(cwdRoot, afterRoot), "caller cwd must still point at the restored workspace root")
+}
+
+func TestRestorer_Restore_CompressedSnapshotKeepsCurrentWorkingDirectoryUsable(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte("compressed snapshot data"), 0644))
+	beforeRoot, err := os.Stat(mainPath)
+	require.NoError(t, err)
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	creator.SetCompression(6)
+	desc, err := creator.Create("main", "compressed cwd restore", nil)
+	require.NoError(t, err)
+	require.NotNil(t, desc.Compression)
+
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte("modified"), 0644))
+
+	oldwd, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(mainPath))
+	defer os.Chdir(oldwd)
+
+	restorer := restore.NewRestorer(repoPath, model.EngineCopy)
+	err = restorer.Restore("main", desc.SnapshotID)
+	require.NoError(t, err)
+
+	content, err := os.ReadFile("data.txt")
+	require.NoError(t, err)
+	assert.Equal(t, "compressed snapshot data", string(content))
+	assert.NoFileExists(t, "data.txt.gz")
+	assert.NoFileExists(t, ".READY")
+	assert.NoFileExists(t, ".READY.gz")
+
+	cwdRoot, err := os.Stat(".")
+	require.NoError(t, err)
+	afterRoot, err := os.Stat(mainPath)
+	require.NoError(t, err)
+	assert.True(t, os.SameFile(beforeRoot, afterRoot), "compressed restore must keep the workspace root directory in place")
+	assert.True(t, os.SameFile(cwdRoot, afterRoot), "caller cwd must still point at the restored workspace root")
 }
 
 func TestRestorer_Restore_PartialSnapshotOverlaysOnlyIncludedPaths(t *testing.T) {
@@ -556,6 +627,40 @@ func TestRestorer_Restore_PartialSnapshotOverlaysOnlyIncludedPaths(t *testing.T)
 	content, err = os.ReadFile(filepath.Join(mainPath, "unrelated.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, "modified unrelated", string(content))
+}
+
+func TestRestorer_Restore_PartialSnapshotReplacesOnlyDescriptorPaths(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+	require.NoError(t, os.MkdirAll(filepath.Join(mainPath, "tracked"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(mainPath, "untouched"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "tracked", "model.bin"), []byte("snapshot model"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "untouched", "notes.txt"), []byte("snapshot notes"), 0644))
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	desc, err := creator.CreatePartial("main", "tracked dir only", nil, []string{"tracked"})
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "tracked", "model.bin"), []byte("current model"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "tracked", "scratch.tmp"), []byte("inside included path"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "untouched", "notes.txt"), []byte("current notes"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "workspace-only.txt"), []byte("current only"), 0644))
+
+	restorer := restore.NewRestorer(repoPath, model.EngineCopy)
+	err = restorer.Restore("main", desc.SnapshotID)
+	require.NoError(t, err)
+
+	content, err := os.ReadFile(filepath.Join(mainPath, "tracked", "model.bin"))
+	require.NoError(t, err)
+	assert.Equal(t, "snapshot model", string(content))
+	assert.NoFileExists(t, filepath.Join(mainPath, "tracked", "scratch.tmp"))
+
+	content, err = os.ReadFile(filepath.Join(mainPath, "untouched", "notes.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "current notes", string(content))
+	content, err = os.ReadFile(filepath.Join(mainPath, "workspace-only.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "current only", string(content))
 }
 
 func TestRestorer_RestoreWithReflinkEngine(t *testing.T) {

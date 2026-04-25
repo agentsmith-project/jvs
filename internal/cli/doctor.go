@@ -48,7 +48,7 @@ Use --repair-runtime to execute safe automatic repairs.`,
 
 		// If --repair-runtime, execute safe repairs first
 		if doctorRepair {
-			results, err := doc.Repair([]string{"clean_tmp", "clean_intents"})
+			results, err := doc.Repair([]string{"clean_locks", "clean_tmp", "clean_intents"})
 			if err != nil {
 				fmtErr("repair: %v", err)
 				os.Exit(1)
@@ -67,7 +67,7 @@ Use --repair-runtime to execute safe automatic repairs.`,
 		}
 
 		if jsonOutput {
-			outputJSON(result)
+			outputJSON(publicDoctor(result))
 			if !result.Healthy {
 				os.Exit(1)
 			}

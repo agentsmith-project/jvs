@@ -87,6 +87,130 @@ func TestContract_GCRunJSONEnvelope(t *testing.T) {
 	}
 }
 
+func TestContract_GCPlanJSONUsesPublicSpecFields(t *testing.T) {
+	repoPath, cleanup := initTestRepo(t)
+	defer cleanup()
+
+	stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "gc", "plan")
+	if code != 0 {
+		t.Fatalf("gc plan failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	data := decodeContractSmokeDataMap(t, stdout)
+
+	for _, field := range []string{
+		"plan_id",
+		"protected_by_pin",
+		"protected_by_lineage",
+		"to_delete",
+		"deletable_bytes_estimate",
+	} {
+		if _, ok := data[field]; !ok {
+			t.Fatalf("gc plan JSON missing required field %q: %s", field, stdout)
+		}
+	}
+	if _, ok := data["to_delete"].([]any); !ok {
+		t.Fatalf("gc plan to_delete must be an array: %#v\n%s", data["to_delete"], stdout)
+	}
+	if _, ok := data["delete_checkpoints"]; ok {
+		t.Fatalf("gc plan JSON exposed non-spec field delete_checkpoints: %s", stdout)
+	}
+}
+
+func TestContract_TargetingRepoFlagStatusUsesRealCWDWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	if stdout, stderr, code := runJVS(t, dir, "init", "repoA"); code != 0 {
+		t.Fatalf("init repoA failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	if stdout, stderr, code := runJVS(t, dir, "init", "repoB"); code != 0 {
+		t.Fatalf("init repoB failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+
+	repoA := filepath.Join(dir, "repoA")
+	repoB := filepath.Join(dir, "repoB")
+	stdout, stderr, code := runJVS(t, filepath.Join(repoA, "main"), "--json", "--repo", repoA, "status")
+	if code != 0 {
+		t.Fatalf("status with matching --repo failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	env := decodeContractSmokeEnvelope(t, stdout)
+	if !env.OK || env.Workspace == nil || *env.Workspace != "main" {
+		t.Fatalf("status did not infer main workspace from real CWD: %s", stdout)
+	}
+
+	stdout, stderr, code = runJVS(t, filepath.Join(repoB, "main"), "--json", "--repo", repoA, "status")
+	if code == 0 {
+		t.Fatalf("status with mismatched --repo unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("targeting mismatch wrote stderr in JSON mode: %q", stderr)
+	}
+	env = decodeContractSmokeEnvelope(t, stdout)
+	if env.OK {
+		t.Fatalf("targeting mismatch returned ok envelope: %s", stdout)
+	}
+	errData, ok := env.Error.(map[string]any)
+	if !ok {
+		t.Fatalf("targeting mismatch error was not an object: %#v\n%s", env.Error, stdout)
+	}
+	if errData["code"] != "E_TARGET_MISMATCH" {
+		t.Fatalf("targeting mismatch used wrong code: %#v", errData)
+	}
+}
+
+func TestContract_DoctorAndGCJSONDoNotExposeInternalFields(t *testing.T) {
+	repoPath, cleanup := initTestRepo(t)
+	defer cleanup()
+
+	emptyPlanOut, stderr, code := runJVSInRepo(t, repoPath, "--json", "gc", "plan")
+	if code != 0 {
+		t.Fatalf("empty gc plan failed: stdout=%s stderr=%s", emptyPlanOut, stderr)
+	}
+	assertContractDataOmitsInternalFields(t, emptyPlanOut)
+
+	mainPath := filepath.Join(repoPath, "main")
+	if err := os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("main"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "main"); code != 0 {
+		t.Fatalf("main checkpoint failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	if stdout, stderr, code := runJVSInRepo(t, repoPath, "fork", "old-feature"); code != 0 {
+		t.Fatalf("fork old-feature failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	featurePath := filepath.Join(repoPath, "worktrees", "old-feature")
+	if err := os.WriteFile(filepath.Join(featurePath, "feature.txt"), []byte("feature"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if stdout, stderr, code := runJVSInWorktree(t, repoPath, "old-feature", "checkpoint", "feature"); code != 0 {
+		t.Fatalf("feature checkpoint failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	if stdout, stderr, code := runJVSInRepo(t, repoPath, "workspace", "remove", "old-feature", "--force"); code != 0 {
+		t.Fatalf("remove old-feature failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	makeDescriptorsOldForContract(t, repoPath)
+
+	nonEmptyPlanOut, stderr, code := runJVSInRepo(t, repoPath, "--json", "gc", "plan")
+	if code != 0 {
+		t.Fatalf("non-empty gc plan failed: stdout=%s stderr=%s", nonEmptyPlanOut, stderr)
+	}
+	assertContractDataOmitsInternalFields(t, nonEmptyPlanOut)
+	planData := decodeContractSmokeDataMap(t, nonEmptyPlanOut)
+	if planData["candidate_count"] == float64(0) {
+		t.Fatalf("expected non-empty gc plan, got: %s", nonEmptyPlanOut)
+	}
+
+	if err := os.RemoveAll(mainPath); err != nil {
+		t.Fatal(err)
+	}
+	doctorOut, stderr, code := runJVS(t, repoPath, "--json", "doctor")
+	if code == 0 {
+		t.Fatalf("unhealthy doctor unexpectedly succeeded: stdout=%s stderr=%s", doctorOut, stderr)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("doctor --json wrote stderr: %q", stderr)
+	}
+	assertContractDataOmitsInternalFields(t, doctorOut)
+}
+
 func TestContract_DirtyWorkspaceRemoveRejectedByDefault(t *testing.T) {
 	repoPath, cleanup := initTestRepo(t)
 	defer cleanup()
@@ -321,4 +445,52 @@ func decodeContractSmokeDataMap(t *testing.T, stdout string) map[string]any {
 		t.Fatalf("decode JSON data: %v\n%s", err, stdout)
 	}
 	return data
+}
+
+func assertContractDataOmitsInternalFields(t *testing.T, stdout string) {
+	t.Helper()
+	env := decodeContractSmokeEnvelope(t, stdout)
+	data := string(env.Data)
+	for _, forbidden := range []string{
+		"snapshot_id",
+		"worktree",
+		"head_snapshot",
+		"latest_snapshot",
+		"keep_min_snapshots",
+	} {
+		if strings.Contains(data, forbidden) {
+			t.Fatalf("public JSON leaked %q:\n%s", forbidden, stdout)
+		}
+	}
+}
+
+func makeDescriptorsOldForContract(t *testing.T, repoPath string) {
+	t.Helper()
+	descriptorsDir := filepath.Join(repoPath, ".jvs", "descriptors")
+	entries, err := os.ReadDir(descriptorsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(descriptorsDir, entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var desc map[string]any
+		if err := json.Unmarshal(data, &desc); err != nil {
+			t.Fatal(err)
+		}
+		desc["created_at"] = "2000-01-01T00:00:00Z"
+		data, err = json.MarshalIndent(desc, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
 }

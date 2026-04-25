@@ -204,7 +204,7 @@ func copyTree(src, dst string) error {
 }
 
 func removeControlMarkers(root string) error {
-	readyPath := filepath.Join(root, ".READY")
+	readyPath := filepath.Join(root, storageReadyMarkerName)
 	info, err := os.Lstat(readyPath)
 	if err != nil {
 		if os.IsNotExist(err) {

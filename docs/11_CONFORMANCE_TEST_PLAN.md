@@ -23,7 +23,7 @@ The `release` profile is mandatory before any pre-release or v0 tag.
   classes: `init`, `import`, `clone`, `capability`, `info`, `status`,
   `workspace list`, `workspace path`, `workspace rename`, `workspace remove`,
   `checkpoint`, `checkpoint list`, `diff`, `restore`, `fork`, `verify`,
-  `doctor`, `gc plan`, and `gc run`.
+  `doctor`, `gc plan`, `gc run`, and `completion`.
 - Commands that document `--json` accept it; commands that do not document a
   flag reject it consistently.
 - Global flags `--repo`, `--workspace`, `--json`, `--debug`, `--no-progress`,

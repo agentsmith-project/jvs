@@ -110,6 +110,24 @@ func TestPublicCLIStatusAndCheckpointCleanliness(t *testing.T) {
 	assert.NotEmpty(t, clean.Engine)
 }
 
+func TestPublicCLIStatusTreatsRootReadyAsDirtyOrReserved(t *testing.T) {
+	setupPublicCLIRepo(t, "reservedstatus")
+
+	require.NoError(t, os.WriteFile("file.txt", []byte("before checkpoint"), 0644))
+	createCheckpointForPublicCLI(t, "baseline")
+	require.NoError(t, os.WriteFile(".READY", []byte("user data"), 0644))
+
+	stdout, err := runPublicCLI(t, "--json", "status")
+	if err != nil {
+		assert.Contains(t, err.Error(), "reserved")
+		return
+	}
+
+	var status statusCommandOutput
+	decodePublicData(t, stdout, &status)
+	assert.True(t, status.Dirty, "root .READY must not be reported clean")
+}
+
 func TestPublicCLIDirtyRestoreRequiresExplicitChoice(t *testing.T) {
 	setupPublicCLIRepo(t, "dirtyrestore")
 
@@ -246,6 +264,35 @@ func TestPublicCLIWorkspaceForkAmbiguousOneArgRef(t *testing.T) {
 	assert.Contains(t, stdout, `"workspace": "release-workspace"`)
 }
 
+func TestPublicCLIReservedRefsCannotBeWorkspaceNames(t *testing.T) {
+	setupPublicCLIRepo(t, "reservedworkspaces")
+
+	require.NoError(t, os.WriteFile("file.txt", []byte("base"), 0644))
+	createCheckpointForPublicCLI(t, "base")
+	stdout, err := runPublicCLI(t, "--json", "fork", "feature")
+	require.NoError(t, err, stdout)
+
+	for _, reserved := range []string{"current", "latest", "dirty"} {
+		t.Run("rename_"+reserved, func(t *testing.T) {
+			stdout, err := runPublicCLI(t, "workspace", "rename", "feature", reserved)
+			require.Error(t, err)
+			assert.Empty(t, stdout)
+			assert.Contains(t, err.Error(), "reserved")
+		})
+
+		t.Run("fork_"+reserved, func(t *testing.T) {
+			stdout, err := runPublicCLI(t, "fork", reserved)
+			require.Error(t, err)
+			assert.Empty(t, stdout)
+			assert.Contains(t, err.Error(), "reserved")
+		})
+	}
+
+	stdout, err = runPublicCLI(t, "--json", "fork", "latest", "latest-feature")
+	require.NoError(t, err, stdout)
+	assert.Contains(t, stdout, `"workspace": "latest-feature"`)
+}
+
 func TestLegacyWorktreeRemoveRejectsDirtyAtLatestWorkspace(t *testing.T) {
 	repoPath, mainPath := setupPublicCLIRepo(t, "legacydirtyremove")
 
@@ -365,6 +412,19 @@ func TestPublicCLIGCRunJSONUsesEnvelope(t *testing.T) {
 	assert.JSONEq(t, `{"plan_id":"`+planID+`","status":"completed"}`, string(env.Data))
 }
 
+func TestPublicCLIGCPlanJSONUsesSpecDeletionField(t *testing.T) {
+	setupPublicCLIRepo(t, "gcplanjson")
+
+	stdout, err := runPublicCLI(t, "--json", "gc", "plan")
+	require.NoError(t, err, stdout)
+
+	var plan map[string]any
+	decodePublicData(t, stdout, &plan)
+	assert.Contains(t, plan, "to_delete")
+	assert.IsType(t, []any{}, plan["to_delete"])
+	assert.NotContains(t, plan, "delete_checkpoints")
+}
+
 func TestPublicCLIWorkspaceRemoveRejectsDirtyByDefault(t *testing.T) {
 	repoPath, _ := setupPublicCLIRepo(t, "dirtyremove")
 
@@ -419,6 +479,45 @@ func TestPublicCLIJSONUsesCheckpointWorkspaceTerms(t *testing.T) {
 			assert.NotContains(t, string(env.Data), "to_snapshot")
 		})
 	}
+}
+
+func TestPublicCLIDoctorAndGCJSONHideInternalContractFields(t *testing.T) {
+	repoPath, mainPath := setupPublicCLIRepo(t, "publicjsoncontract")
+
+	emptyPlanOut, err := runPublicCLI(t, "--json", "gc", "plan")
+	require.NoError(t, err, emptyPlanOut)
+	assertPublicJSONDataOmitsInternalContractFields(t, emptyPlanOut)
+
+	require.NoError(t, os.WriteFile("file.txt", []byte("main"), 0644))
+	createCheckpointForPublicCLI(t, "main")
+	stdout, err := runPublicCLI(t, "--json", "fork", "old-feature")
+	require.NoError(t, err, stdout)
+	featurePath := filepath.Join(repoPath, "worktrees", "old-feature")
+	require.NoError(t, os.WriteFile(filepath.Join(featurePath, "feature.txt"), []byte("feature"), 0644))
+	require.NoError(t, os.Chdir(featurePath))
+	createCheckpointForPublicCLI(t, "feature")
+	require.NoError(t, os.Chdir(mainPath))
+	stdout, err = runPublicCLI(t, "--json", "workspace", "remove", "old-feature", "--force")
+	require.NoError(t, err, stdout)
+	makeAllDescriptorsOldForPublicCLI(t, repoPath)
+
+	nonEmptyPlanOut, err := runPublicCLI(t, "--json", "gc", "plan")
+	require.NoError(t, err, nonEmptyPlanOut)
+	assertPublicJSONDataOmitsInternalContractFields(t, nonEmptyPlanOut)
+	var plan map[string]any
+	decodePublicData(t, nonEmptyPlanOut, &plan)
+	assert.NotZero(t, plan["candidate_count"])
+
+	require.NoError(t, os.RemoveAll(mainPath))
+	doctorOut, stderr, exitCode := runContractSubprocess(t, repoPath, "--json", "doctor")
+	require.Equal(t, 1, exitCode, "doctor unexpectedly succeeded: stdout=%s stderr=%s", doctorOut, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	assertPublicJSONDataOmitsInternalContractFields(t, doctorOut)
+	env := decodeContractEnvelope(t, doctorOut)
+	assert.True(t, env.OK)
+	var doctorData map[string]any
+	require.NoError(t, json.Unmarshal(env.Data, &doctorData), doctorOut)
+	assert.Equal(t, false, doctorData["healthy"])
 }
 
 func TestHiddenLegacyCommandHelpUsesPublicGuidance(t *testing.T) {
@@ -500,4 +599,42 @@ func assertNoLegacyStateGuidance(t *testing.T, output string) {
 	assert.NotContains(t, output, strings.Join([]string{"restore", "HEAD"}, " "))
 	assert.NotContains(t, output, "DET"+"ACHED")
 	assert.NotContains(t, output, "detached"+" state")
+}
+
+func assertPublicJSONDataOmitsInternalContractFields(t *testing.T, stdout string) {
+	t.Helper()
+
+	env := decodeContractEnvelope(t, stdout)
+	data := string(env.Data)
+	for _, forbidden := range []string{
+		"snapshot_id",
+		"worktree",
+		"head_snapshot",
+		"latest_snapshot",
+		"keep_min_snapshots",
+	} {
+		assert.NotContains(t, data, forbidden)
+	}
+}
+
+func makeAllDescriptorsOldForPublicCLI(t *testing.T, repoPath string) {
+	t.Helper()
+
+	descriptorsDir := filepath.Join(repoPath, ".jvs", "descriptors")
+	entries, err := os.ReadDir(descriptorsDir)
+	require.NoError(t, err)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(descriptorsDir, entry.Name())
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		var desc map[string]any
+		require.NoError(t, json.Unmarshal(data, &desc))
+		desc["created_at"] = "2000-01-01T00:00:00Z"
+		data, err = json.MarshalIndent(desc, "", "  ")
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(path, data, 0644))
+	}
 }

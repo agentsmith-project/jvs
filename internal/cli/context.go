@@ -65,19 +65,20 @@ func discoverOptionalWorktree() (*repo.Repo, string, error) {
 
 // resolveRepoScoped resolves commands that only require a repository.
 func resolveRepoScoped() (*cliDiscoveryContext, error) {
-	start, err := repoDiscoveryStart()
+	repoStart, workspaceStart, err := discoveryStarts()
 	if err != nil {
 		return nil, err
 	}
 
-	r, err := repo.Discover(start)
+	r, err := repo.Discover(repoStart)
 	if err != nil {
 		return nil, errclass.ErrNotRepo.
 			WithMessage("not a JVS repository (or any parent)").
 			WithHint(suggestInit())
 	}
+	recordResolvedTarget(r.Root, "")
 
-	workspace, err := resolveOptionalWorkspace(r, start)
+	workspace, err := resolveOptionalWorkspace(r, workspaceStart)
 	if err != nil {
 		return nil, err
 	}
@@ -106,29 +107,32 @@ func resolveWorkspaceScoped() (*cliDiscoveryContext, error) {
 	return ctx, nil
 }
 
-func repoDiscoveryStart() (string, error) {
+func discoveryStarts() (repoStart string, workspaceStart string, err error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", "", errclass.ErrUsage.WithMessagef("cannot get current directory: %v", err)
+	}
+
+	workspaceStart = cwd
+	repoStart = cwd
 	if targetRepoPath != "" {
 		path, err := filepath.Abs(targetRepoPath)
 		if err != nil {
-			return "", errclass.ErrUsage.WithMessagef("resolve --repo: %v", err)
+			return "", "", errclass.ErrUsage.WithMessagef("resolve --repo: %v", err)
 		}
 		if info, err := os.Stat(path); err != nil {
-			return "", errclass.ErrNotRepo.
+			return "", "", errclass.ErrNotRepo.
 				WithMessagef("not a JVS repository: %s", targetRepoPath).
 				WithHint(suggestInit())
 		} else if !info.IsDir() {
-			return "", errclass.ErrNotRepo.
+			return "", "", errclass.ErrNotRepo.
 				WithMessagef("--repo must be a directory: %s", targetRepoPath).
 				WithHint(suggestInit())
 		}
-		return path, nil
+		repoStart = path
 	}
 
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", errclass.ErrUsage.WithMessagef("cannot get current directory: %v", err)
-	}
-	return cwd, nil
+	return repoStart, workspaceStart, nil
 }
 
 func resolveOptionalWorkspace(r *repo.Repo, start string) (string, error) {
@@ -136,18 +140,21 @@ func resolveOptionalWorkspace(r *repo.Repo, start string) (string, error) {
 		return resolveNamedWorkspace(r.Root, targetWorkspaceName)
 	}
 
-	return workspaceFromPath(r.Root, start), nil
+	return workspaceFromPath(r.Root, start)
 }
 
-func workspaceFromPath(repoRoot, path string) string {
+func workspaceFromPath(repoRoot, path string) (string, error) {
 	r, workspace, err := repo.DiscoverWorktree(path)
 	if err != nil || workspace == "" {
-		return ""
+		return "", nil
 	}
 	if filepath.Clean(r.Root) != filepath.Clean(repoRoot) {
-		return ""
+		return "", errclass.ErrTargetMismatch.WithMessagef(
+			"targeting mismatch: --repo resolves to %s, but current workspace %q belongs to %s",
+			filepath.Clean(repoRoot), workspace, filepath.Clean(r.Root),
+		)
 	}
-	return workspace
+	return workspace, nil
 }
 
 func resolveNamedWorkspace(repoRoot, name string) (string, error) {

@@ -48,6 +48,26 @@ func TestMaterialize_UncompressedSnapshotKeepsUserGzipFile(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(dst, ".READY"))
 }
 
+func TestMaterialize_CompressedSnapshotPreservesRootReadyGzipAsUserPayload(t *testing.T) {
+	src := t.TempDir()
+	dst := filepath.Join(t.TempDir(), "materialized")
+
+	writeGzipFile(t, filepath.Join(src, "data.txt.gz"), []byte("logical data"), 0644)
+	writeReadyWithCompressionManifest(t, src, []string{"data.txt"})
+	require.NoError(t, os.WriteFile(filepath.Join(src, ".READY.gz"), []byte("user gzip data"), 0644))
+
+	err := snapshotpayload.Materialize(src, dst, snapshotpayload.Options{Compressed: true}, copyTree)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dst, "data.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "logical data", string(data))
+	content, err := os.ReadFile(filepath.Join(dst, ".READY.gz"))
+	require.NoError(t, err)
+	assert.Equal(t, "user gzip data", string(content))
+	assert.NoFileExists(t, filepath.Join(dst, ".READY"))
+}
+
 func TestMaterialize_CompressedSnapshotUsesManifestForGzipFiles(t *testing.T) {
 	src := t.TempDir()
 	dst := filepath.Join(t.TempDir(), "materialized")

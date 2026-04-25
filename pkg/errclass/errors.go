@@ -41,6 +41,7 @@ func (e *JVSError) WithHint(hint string) *JVSError {
 var (
 	ErrNotRepo             = &JVSError{Code: "E_NOT_REPO"}
 	ErrNotWorkspace        = &JVSError{Code: "E_NOT_WORKSPACE"}
+	ErrTargetMismatch      = &JVSError{Code: "E_TARGET_MISMATCH"}
 	ErrUsage               = &JVSError{Code: "E_USAGE"}
 	ErrNameInvalid         = &JVSError{Code: "E_NAME_INVALID"}
 	ErrPathEscape          = &JVSError{Code: "E_PATH_ESCAPE"}

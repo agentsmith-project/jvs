@@ -31,6 +31,15 @@ Before any pre-release or v0 tag:
 7. `jvs doctor --strict` passes on a representative repo.
 8. `jvs verify --all` passes on the same representative repo.
 
+CI enforces the same release gate for publishing paths. A `v*` tag push or
+manual `workflow_dispatch` release for an existing `v*` tag must pass the
+`release-gate` job, which runs `make release-gate`, before the release job can
+publish artifacts.
+Manual releases validate and check out `refs/tags/<tag>` and publish that exact
+tag name; a same-named branch or other ambiguous ref is not a release input.
+PR and normal branch pushes may keep faster checks, but they must not publish
+release artifacts.
+
 ## Documentation Gates
 
 - `README.md`, `docs/QUICKSTART.md`, `docs/02_CLI_SPEC.md`, and the

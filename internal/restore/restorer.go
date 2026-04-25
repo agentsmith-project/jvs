@@ -104,6 +104,9 @@ func (r *Restorer) restore(worktreeName string, snapshotID model.SnapshotID) err
 	if err != nil {
 		return fmt.Errorf("worktree payload path: %w", err)
 	}
+	if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(payloadPath); err != nil {
+		return err
+	}
 
 	// Create backup directory for rollback while keeping payloadPath itself in place.
 	backupPath := payloadPath + ".restore-backup-" + uuidutil.NewV4()[:8]
@@ -122,6 +125,9 @@ func (r *Restorer) restore(worktreeName string, snapshotID model.SnapshotID) err
 		return fmt.Errorf("materialize snapshot: %w", err)
 	}
 	defer os.RemoveAll(tempPath)
+	if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(tempPath); err != nil {
+		return fmt.Errorf("materialized snapshot payload: %w", err)
+	}
 
 	// Step 2: Replace or overlay contents inside the existing payload root.
 	var partialChanges []partialChange
