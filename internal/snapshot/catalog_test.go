@@ -72,6 +72,101 @@ func TestListAll(t *testing.T) {
 	assert.Equal(t, desc1.SnapshotID, all[1].SnapshotID)
 }
 
+func TestListAllRequiresReadyMarker(t *testing.T) {
+	type markerSetup func(t *testing.T, snapshotDir string)
+
+	regularMarker := func(name string) markerSetup {
+		return func(t *testing.T, snapshotDir string) {
+			t.Helper()
+			require.NoError(t, os.WriteFile(filepath.Join(snapshotDir, name), []byte("ready"), 0644))
+		}
+	}
+	symlinkMarker := func(name string) markerSetup {
+		return func(t *testing.T, snapshotDir string) {
+			t.Helper()
+			targetPath := filepath.Join(snapshotDir, "ready-target")
+			require.NoError(t, os.WriteFile(targetPath, []byte("ready"), 0644))
+			if err := os.Symlink("ready-target", filepath.Join(snapshotDir, name)); err != nil {
+				t.Skipf("symlinks not supported: %v", err)
+			}
+		}
+	}
+	directoryMarker := func(name string) markerSetup {
+		return func(t *testing.T, snapshotDir string) {
+			t.Helper()
+			require.NoError(t, os.Mkdir(filepath.Join(snapshotDir, name), 0755))
+		}
+	}
+
+	tests := []struct {
+		name      string
+		setup     markerSetup
+		wantErr   bool
+		wantCount int
+	}{
+		{
+			name:      ".READY regular file is visible",
+			setup:     regularMarker(".READY"),
+			wantCount: 1,
+		},
+		{
+			name:      ".READY.gz regular file is visible",
+			setup:     regularMarker(".READY.gz"),
+			wantCount: 1,
+		},
+		{
+			name:      "missing marker is invisible",
+			wantCount: 0,
+		},
+		{
+			name:    ".READY symlink fails closed",
+			setup:   symlinkMarker(".READY"),
+			wantErr: true,
+		},
+		{
+			name:    ".READY directory fails closed",
+			setup:   directoryMarker(".READY"),
+			wantErr: true,
+		},
+		{
+			name:    ".READY.gz symlink fails closed",
+			setup:   symlinkMarker(".READY.gz"),
+			wantErr: true,
+		},
+		{
+			name:    ".READY.gz directory fails closed",
+			setup:   directoryMarker(".READY.gz"),
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repoPath := setupCatalogTestRepo(t)
+			desc := createCatalogSnapshot(t, repoPath, "ready marker boundary", nil)
+			snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(desc.SnapshotID))
+			for _, markerName := range []string{".READY", ".READY.gz"} {
+				require.NoError(t, os.RemoveAll(filepath.Join(snapshotDir, markerName)))
+			}
+			if tt.setup != nil {
+				tt.setup(t, snapshotDir)
+			}
+
+			all, err := snapshot.ListAll(repoPath)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Empty(t, all)
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, all, tt.wantCount)
+			if tt.wantCount > 0 {
+				assert.Equal(t, desc.SnapshotID, all[0].SnapshotID)
+			}
+		})
+	}
+}
+
 func TestListAll_SortedByTime(t *testing.T) {
 	repoPath := setupCatalogTestRepo(t)
 

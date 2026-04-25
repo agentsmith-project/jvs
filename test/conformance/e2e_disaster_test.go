@@ -350,6 +350,124 @@ func TestE2E_Disaster_MissingReadyMarker(t *testing.T) {
 	})
 }
 
+func TestE2E_Disaster_MissingReadyCheckpointInvisibleAndMachineReadable(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "ready-missing")
+	mainPath := filepath.Join(repoPath, "main")
+	snapshotsPath := filepath.Join(repoPath, ".jvs", "snapshots")
+
+	runJVS(t, dir, "init", "ready-missing")
+	if err := os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	checkpointOut, stderr, code := runJVSInRepo(t, repoPath, "--json", "checkpoint", "ready gate")
+	if code != 0 {
+		t.Fatalf("checkpoint failed: stdout=%s stderr=%s", checkpointOut, stderr)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("checkpoint --json wrote stderr: %q", stderr)
+	}
+	checkpointID, ok := decodeContractSmokeDataMap(t, checkpointOut)["checkpoint_id"].(string)
+	if !ok || checkpointID == "" {
+		t.Fatalf("checkpoint JSON missing checkpoint_id: %s", checkpointOut)
+	}
+
+	readyPath := filepath.Join(snapshotsPath, checkpointID, ".READY")
+	if err := os.Remove(readyPath); err != nil {
+		t.Fatalf("remove READY marker: %v", err)
+	}
+	crashedTmp := filepath.Join(snapshotsPath, "crashed.tmp")
+	if err := os.MkdirAll(crashedTmp, 0755); err != nil {
+		t.Fatalf("create crashed tmp: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(crashedTmp, "partial.txt"), []byte("partial"), 0644); err != nil {
+		t.Fatalf("write crashed tmp payload: %v", err)
+	}
+
+	listOut, stderr, code := runJVSInRepo(t, repoPath, "--json", "checkpoint", "list")
+	if code != 0 {
+		t.Fatalf("checkpoint list failed: stdout=%s stderr=%s", listOut, stderr)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("checkpoint list --json wrote stderr: %q", stderr)
+	}
+	for _, id := range extractAllSnapshotIDs(listOut) {
+		if id == checkpointID {
+			t.Fatalf("checkpoint list exposed missing READY checkpoint %s: %s", checkpointID, listOut)
+		}
+	}
+
+	verifyOut, stderr, code := runJVSInRepo(t, repoPath, "--json", "verify", checkpointID)
+	if code == 0 {
+		t.Fatalf("verify accepted missing READY checkpoint: stdout=%s stderr=%s", verifyOut, stderr)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("verify --json wrote stderr: %q", stderr)
+	}
+	requireJSONDataOrEnvelopeErrorCode(t, verifyOut, "E_READY_MISSING")
+
+	doctorOut, stderr, code := runJVSInRepo(t, repoPath, "--json", "doctor", "--strict")
+	if code == 0 {
+		t.Fatalf("doctor --strict accepted missing READY checkpoint: stdout=%s stderr=%s", doctorOut, stderr)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("doctor --json --strict wrote stderr: %q", stderr)
+	}
+	requireDoctorFindingCode(t, doctorOut, "E_READY_MISSING")
+
+	repairOut, stderr, code := runJVSInRepo(t, repoPath, "--json", "doctor", "--repair-runtime")
+	if code == 0 {
+		t.Fatalf("doctor --repair-runtime should remain unhealthy for final missing READY checkpoint: stdout=%s stderr=%s", repairOut, stderr)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("doctor --json --repair-runtime wrote stderr: %q", stderr)
+	}
+	if fileExists(t, crashedTmp) {
+		t.Fatalf("doctor --repair-runtime did not clean crashed tmp directory: %s", repairOut)
+	}
+	if !fileExists(t, filepath.Join(snapshotsPath, checkpointID)) {
+		t.Fatalf("doctor --repair-runtime deleted final missing READY checkpoint: %s", repairOut)
+	}
+	requireDoctorFindingCode(t, repairOut, "E_READY_MISSING")
+}
+
+func requireJSONDataOrEnvelopeErrorCode(t *testing.T, stdout, want string) {
+	t.Helper()
+	env := decodeContractSmokeEnvelope(t, stdout)
+	if env.Error != nil {
+		errData, ok := env.Error.(map[string]any)
+		if !ok || errData["code"] != want {
+			t.Fatalf("expected JSON error code %s, got %#v\n%s", want, env.Error, stdout)
+		}
+		return
+	}
+
+	data := decodeContractSmokeDataMap(t, stdout)
+	if data["error_code"] != want {
+		t.Fatalf("expected JSON data error_code %s, got %#v\n%s", want, data["error_code"], stdout)
+	}
+}
+
+func requireDoctorFindingCode(t *testing.T, stdout, want string) {
+	t.Helper()
+	data := decodeContractSmokeDataMap(t, stdout)
+	findings, ok := data["findings"].([]any)
+	if !ok {
+		t.Fatalf("doctor JSON missing findings array: %s", stdout)
+	}
+	for _, raw := range findings {
+		finding, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("doctor finding is not an object: %#v\n%s", raw, stdout)
+		}
+		if finding["error_code"] == want {
+			return
+		}
+	}
+	t.Fatalf("doctor JSON missing finding code %s: %s", want, stdout)
+}
+
 // TestE2E_Disaster_RecoveryWorkflow tests complete disaster recovery workflow
 func TestE2E_Disaster_RecoveryWorkflow(t *testing.T) {
 	repoPath, _ := initTestRepo(t)

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -47,8 +48,16 @@ func ListAll(repoRoot string) ([]*model.Descriptor, error) {
 		if err := snapshotID.Validate(); err != nil {
 			continue
 		}
-		if _, err := repo.SnapshotPathForRead(repoRoot, snapshotID); err != nil {
+		snapshotDir, err := repo.SnapshotPathForRead(repoRoot, snapshotID)
+		if err != nil {
 			return nil, err
+		}
+		ready, err := hasPublishReadyMarker(snapshotDir)
+		if err != nil {
+			return nil, err
+		}
+		if !ready {
+			continue
 		}
 		desc, err := LoadDescriptor(repoRoot, snapshotID)
 		if err != nil {
@@ -64,6 +73,28 @@ func ListAll(repoRoot string) ([]*model.Descriptor, error) {
 	})
 
 	return descriptors, nil
+}
+
+func hasPublishReadyMarker(snapshotDir string) (bool, error) {
+	found := false
+	for _, name := range []string{".READY", ".READY.gz"} {
+		path := filepath.Join(snapshotDir, name)
+		info, err := os.Lstat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return false, fmt.Errorf("stat ready marker %s: %w", path, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return false, fmt.Errorf("ready marker is symlink: %s", path)
+		}
+		if !info.Mode().IsRegular() {
+			return false, fmt.Errorf("ready marker is not regular file: %s", path)
+		}
+		found = true
+	}
+	return found, nil
 }
 
 // FilterOptions for searching snapshots.

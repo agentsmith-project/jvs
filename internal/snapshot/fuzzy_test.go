@@ -60,6 +60,7 @@ func setupSnapshotTestRepo(t *testing.T) string {
 		// Create snapshot directory
 		snapDir := filepath.Join(snapshotsDir, string(snap.SnapshotID))
 		require.NoError(t, os.MkdirAll(snapDir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(snapDir, ".READY"), []byte("{}"), 0644))
 
 		// Write descriptor
 		descPath := filepath.Join(descriptorsDir, string(snap.SnapshotID)+".json")

@@ -220,7 +220,7 @@ jobs:
             echo "- jvs-darwin-amd64 - macOS x86_64"
             echo "- jvs-darwin-arm64 - macOS ARM64 (Apple Silicon)"
             echo "- jvs-windows-amd64.exe - Windows x86_64"
-            echo "- SHA256SUMS - SHA-256 hashes for the published jvs-* artifacts"
+            echo "- SHA256SUMS - SHA-256 hashes for the published binaries"
             echo ""
             echo "### Verification"
             echo "All binaries are signed using Sigstore/cosign. Download the binary with its matching .sig and .pem sidecars; see docs/SIGNING.md for the full guide."
@@ -262,17 +262,68 @@ jobs:
       - name: Create checksums
         run: |
           cd bin
-          sha256sum jvs-* > SHA256SUMS
+          sha256sum \
+            jvs-linux-amd64 \
+            jvs-linux-arm64 \
+            jvs-darwin-amd64 \
+            jvs-darwin-arm64 \
+            jvs-windows-amd64.exe > SHA256SUMS
           cd ..
 
       - name: Sign checksums file
         run: |
           cosign sign-blob --yes --output-signature="bin/SHA256SUMS.sig" --output-certificate="bin/SHA256SUMS.pem" "bin/SHA256SUMS"
 
+      - name: Verify release artifacts
+        run: |
+          set -eu
+          cd bin
+          for artifact in \
+            jvs-linux-amd64 \
+            jvs-linux-amd64.sig \
+            jvs-linux-amd64.pem \
+            jvs-linux-arm64 \
+            jvs-linux-arm64.sig \
+            jvs-linux-arm64.pem \
+            jvs-darwin-amd64 \
+            jvs-darwin-amd64.sig \
+            jvs-darwin-amd64.pem \
+            jvs-darwin-arm64 \
+            jvs-darwin-arm64.sig \
+            jvs-darwin-arm64.pem \
+            jvs-windows-amd64.exe \
+            jvs-windows-amd64.exe.sig \
+            jvs-windows-amd64.exe.pem \
+            SHA256SUMS \
+            SHA256SUMS.sig \
+            SHA256SUMS.pem
+          do
+            test -s "$artifact"
+          done
+          sha256sum --check --strict SHA256SUMS
+
       - name: Upload artifacts to release
         uses: softprops/action-gh-release@v2
         with:
-          files: bin/*
+          files: |
+            bin/jvs-linux-amd64
+            bin/jvs-linux-amd64.sig
+            bin/jvs-linux-amd64.pem
+            bin/jvs-linux-arm64
+            bin/jvs-linux-arm64.sig
+            bin/jvs-linux-arm64.pem
+            bin/jvs-darwin-amd64
+            bin/jvs-darwin-amd64.sig
+            bin/jvs-darwin-amd64.pem
+            bin/jvs-darwin-arm64
+            bin/jvs-darwin-arm64.sig
+            bin/jvs-darwin-arm64.pem
+            bin/jvs-windows-amd64.exe
+            bin/jvs-windows-amd64.exe.sig
+            bin/jvs-windows-amd64.exe.pem
+            bin/SHA256SUMS
+            bin/SHA256SUMS.sig
+            bin/SHA256SUMS.pem
           body_path: release-notes.md
           tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
           draft: false

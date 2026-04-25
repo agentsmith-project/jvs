@@ -1,8 +1,10 @@
 package ci
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -188,6 +190,128 @@ func TestReleaseWorkflowNotesUseSigningGuideAndGASections(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowVerifiesArtifactsBeforeUpload(t *testing.T) {
+	root := repoRoot(t)
+	workflow := readWorkflow(t, root)
+	jobs := requireMappingValue(t, workflow, "jobs")
+	release := requireMappingValue(t, jobs, "release")
+
+	createChecksums, createChecksumsIndex := requireStepIndexNamed(t, release, "Create checksums")
+	_, signChecksumsIndex := requireStepIndexNamed(t, release, "Sign checksums file")
+	verify, verifyIndex := requireStepIndexNamed(t, release, "Verify release artifacts")
+	upload, uploadIndex := requireStepIndexNamed(t, release, "Upload artifacts to release")
+	if !(createChecksumsIndex < signChecksumsIndex && signChecksumsIndex < verifyIndex && verifyIndex < uploadIndex) {
+		t.Fatalf("Verify release artifacts must run after checksum creation/signing and before upload; got create=%d sign=%d verify=%d upload=%d", createChecksumsIndex, signChecksumsIndex, verifyIndex, uploadIndex)
+	}
+	requireStepDoesNotBypassFailures(t, verify, "Verify release artifacts")
+	requireStepDoesNotBypassFailures(t, upload, "Upload artifacts to release")
+
+	checksummedBinaries := releaseBinariesChecksummedBySha256sum(t, scalarValue(t, requireMappingValue(t, createChecksums, "run")))
+	run := scalarValue(t, requireMappingValue(t, verify, "run"))
+	verifiedArtifacts := releaseArtifactsVerifiedWithTestS(t, run)
+	uploadedArtifacts := releaseArtifactsUploadedByReleaseAction(t, upload)
+	requireSameStringSet(t, checksummedBinaries, expectedReleaseBinaries())
+	requireSameStringSet(t, verifiedArtifacts, expectedReleaseArtifacts())
+	requireSameStringSet(t, uploadedArtifacts, verifiedArtifacts)
+	requireSha256sumStrictCheck(t, run)
+}
+
+func TestReleaseArtifactsVerifiedWithTestSRejectsWeakeningTokens(t *testing.T) {
+	for _, body := range []string{
+		`test -s "$artifact" || true`,
+		`test -s "${artifact}" ; true`,
+		`test -s "$artifact" extra-token`,
+	} {
+		run := releaseArtifactTestSLoop(body)
+		if artifacts, ok := releaseArtifactsVerifiedWithTestSFromScript(run); ok {
+			t.Fatalf("test -s contract accepted weakened command %q with artifacts %v", body, artifacts)
+		}
+	}
+
+	for _, body := range []string{
+		`test -s "$artifact"`,
+		`test -s "${artifact}"`,
+	} {
+		artifacts, ok := releaseArtifactsVerifiedWithTestSFromScript(releaseArtifactTestSLoop(body))
+		if !ok {
+			t.Fatalf("test -s contract rejected strict command %q", body)
+		}
+		requireSameStringSet(t, artifacts, []string{"jvs-linux-amd64"})
+	}
+}
+
+func TestReleaseStepSuccessGateRejectsBypassControls(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		step string
+	}{
+		{
+			name: "composed success condition",
+			step: "name: Verify release artifacts\nif: ${{ success() || true }}\nrun: test\n",
+		},
+		{
+			name: "custom condition",
+			step: "name: Upload artifacts to release\nif: github.ref != ''\nuses: softprops/action-gh-release@v2\n",
+		},
+		{
+			name: "continue false",
+			step: "name: Verify release artifacts\ncontinue-on-error: false\nrun: test\n",
+		},
+		{
+			name: "continue true",
+			step: "name: Verify release artifacts\ncontinue-on-error: true\nrun: test\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := &fatalRecorder{}
+			requireStepDoesNotBypassFailures(recorder, workflowStepFromYAML(t, tc.step), tc.name)
+			if !recorder.failed {
+				t.Fatalf("release step success gate accepted bypass control:\n%s", tc.step)
+			}
+		})
+	}
+}
+
+func TestReleaseStepSuccessGateAllowsDefaultAndStrictSuccess(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		step string
+	}{
+		{
+			name: "default",
+			step: "name: Verify release artifacts\nrun: test\n",
+		},
+		{
+			name: "success function",
+			step: "name: Verify release artifacts\nif: success()\nrun: test\n",
+		},
+		{
+			name: "wrapped success function",
+			step: "name: Verify release artifacts\nif: ${{ success() }}\nrun: test\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := &fatalRecorder{}
+			requireStepDoesNotBypassFailures(recorder, workflowStepFromYAML(t, tc.step), tc.name)
+			if recorder.failed {
+				t.Fatalf("release step success gate rejected strict success control: %s", recorder.message)
+			}
+		})
+	}
+}
+
+func TestReleaseSha256sumStrictCheckRejectsWeakeningFlags(t *testing.T) {
+	for _, run := range []string{
+		"sha256sum --check --ignore-missing --strict SHA256SUMS",
+		"sha256sum --check --strict --ignore-missing SHA256SUMS",
+		"sha256sum --check --strict SHA256SUMS || true",
+	} {
+		if sha256sumStrictCheckCommand(run) != nil {
+			t.Fatalf("sha256sum strict contract accepted weak command: %q", run)
+		}
+	}
+}
+
 func TestMakefilePinsGolangCILintTooling(t *testing.T) {
 	root := repoRoot(t)
 	data, err := os.ReadFile(filepath.Join(root, "Makefile"))
@@ -256,6 +380,23 @@ func TestMakefileReleaseGateRunsCIContract(t *testing.T) {
 	}
 }
 
+type testFailureReporter interface {
+	Helper()
+	Fatalf(string, ...any)
+}
+
+type fatalRecorder struct {
+	failed  bool
+	message string
+}
+
+func (r *fatalRecorder) Helper() {}
+
+func (r *fatalRecorder) Fatalf(format string, args ...any) {
+	r.failed = true
+	r.message = fmt.Sprintf(format, args...)
+}
+
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()
@@ -292,6 +433,18 @@ func readWorkflow(t *testing.T, root string) *yaml.Node {
 	return doc.Content[0]
 }
 
+func workflowStepFromYAML(t *testing.T, data string) *yaml.Node {
+	t.Helper()
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(data), &doc); err != nil {
+		t.Fatalf("parse workflow step: %v", err)
+	}
+	if len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
+		t.Fatalf("workflow step fixture must be a mapping")
+	}
+	return doc.Content[0]
+}
+
 func requireMappingValue(t *testing.T, node *yaml.Node, key string) *yaml.Node {
 	t.Helper()
 	value := mappingValue(node, key)
@@ -313,7 +466,7 @@ func mappingValue(node *yaml.Node, key string) *yaml.Node {
 	return nil
 }
 
-func scalarValue(t *testing.T, node *yaml.Node) string {
+func scalarValue(t testFailureReporter, node *yaml.Node) string {
 	t.Helper()
 	if node.Kind != yaml.ScalarNode {
 		t.Fatalf("expected scalar YAML value, got kind %d", node.Kind)
@@ -369,18 +522,24 @@ func jobRuns(job *yaml.Node, want string) bool {
 
 func requireStepNamed(t *testing.T, job *yaml.Node, name string) *yaml.Node {
 	t.Helper()
+	step, _ := requireStepIndexNamed(t, job, name)
+	return step
+}
+
+func requireStepIndexNamed(t *testing.T, job *yaml.Node, name string) (*yaml.Node, int) {
+	t.Helper()
 	steps := requireMappingValue(t, job, "steps")
 	if steps.Kind != yaml.SequenceNode {
 		t.Fatalf("job steps must be a sequence, got kind %d", steps.Kind)
 	}
-	for _, step := range steps.Content {
+	for i, step := range steps.Content {
 		stepName := mappingValue(step, "name")
 		if stepName != nil && stepName.Value == name {
-			return step
+			return step, i
 		}
 	}
 	t.Fatalf("missing workflow step named %q", name)
-	return nil
+	return nil, -1
 }
 
 func requireStepUsing(t *testing.T, job *yaml.Node, usesPrefix string) *yaml.Node {
@@ -452,4 +611,355 @@ func requireContains(t *testing.T, got, want string) {
 	if !strings.Contains(got, want) {
 		t.Fatalf("value %q must contain %q", got, want)
 	}
+}
+
+func requireStepDoesNotBypassFailures(t testFailureReporter, step *yaml.Node, name string) {
+	t.Helper()
+	if continueOnError := mappingValue(step, "continue-on-error"); continueOnError != nil {
+		t.Fatalf("%s step must not define continue-on-error; release verification must fail closed", name)
+	}
+	if condition := mappingValue(step, "if"); condition != nil {
+		value := scalarValue(t, condition)
+		if normalizeGitHubActionsExpression(value) != "success()" {
+			t.Fatalf("%s step must use the default success gate or exactly success(), got %q", name, value)
+		}
+	}
+}
+
+func normalizeGitHubActionsExpression(value string) string {
+	expr := strings.TrimSpace(value)
+	if strings.HasPrefix(expr, "${{") && strings.HasSuffix(expr, "}}") {
+		expr = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(expr, "${{"), "}}"))
+	}
+	return expr
+}
+
+func expectedReleaseBinaries() []string {
+	return []string{
+		"jvs-linux-amd64",
+		"jvs-linux-arm64",
+		"jvs-darwin-amd64",
+		"jvs-darwin-arm64",
+		"jvs-windows-amd64.exe",
+	}
+}
+
+func expectedReleaseArtifacts() []string {
+	binaries := expectedReleaseBinaries()
+	artifacts := make([]string, 0, len(binaries)*3+3)
+	for _, binary := range binaries {
+		artifacts = append(artifacts, binary, binary+".sig", binary+".pem")
+	}
+	return append(artifacts, "SHA256SUMS", "SHA256SUMS.sig", "SHA256SUMS.pem")
+}
+
+func releaseBinariesChecksummedBySha256sum(t *testing.T, run string) []string {
+	t.Helper()
+	for _, line := range shellLogicalLines(run) {
+		words := shellWords(line)
+		if len(words) == 0 || words[0] != "sha256sum" {
+			continue
+		}
+		redirectIndex := indexString(words, ">")
+		if redirectIndex < 0 {
+			t.Fatalf("Create checksums step must redirect sha256sum output to SHA256SUMS")
+		}
+		if redirectIndex != len(words)-2 || words[len(words)-1] != "SHA256SUMS" {
+			t.Fatalf("Create checksums step must write exactly one SHA256SUMS file, got %q", line)
+		}
+		binaries := words[1:redirectIndex]
+		if len(binaries) == 0 {
+			t.Fatalf("Create checksums step must checksum release binaries")
+		}
+		for _, binary := range binaries {
+			if strings.ContainsAny(binary, "*?[") || strings.Contains(binary, "$") {
+				t.Fatalf("Create checksums step must list explicit release binaries, got %q", binary)
+			}
+			if strings.Contains(binary, "/") {
+				t.Fatalf("Create checksums step must checksum files from bin/ by basename, got %q", binary)
+			}
+		}
+		return append([]string(nil), binaries...)
+	}
+	t.Fatalf("Create checksums step must run sha256sum over explicit release binaries")
+	return nil
+}
+
+func releaseArtifactsVerifiedWithTestS(t *testing.T, run string) []string {
+	t.Helper()
+	artifacts, ok := releaseArtifactsVerifiedWithTestSFromScript(run)
+	if ok {
+		return artifacts
+	}
+	t.Fatalf("Verify release artifacts step must test -s every artifact from a literal for loop")
+	return nil
+}
+
+func releaseArtifactsVerifiedWithTestSFromScript(run string) ([]string, bool) {
+	lines := shellLogicalLines(run)
+	for i, line := range lines {
+		loopVariable, artifacts, hasLoop := shellForInLiteralList(line)
+		if !hasLoop {
+			continue
+		}
+		if shellWordsStartWithTestSForVariable(shellWordsAfterDo(line), loopVariable) {
+			return artifacts, true
+		}
+		for _, bodyLine := range lines[i+1:] {
+			words := shellWords(bodyLine)
+			if len(words) > 0 && words[0] == "done" {
+				break
+			}
+			if shellWordsStartWithTestSForVariable(shellWordsAfterDo(bodyLine), loopVariable) {
+				return artifacts, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func releaseArtifactTestSLoop(body string) string {
+	return "for artifact in jvs-linux-amd64\ndo\n  " + body + "\ndone\n"
+}
+
+func releaseArtifactsUploadedByReleaseAction(t *testing.T, step *yaml.Node) []string {
+	t.Helper()
+	with := requireMappingValue(t, step, "with")
+	files := scalarValue(t, requireMappingValue(t, with, "files"))
+	var artifacts []string
+	for _, entry := range releaseUploadFileEntries(files) {
+		if strings.ContainsAny(entry, "*?[") || strings.Contains(entry, "$") {
+			t.Fatalf("release upload files must be an explicit bin/<artifact> list, got %q", entry)
+		}
+		if !strings.HasPrefix(entry, "bin/") {
+			t.Fatalf("release upload file %q must live under bin/", entry)
+		}
+		artifact := strings.TrimPrefix(entry, "bin/")
+		if artifact == "" || strings.Contains(artifact, "/") {
+			t.Fatalf("release upload file %q must name a single bin artifact", entry)
+		}
+		artifacts = append(artifacts, artifact)
+	}
+	if len(artifacts) == 0 {
+		t.Fatalf("release upload files must list artifacts explicitly")
+	}
+	return artifacts
+}
+
+func releaseUploadFileEntries(files string) []string {
+	var entries []string
+	for _, line := range strings.Split(files, "\n") {
+		entry := strings.TrimSpace(line)
+		if entry == "" {
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+func shellLogicalLines(script string) []string {
+	var lines []string
+	var logical strings.Builder
+	for _, raw := range strings.Split(script, "\n") {
+		line := strings.TrimSpace(stripShellComment(raw))
+		if line == "" {
+			continue
+		}
+		continued := strings.HasSuffix(line, "\\")
+		if continued {
+			line = strings.TrimSpace(strings.TrimSuffix(line, "\\"))
+		}
+		if logical.Len() > 0 {
+			logical.WriteByte(' ')
+		}
+		logical.WriteString(line)
+		if !continued {
+			lines = append(lines, logical.String())
+			logical.Reset()
+		}
+	}
+	if logical.Len() > 0 {
+		lines = append(lines, logical.String())
+	}
+	return lines
+}
+
+func stripShellComment(line string) string {
+	inSingleQuote := false
+	inDoubleQuote := false
+	escaped := false
+	for i, r := range line {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if r == '\\' && !inSingleQuote {
+			escaped = true
+			continue
+		}
+		switch r {
+		case '\'':
+			if !inDoubleQuote {
+				inSingleQuote = !inSingleQuote
+			}
+		case '"':
+			if !inSingleQuote {
+				inDoubleQuote = !inDoubleQuote
+			}
+		case '#':
+			if !inSingleQuote && !inDoubleQuote {
+				return line[:i]
+			}
+		}
+	}
+	return line
+}
+
+func shellWords(line string) []string {
+	var words []string
+	var word strings.Builder
+	inSingleQuote := false
+	inDoubleQuote := false
+	escaped := false
+	flush := func() {
+		if word.Len() == 0 {
+			return
+		}
+		words = append(words, word.String())
+		word.Reset()
+	}
+	for _, r := range line {
+		if escaped {
+			word.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if r == '\\' && !inSingleQuote {
+			escaped = true
+			continue
+		}
+		switch r {
+		case '\'':
+			if !inDoubleQuote {
+				inSingleQuote = !inSingleQuote
+				continue
+			}
+		case '"':
+			if !inSingleQuote {
+				inDoubleQuote = !inDoubleQuote
+				continue
+			}
+		case ' ', '\t', ';':
+			if !inSingleQuote && !inDoubleQuote {
+				flush()
+				continue
+			}
+		}
+		word.WriteRune(r)
+	}
+	flush()
+	return words
+}
+
+func shellForInLiteralList(line string) (string, []string, bool) {
+	words := shellWords(line)
+	if len(words) < 4 || words[0] != "for" || words[2] != "in" {
+		return "", nil, false
+	}
+	var artifacts []string
+	for _, word := range words[3:] {
+		if word == "do" {
+			break
+		}
+		artifacts = append(artifacts, word)
+	}
+	return words[1], artifacts, len(artifacts) > 0
+}
+
+func shellWordsAfterDo(line string) []string {
+	words := shellWords(line)
+	for i, word := range words {
+		if word == "do" {
+			return words[i+1:]
+		}
+	}
+	return words
+}
+
+func shellWordsStartWithTestSForVariable(words []string, variable string) bool {
+	if len(words) != 3 {
+		return false
+	}
+	return words[0] == "test" && words[1] == "-s" && shellVariableReference(words[2], variable)
+}
+
+func shellVariableReference(word, variable string) bool {
+	return word == "$"+variable || word == "${"+variable+"}"
+}
+
+func requireSha256sumStrictCheck(t *testing.T, run string) {
+	t.Helper()
+	if sha256sumStrictCheckCommand(run) != nil {
+		return
+	}
+	t.Fatalf("Verify release artifacts step must run exactly: sha256sum --check --strict SHA256SUMS")
+}
+
+func sha256sumStrictCheckCommand(run string) []string {
+	for _, line := range shellLogicalLines(run) {
+		words := shellWords(line)
+		if len(words) == 4 && words[0] == "sha256sum" && words[1] == "--check" && words[2] == "--strict" && words[3] == "SHA256SUMS" {
+			return words
+		}
+	}
+	return nil
+}
+
+func indexString(values []string, want string) int {
+	for i, value := range values {
+		if value == want {
+			return i
+		}
+	}
+	return -1
+}
+
+func requireSameStringSet(t *testing.T, got, want []string) {
+	t.Helper()
+	gotCounts := stringCounts(got)
+	wantCounts := stringCounts(want)
+	if len(gotCounts) != len(wantCounts) || len(got) != len(want) {
+		t.Fatalf("verified artifacts mismatch\nmissing: %v\nextra: %v\ngot: %v\nwant: %v", missingStrings(wantCounts, gotCounts), missingStrings(gotCounts, wantCounts), sortedStrings(got), sortedStrings(want))
+	}
+	for value, count := range wantCounts {
+		if gotCounts[value] != count {
+			t.Fatalf("verified artifacts mismatch\nmissing: %v\nextra: %v\ngot: %v\nwant: %v", missingStrings(wantCounts, gotCounts), missingStrings(gotCounts, wantCounts), sortedStrings(got), sortedStrings(want))
+		}
+	}
+}
+
+func stringCounts(values []string) map[string]int {
+	counts := make(map[string]int, len(values))
+	for _, value := range values {
+		counts[value]++
+	}
+	return counts
+}
+
+func missingStrings(want, got map[string]int) []string {
+	var missing []string
+	for value, count := range want {
+		for i := got[value]; i < count; i++ {
+			missing = append(missing, value)
+		}
+	}
+	sort.Strings(missing)
+	return missing
+}
+
+func sortedStrings(values []string) []string {
+	sorted := append([]string(nil), values...)
+	sort.Strings(sorted)
+	return sorted
 }
