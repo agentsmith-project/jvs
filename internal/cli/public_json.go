@@ -11,16 +11,21 @@ import (
 )
 
 type publicCheckpointRecord struct {
-	CheckpointID       string               `json:"checkpoint_id"`
-	ParentCheckpointID string               `json:"parent_checkpoint_id,omitempty"`
-	Workspace          string               `json:"workspace"`
-	CreatedAt          time.Time            `json:"created_at"`
-	Note               string               `json:"note,omitempty"`
-	Tags               []string             `json:"tags,omitempty"`
-	Engine             model.EngineType     `json:"engine"`
-	PayloadRootHash    model.HashValue      `json:"payload_root_hash"`
-	DescriptorChecksum model.HashValue      `json:"descriptor_checksum"`
-	IntegrityState     model.IntegrityState `json:"integrity_state"`
+	CheckpointID         string                      `json:"checkpoint_id"`
+	ParentCheckpointID   string                      `json:"parent_checkpoint_id,omitempty"`
+	Workspace            string                      `json:"workspace"`
+	CreatedAt            time.Time                   `json:"created_at"`
+	Note                 string                      `json:"note,omitempty"`
+	Tags                 []string                    `json:"tags,omitempty"`
+	Engine               model.EngineType            `json:"engine"`
+	ActualEngine         model.EngineType            `json:"actual_engine,omitempty"`
+	EffectiveEngine      model.EngineType            `json:"effective_engine,omitempty"`
+	DegradedReasons      []string                    `json:"degraded_reasons,omitempty"`
+	MetadataPreservation *model.MetadataPreservation `json:"metadata_preservation,omitempty"`
+	PerformanceClass     string                      `json:"performance_class,omitempty"`
+	PayloadRootHash      model.HashValue             `json:"payload_root_hash"`
+	DescriptorChecksum   model.HashValue             `json:"descriptor_checksum"`
+	IntegrityState       model.IntegrityState        `json:"integrity_state"`
 }
 
 type publicWorkspaceRecord struct {
@@ -57,6 +62,7 @@ type publicVerifyResult struct {
 type publicDoctorResult struct {
 	Healthy  bool                  `json:"healthy"`
 	Findings []publicDoctorFinding `json:"findings"`
+	Repairs  []publicDoctorRepair  `json:"repairs,omitempty"`
 }
 
 type publicDoctorFinding struct {
@@ -64,6 +70,13 @@ type publicDoctorFinding struct {
 	Description string `json:"description"`
 	Severity    string `json:"severity"`
 	ErrorCode   string `json:"error_code,omitempty"`
+}
+
+type publicDoctorRepair struct {
+	Action  string `json:"action"`
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Cleaned int    `json:"cleaned,omitempty"`
 }
 
 type publicGCPlan struct {
@@ -86,15 +99,20 @@ type publicRetentionPolicy struct {
 
 func publicCheckpoint(desc *model.Descriptor) publicCheckpointRecord {
 	record := publicCheckpointRecord{
-		CheckpointID:       string(desc.SnapshotID),
-		Workspace:          desc.WorktreeName,
-		CreatedAt:          desc.CreatedAt,
-		Note:               desc.Note,
-		Tags:               desc.Tags,
-		Engine:             desc.Engine,
-		PayloadRootHash:    desc.PayloadRootHash,
-		DescriptorChecksum: desc.DescriptorChecksum,
-		IntegrityState:     desc.IntegrityState,
+		CheckpointID:         string(desc.SnapshotID),
+		Workspace:            desc.WorktreeName,
+		CreatedAt:            desc.CreatedAt,
+		Note:                 desc.Note,
+		Tags:                 desc.Tags,
+		Engine:               desc.Engine,
+		ActualEngine:         desc.ActualEngine,
+		EffectiveEngine:      desc.EffectiveEngine,
+		DegradedReasons:      desc.DegradedReasons,
+		MetadataPreservation: desc.MetadataPreservation,
+		PerformanceClass:     desc.PerformanceClass,
+		PayloadRootHash:      desc.PayloadRootHash,
+		DescriptorChecksum:   desc.DescriptorChecksum,
+		IntegrityState:       desc.IntegrityState,
 	}
 	if desc.ParentID != nil {
 		record.ParentCheckpointID = string(*desc.ParentID)
@@ -150,8 +168,8 @@ func publicVerify(result *cliverify.Result) publicVerifyResult {
 		PayloadHashValid: result.PayloadHashValid,
 		TamperDetected:   result.TamperDetected,
 		Severity:         result.Severity,
-		Error:            result.Error,
-		ErrorCode:        result.ErrorCode,
+		Error:            publicContractVocabulary(result.Error),
+		ErrorCode:        publicErrorCodeVocabulary(result.ErrorCode),
 	}
 }
 
@@ -177,6 +195,23 @@ func publicDoctor(result *clidoctor.Result) publicDoctorResult {
 		Healthy:  result.Healthy,
 		Findings: findings,
 	}
+}
+
+func publicDoctorWithRepairs(result *clidoctor.Result, repairs []clidoctor.RepairResult) publicDoctorResult {
+	record := publicDoctor(result)
+	if repairs == nil {
+		return record
+	}
+	record.Repairs = make([]publicDoctorRepair, 0, len(repairs))
+	for _, repair := range repairs {
+		record.Repairs = append(record.Repairs, publicDoctorRepair{
+			Action:  repair.Action,
+			Success: repair.Success,
+			Message: publicContractVocabulary(repair.Message),
+			Cleaned: repair.Cleaned,
+		})
+	}
+	return record
 }
 
 func publicGC(plan *model.GCPlan) publicGCPlan {
@@ -217,6 +252,11 @@ func publicContractVocabulary(value string) string {
 		"head_snapshot_id", "current_checkpoint",
 		"latest_snapshot_id", "latest_checkpoint",
 		"base_snapshot_id", "base_checkpoint",
+		"orphan intent files", "stale operation records",
+		"intent files", "operation records",
+		"intents directory", "operations directory",
+		"intents", "operations",
+		"intent", "operation",
 		"head snapshot", "current checkpoint",
 		"latest snapshot", "latest checkpoint",
 		"base snapshot", "base checkpoint",

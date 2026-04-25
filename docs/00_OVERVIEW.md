@@ -1,21 +1,21 @@
 # Overview
 
-**Document set:** JVS v7.0 (JuiceFS-first, snapshot-first)
+**Document set:** JVS v7.0 (JuiceFS-first, checkpoint-first)
 **Date:** 2026-02-22
 
 ## Core idea
-JVS versions workspaces by full snapshots of a single worktree payload root.
+JVS versions workspaces by full checkpoints of a single workspace payload root.
 
 ## Frozen design decisions
 1. No remote replication features in JVS; JuiceFS handles transport.
 2. Main payload root is `repo/main/`.
-3. Snapshot publish is READY-based and auditable.
-4. Restore is always inplace; use `worktree fork` to create branches.
+3. Checkpoint publish is READY-based and auditable.
+4. Restore is always inplace; use `workspace fork` to create branches.
 5. Verification default is strong: checksum + payload hash. Signature/trust chain deferred to v1.x.
 6. Runtime state (active `intents`) is non-portable and rebuilt after migration.
 
 ## Product promise
-- Detached state model for safe history navigation
+- Current differs from latest model for safe history navigation
 - Verifiable and tamper-evident history
 - Filesystem-native scale on JuiceFS
 

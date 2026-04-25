@@ -7,7 +7,7 @@
 
 ## Overview
 
-This guide helps AI/ML engineers use JVS for creating deterministic, reproducible agent sandbox environments. JVS provides O(1) snapshot and restore operations, enabling rapid iteration for agent experiments.
+This guide helps AI/ML engineers use JVS for creating deterministic, reproducible agent sandbox environments. JVS provides O(1) checkpoint and restore operations, enabling rapid iteration for agent experiments.
 
 ---
 
@@ -16,9 +16,9 @@ This guide helps AI/ML engineers use JVS for creating deterministic, reproducibl
 | Problem | Docker | VMs | JVS |
 |---------|--------|-----|-----|
 | Environment reset | Slow rebuild | Very slow | Instant restore |
-| Deterministic state | Complex to set up | Complex to set up | Simple snapshot/restore |
-| Parallel experiments | Container overhead | VM overhead | Worktree isolation |
-| State tracking | Volume management | Snapshot management | Built-in history |
+| Deterministic state | Complex to set up | Complex to set up | Simple checkpoint/restore |
+| Parallel experiments | Container overhead | VM overhead | Workspace isolation |
+| State tracking | Volume management | Checkpoint management | Built-in history |
 
 **Key Benefit:** Reset agent environment to exact baseline state in <1 second, enabling thousands of experiments per day.
 
@@ -47,8 +47,8 @@ cd agent-base/main
 # Copy your agent environment
 cp -r ~/agent-environment/* .
 
-# Create baseline snapshot
-jvs snapshot "Agent baseline v1" --tag baseline --tag v1
+# Create baseline checkpoint
+jvs checkpoint "Agent baseline v1" --tag baseline --tag v1
 ```
 
 ### Step 2: Run Agent Experiment
@@ -60,8 +60,8 @@ jvs restore baseline
 # Run your agent
 python agent.py --config config/experiment1.json --output results/run1.json
 
-# Snapshot result
-jvs snapshot "Run 1: success" --tag run1 --tag agent
+# Checkpoint result
+jvs checkpoint "Run 1: success" --tag run1 --tag agent
 ```
 
 ### Step 3: Batch Experiments
@@ -80,9 +80,9 @@ for RUN in {1..100}; do
         --config config/experiment_$RUN.json \
         --output results/$RUN.json
 
-    # Snapshot result state
+    # Checkpoint result state
     RESULT=$(cat results/$RUN.json | jq -r '.outcome')
-    jvs snapshot "Run $RUN: $RESULT" --tag "run-$RUN" --tag agent
+    jvs checkpoint "Run $RUN: $RESULT" --tag "run-$RUN" --tag agent
 done
 ```
 
@@ -98,24 +98,24 @@ jvs restore baseline
 
 # Run experiment 1
 python agent.py --task task1
-jvs snapshot "After task1" --tag task1
+jvs checkpoint "After task1" --tag task1
 
 # Run experiment 2
 jvs restore baseline  # Reset to clean state
 python agent.py --task task2
-jvs snapshot "After task2" --tag task2
+jvs checkpoint "After task2" --tag task2
 ```
 
-### Pattern 2: Parallel Experiments with Worktrees
+### Pattern 2: Parallel Experiments with Workspaces
 
 ```bash
-# Create worktrees for parallel execution
-jvs worktree fork experiment-a
-jvs worktree fork experiment-b
-jvs worktree fork experiment-c
+# Create workspaces for parallel execution
+jvs fork experiment-a
+jvs fork experiment-b
+jvs fork experiment-c
 
 # Run experiments in parallel
-cd worktrees/experiment-a/main
+cd "$(jvs workspace path experiment-a)"
 jvs restore baseline
 python agent.py --variant A &
 
@@ -135,29 +135,29 @@ wait  # Wait for all to complete
 ```bash
 # Create baseline with model A
 cp models/model_a.pth checkpoint.pth
-jvs snapshot "Baseline: model A" --tag baseline --tag model-a
+jvs checkpoint "Baseline: model A" --tag baseline --tag model-a
 
 # Run experiments with model A
 for RUN in {1..50}; do
     jvs restore baseline
     python agent.py --checkpoint checkpoint.pth --run $RUN
-    jvs snapshot "ModelA-run-$RUN" --tag model-a
+    jvs checkpoint "ModelA-run-$RUN" --tag model-a
 done
 
 # Create baseline with model B
 cp models/model_b.pth checkpoint.pth
-jvs snapshot "Baseline: model B" --tag baseline --tag model-b
+jvs checkpoint "Baseline: model B" --tag baseline --tag model-b
 
 # Run experiments with model B
 for RUN in {1..50}; do
     jvs restore baseline
     python agent.py --checkpoint checkpoint.pth --run $RUN
-    jvs snapshot "ModelB-run-$RUN" --tag model-b
+    jvs checkpoint "ModelB-run-$RUN" --tag model-b
 done
 
 # Compare results
-jvs history --tag model-a | wc -l  # Count A experiments
-jvs history --tag model-b | wc -l  # Count B experiments
+jvs checkpoint list | grep model-a | wc -l  # Count A experiments
+jvs checkpoint list | grep model-b | wc -l  # Count B experiments
 ```
 
 ---
@@ -175,7 +175,7 @@ import sys
 import json
 
 def run_agent_experiment(prompt: str, config: dict):
-    """Run agent experiment with JVS snapshot"""
+    """Run agent experiment with JVS checkpoint"""
 
     # Reset to baseline
     subprocess.run(['jvs', 'restore', 'baseline'], check=True)
@@ -186,10 +186,10 @@ def run_agent_experiment(prompt: str, config: dict):
 
     result = agent.run(prompt)
 
-    # Snapshot result
+    # Checkpoint result
     snapshot_note = f"LangChain: {prompt[:50]}... -> {result['status']}"
     subprocess.run([
-        'jvs', 'snapshot', snapshot_note,
+        'jvs', 'checkpoint', snapshot_note,
         '--tag', 'langchain',
         '--tag', result['status']
     ], check=True)
@@ -211,7 +211,7 @@ import subprocess
 import autogen
 
 def run_autogen_experiment(task: str):
-    """Run AutoGen experiment with JVS snapshot"""
+    """Run AutoGen experiment with JVS checkpoint"""
 
     # Reset to baseline
     subprocess.run(['jvs', 'restore', 'baseline'], check=True)
@@ -226,10 +226,10 @@ def run_autogen_experiment(task: str):
         message=task
     )
 
-    # Snapshot result
+    # Checkpoint result
     snapshot_note = f"AutoGen: {task[:50]}... -> {result['status']}"
     subprocess.run([
-        'jvs', 'snapshot', snapshot_note,
+        'jvs', 'checkpoint', snapshot_note,
         '--tag', 'autogen',
         '--tag', result['status']
     ], check=True)
@@ -248,7 +248,7 @@ import subprocess
 from openai import OpenAI
 
 def run_openai_agent(task: str):
-    """Run OpenAI agent with JVS snapshot"""
+    """Run OpenAI agent with JVS checkpoint"""
 
     # Reset to baseline
     subprocess.run(['jvs', 'restore', 'baseline'], check=True)
@@ -264,9 +264,9 @@ def run_openai_agent(task: str):
     with open('result.json', 'w') as f:
         json.dump(response.choices[0].message.content, f)
 
-    # Snapshot result
+    # Checkpoint result
     subprocess.run([
-        'jvs', 'snapshot',
+        'jvs', 'checkpoint',
         f"OpenAI: {task[:50]}...",
         '--tag', 'openai',
         '--tag', 'completed'
@@ -287,7 +287,7 @@ if __name__ == '__main__':
 # hyperparam_sweep.sh
 
 # Baseline model
-jvs snapshot "Hyperparam sweep baseline" --tag hps-baseline
+jvs checkpoint "Hyperparam sweep baseline" --tag hps-baseline
 
 # Sweep learning rates
 for LR in 0.001 0.01 0.1; do
@@ -303,8 +303,8 @@ for LR in 0.001 0.01 0.1; do
             --batch-size $BATCH \
             --output results/$RUN_ID.json
 
-        # Snapshot result
-        jvs snapshot \
+        # Checkpoint result
+        jvs checkpoint \
             "HP sweep: LR=$LR, BATCH=$BATCH" \
             --tag hps \
             --tag "lr-$LR" \
@@ -327,15 +327,15 @@ jvs restore baseline
 
 # Stage 1: Basic functionality
 python agent.py --stage 1
-jvs snapshot "Stage 1 complete" --tag stage1
+jvs checkpoint "Stage 1 complete" --tag stage1
 
 # Stage 2: Build on stage 1
 python agent.py --stage 2
-jvs snapshot "Stage 2 complete" --tag stage2
+jvs checkpoint "Stage 2 complete" --tag stage2
 
 # Stage 3: Build on stage 2
 python agent.py --stage 3
-jvs snapshot "Stage 3 complete" --tag stage3
+jvs checkpoint "Stage 3 complete" --tag stage3
 
 # If stage 3 fails, go back to stage 2
 jvs restore --latest-tag stage2
@@ -363,8 +363,8 @@ for FAULT in "${FAULTS[@]}"; do
     # Inject fault
     python agent.py --inject-fault $FAULT --output results/$FAULT.json
 
-    # Snapshot result
-    jvs snapshot "Fault test: $FAULT" --tag fault-test --tag "$FAULT"
+    # Checkpoint result
+    jvs checkpoint "Fault test: $FAULT" --tag fault-test --tag "$FAULT"
 done
 ```
 
@@ -379,38 +379,38 @@ done
 for RUN in {1..100}; do
     jvs restore baseline
     python agent.py --run $RUN
-    jvs snapshot "Run $RUN"
+    jvs checkpoint "Run $RUN"
 done
 
 # Bad: State bleeds between runs
 for RUN in {1..100}; do
     python agent.py --run $RUN  # Previous state affects this run!
-    jvs snapshot "Run $RUN"
+    jvs checkpoint "Run $RUN"
 done
 ```
 
-### 2. Use Descriptive Snapshot Notes
+### 2. Use Descriptive Checkpoint Notes
 
 ```bash
 # Good: Includes parameters and results
-jvs snapshot \
+jvs checkpoint \
     "GPT-4 temp=0.7 max_tokens=1000 -> success:95% confidence" \
     --tag gpt4 --tag temp-0.7
 
 # Bad: Generic
-jvs snapshot "experiment 123"
+jvs checkpoint "experiment 123"
 ```
 
 ### 3. Tag by Experiment Type
 
 ```bash
 # Tag by agent type
-jvs snapshot "..." --tag langchain --tag research
-jvs snapshot "..." --tag autogen --tag coding
-jvs snapshot "..." --tag openai --tag chat
+jvs checkpoint "..." --tag langchain --tag research
+jvs checkpoint "..." --tag autogen --tag coding
+jvs checkpoint "..." --tag openai --tag chat
 
 # Find all experiments for a type
-jvs history --tag langchain
+jvs checkpoint list | grep langchain
 ```
 
 ### 4. Regular Verification
@@ -419,7 +419,7 @@ jvs history --tag langchain
 # Verify baseline integrity
 jvs verify baseline
 
-# Verify all agent snapshots
+# Verify all agent checkpoints
 jvs verify --all
 ```
 
@@ -427,38 +427,35 @@ jvs verify --all
 
 ## Performance Tips
 
-### Use JuiceFS for O(1) Snapshots
+### Use JuiceFS for O(1) Checkpoints
 
 ```bash
 # Check which engine you're using
-jvs doctor --json | jq '.engine'
-
-# If not juicefs-clone, force it
-jvs init agent-env --engine juicefs-clone
+jvs info --json
+jvs capability /mnt/juicefs
 ```
 
-### Partial Snapshots for Selective Tracking
+### Keep Large Generated Data Out of the Workspace
 
 ```bash
-# Snapshot only agent code (not large datasets)
-jvs snapshot "Code update" --paths agent/ config/
-
-# Snapshot only results
-jvs snapshot "Experiment results" --paths results/
+# Put cache/output directories outside the JVS workspace when they should not
+# be part of checkpoints.
+export AGENT_CACHE=/mnt/juicefs/agent-cache
+jvs checkpoint "Code and config update"
 ```
 
-### Parallel Worktrees for Concurrent Experiments
+### Parallel Workspaces for Concurrent Experiments
 
 ```bash
-# Create 10 worktrees for parallel execution
+# Create 10 workspaces for parallel execution
 for i in {1..10}; do
-    jvs worktree fork exp-$i
+    jvs fork exp-$i
 done
 
 # Run experiments in parallel
 for i in {1..10}; do
     (
-        cd worktrees/exp-$i/main
+        cd "$(jvs workspace path exp-$i)"
         jvs restore baseline
         python agent.py --run $i
     ) &
@@ -477,7 +474,7 @@ wait
 jvs restore baseline
 ```
 
-### Problem: Snapshots are slow
+### Problem: Checkpoints are slow
 
 **Solution:** Verify juicefs-clone engine
 ```bash
@@ -489,8 +486,8 @@ jvs doctor --json | jq '.engine'
 
 **Solution:** Use tags and grep
 ```bash
-jvs history --tag autogen
-jvs history | grep "network_timeout"
+jvs checkpoint list | grep autogen
+jvs checkpoint list | grep "network_timeout"
 ```
 
 ---
@@ -519,13 +516,13 @@ with DAG('agent_experiments', start_date=datetime(2024, 1, 1)) as dag:
         bash_command='cd /mnt/juicefs/agent-sandbox/main && python agent.py'
     )
 
-    # Create snapshot
-    snapshot = BashOperator(
+    # Create checkpoint
+    checkpoint = BashOperator(
         task_id='create_snapshot',
-        bash_command='cd /mnt/juicefs/agent-sandbox/main && jvs snapshot "Airflow run {{ ds_nodash }}" --tag airflow'
+        bash_command='cd /mnt/juicefs/agent-sandbox/main && jvs checkpoint "Airflow run {{ ds_nodash }}" --tag airflow'
     )
 
-    restore >> run_agent >> snapshot
+    restore >> run_agent >> checkpoint
 ```
 
 ---

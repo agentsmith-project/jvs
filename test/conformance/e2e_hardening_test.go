@@ -47,7 +47,7 @@ func TestE2E_Hardening_CompressionRoundTrip(t *testing.T) {
 	})
 
 	t.Run("restore_compressed_snapshot", func(t *testing.T) {
-		stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--json")
+		stdout, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "list", "--json")
 		ids := extractAllSnapshotIDs(stdout)
 		if len(ids) == 0 {
 			t.Fatal("expected at least one snapshot")
@@ -80,11 +80,11 @@ func TestE2E_Hardening_GCRetentionPolicy(t *testing.T) {
 	t.Run("create_5_main_snapshots", func(t *testing.T) {
 		for i := 1; i <= 5; i++ {
 			os.WriteFile(filepath.Join(mainPath, "iteration.txt"), []byte(string(rune('0'+i))), 0644)
-			stdout, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "main iteration")
+			stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "main iteration")
 			if code != 0 {
 				t.Fatalf("snapshot %d failed: %s", i, stderr)
 			}
-			if !strings.Contains(stdout, "Created snapshot") {
+			if !strings.Contains(stdout, "Created checkpoint") {
 				t.Errorf("snapshot %d: expected success message, got: %s", i, stdout)
 			}
 		}
@@ -95,7 +95,7 @@ func TestE2E_Hardening_GCRetentionPolicy(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("gc plan failed: %s", stderr)
 		}
-		histOut, _, _ := runJVSInRepo(t, repoPath, "history", "--json")
+		histOut, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "list", "--json")
 		mainIDs := extractAllSnapshotIDs(histOut)
 		if len(mainIDs) < 5 {
 			t.Errorf("expected 5 main snapshots, got %d", len(mainIDs))
@@ -104,20 +104,20 @@ func TestE2E_Hardening_GCRetentionPolicy(t *testing.T) {
 	})
 
 	t.Run("create_temp_worktree_and_snapshot", func(t *testing.T) {
-		_, stderr, code := runJVSInRepo(t, repoPath, "worktree", "fork", "temp-branch")
+		_, stderr, code := runJVSInRepo(t, repoPath, "fork", "temp-branch")
 		if code != 0 {
 			t.Fatalf("fork failed: %s", stderr)
 		}
 		featurePath := filepath.Join(repoPath, "worktrees", "temp-branch")
 		os.WriteFile(filepath.Join(featurePath, "temp.txt"), []byte("temporary work"), 0644)
-		_, stderr, code = runJVSInWorktree(t, repoPath, "temp-branch", "snapshot", "temp snapshot")
+		_, stderr, code = runJVSInWorktree(t, repoPath, "temp-branch", "checkpoint", "temp snapshot")
 		if code != 0 {
 			t.Fatalf("temp snapshot failed: %s", stderr)
 		}
 	})
 
 	t.Run("remove_temp_worktree", func(t *testing.T) {
-		_, stderr, code := runJVSInRepo(t, repoPath, "worktree", "remove", "temp-branch")
+		_, stderr, code := runJVSInRepo(t, repoPath, "workspace", "remove", "temp-branch")
 		if code != 0 {
 			t.Fatalf("remove worktree failed: %s", stderr)
 		}
@@ -144,11 +144,11 @@ func TestE2E_Hardening_DoctorCrashRecovery(t *testing.T) {
 
 	t.Run("create_healthy_snapshot", func(t *testing.T) {
 		os.WriteFile(filepath.Join(mainPath, "app.txt"), []byte("healthy state"), 0644)
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "healthy")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "healthy")
 		if code != 0 {
 			t.Fatalf("snapshot failed: %s", stderr)
 		}
-		if !strings.Contains(stdout, "Created snapshot") {
+		if !strings.Contains(stdout, "Created checkpoint") {
 			t.Errorf("expected success message, got: %s", stdout)
 		}
 	})
@@ -170,7 +170,7 @@ func TestE2E_Hardening_DoctorCrashRecovery(t *testing.T) {
 		if err := os.MkdirAll(intentsPath, 0755); err != nil {
 			t.Fatalf("failed to create intents dir: %v", err)
 		}
-		os.WriteFile(filepath.Join(intentsPath, "orphan-op.json"), []byte(`{"status":"in_progress","operation":"snapshot"}`), 0644)
+		os.WriteFile(filepath.Join(intentsPath, "orphan-op.json"), []byte(`{"status":"in_progress","operation":"checkpoint"}`), 0644)
 		os.WriteFile(filepath.Join(intentsPath, "stale-gc.json"), []byte(`{"status":"pending","operation":"gc"}`), 0644)
 	})
 
@@ -215,11 +215,11 @@ func TestE2E_Hardening_DoctorCrashRecovery(t *testing.T) {
 
 	t.Run("resume_normal_operations", func(t *testing.T) {
 		os.WriteFile(filepath.Join(mainPath, "recovered.txt"), []byte("post-repair"), 0644)
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "post-recovery")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "post-recovery")
 		if code != 0 {
 			t.Fatalf("post-recovery snapshot failed: %s", stderr)
 		}
-		if !strings.Contains(stdout, "Created snapshot") {
+		if !strings.Contains(stdout, "Created checkpoint") {
 			t.Errorf("expected success message, got: %s", stdout)
 		}
 	})
@@ -232,17 +232,17 @@ func TestE2E_Hardening_ConcurrentWorktreeOperations(t *testing.T) {
 	mainPath := filepath.Join(repoPath, "main")
 
 	os.WriteFile(filepath.Join(mainPath, "shared.txt"), []byte("shared baseline"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "baseline")
+	runJVSInRepo(t, repoPath, "checkpoint", "baseline")
 
 	worktrees := []string{"feature-a", "feature-b", "feature-c"}
 
 	t.Run("create_worktrees", func(t *testing.T) {
 		for _, name := range worktrees {
-			stdout, stderr, code := runJVSInRepo(t, repoPath, "worktree", "fork", name)
+			stdout, stderr, code := runJVSInRepo(t, repoPath, "fork", name)
 			if code != 0 {
 				t.Fatalf("fork %s failed: %s", name, stderr)
 			}
-			if !strings.Contains(stdout, "Created worktree") {
+			if !strings.Contains(stdout, "Created workspace") {
 				t.Errorf("fork %s: expected success message, got: %s", name, stdout)
 			}
 		}
@@ -258,11 +258,11 @@ func TestE2E_Hardening_ConcurrentWorktreeOperations(t *testing.T) {
 		for _, name := range worktrees {
 			featurePath := filepath.Join(repoPath, "worktrees", name)
 			createFiles(t, featurePath, worktreeFiles[name])
-			stdout, stderr, code := runJVSInWorktree(t, repoPath, name, "snapshot", name+" work")
+			stdout, stderr, code := runJVSInWorktree(t, repoPath, name, "checkpoint", name+" work")
 			if code != 0 {
 				t.Fatalf("snapshot %s failed: %s", name, stderr)
 			}
-			if !strings.Contains(stdout, "Created snapshot") {
+			if !strings.Contains(stdout, "Created checkpoint") {
 				t.Errorf("snapshot %s: expected success, got: %s", name, stdout)
 			}
 		}
@@ -270,7 +270,7 @@ func TestE2E_Hardening_ConcurrentWorktreeOperations(t *testing.T) {
 
 	t.Run("verify_independent_histories", func(t *testing.T) {
 		for _, name := range worktrees {
-			stdout, _, _ := runJVSInWorktree(t, repoPath, name, "history", "--json")
+			stdout, _, _ := runJVSInWorktree(t, repoPath, name, "checkpoint", "list", "--json")
 			count := getSnapshotCount(stdout)
 			if count < 1 {
 				t.Errorf("worktree %s should have at least 1 snapshot, got %d", name, count)
@@ -300,7 +300,7 @@ func TestE2E_Hardening_ConcurrentWorktreeOperations(t *testing.T) {
 	})
 
 	t.Run("remove_one_worktree", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "worktree", "remove", "feature-b")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "workspace", "remove", "feature-b")
 		if code != 0 {
 			t.Fatalf("remove feature-b failed: %s", stderr)
 		}
@@ -317,11 +317,11 @@ func TestE2E_Hardening_ConcurrentWorktreeOperations(t *testing.T) {
 					t.Errorf("worktree %s should still have %s after removing feature-b", name, filename)
 				}
 			}
-			stdout, stderr, code := runJVSInWorktree(t, repoPath, name, "snapshot", name+" still working")
+			stdout, stderr, code := runJVSInWorktree(t, repoPath, name, "checkpoint", name+" still working")
 			if code != 0 {
 				t.Errorf("snapshot in %s failed after removing feature-b: %s", name, stderr)
 			}
-			if !strings.Contains(stdout, "Created snapshot") {
+			if !strings.Contains(stdout, "Created checkpoint") {
 				t.Errorf("expected success in %s, got: %s", name, stdout)
 			}
 		}
@@ -336,18 +336,18 @@ func TestE2E_Hardening_FirstSnapshotOnNewWorktree(t *testing.T) {
 
 	t.Run("create_main_baseline", func(t *testing.T) {
 		os.WriteFile(filepath.Join(mainPath, "base.txt"), []byte("baseline"), 0644)
-		_, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "baseline")
+		_, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "baseline")
 		if code != 0 {
 			t.Fatalf("baseline snapshot failed: %s", stderr)
 		}
 	})
 
 	t.Run("fork_fresh_worktree", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "worktree", "fork", "fresh")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "fork", "fresh")
 		if code != 0 {
 			t.Fatalf("fork failed: %s", stderr)
 		}
-		if !strings.Contains(stdout, "Created worktree") {
+		if !strings.Contains(stdout, "Created workspace") {
 			t.Errorf("expected success message, got: %s", stdout)
 		}
 	})
@@ -361,17 +361,17 @@ func TestE2E_Hardening_FirstSnapshotOnNewWorktree(t *testing.T) {
 	})
 
 	t.Run("first_snapshot_succeeds", func(t *testing.T) {
-		stdout, stderr, code := runJVSInWorktree(t, repoPath, "fresh", "snapshot", "first snapshot on fresh worktree")
+		stdout, stderr, code := runJVSInWorktree(t, repoPath, "fresh", "checkpoint", "first snapshot on fresh worktree")
 		if code != 0 {
 			t.Fatalf("first snapshot on fresh worktree failed (CanSnapshot regression): %s", stderr)
 		}
-		if !strings.Contains(stdout, "Created snapshot") {
+		if !strings.Contains(stdout, "Created checkpoint") {
 			t.Errorf("expected success message, got: %s", stdout)
 		}
 	})
 
 	t.Run("verify_snapshot_in_history", func(t *testing.T) {
-		stdout, _, _ := runJVSInWorktree(t, repoPath, "fresh", "history", "--json")
+		stdout, _, _ := runJVSInWorktree(t, repoPath, "fresh", "checkpoint", "list", "--json")
 		count := getSnapshotCount(stdout)
 		if count < 1 {
 			t.Errorf("expected at least 1 snapshot in fresh worktree history, got %d", count)
@@ -390,11 +390,11 @@ func TestE2E_Hardening_VerifyAfterRestore(t *testing.T) {
 			"app.go":     "package main\n\nvar version = \"v1\"\n",
 			"config.yml": "version: 1\nmode: production\n",
 		})
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "release v1", "--tag", "v1")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "release v1", "--tag", "v1")
 		if code != 0 {
 			t.Fatalf("v1 snapshot failed: %s", stderr)
 		}
-		if !strings.Contains(stdout, "Created snapshot") {
+		if !strings.Contains(stdout, "Created checkpoint") {
 			t.Errorf("expected success message, got: %s", stdout)
 		}
 	})
@@ -405,18 +405,18 @@ func TestE2E_Hardening_VerifyAfterRestore(t *testing.T) {
 			"config.yml": "version: 2\nmode: staging\n",
 			"extra.txt":  "extra file in v2",
 		})
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "release v2", "--tag", "v2")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "release v2", "--tag", "v2")
 		if code != 0 {
 			t.Fatalf("v2 snapshot failed: %s", stderr)
 		}
-		if !strings.Contains(stdout, "Created snapshot") {
+		if !strings.Contains(stdout, "Created checkpoint") {
 			t.Errorf("expected success message, got: %s", stdout)
 		}
 	})
 
 	var v1ID string
 	t.Run("get_v1_snapshot_id", func(t *testing.T) {
-		stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--json")
+		stdout, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "list", "--json")
 		ids := extractAllSnapshotIDs(stdout)
 		if len(ids) < 2 {
 			t.Fatalf("expected at least 2 snapshots, got %d", len(ids))

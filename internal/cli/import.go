@@ -54,7 +54,7 @@ var importCmd = &cobra.Command{
 			"initial_checkpoint": desc.SnapshotID,
 			"engine":             desc.Engine,
 		}
-		applyTransferJSONFields(output, transferPlan)
+		applyTransferJSONFields(output, transferPlan, desc.Engine)
 		if jsonOutput {
 			return outputJSON(output)
 		}

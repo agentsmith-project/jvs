@@ -9,13 +9,13 @@
 
 ### What is JVS?
 
-**JVS** (Juicy Versioned Workspaces) is a **workspace versioning system** built on JuiceFS. It captures entire workspace states as snapshots, providing O(1) version control for data-intensive workloads.
+**JVS** (Juicy Versioned Workspaces) is a **workspace versioning system** built on JuiceFS. It captures entire workspace states as checkpoints, providing O(1) version control for data-intensive workloads.
 
 **Key characteristics:**
-- Snapshot-first (not diff-first like Git)
+- Checkpoint-first (not diff-first like Git)
 - Filesystem-native (no virtualization)
 - Local-first (no remote protocol)
-- O(1) snapshots via JuiceFS Copy-on-Write
+- O(1) checkpoints via JuiceFS Copy-on-Write
 
 ---
 
@@ -24,7 +24,7 @@
 | Aspect | Git | JVS |
 |--------|-----|-----|
 | **Unit of versioning** | Files/diffs | Entire workspace |
-| **Storage model** | Blob store + refs | Snapshots + descriptors |
+| **Storage model** | Blob store + refs | Checkpoints + descriptors |
 | **Performance** | Slower with large files | O(1) regardless of size |
 | **Use case** | Source code | Workspaces with data |
 | **Merge** | Text-based 3-way merge | No merge (fork instead) |
@@ -40,7 +40,7 @@ Git excels at text-based version control, but struggles with:
 - **Large datasets** (ML models, scientific data)
 - **Binary files** (storing full copies)
 - **Workspace reproducibility** (Git submodules are complex)
-- **O(1) snapshots** (Git requires significant I/O for large files)
+- **O(1) checkpoints** (Git requires significant I/O for large files)
 
 JVS handles these use cases natively.
 
@@ -50,7 +50,7 @@ JVS handles these use cases natively.
 
 **Use JVS when:**
 - You have large datasets (10GB+ workspaces)
-- You need O(1) snapshot/restore
+- You need O(1) checkpoint/restore
 - You work with ML experiments that need exact reproduction
 - You use JuiceFS for storage
 - You want simple workspace versioning without Git complexity
@@ -80,7 +80,7 @@ JVS handles these use cases natively.
 - A filesystem (JuiceFS recommended, any POSIX FS works)
 
 **Optional but recommended:**
-- JuiceFS mount (for O(1) snapshots)
+- JuiceFS mount (for O(1) checkpoints)
 - CoW-capable filesystem (btrfs, XFS) for reflink engine
 
 ---
@@ -112,72 +112,72 @@ jvs --version
 
 ## Concepts
 
-### What is a snapshot?
+### What is a checkpoint?
 
-A snapshot is a **complete capture of your workspace state** at a point in time. It includes:
+A checkpoint is a **complete capture of your workspace state** at a point in time. It includes:
 - All files in your workspace
-- Metadata describing the snapshot (note, tags, timestamps)
+- Metadata describing the checkpoint (note, tags, timestamps)
 - Integrity information (checksums and hashes)
 
-Snapshots are **immutable** - once created, they never change.
+Checkpoints are **immutable** - once created, they never change.
 
 ---
 
-### What is a worktree?
+### What is a workspace?
 
-A worktree is a **real directory** containing your workspace files. JVS manages multiple worktrees, each pointing to different snapshots.
+A workspace is a **real directory** containing your workspace files. JVS manages multiple workspaces, each pointing to different checkpoints.
 
-- `repo/main/` - The primary worktree
-- `repo/worktrees/<name>/` - Additional worktrees
+- `repo/main/` - The primary workspace
+- Use `jvs workspace path <name>` to find an additional workspace directory
 
 **Note:** The repository root (`repo/`) is NOT a workspace - `main/` is.
 
 ---
 
-### What is detached state?
+### What is current differs from latest?
 
-When you restore to a historical snapshot (not the latest), your worktree enters **detached state**. This means:
-- You can view/use the snapshot state
-- You cannot create new snapshots (would break lineage)
-- Use `jvs worktree fork` to create a new branch from this state
+When you restore to a historical checkpoint (not the latest), your workspace enters **current differs from latest**. This means:
+- You can view/use the checkpoint state
+- You cannot create new checkpoints (would break lineage)
+- Use `jvs fork` to create a new branch from this state
 
 ---
 
-### What does O(1) snapshot mean?
+### What does O(1) checkpoint mean?
 
-With JuiceFS Copy-on-Write, creating a snapshot is **constant time** - it doesn't matter if your workspace is 1GB or 1TB. The snapshot is a metadata reference, not a copy.
+With JuiceFS Copy-on-Write, creating a checkpoint is **constant time** - it doesn't matter if your workspace is 1GB or 1TB. The checkpoint is a metadata reference, not a copy.
 
-**Without JuiceFS:** Snapshots take O(n) time proportional to workspace size.
+**Without JuiceFS:** Checkpoints take O(n) time proportional to workspace size.
 
 ---
 
 ## Usage
 
-### How do I create a snapshot?
+### How do I create a checkpoint?
 
 ```bash
 cd myrepo/main
-jvs snapshot "Work in progress"
+jvs checkpoint "Work in progress"
 ```
 
 Add tags for organization:
 ```bash
-jvs snapshot "v1.0 release" --tag release --tag v1.0 --tag stable
+jvs checkpoint "v1.0 release" --tag release --tag v1.0 --tag stable
 ```
 
 ---
 
-### How do I restore a snapshot?
+### How do I restore a checkpoint?
 
 ```bash
-# By snapshot ID (full or prefix)
+# By checkpoint ID (full or prefix)
 jvs restore abc123
 
 # By tag
 jvs restore --latest-tag stable
 
 # Back to latest
-jvs restore HEAD
+jvs restore latest
 ```
 
 ---
@@ -185,13 +185,13 @@ jvs restore HEAD
 ### How do I see history?
 
 ```bash
-jvs history
+jvs checkpoint list
 
 # Filter by tag
-jvs history --tag stable
+jvs checkpoint list | grep stable
 
-# Show all snapshots across all worktrees
-jvs history --all
+# Show all checkpoints across all workspaces
+jvs checkpoint list --all
 ```
 
 ---
@@ -200,97 +200,29 @@ jvs history --all
 
 ```bash
 # Fork from current state
-jvs worktree fork feature-branch
+jvs fork feature-branch
 
-# Fork from specific snapshot
-jvs worktree fork feature-branch abc123
+# Fork from a specific checkpoint
+jvs fork abc123 feature-branch
 ```
 
-This creates a new directory at `worktrees/feature-branch/` that you can `cd` into.
+Use `jvs workspace path feature-branch` to print the directory you can `cd` into.
 
 ---
 
-### How do I create a partial snapshot?
+### Can I create partial checkpoints?
 
-**Partial snapshots** allow you to snapshot only specific paths within a worktree, rather than the entire workspace. This is useful for:
-
-- Large models that change infrequently
-- Training data that doesn't need versioning
-- Temporary files or caches
-- Selective backup strategies
-
-```bash
-# Snapshot only the models/ directory
-jvs snapshot "model checkpoint" --paths models/
-
-# Snapshot multiple specific paths
-jvs snapshot "models and config" --paths models/ config.yaml
-
-# Snapshot a single file
-jvs snapshot "config backup" --paths config.yaml
-```
-
-**Important notes:**
-- Paths must be relative to the worktree root
-- Absolute paths are rejected (security measure)
-- Paths containing `..` are rejected (prevents traversal attacks)
-- Non-existent paths are rejected with clear error messages
-- Duplicate paths are automatically deduplicated
-- Partial snapshots store the list of included paths in their descriptor
-
-**Can I restore a partial snapshot?**
-Yes! When you restore a partial snapshot, only the paths included in that snapshot are restored in your worktree. Paths not included in the partial snapshot remain unchanged.
-
-**How can I tell if a snapshot is partial?**
-Check the descriptor:
-```bash
-jvs inspect <snapshot-id>
-```
-Partial snapshots will show `"partial_paths": ["path1", "path2"]` in the output. Full snapshots have `"partial_paths": null` or an empty array.
+Not as part of the v0 stable public CLI. A checkpoint records the current
+workspace tree. Keep generated caches or temporary files outside the workspace
+when you do not want them in checkpoints.
 
 ---
 
-### How do I use compression for snapshots?
+### Does v0 expose checkpoint compression flags?
 
-**Compression** can significantly reduce storage usage for snapshots, especially for workspaces with text files, logs, or compressible data.
-
-**Create a compressed snapshot:**
-```bash
-# Fast compression (good balance of speed and ratio)
-jvs snapshot "checkpoint" --compress fast
-
-# Maximum compression (slower but smaller files)
-jvs snapshot "archive" --compress max
-
-# Default compression level
-jvs snapshot "backup" --compress default
-```
-
-**Compression levels:**
-- `none` - No compression (default)
-- `fast` - Level 1 gzip (fastest, lower compression)
-- `default` - Level 6 gzip (balanced speed and ratio)
-- `max` - Level 9 gzip (slowest, highest compression)
-
-**Important notes:**
-- Compression happens after snapshot creation
-- Compressed files have `.gz` extension added
-- Restore automatically decompresses compressed snapshots
-- Compression metadata is stored in the snapshot descriptor
-- Compression failure is non-fatal (snapshot is still valid)
-
-**Can I tell if a snapshot is compressed?**
-Check the descriptor:
-```bash
-jvs inspect <snapshot-id>
-```
-Compressed snapshots will show `"compression": {"type": "gzip", "level": 6}` in the output.
-
-**Performance considerations:**
-- Compression adds CPU overhead during snapshot creation
-- Decompression happens during restore (also adds overhead)
-- For large datasets with incompressible data (videos, already compressed files), compression may not help
-- JuiceFS Copy-on-Write + compression provides maximum storage efficiency
+No. Compression is not a v0 stable public CLI contract. Use the filesystem or
+storage layer for compression decisions, and rely on `jvs capability`,
+`jvs info`, and `jvs doctor` for engine visibility.
 
 ---
 
@@ -298,8 +230,8 @@ Compressed snapshots will show `"compression": {"type": "gzip", "level": 6}` in 
 
 JVS supports configuration via `.jvs/config.yaml` for repository-specific settings. This allows you to set defaults like:
 
-- **Default engine** - Avoid specifying `--engine` every time
-- **Default tags** - Automatically add tags to every snapshot
+- **Engine visibility** - Check the selected engine with `jvs info`
+- **Default tags** - Automatically add tags to every checkpoint
 - **Output format** - Always use JSON output if preferred
 - **Progress bars** - Enable/disable progress bar display
 
@@ -370,7 +302,7 @@ progress_enabled: true
 
 ### Misconception: "JVS has merge conflicts"
 
-**Reality:** JVS has no merge. You fork worktrees instead. Different model for different use case.
+**Reality:** JVS has no merge. You fork workspaces instead. Different model for different use case.
 
 ---
 
@@ -382,10 +314,10 @@ progress_enabled: true
 
 ## Technical
 
-### What happens if a snapshot creation is interrupted?
+### What happens if a checkpoint creation is interrupted?
 
-JVS uses **intent records** to track in-progress snapshots. If interrupted:
-- Partial snapshots are detectable (missing `.READY` file)
+JVS uses **intent records** to track in-progress checkpoints. If interrupted:
+- Partial checkpoints are detectable (missing `.READY` file)
 - Run `jvs doctor --strict` to find and clean up
 
 ---
@@ -403,7 +335,7 @@ Both must pass for verification to succeed.
 ### Can JVS handle concurrent access?
 
 JVS v7.0 is designed for **single-writer** scenarios. Concurrent access from multiple processes is not supported and may cause:
-- Corrupted snapshots
+- Corrupted checkpoints
 - Lost updates
 - Audit inconsistencies
 
@@ -414,11 +346,11 @@ JVS v7.0 is designed for **single-writer** scenarios. Concurrent access from mul
 ### What is the storage overhead?
 
 JVS metadata is minimal:
-- **Descriptors:** ~1-2KB per snapshot
-- **Snapshots:** Small reference files (juicefs-clone references)
+- **Descriptors:** ~1-2KB per checkpoint
+- **Checkpoints:** Small reference files (juicefs-clone references)
 - **Audit log:** ~200 bytes per operation
 
-Your actual workspace data is stored once - snapshots are references, not copies.
+Your actual workspace data is stored once - checkpoints are references, not copies.
 
 ---
 
@@ -426,33 +358,31 @@ Your actual workspace data is stored once - snapshots are references, not copies
 
 ### JVS says "no suitable engine found"
 
-**Solution:** You're on a filesystem without CoW, and copy isn't enabled. Force copy engine:
-
-```bash
-jvs init myrepo --engine copy
-```
+**Solution:** Probe the target path with `jvs capability <path>` and move the
+repo to a filesystem where JVS reports a supported engine. The portable copy
+engine is selected automatically when it is the best available option.
 
 ---
 
-### Restore says "worktree is in detached state"
+### Restore says "workspace is in current differs from latest"
 
-**Solution:** This is normal for historical snapshots. Return to latest:
+**Solution:** This is normal for historical checkpoints. Return to latest:
 
 ```bash
-jvs restore HEAD
+jvs restore latest
 ```
 
 Or create a fork to continue work:
 
 ```bash
-jvs worktree fork new-branch
+jvs fork new-branch
 ```
 
 ---
 
-### Doctor reports "partial snapshot detected"
+### Doctor reports "partial checkpoint detected"
 
-**Solution:** A previous snapshot was interrupted. Clean up:
+**Solution:** A previous checkpoint was interrupted. Clean up:
 
 ```bash
 jvs doctor --strict --repair-runtime
@@ -462,7 +392,7 @@ jvs doctor --strict --repair-runtime
 
 ## Performance
 
-### How can I speed up snapshots?
+### How can I speed up checkpoints?
 
 1. **Use JuiceFS** - Enables O(1) juicefs-clone engine
 2. **Use fast storage** - NVMe SSD, optimized storage
@@ -471,13 +401,13 @@ jvs doctor --strict --repair-runtime
 
 ---
 
-### Why is my first snapshot slow?
+### Why is my first checkpoint slow?
 
-The first snapshot needs to:
+The first checkpoint needs to:
 - Create initial metadata structures
 - Compute payload hashes (I/O intensive)
 
-Subsequent snapshots are much faster (incremental hashing).
+Subsequent checkpoints are much faster (incremental hashing).
 
 ---
 
@@ -486,7 +416,7 @@ Subsequent snapshots are much faster (incremental hashing).
 JVS itself uses very little space (metadata only). Your workspace data storage depends on your filesystem (JuiceFS, NFS, local disk, etc.).
 
 With JuiceFS CoW:
-- Snapshots: Minimal overhead (reference, not copy)
+- Checkpoints: Minimal overhead (reference, not copy)
 - Descriptors: ~1KB each
 
 ---
@@ -500,7 +430,7 @@ With JuiceFS CoW:
 | **Storage backend** | Any filesystem | Multiple backends (S3, GCS, etc.) |
 | **Architecture** | Filesystem-native | Cache + remote |
 | **Model tracking** | No (use Git/MLEM) | Yes (built-in) |
-| **Snapshot speed** | O(1) with JuiceFS | O(n) |
+| **Checkpoint speed** | O(1) with JuiceFS | O(n) |
 | **Setup complexity** | Low | Medium |
 
 ---
@@ -510,7 +440,7 @@ With JuiceFS CoW:
 | Aspect | JVS | Git LFS |
 |--------|-----|---------|
 | **Versioning unit** | Entire workspace | Files (large files stored separately) |
-| **Workflow** | Snapshot restore | Git checkout |
+| **Workflow** | Checkpoint restore | Git checkout |
 | **O(1) operations** | Yes (with JuiceFS) | No |
 | **Learning curve** | Simple | Moderate |
 
@@ -554,17 +484,17 @@ See the [Quick Start Guide](QUICKSTART.md) for a 5-minute tutorial.
 jvs init myproject
 cd myproject/main
 
-# Snapshot
-jvs snapshot "Initial state"
+# Checkpoint
+jvs checkpoint "Initial state"
 
 # Make changes
 vim file.txt
 
-# Snapshot again
-jvs snapshot "Added feature"
+# Checkpoint again
+jvs checkpoint "Added feature"
 
 # Restore if needed
-jvs restore <snapshot-id>
+jvs restore <checkpoint-id>
 ```
 
 ---
@@ -642,7 +572,7 @@ See the [changelog](docs/99_CHANGELOG.md) for recent releases. Current focus are
 
 ### Will JVS add merge support?
 
-**Not planned.** Merge complexity doesn't align with JVS's snapshot-first philosophy. Use `jvs worktree fork` to create parallel work streams instead.
+**Not planned.** Merge complexity doesn't align with JVS's checkpoint-first philosophy. Use `jvs fork` to create parallel work streams instead.
 
 ---
 

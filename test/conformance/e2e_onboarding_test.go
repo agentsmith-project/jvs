@@ -67,12 +67,12 @@ func TestE2E_Onboarding_NewUserFlow(t *testing.T) {
 	// Step 3: Take initial snapshot
 	var snapshotID string
 	t.Run("create_snapshot", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, projectPath, "snapshot", "initial commit")
+		stdout, stderr, code := runJVSInRepo(t, projectPath, "checkpoint", "initial commit")
 		if code != 0 {
 			t.Fatalf("snapshot failed: %s", stderr)
 		}
-		if !strings.Contains(stdout, "Created snapshot") {
-			t.Errorf("expected 'Created snapshot' in output, got: %s", stdout)
+		if !strings.Contains(stdout, "Created checkpoint") {
+			t.Errorf("expected 'Created checkpoint' in output, got: %s", stdout)
 		}
 
 		// Extract snapshot ID for later use
@@ -84,7 +84,7 @@ func TestE2E_Onboarding_NewUserFlow(t *testing.T) {
 
 	// Step 4: View history
 	t.Run("view_history", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, projectPath, "history")
+		stdout, stderr, code := runJVSInRepo(t, projectPath, "checkpoint", "list")
 		if code != 0 {
 			t.Fatalf("history failed: %s", stderr)
 		}
@@ -93,7 +93,7 @@ func TestE2E_Onboarding_NewUserFlow(t *testing.T) {
 		}
 
 		// Count snapshots - should be exactly one
-		jsonOut, _, _ := runJVSInRepo(t, projectPath, "history", "--json")
+		jsonOut, _, _ := runJVSInRepo(t, projectPath, "checkpoint", "list", "--json")
 		count := getSnapshotCount(jsonOut)
 		if count != 1 {
 			t.Errorf("expected exactly 1 snapshot, got %d", count)
@@ -113,7 +113,7 @@ func TestE2E_Onboarding_NewUserFlow(t *testing.T) {
 
 		// Check JSON output for total_snapshots
 		jsonOut, _, _ := runJVSInRepo(t, projectPath, "info", "--json")
-		if !strings.Contains(jsonOut, "total_snapshots") && !strings.Contains(jsonOut, "snapshot") {
+		if !strings.Contains(jsonOut, "total_snapshots") && !strings.Contains(jsonOut, "checkpoint") {
 			t.Logf("Warning: info JSON may not contain snapshot count: %s", jsonOut)
 		}
 	})
@@ -132,13 +132,13 @@ func TestE2E_Onboarding_NewUserFlow(t *testing.T) {
 
 // extractSnapshotIDFromOutput extracts snapshot ID from command output
 func extractSnapshotIDFromOutput(output string) string {
-	// Look for patterns like "Created snapshot abc123" or "snapshot_id": "abc123"
+	// Look for patterns like "Created checkpoint abc123" or "checkpoint_id": "abc123"
 	lines := strings.Split(output, "\n")
 	for _, line := range lines {
-		if strings.Contains(line, "Created snapshot") {
+		if strings.Contains(line, "Created checkpoint") {
 			parts := strings.Fields(line)
 			for i, p := range parts {
-				if p == "snapshot" && i+1 < len(parts) {
+				if p == "checkpoint" && i+1 < len(parts) {
 					return parts[i+1]
 				}
 			}

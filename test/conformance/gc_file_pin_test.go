@@ -19,7 +19,7 @@ func createOldOrphanedSnapshot(t *testing.T, repoPath string) string {
 
 	mainPath := filepath.Join(repoPath, "main")
 	requireWriteFile(t, filepath.Join(mainPath, "base.txt"), "base")
-	baseOut, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "base", "--json")
+	baseOut, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "base", "--json")
 	if code != 0 {
 		t.Fatalf("base snapshot failed: %s", stderr)
 	}
@@ -28,14 +28,14 @@ func createOldOrphanedSnapshot(t *testing.T, repoPath string) string {
 		t.Fatalf("base snapshot id not found in output: %s", baseOut)
 	}
 
-	_, stderr, code = runJVSInRepo(t, repoPath, "worktree", "fork", baseID, "temp")
+	_, stderr, code = runJVSInRepo(t, repoPath, "fork", baseID, "temp")
 	if code != 0 {
 		t.Fatalf("worktree fork failed: %s", stderr)
 	}
 
 	tempPath := filepath.Join(repoPath, "worktrees", "temp")
 	requireWriteFile(t, filepath.Join(tempPath, "temp.txt"), "temp")
-	tempOut, stderr, code := runJVSInWorktree(t, repoPath, "temp", "snapshot", "temp", "--json")
+	tempOut, stderr, code := runJVSInWorktree(t, repoPath, "temp", "checkpoint", "temp", "--json")
 	if code != 0 {
 		t.Fatalf("temp snapshot failed: %s", stderr)
 	}
@@ -45,7 +45,7 @@ func createOldOrphanedSnapshot(t *testing.T, repoPath string) string {
 	}
 
 	ageSnapshotDescriptor(t, repoPath, tempID)
-	_, stderr, code = runJVSInRepo(t, repoPath, "worktree", "remove", "temp")
+	_, stderr, code = runJVSInRepo(t, repoPath, "workspace", "remove", "temp")
 	if code != 0 {
 		t.Fatalf("worktree remove failed: %s", stderr)
 	}

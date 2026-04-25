@@ -24,33 +24,33 @@ func TestE2E_Worktree_ParallelFeatures(t *testing.T) {
 	// Step 1: Create shared baseline
 	t.Run("create_baseline", func(t *testing.T) {
 		os.WriteFile(filepath.Join(mainPath, "lib.txt"), []byte("shared library"), 0644)
-		runJVSInRepo(t, repoPath, "snapshot", "baseline", "--tag", "baseline")
+		runJVSInRepo(t, repoPath, "checkpoint", "baseline", "--tag", "baseline")
 	})
 
 	// Step 2: Fork feature worktrees
 	t.Run("fork_worktrees", func(t *testing.T) {
 		// Fork auth feature
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "worktree", "fork", "feature-auth")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "fork", "feature-auth")
 		if code != 0 {
 			t.Fatalf("fork feature-auth failed: %s", stderr)
 		}
-		if !strings.Contains(stdout, "Created worktree") {
+		if !strings.Contains(stdout, "Created workspace") {
 			t.Errorf("expected success message, got: %s", stdout)
 		}
 
 		// Fork UI feature
-		stdout, stderr, code = runJVSInRepo(t, repoPath, "worktree", "fork", "feature-ui")
+		stdout, stderr, code = runJVSInRepo(t, repoPath, "fork", "feature-ui")
 		if code != 0 {
 			t.Fatalf("fork feature-ui failed: %s", stderr)
 		}
-		if !strings.Contains(stdout, "Created worktree") {
+		if !strings.Contains(stdout, "Created workspace") {
 			t.Errorf("expected success message, got: %s", stdout)
 		}
 	})
 
 	// Step 3: List worktrees
 	t.Run("list_worktrees", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "worktree", "list")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "workspace", "list")
 		if code != 0 {
 			t.Fatalf("worktree list failed: %s", stderr)
 		}
@@ -72,11 +72,11 @@ func TestE2E_Worktree_ParallelFeatures(t *testing.T) {
 		authPath := filepath.Join(repoPath, "worktrees", "feature-auth")
 		os.WriteFile(filepath.Join(authPath, "auth.py"), []byte("auth module"), 0644)
 
-		stdout, stderr, code := runJVSInWorktree(t, repoPath, "feature-auth", "snapshot", "auth v1")
+		stdout, stderr, code := runJVSInWorktree(t, repoPath, "feature-auth", "checkpoint", "auth v1")
 		if code != 0 {
 			t.Fatalf("auth snapshot failed: %s", stderr)
 		}
-		if !strings.Contains(stdout, "Created snapshot") {
+		if !strings.Contains(stdout, "Created checkpoint") {
 			t.Errorf("expected success message, got: %s", stdout)
 		}
 
@@ -91,11 +91,11 @@ func TestE2E_Worktree_ParallelFeatures(t *testing.T) {
 		uiPath := filepath.Join(repoPath, "worktrees", "feature-ui")
 		os.WriteFile(filepath.Join(uiPath, "ui.jsx"), []byte("ui component"), 0644)
 
-		stdout, stderr, code := runJVSInWorktree(t, repoPath, "feature-ui", "snapshot", "ui v1")
+		stdout, stderr, code := runJVSInWorktree(t, repoPath, "feature-ui", "checkpoint", "ui v1")
 		if code != 0 {
 			t.Fatalf("ui snapshot failed: %s", stderr)
 		}
-		if !strings.Contains(stdout, "Created snapshot") {
+		if !strings.Contains(stdout, "Created checkpoint") {
 			t.Errorf("expected success message, got: %s", stdout)
 		}
 
@@ -130,7 +130,7 @@ func TestE2E_Worktree_ParallelFeatures(t *testing.T) {
 
 	// Step 7: Check main's history (should only have main's snapshots)
 	t.Run("main_history", func(t *testing.T) {
-		stdout, _, _ := runJVSInRepo(t, repoPath, "history")
+		stdout, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "list")
 		// Main should have baseline
 		if !strings.Contains(stdout, "baseline") {
 			t.Error("main history should contain 'baseline'")
@@ -141,7 +141,7 @@ func TestE2E_Worktree_ParallelFeatures(t *testing.T) {
 
 	// Step 8: Rename worktree
 	t.Run("rename_worktree", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "worktree", "rename", "feature-ui", "feature-frontend")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "workspace", "rename", "feature-ui", "feature-frontend")
 		if code != 0 {
 			t.Fatalf("rename failed: %s", stderr)
 		}
@@ -150,7 +150,7 @@ func TestE2E_Worktree_ParallelFeatures(t *testing.T) {
 		}
 
 		// Verify new name exists
-		stdout, _, _ = runJVSInRepo(t, repoPath, "worktree", "list")
+		stdout, _, _ = runJVSInRepo(t, repoPath, "workspace", "list")
 		if !strings.Contains(stdout, "feature-frontend") {
 			t.Error("feature-frontend should exist after rename")
 		}
@@ -161,7 +161,7 @@ func TestE2E_Worktree_ParallelFeatures(t *testing.T) {
 
 	// Step 9: Remove worktree
 	t.Run("remove_worktree", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "worktree", "remove", "feature-auth")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "workspace", "remove", "feature-auth")
 		if code != 0 {
 			t.Fatalf("remove failed: %s", stderr)
 		}
@@ -170,7 +170,7 @@ func TestE2E_Worktree_ParallelFeatures(t *testing.T) {
 		}
 
 		// Verify removed from list
-		stdout, _, _ = runJVSInRepo(t, repoPath, "worktree", "list")
+		stdout, _, _ = runJVSInRepo(t, repoPath, "workspace", "list")
 		if strings.Contains(stdout, "feature-auth") {
 			t.Error("feature-auth should NOT exist after removal")
 		}
@@ -182,7 +182,7 @@ func TestE2E_Worktree_CannotRemoveMain(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 
 	// Try to remove main - should fail
-	_, _, code := runJVSInRepo(t, repoPath, "worktree", "remove", "main")
+	_, _, code := runJVSInRepo(t, repoPath, "workspace", "remove", "main")
 	if code == 0 {
 		t.Error("should not be able to remove main worktree")
 	}
@@ -195,26 +195,26 @@ func TestE2E_Worktree_IndependentHistory(t *testing.T) {
 
 	// Create baseline
 	os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte("base"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "main-baseline")
+	runJVSInRepo(t, repoPath, "checkpoint", "main-baseline")
 
 	// Fork worktree
-	runJVSInRepo(t, repoPath, "worktree", "fork", "feature")
+	runJVSInRepo(t, repoPath, "fork", "feature")
 
 	// Create snapshot in feature worktree
 	featurePath := filepath.Join(repoPath, "worktrees", "feature")
 	os.WriteFile(filepath.Join(featurePath, "feature.txt"), []byte("feature"), 0644)
-	runJVSInWorktree(t, repoPath, "feature", "snapshot", "feature-added")
+	runJVSInWorktree(t, repoPath, "feature", "checkpoint", "feature-added")
 
 	// Create snapshot in main
 	os.WriteFile(filepath.Join(mainPath, "main.txt"), []byte("main"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "main-update")
+	runJVSInRepo(t, repoPath, "checkpoint", "main-update")
 
 	// Verify histories are tracked separately
 	t.Run("check_histories", func(t *testing.T) {
 		// Both worktrees should see the shared baseline
 		// But their subsequent snapshots are in different lineages
-		mainHist, _, _ := runJVSInRepo(t, repoPath, "history", "--json")
-		featureHist, _, _ := runJVSInWorktree(t, repoPath, "feature", "history", "--json")
+		mainHist, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "list", "--json")
+		featureHist, _, _ := runJVSInWorktree(t, repoPath, "feature", "checkpoint", "list", "--json")
 
 		mainCount := getSnapshotCount(mainHist)
 		featureCount := getSnapshotCount(featureHist)
@@ -236,14 +236,14 @@ func TestE2E_Worktree_WorktreePath(t *testing.T) {
 
 	// Create a snapshot so we can fork from it
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "baseline")
+	runJVSInRepo(t, repoPath, "checkpoint", "baseline")
 
 	// Fork a worktree
-	runJVSInRepo(t, repoPath, "worktree", "fork", "my-feature")
+	runJVSInRepo(t, repoPath, "fork", "my-feature")
 
 	// Get path of main
 	t.Run("main_path", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "worktree", "path", "main")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "workspace", "path", "main")
 		if code != 0 {
 			t.Fatalf("worktree path main failed: %s", stderr)
 		}
@@ -254,7 +254,7 @@ func TestE2E_Worktree_WorktreePath(t *testing.T) {
 
 	// Get path of feature
 	t.Run("feature_path", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "worktree", "path", "my-feature")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "workspace", "path", "my-feature")
 		if code != 0 {
 			t.Fatalf("worktree path my-feature failed: %s", stderr)
 		}
@@ -271,11 +271,11 @@ func TestE2E_Worktree_ForkFromCurrentState(t *testing.T) {
 
 	// Create initial snapshot
 	os.WriteFile(filepath.Join(mainPath, "original.txt"), []byte("v1"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "v1")
+	runJVSInRepo(t, repoPath, "checkpoint", "v1")
 
 	// Fork from current position (forks from last snapshot)
 	t.Run("fork_from_snapshot", func(t *testing.T) {
-		runJVSInRepo(t, repoPath, "worktree", "fork", "from-snapshot")
+		runJVSInRepo(t, repoPath, "fork", "from-snapshot")
 
 		// Verify fork has the original file
 		forkPath := filepath.Join(repoPath, "worktrees", "from-snapshot")
@@ -298,12 +298,12 @@ func TestE2E_Worktree_MultipleFeatureBranches(t *testing.T) {
 
 	// Setup: create shared library
 	os.WriteFile(filepath.Join(mainPath, "shared.go"), []byte("package shared"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "shared lib", "--tag", "shared-v1")
+	runJVSInRepo(t, repoPath, "checkpoint", "shared lib", "--tag", "shared-v1")
 
 	// Create multiple feature branches
 	features := []string{"feature-a", "feature-b", "feature-c"}
 	for _, name := range features {
-		runJVSInRepo(t, repoPath, "worktree", "fork", name)
+		runJVSInRepo(t, repoPath, "fork", name)
 	}
 
 	// Work on each feature independently
@@ -314,11 +314,11 @@ func TestE2E_Worktree_MultipleFeatureBranches(t *testing.T) {
 			content := string(rune('A' + i))
 
 			os.WriteFile(filepath.Join(featurePath, filename), []byte(content), 0644)
-			stdout, stderr, code := runJVSInWorktree(t, repoPath, name, "snapshot", name+" work")
+			stdout, stderr, code := runJVSInWorktree(t, repoPath, name, "checkpoint", name+" work")
 			if code != 0 {
 				t.Fatalf("snapshot failed: %s", stderr)
 			}
-			if !strings.Contains(stdout, "Created snapshot") {
+			if !strings.Contains(stdout, "Created checkpoint") {
 				t.Errorf("expected success, got: %s", stdout)
 			}
 		})

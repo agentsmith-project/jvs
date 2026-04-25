@@ -26,15 +26,17 @@ type Capability struct {
 // CapabilityReport is a non-mutating report by default. Reflink support is
 // only confirmed when writeProbe is true.
 type CapabilityReport struct {
-	TargetPath        string           `json:"target_path"`
-	ProbePath         string           `json:"probe_path"`
-	WriteProbe        bool             `json:"write_probe"`
-	Write             Capability       `json:"write"`
-	JuiceFS           Capability       `json:"juicefs"`
-	Reflink           Capability       `json:"reflink"`
-	Copy              Capability       `json:"copy"`
-	RecommendedEngine model.EngineType `json:"recommended_engine"`
-	Warnings          []string         `json:"warnings,omitempty"`
+	TargetPath           string                     `json:"target_path"`
+	ProbePath            string                     `json:"probe_path"`
+	WriteProbe           bool                       `json:"write_probe"`
+	Write                Capability                 `json:"write"`
+	JuiceFS              Capability                 `json:"juicefs"`
+	Reflink              Capability                 `json:"reflink"`
+	Copy                 Capability                 `json:"copy"`
+	RecommendedEngine    model.EngineType           `json:"recommended_engine"`
+	MetadataPreservation model.MetadataPreservation `json:"metadata_preservation"`
+	PerformanceClass     string                     `json:"performance_class"`
+	Warnings             []string                   `json:"warnings,omitempty"`
 }
 
 // CapabilityProber is the filesystem probing surface used by capability
@@ -138,6 +140,8 @@ func (filesystemCapabilityProber) ProbeCapabilities(targetPath string, writeProb
 	report.JuiceFS = probeJuiceFS(probePath)
 	report.Reflink = probeReflink(probeDir, writeProbe, report.Write)
 	report.RecommendedEngine = recommendedEngine(report)
+	report.MetadataPreservation = MetadataPreservationForEngine(report.RecommendedEngine)
+	report.PerformanceClass = PerformanceClassForEngine(report.RecommendedEngine)
 	report.Warnings = append(report.Warnings, report.Write.Warnings...)
 	report.Warnings = append(report.Warnings, report.JuiceFS.Warnings...)
 	report.Warnings = append(report.Warnings, report.Reflink.Warnings...)
@@ -546,6 +550,64 @@ func firstRegularFile(root string) (string, os.FileInfo, bool, error) {
 
 func optimizedTransfer(engineType model.EngineType) bool {
 	return engineType == model.EngineJuiceFSClone || engineType == model.EngineReflinkCopy
+}
+
+// MetadataPreservationForEngine returns the documented preservation contract
+// for materializing payloads with engineType.
+func MetadataPreservationForEngine(engineType model.EngineType) model.MetadataPreservation {
+	switch engineType {
+	case model.EngineJuiceFSClone:
+		return model.MetadataPreservation{
+			Symlinks:   "preserved",
+			Hardlinks:  "identity not guaranteed in v0; files may materialize independently",
+			Mode:       "preserved",
+			Timestamps: "preserved",
+			Xattrs:     "filesystem-dependent",
+			ACLs:       "filesystem-dependent",
+		}
+	case model.EngineReflinkCopy:
+		return model.MetadataPreservation{
+			Symlinks:   "preserved",
+			Hardlinks:  "identity not guaranteed in v0; files may materialize independently",
+			Mode:       "preserved",
+			Timestamps: "preserved",
+			Xattrs:     "not preserved",
+			ACLs:       "not preserved",
+		}
+	case model.EngineCopy:
+		return model.MetadataPreservation{
+			Symlinks:   "preserved",
+			Hardlinks:  "identity not guaranteed in v0; files may materialize independently",
+			Mode:       "preserved",
+			Timestamps: "preserved",
+			Xattrs:     "not preserved",
+			ACLs:       "not preserved",
+		}
+	default:
+		return model.MetadataPreservation{
+			Symlinks:   "unknown",
+			Hardlinks:  "unknown",
+			Mode:       "unknown",
+			Timestamps: "unknown",
+			Xattrs:     "unknown",
+			ACLs:       "unknown",
+		}
+	}
+}
+
+// PerformanceClassForEngine returns the public performance class for an engine
+// without promising benchmark-specific throughput.
+func PerformanceClassForEngine(engineType model.EngineType) string {
+	switch engineType {
+	case model.EngineJuiceFSClone:
+		return "constant-time-metadata-clone"
+	case model.EngineReflinkCopy:
+		return "linear-tree-walk-cow-data"
+	case model.EngineCopy:
+		return "linear-data-copy"
+	default:
+		return "unknown"
+	}
 }
 
 func firstWarning(groups ...[]string) string {

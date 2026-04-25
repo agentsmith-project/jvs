@@ -13,23 +13,21 @@ JVS performance depends on several factors: storage engine, filesystem choices, 
 
 ## Performance Characteristics
 
-### Snapshot Performance by Engine
+### Checkpoint Performance by Engine
 
-| Engine | Complexity | Use Case | Throughput |
-|--------|------------|----------|------------|
-| **juicefs-clone** | O(1) | JuiceFS mount | Unlimited |
-| **reflink** | O(1) | CoW filesystems (btrfs, XFS) | High |
-| **copy** | O(n) | Fallback | Limited by disk I/O |
+| Engine | Performance Class | Use Case | Bottleneck |
+|--------|-------------------|----------|------------|
+| **juicefs-clone** | Constant-time metadata clone when supported | JuiceFS mount | Metadata service and mount health |
+| **reflink-copy** | Linear tree walk with CoW data sharing per file | CoW filesystems (btrfs, XFS) | File count and metadata I/O |
+| **copy** | Linear data copy | Fallback | Disk and network I/O |
 
 ### Verify Performance
 
 | Operation | Complexity | Bottleneck |
 |-----------|------------|------------|
 | `jvs verify` | O(n) | Disk I/O, SHA-256 computation |
-| `jvs gc plan` | O(m) | Descriptor reads (m = snapshots) |
-| `jvs restore` | O(1)* | JuiceFS clone; O(n) for copy |
-
-*With juicefs-clone engine
+| `jvs gc plan` | O(m) | Descriptor reads (m = checkpoints) |
+| `jvs restore` | Engine-dependent | Constant-time metadata clone with supported `juicefs-clone`; linear fallback for copy |
 
 ---
 
@@ -41,25 +39,24 @@ JVS performance depends on several factors: storage engine, filesystem choices, 
 
 ```bash
 # Verify juicefs-clone is available
-jvs doctor --json | grep -A5 engines
+jvs capability /path/to/repo-parent --write-probe --json
 
-# Force juicefs-clone if detected
-jvs init myrepo --engine juicefs-clone
+# Prefer an engine for future materialization
+export JVS_SNAPSHOT_ENGINE=juicefs-clone
+jvs init myrepo
 ```
 
 **When juicefs-clone is not available:**
-1. **Use reflink** on btrfs/XFS for O(1) without JuiceFS
+1. **Use reflink-copy** on btrfs/XFS for CoW data sharing without JuiceFS
 2. **Use copy** as fallback for one-time operations
 
-### reflink Engine
+### reflink-copy Engine
 
 **Best for:** Local SSDs without JuiceFS
 
 ```bash
 # Check if filesystem supports reflink
-# On Linux: stat -c %i file1 stat -c %i file2 (same i-node = CoW)
-
-jvs init myrepo --engine reflink
+jvs capability /path/to/repo-parent --write-probe --json
 ```
 
 **Requirements:**
@@ -166,12 +163,12 @@ JVS itself uses minimal RAM, but Go runtime benefits from more memory.
 **Auto-detection (default):**
 ```yaml
 # .jvs/config.yaml
-engine: auto  # Tries juicefs-clone, reflink, copy
+default_engine: auto  # Tries juicefs-clone, reflink-copy, copy
 ```
 
 **Force specific engine:**
 ```yaml
-engine: juicefs-clone  # Always use JuiceFS
+default_engine: juicefs-clone  # Prefer JuiceFS; command JSON reports fallback
 ```
 
 ### Logging
@@ -187,7 +184,7 @@ logging:
 
 **Disable for scripts:**
 ```bash
-jvs snapshot "Automated snapshot" --quiet
+jvs checkpoint "Automated checkpoint" --quiet
 ```
 
 ---
@@ -258,21 +255,21 @@ echo cfq | sudo tee /sys/block/sdX/queue/scheduler
 
 ## Common Bottlenecks
 
-### Issue: Slow first snapshot
+### Issue: Slow first checkpoint
 
 **Cause:** Computing initial payload hashes for all files
 
 **Solutions:**
 - Use JuiceFS with metadata cache
 - Pre-warm cache: `find . -type f -exec cat {} \; > /dev/null`
-- Accept slower first snapshot for long-term benefit
+- Accept a slower first checkpoint for long-term benefit
 
 ### Issue: Slow verify
 
 **Cause:** Hashing every file in workspace
 
 **Solutions:**
-- Verify specific snapshots instead of `--all`
+- Verify specific checkpoints instead of `--all`
 - Use `--no-payload` to skip hash computation (not recommended for production)
 - Run during off-peak hours
 
@@ -282,7 +279,7 @@ echo cfq | sudo tee /sys/block/sdX/queue/scheduler
 
 **Solutions:**
 - Keep descriptor count manageable (GC regularly)
-- Use retention policies to limit snapshots
+- Use retention policies to limit checkpoints
 
 ---
 
@@ -290,14 +287,14 @@ echo cfq | sudo tee /sys/block/sdX/queue/scheduler
 
 ### Measuring Performance
 
-**Snapshot performance:**
+**Checkpoint performance:**
 ```bash
-time jvs snapshot "Benchmark test"
+time jvs checkpoint "Benchmark test"
 ```
 
 **Restore performance:**
 ```bash
-time jvs restore <snapshot-id>
+time jvs restore <checkpoint-id>
 ```
 
 **Verify performance:**
@@ -313,7 +310,7 @@ jvs doctor --json | jq '.timing'
 
 ### Example Benchmarks
 
-| Workspace Size | Snapshot (juicefs-clone) | Snapshot (copy) | Verify |
+| Workspace Size | Checkpoint (juicefs-clone) | Checkpoint (copy) | Verify |
 |----------------|------------------------|---------------|--------|
 | 1 GB | 0.1s | 2s | 3s |
 | 10 GB | 0.1s | 25s | 35s |
@@ -341,7 +338,7 @@ jvs doctor --json | jq '.timing'
 ### Monitoring
 
 **Key metrics to monitor:**
-- Snapshot creation time
+- Checkpoint creation time
 - Restore time
 - Verify time
 - Disk usage (`.jvs/` and workspace)
@@ -352,12 +349,12 @@ jvs doctor --json | jq '.timing'
 
 ## Scaling Considerations
 
-### Snapshot Count
+### Checkpoint Count
 
-**Recommended:** < 10,000 snapshots per repository for best performance
+**Recommended:** < 10,000 checkpoints per repository for best performance
 
-**More snapshots?**
-- Use tags to mark important snapshots
+**More checkpoints?**
+- Use tags to mark important checkpoints
 - More aggressive GC policies
 - Consider splitting into multiple repositories
 
@@ -377,13 +374,13 @@ jvs doctor --json | jq '.timing'
 **Larger workspaces:**
 - Ensure sufficient IOPS
 - Monitor hash computation time
-- Consider partial snapshots (future feature)
+- Consider partial checkpoints (future feature)
 
 ---
 
 ## Troubleshooting Performance
 
-### Issue: Snapshots are slow
+### Issue: Checkpoints are slow
 
 **Diagnostics:**
 ```bash
@@ -418,7 +415,7 @@ jvs doctor --json | grep engine
 
 **This is expected** - verify reads and hashes every file. Optimization:
 
-1. Verify fewer snapshots:
+1. Verify fewer checkpoints:
    ```bash
    jvs verify --since "2026-02-20"
    ```

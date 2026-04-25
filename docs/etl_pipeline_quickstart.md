@@ -7,7 +7,7 @@
 
 ## Overview
 
-This guide helps data engineers use JVS for versioning large datasets in ETL pipelines. JVS provides O(1) snapshots for TB-scale data, enabling reproducible data workflows.
+This guide helps data engineers use JVS for versioning large datasets in ETL pipelines. JVS provides O(1) checkpoints for TB-scale data, enabling reproducible data workflows.
 
 ---
 
@@ -15,12 +15,12 @@ This guide helps data engineers use JVS for versioning large datasets in ETL pip
 
 | Problem | Git + Git LFS | DVC | JVS |
 |---------|---------------|-----|-----|
-| TB-scale datasets | Doesn't scale | Complex cache management | O(1) snapshots |
+| TB-scale datasets | Doesn't scale | Complex cache management | O(1) checkpoints |
 | Pipeline integration | Manual | Requires DVC CLI | Simple CLI integration |
-| Data lineage | Manual tracking | DVC metrics | Snapshot notes + tags |
+| Data lineage | Manual tracking | DVC metrics | Checkpoint notes + tags |
 | Reproducibility | Difficult | Good | Excellent |
 
-**Key Benefit:** Snapshot entire datasets (10GB-10TB) in seconds, enabling exact reproducibility.
+**Key Benefit:** Checkpoint entire datasets (10GB-10TB) in seconds, enabling exact reproducibility.
 
 ---
 
@@ -48,17 +48,17 @@ cd etl-pipeline/main
 mkdir -p raw/ processed/ features/ models/
 ```
 
-### Step 2: Create Baseline Snapshot
+### Step 2: Create Baseline Checkpoint
 
 ```bash
 # Copy initial data (or start empty)
 cp -r /source/data/* raw/
 
 # Create baseline
-jvs snapshot "Initial raw data import" --tag baseline --tag raw
+jvs checkpoint "Initial raw data import" --tag baseline --tag raw
 ```
 
-### Step 3: ETL Pipeline with Snapshots
+### Step 3: ETL Pipeline with Checkpoints
 
 ```bash
 #!/bin/bash
@@ -67,22 +67,22 @@ jvs snapshot "Initial raw data import" --tag baseline --tag raw
 # Stage 1: Ingest raw data
 echo "Ingesting raw data..."
 cp /source/new_data/* raw/
-jvs snapshot "Raw ingestion: 2024-02-23" --tag raw --tag $(date +%Y-%m-%d)
+jvs checkpoint "Raw ingestion: 2024-02-23" --tag raw --tag $(date +%Y-%m-%d)
 
 # Stage 2: Process data
 echo "Processing data..."
 python process.py --input raw/ --output processed/
-jvs snapshot "Processed data: cleaned, normalized" --tag processed --tag $(date +%Y-%m-%d)
+jvs checkpoint "Processed data: cleaned, normalized" --tag processed --tag $(date +%Y-%m-%d)
 
 # Stage 3: Feature engineering
 echo "Building features..."
 python build_features.py --input processed/ --output features/
-jvs snapshot "Features: v2.0 schema" --tag features --tag $(date +%Y-%m-%d)
+jvs checkpoint "Features: v2.0 schema" --tag features --tag $(date +%Y-%m-%d)
 
 # Stage 4: Train model
 echo "Training model..."
 python train.py --input features/ --output models/model.pkl
-jvs snapshot "Model trained on $(date +%Y-%m-%d)" --tag model --tag $(date +%Y-%m-%d)
+jvs checkpoint "Model trained on $(date +%Y-%m-%d)" --tag model --tag $(date +%Y-%m-%d)
 ```
 
 ---
@@ -115,8 +115,8 @@ python transform.py --input raw/ --output processed/ --date $TODAY
 echo "Loading to warehouse..."
 python load_to_warehouse.py --input processed/ --date $TODAY
 
-# 4. Snapshot the completed pipeline
-jvs snapshot "ETL pipeline complete: $TODAY" --tag etl --tag $TODAY
+# 4. Checkpoint the completed pipeline
+jvs checkpoint "ETL pipeline complete: $TODAY" --tag etl --tag $TODAY
 
 # Send notification
 echo "ETL pipeline completed for $TODAY"
@@ -126,12 +126,12 @@ echo "ETL pipeline completed for $TODAY"
 
 ```bash
 #!/bin/bash
-# Incremental updates (only snapshot what changes)
+# Incremental updates
 
-LATEST_SNAPSHOT=$(jvs history | grep processed | head -1 | awk '{print $1}')
+LATEST_CHECKPOINT=$(jvs checkpoint list | grep processed | head -1 | awk '{print $1}')
 
 # Restore to last processed state
-jvs restore $LATEST_SNAPSHOT
+jvs restore $LATEST_CHECKPOINT
 
 # Add new data
 cat /source/incremental_*.csv >> raw/new_data.csv
@@ -139,11 +139,8 @@ cat /source/incremental_*.csv >> raw/new_data.csv
 # Process only new data
 python process_incremental.py --input raw/new_data.csv --output processed/incremental/
 
-# Snapshot only the changed paths
-jvs snapshot "Incremental update: $(date +%Y-%m-%d)" \
-    --paths raw/new_data.csv \
-    --paths processed/incremental/ \
-    --tag incremental
+# Create a checkpoint after the incremental stage completes
+jvs checkpoint "Incremental update: $(date +%Y-%m-%d)" --tag incremental
 ```
 
 ### Pattern 3: Data Quality Checks with Rollback
@@ -165,8 +162,8 @@ echo "Running quality checks..."
 python quality_check.py --input processed/
 
 if [ $? -eq 0 ]; then
-    # Quality check passed - snapshot
-    jvs snapshot "ETL + QC passed: $(date +%Y-%m-%d)" --tag etl --tag passed
+    # Quality check passed - checkpoint
+    jvs checkpoint "ETL + QC passed: $(date +%Y-%m-%d)" --tag etl --tag passed
     echo "ETL pipeline completed successfully"
 else
     # Quality check failed - restore and alert
@@ -214,10 +211,10 @@ with DAG('jvs_etl_pipeline', default_args=default_args, schedule_interval='@dail
         bash_command=f'cd {JVS_PATH} && python extract.py --date {{ ds_nodash }}'
     )
 
-    # Snapshot after extract
+    # Checkpoint after extract
     snapshot_extract = BashOperator(
         task_id='snapshot_extract',
-        bash_command=f'cd {JVS_PATH} && jvs snapshot "Extract complete: {{{{ ds_nodash }}}}" --tag extract --tag {{{{ ds_nodash }}}}'
+        bash_command=f'cd {JVS_PATH} && jvs checkpoint "Extract complete: {{{{ ds_nodash }}}}" --tag extract --tag {{{{ ds_nodash }}}}'
     )
 
     # Transform data
@@ -226,10 +223,10 @@ with DAG('jvs_etl_pipeline', default_args=default_args, schedule_interval='@dail
         bash_command=f'cd {JVS_PATH} && python transform.py --date {{ ds_nodash }}'
     )
 
-    # Snapshot after transform
+    # Checkpoint after transform
     snapshot_transform = BashOperator(
         task_id='snapshot_transform',
-        bash_command=f'cd {JVS_PATH} && jvs snapshot "Transform complete: {{{{ ds_nodash }}}}" --tag transform --tag {{{{ ds_nodash }}}}'
+        bash_command=f'cd {JVS_PATH} && jvs checkpoint "Transform complete: {{{{ ds_nodash }}}}" --tag transform --tag {{{{ ds_nodash }}}}'
     )
 
     # Load data
@@ -238,10 +235,10 @@ with DAG('jvs_etl_pipeline', default_args=default_args, schedule_interval='@dail
         bash_command=f'cd {JVS_PATH} && python load.py --date {{ ds_nodash }}'
     )
 
-    # Final snapshot
+    # Final checkpoint
     snapshot_final = BashOperator(
         task_id='snapshot_final',
-        bash_command=f'cd {JVS_PATH} && jvs snapshot "ETL complete: {{{{ ds_nodash }}}}" --tag etl --tag {{{{ ds_nodash }}}}'
+        bash_command=f'cd {JVS_PATH} && jvs checkpoint "ETL complete: {{{{ ds_nodash }}}}" --tag etl --tag {{{{ ds_nodash }}}}'
     )
 
     # Define dependencies
@@ -259,7 +256,7 @@ import subprocess
 import json
 
 class JVSSnapshotOperator(BaseOperator):
-    """Airflow operator to create JVS snapshot"""
+    """Airflow operator to create JVS checkpoint"""
 
     @apply_defaults
     def __init__(self, jvs_path, note, tags=None, **kwargs):
@@ -270,11 +267,11 @@ class JVSSnapshotOperator(BaseOperator):
 
     def execute(self, context):
         # Build JVS command
-        cmd = ['jvs', 'snapshot', self.note]
+        cmd = ['jvs', '--json', 'checkpoint', self.note]
         for tag in self.tags:
             cmd.extend(['--tag', tag])
 
-        # Execute JVS snapshot
+        # Execute JVS checkpoint
         result = subprocess.run(
             cmd,
             cwd=self.jvs_path,
@@ -283,16 +280,16 @@ class JVSSnapshotOperator(BaseOperator):
         )
 
         if result.returncode != 0:
-            raise Exception(f"JVS snapshot failed: {result.stderr}")
+            raise Exception(f"JVS checkpoint failed: {result.stderr}")
 
-        # Return snapshot ID for XCom
-        output = json.loads(result.stdout)
-        return output.get('snapshot_id')
+        # Return checkpoint ID for XCom
+        envelope = json.loads(result.stdout)
+        return envelope['data']['checkpoint_id']
 
 # Usage in DAG
 from airflow_plugins.operators.jvs_operator import JVSSnapshotOperator
 
-snapshot = JVSSnapshotOperator(
+checkpoint = JVSSnapshotOperator(
     task_id='create_snapshot',
     jvs_path='/mnt/juicefs/data-lake/etl-pipeline/main',
     note='ETL complete: {{ ds_nodash }}',
@@ -316,7 +313,7 @@ import mlflow.sklearn
 from sklearn.ensemble import RandomForestClassifier
 
 def run_ml_pipeline_with_jvs():
-    """Run ML pipeline with JVS snapshots"""
+    """Run ML pipeline with JVS checkpoints"""
 
     # Reset to baseline
     subprocess.run(['jvs', 'restore', 'baseline'], check=True)
@@ -339,10 +336,10 @@ def run_ml_pipeline_with_jvs():
         model_path = 'models/model.pkl'
         mlflow.sklearn.save_model(model, model_path)
 
-        # Create JVS snapshot with MLflow run info
+        # Create JVS checkpoint with MLflow run info
         run_id = mlflow.active_run().info.run_id
         subprocess.run([
-            'jvs', 'snapshot',
+            'jvs', 'checkpoint',
             f'Model trained: MLflow run {run_id[:8]}, accuracy={model.score(X_test, y_test):.3f}',
             '--tag', 'mlflow',
             '--tag', 'model',
@@ -357,39 +354,39 @@ if __name__ == '__main__':
 
 ## Best Practices
 
-### 1. Snapshot After Each Pipeline Stage
+### 1. Checkpoint After Each Pipeline Stage
 
 ```bash
 # Good: Checkpoint after each stage
-extract_data && jvs snapshot "Extract done" --tag extract
-transform_data && jvs snapshot "Transform done" --tag transform
-load_data && jvs snapshot "Load done" --tag load
+extract_data && jvs checkpoint "Extract done" --tag extract
+transform_data && jvs checkpoint "Transform done" --tag transform
+load_data && jvs checkpoint "Load done" --tag load
 
-# Bad: Only snapshot at the end (hard to debug failures)
-extract_data && transform_data && load_data && jvs snapshot "ETL done"
+# Bad: Only checkpoint at the end (hard to debug failures)
+extract_data && transform_data && load_data && jvs checkpoint "ETL done"
 ```
 
 ### 2. Tag by Date and Pipeline Stage
 
 ```bash
 # Tag with date
-jvs snapshot "..." --tag $(date +%Y-%m-%d)
+jvs checkpoint "..." --tag $(date +%Y-%m-%d)
 
 # Tag with stage
-jvs snapshot "..." --tag extract --tag processed
+jvs checkpoint "..." --tag extract --tag processed
 
-# Find all snapshots for a date
-jvs history --tag 2024-02-23
+# Find all checkpoints for a date
+jvs checkpoint list | grep 2024-02-23
 ```
 
-### 3. Use Meaningful Snapshot Notes
+### 3. Use Meaningful Checkpoint Notes
 
 ```bash
 # Good: Includes context
-jvs snapshot "Customer data: added 50k new rows, cleaned null emails, normalized phone numbers"
+jvs checkpoint "Customer data: added 50k new rows, cleaned null emails, normalized phone numbers"
 
 # Bad: Generic
-jvs snapshot "Data updated"
+jvs checkpoint "Data updated"
 ```
 
 ### 4. Regular Verification
@@ -398,7 +395,7 @@ jvs snapshot "Data updated"
 # Verify data integrity
 jvs verify --all
 
-# Verify specific snapshot
+# Verify specific checkpoint
 jvs verify abc123
 ```
 
@@ -410,19 +407,19 @@ jvs verify abc123
 
 ```bash
 # Pipeline A: Current approach
-jvs worktree fork pipeline-a
-cd worktrees/pipeline-a/main
+jvs fork pipeline-a
+cd "$(jvs workspace path pipeline-a)"
 jvs restore baseline
 python pipeline_a.py
-jvs snapshot "Pipeline A: accuracy=0.85" --tag pipeline-a --tag baseline
+jvs checkpoint "Pipeline A: accuracy=0.85" --tag pipeline-a --tag baseline
 
 # Pipeline B: Experimental approach
 cd ../../main
-jvs worktree fork pipeline-b
-cd worktrees/pipeline-b/main
+jvs fork pipeline-b
+cd "$(jvs workspace path pipeline-b)"
 jvs restore baseline
 python pipeline_b.py
-jvs snapshot "Pipeline B: accuracy=0.87" --tag pipeline-b --tag experimental
+jvs checkpoint "Pipeline B: accuracy=0.87" --tag pipeline-b --tag experimental
 ```
 
 ### Workflow 2: Schema Migration Tracking
@@ -432,19 +429,19 @@ jvs snapshot "Pipeline B: accuracy=0.87" --tag pipeline-b --tag experimental
 # Track schema changes with JVS
 
 # Schema v1
-jvs snapshot "Schema v1: customer_id, name, email" --tag schema --tag v1
+jvs checkpoint "Schema v1: customer_id, name, email" --tag schema --tag v1
 
 # Apply migration
 python migrate_v1_to_v2.py
 
 # Schema v2
-jvs snapshot "Schema v2: added phone, address fields" --tag schema --tag v2
+jvs checkpoint "Schema v2: added phone, address fields" --tag schema --tag v2
 
 # Apply another migration
 python migrate_v2_to_v3.py
 
 # Schema v3
-jvs snapshot "Schema v3: normalized phone format, added created_at" --tag schema --tag v3
+jvs checkpoint "Schema v3: normalized phone format, added created_at" --tag schema --tag v3
 
 # To rollback to v2:
 jvs restore --latest-tag v2
@@ -454,55 +451,53 @@ jvs restore --latest-tag v2
 
 ```bash
 #!/bin/bash
-# Sync data snapshots across regions
+# Sync data checkpoints across regions
 
-# Create snapshot in primary region
+# Create checkpoint in primary region
 cd /mnt/juicefs-primary/data/main
-jvs snapshot "Daily data sync: $(date +%Y-%m-%d)" --tag sync --tag $(date +%Y-%m-%d)
-SNAPSHOT_ID=$(jvs history --format json | jq -r '.[0].id')
+jvs checkpoint "Daily data sync: $(date +%Y-%m-%d)" --tag sync --tag $(date +%Y-%m-%d)
+CHECKPOINT_ID=$(jvs checkpoint list --json | jq -r '.data[0].checkpoint_id')
 
 # Sync JVS metadata to secondary region
 rsync -avz .jvs/ /mnt/juicefs-secondary/data/.jvs/
 
-# In secondary region, verify and use snapshot
+# In secondary region, verify and use checkpoint
 cd /mnt/juicefs-secondary/data/main
-jvs verify $SNAPSHOT_ID
-jvs restore $SNAPSHOT_ID
+jvs verify $CHECKPOINT_ID
+jvs restore $CHECKPOINT_ID
 ```
 
 ---
 
 ## Performance Tips
 
-### Use Partial Snapshots for Large Datasets
+### Keep Large Generated Data Out of the Workspace
 
 ```bash
-# Snapshot only specific directories
-jvs snapshot "Raw data update" --paths raw/
-jvs snapshot "Features update" --paths features/
-
-# Or exclude large unchanged directories
-jvs snapshot "Code update only" --paths scripts/ --paths config/
+# Keep caches outside the workspace when they should not be checkpointed.
+export ETL_CACHE=/mnt/juicefs/etl-cache
+jvs checkpoint "Raw data update"
+jvs checkpoint "Features update"
 ```
 
 ### Schedule GC During Off-Peak Hours
 
 ```bash
 # Run GC cron job at 3 AM daily
-0 3 * * * cd /mnt/juicefs/data/main && jvs gc plan --keep-daily 30 && jvs gc run --plan-id <plan-id>
+0 3 * * * cd /mnt/juicefs/data/main && jvs gc plan && jvs gc run --plan-id <plan-id>
 ```
 
 ### Use Tags for Efficient Queries
 
 ```bash
-# Find all snapshots for a specific date
-jvs history --tag 2024-02-23
+# Find all checkpoints for a specific date
+jvs checkpoint list | grep 2024-02-23
 
 # Find all failed pipeline runs
-jvs history | grep "failed"
+jvs checkpoint list | grep "failed"
 
-# Find all model training snapshots
-jvs history --tag model
+# Find all model training checkpoints
+jvs checkpoint list | grep model
 ```
 
 ---
@@ -513,7 +508,7 @@ jvs history --tag model
 
 **Solution:** Run garbage collection
 ```bash
-jvs gc plan --keep-daily 30
+jvs gc plan
 jvs gc run --plan-id <plan-id>
 ```
 
@@ -521,7 +516,7 @@ jvs gc run --plan-id <plan-id>
 
 **Solution:** Use date tags
 ```bash
-jvs history --tag 2024-02-23
+jvs checkpoint list | grep 2024-02-23
 ```
 
 ### Problem: Verify fails
@@ -531,7 +526,7 @@ jvs history --tag 2024-02-23
 # Check what changed
 find . -newer .jvs/snapshots/abc123
 
-# Restore from snapshot
+# Restore from checkpoint
 jvs restore abc123
 ```
 
@@ -543,7 +538,7 @@ jvs restore abc123
 
 ```bash
 #!/bin/bash
-# dbt pipeline with JVS snapshots
+# dbt pipeline with JVS checkpoints
 
 # Restore baseline
 jvs restore baseline
@@ -551,11 +546,8 @@ jvs restore baseline
 # Run dbt
 dbt run
 
-# Snapshot dbt artifacts
-jvs snapshot "dbt run complete: $(date +%Y-%m-%d)" \
-    --paths target/ \
-    --paths dbt_packages/ \
-    --tag dbt --tag $(date +%Y-%m-%d)
+# Checkpoint dbt artifacts
+jvs checkpoint "dbt run complete: $(date +%Y-%m-%d)" --tag dbt --tag $(date +%Y-%m-%d)
 ```
 
 ### Spark + JVS
@@ -568,7 +560,7 @@ import subprocess
 from pyspark.sql import SparkSession
 
 def run_spark_with_jvs():
-    """Run Spark job with JVS snapshot"""
+    """Run Spark job with JVS checkpoint"""
 
     # Restore baseline
     subprocess.run(['jvs', 'restore', 'baseline'], check=True)
@@ -585,9 +577,9 @@ def run_spark_with_jvs():
     # Write output
     df_transformed.write.parquet("processed/output")
 
-    # Snapshot results
+    # Checkpoint results
     subprocess.run([
-        'jvs', 'snapshot',
+        'jvs', 'checkpoint',
         f'Spark job complete: {df_transformed.count()} rows processed',
         '--tag', 'spark',
         '--tag', 'etl'

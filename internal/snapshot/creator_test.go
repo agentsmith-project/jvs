@@ -69,6 +69,29 @@ func TestCreator_Create(t *testing.T) {
 	assert.FileExists(t, readyPath)
 }
 
+func TestCreator_CreateRecordsCloneResultMetadata(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+	first := filepath.Join(mainPath, "first.bin")
+	second := filepath.Join(mainPath, "second.bin")
+	require.NoError(t, os.WriteFile(first, []byte("shared"), 0644))
+	if err := os.Link(first, second); err != nil {
+		t.Skipf("hardlink unavailable: %v", err)
+	}
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	desc, err := creator.Create("main", "metadata", nil)
+	require.NoError(t, err)
+
+	require.Equal(t, model.EngineCopy, desc.Engine)
+	require.Equal(t, model.EngineCopy, desc.ActualEngine)
+	require.Equal(t, model.EngineCopy, desc.EffectiveEngine)
+	require.Contains(t, desc.DegradedReasons, "hardlink")
+	require.NotNil(t, desc.MetadataPreservation)
+	require.NotEmpty(t, desc.MetadataPreservation.Hardlinks)
+	require.Equal(t, "linear-data-copy", desc.PerformanceClass)
+}
+
 func TestCreatorCreateReturnsRepoBusyWhenMutationLockHeld(t *testing.T) {
 	repoPath := setupTestRepo(t)
 

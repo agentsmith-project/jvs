@@ -42,11 +42,11 @@ func TestE2E_Journey_CompleteWorkflow(t *testing.T) {
 		})
 
 		// Initial snapshot
-		stdout, _, code = runJVSInRepo(t, repoPath, "snapshot", "initial commit", "--tag", "v0.1.0")
+		stdout, _, code = runJVSInRepo(t, repoPath, "checkpoint", "initial commit", "--tag", "v0.1.0")
 		if code != 0 {
 			t.Fatal("initial snapshot failed")
 		}
-		if !strings.Contains(stdout, "Created snapshot") {
+		if !strings.Contains(stdout, "Created checkpoint") {
 			t.Errorf("expected success: %s", stdout)
 		}
 
@@ -60,7 +60,7 @@ func TestE2E_Journey_CompleteWorkflow(t *testing.T) {
 	// ===== Day 2-3: Feature Development =====
 	t.Run("day2_feature_development", func(t *testing.T) {
 		// Fork feature branch
-		_, stderr, code := runJVSInRepo(t, repoPath, "worktree", "fork", "feature-auth")
+		_, stderr, code := runJVSInRepo(t, repoPath, "fork", "feature-auth")
 		if code != 0 {
 			t.Fatalf("fork failed: %s", stderr)
 		}
@@ -74,20 +74,20 @@ func TestE2E_Journey_CompleteWorkflow(t *testing.T) {
 		})
 
 		// Snapshot auth progress
-		_, _, code = runJVSInWorktree(t, repoPath, "feature-auth", "snapshot", "auth module", "--tag", "auth")
+		_, _, code = runJVSInWorktree(t, repoPath, "feature-auth", "checkpoint", "auth module", "--tag", "auth")
 		if code != 0 {
 			t.Fatal("auth snapshot failed")
 		}
 
 		// Fork another feature
-		runJVSInRepo(t, repoPath, "worktree", "fork", "feature-api")
+		runJVSInRepo(t, repoPath, "fork", "feature-api")
 		apiPath := filepath.Join(repoPath, "worktrees", "feature-api")
 
 		createFiles(t, apiPath, map[string]string{
 			"src/api/handler.go": "package api\n\nfunc Handle() {}\n",
 		})
 
-		runJVSInWorktree(t, repoPath, "feature-api", "snapshot", "api module", "--tag", "api")
+		runJVSInWorktree(t, repoPath, "feature-api", "checkpoint", "api module", "--tag", "api")
 	})
 
 	// ===== Day 4: Bug Fix in Main =====
@@ -95,33 +95,33 @@ func TestE2E_Journey_CompleteWorkflow(t *testing.T) {
 		// Fix bug in main
 		os.WriteFile(filepath.Join(mainPath, "src/lib/helper.go"), []byte("package lib\n\nfunc Help() string { return \"fixed\" }\n"), 0644)
 
-		_, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "bugfix: helper function", "--tag", "bugfix")
+		_, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "bugfix: helper function", "--tag", "bugfix")
 		if code != 0 {
 			t.Fatalf("bugfix snapshot failed: %s", stderr)
 		}
 
 		// Continue development
 		os.WriteFile(filepath.Join(mainPath, "VERSION"), []byte("0.2.0"), 0644)
-		runJVSInRepo(t, repoPath, "snapshot", "version bump", "--tag", "v0.2.0")
+		runJVSInRepo(t, repoPath, "checkpoint", "version bump", "--tag", "v0.2.0")
 	})
 
 	// ===== Day 5: Release Branching =====
 	t.Run("day5_release_branching", func(t *testing.T) {
 		// Create release from current main
 		os.WriteFile(filepath.Join(mainPath, "VERSION"), []byte("1.0.0-rc1"), 0644)
-		_, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "release candidate 1",
+		_, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "release candidate 1",
 			"--tag", "v1.0.0-rc1", "--tag", "rc", "--tag", "release")
 		if code != 0 {
 			t.Fatalf("release snapshot failed: %s", stderr)
 		}
 
 		// Fork release maintenance branch
-		runJVSInRepo(t, repoPath, "worktree", "fork", "release-1.x")
+		runJVSInRepo(t, repoPath, "fork", "release-1.x")
 		releasePath := filepath.Join(repoPath, "worktrees", "release-1.x")
 
 		// Final release
 		os.WriteFile(filepath.Join(releasePath, "VERSION"), []byte("1.0.0"), 0644)
-		runJVSInWorktree(t, repoPath, "release-1.x", "snapshot", "release 1.0.0",
+		runJVSInWorktree(t, repoPath, "release-1.x", "checkpoint", "release 1.0.0",
 			"--tag", "v1.0.0", "--tag", "stable", "--tag", "release")
 	})
 
@@ -134,7 +134,7 @@ func TestE2E_Journey_CompleteWorkflow(t *testing.T) {
 		}
 
 		// Fork hotfix branch
-		_, stderr, code = runJVSInRepo(t, repoPath, "worktree", "fork", "hotfix-1.0.1")
+		_, stderr, code = runJVSInRepo(t, repoPath, "fork", "hotfix-1.0.1")
 		if code != 0 {
 			t.Fatalf("fork hotfix failed: %s", stderr)
 		}
@@ -145,7 +145,7 @@ func TestE2E_Journey_CompleteWorkflow(t *testing.T) {
 		os.WriteFile(filepath.Join(hotfixPath, "VERSION"), []byte("1.0.1"), 0644)
 		os.WriteFile(filepath.Join(hotfixPath, "src/lib/helper.go"), []byte("package lib\n\nfunc Help() string { return \"hotfixed\" }\n"), 0644)
 
-		_, _, code = runJVSInWorktree(t, repoPath, "hotfix-1.0.1", "snapshot", "hotfix 1.0.1",
+		_, _, code = runJVSInWorktree(t, repoPath, "hotfix-1.0.1", "checkpoint", "hotfix 1.0.1",
 			"--tag", "v1.0.1", "--tag", "hotfix")
 		if code != 0 {
 			t.Fatal("hotfix snapshot failed")
@@ -161,16 +161,16 @@ func TestE2E_Journey_CompleteWorkflow(t *testing.T) {
 	// ===== Day 7: Verification and Cleanup =====
 	t.Run("day7_verification_and_cleanup", func(t *testing.T) {
 		// List all worktrees
-		stdout, _, _ := runJVSInRepo(t, repoPath, "worktree", "list")
+		stdout, _, _ := runJVSInRepo(t, repoPath, "workspace", "list")
 		t.Logf("Worktrees: %s", stdout)
 
 		// Complete feature-auth and remove
-		runJVSInWorktree(t, repoPath, "feature-auth", "snapshot", "auth complete", "--tag", "auth", "--tag", "complete")
-		runJVSInRepo(t, repoPath, "worktree", "remove", "feature-auth")
+		runJVSInWorktree(t, repoPath, "feature-auth", "checkpoint", "auth complete", "--tag", "auth", "--tag", "complete")
+		runJVSInRepo(t, repoPath, "workspace", "remove", "feature-auth")
 
 		// Complete feature-api and remove
-		runJVSInWorktree(t, repoPath, "feature-api", "snapshot", "api complete", "--tag", "api", "--tag", "complete")
-		runJVSInRepo(t, repoPath, "worktree", "remove", "feature-api")
+		runJVSInWorktree(t, repoPath, "feature-api", "checkpoint", "api complete", "--tag", "api", "--tag", "complete")
+		runJVSInRepo(t, repoPath, "workspace", "remove", "feature-api")
 
 		// Run GC to clean up orphaned snapshots
 		planOut, _, _ := runJVSInRepo(t, repoPath, "gc", "plan", "--json")
@@ -204,7 +204,7 @@ func TestE2E_Journey_CompleteWorkflow(t *testing.T) {
 		}
 
 		// History should show our work
-		stdout, _, _ = runJVSInRepo(t, repoPath, "history")
+		stdout, _, _ = runJVSInRepo(t, repoPath, "checkpoint", "list")
 		t.Logf("Final history:\n%s", stdout)
 	})
 }
@@ -229,11 +229,11 @@ func TestE2E_Journey_RestoreScenarios(t *testing.T) {
 
 	for _, v := range versions {
 		os.WriteFile(filepath.Join(mainPath, "version.txt"), []byte(v.content), 0644)
-		runJVSInRepo(t, repoPath, "snapshot", v.note, "--tag", v.tag)
+		runJVSInRepo(t, repoPath, "checkpoint", v.note, "--tag", v.tag)
 	}
 
 	// Get snapshot IDs
-	stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--json")
+	stdout, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "list", "--json")
 	ids := extractAllSnapshotIDs(stdout)
 
 	// Test restore by tag
@@ -284,42 +284,42 @@ func TestE2E_Journey_TagOperations(t *testing.T) {
 
 	// Create snapshots with various tag patterns
 	os.WriteFile(filepath.Join(mainPath, "app.txt"), []byte("1.0.0"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "release 1.0", "--tag", "v1.0.0", "--tag", "v1", "--tag", "release")
+	runJVSInRepo(t, repoPath, "checkpoint", "release 1.0", "--tag", "v1.0.0", "--tag", "v1", "--tag", "release")
 
 	os.WriteFile(filepath.Join(mainPath, "app.txt"), []byte("1.1.0"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "release 1.1", "--tag", "v1.1.0", "--tag", "v1", "--tag", "release")
+	runJVSInRepo(t, repoPath, "checkpoint", "release 1.1", "--tag", "v1.1.0", "--tag", "v1", "--tag", "release")
 
 	os.WriteFile(filepath.Join(mainPath, "app.txt"), []byte("2.0.0"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "release 2.0", "--tag", "v2.0.0", "--tag", "v2", "--tag", "release", "--tag", "latest")
+	runJVSInRepo(t, repoPath, "checkpoint", "release 2.0", "--tag", "v2.0.0", "--tag", "v2", "--tag", "release", "--tag", "current-release")
 
 	// Filter by different tags
 	t.Run("filter_by_release", func(t *testing.T) {
-		stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--tag", "release", "--json")
-		count := getSnapshotCount(stdout)
+		stdout, _, _ := runJVSInRepo(t, repoPath, "--json", "checkpoint", "list")
+		count := getCheckpointCountByTag(t, stdout, "release")
 		if count != 3 {
 			t.Errorf("expected 3 releases, got %d", count)
 		}
 	})
 
 	t.Run("filter_by_v1", func(t *testing.T) {
-		stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--tag", "v1", "--json")
-		count := getSnapshotCount(stdout)
+		stdout, _, _ := runJVSInRepo(t, repoPath, "--json", "checkpoint", "list")
+		count := getCheckpointCountByTag(t, stdout, "v1")
 		if count != 2 {
 			t.Errorf("expected 2 v1 releases, got %d", count)
 		}
 	})
 
-	t.Run("filter_by_latest", func(t *testing.T) {
-		stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--tag", "latest", "--json")
-		count := getSnapshotCount(stdout)
+	t.Run("filter_by_current_release", func(t *testing.T) {
+		stdout, _, _ := runJVSInRepo(t, repoPath, "--json", "checkpoint", "list")
+		count := getCheckpointCountByTag(t, stdout, "current-release")
 		if count != 1 {
-			t.Errorf("expected 1 latest, got %d", count)
+			t.Errorf("expected 1 current-release, got %d", count)
 		}
 	})
 
 	// Fork from tag
 	t.Run("fork_from_tag", func(t *testing.T) {
-		_, _, code := runJVSInRepo(t, repoPath, "worktree", "fork", "v1.1.0", "maintain-1.x")
+		_, _, code := runJVSInRepo(t, repoPath, "fork", "v1.1.0", "maintain-1.x")
 		if code != 0 {
 			t.Fatal("fork from tag failed")
 		}
@@ -338,16 +338,16 @@ func TestE2E_Journey_CompleteWorktreeLifecycle(t *testing.T) {
 
 	// Setup
 	os.WriteFile(filepath.Join(mainPath, "base.txt"), []byte("base"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "base")
+	runJVSInRepo(t, repoPath, "checkpoint", "base")
 
 	// Create worktrees
 	t.Run("create_worktrees", func(t *testing.T) {
-		runJVSInRepo(t, repoPath, "worktree", "fork", "feature-a")
-		runJVSInRepo(t, repoPath, "worktree", "fork", "feature-b")
-		runJVSInRepo(t, repoPath, "worktree", "fork", "feature-c")
+		runJVSInRepo(t, repoPath, "fork", "feature-a")
+		runJVSInRepo(t, repoPath, "fork", "feature-b")
+		runJVSInRepo(t, repoPath, "fork", "feature-c")
 
 		// Verify list
-		stdout, _, _ := runJVSInRepo(t, repoPath, "worktree", "list")
+		stdout, _, _ := runJVSInRepo(t, repoPath, "workspace", "list")
 		if !strings.Contains(stdout, "feature-a") || !strings.Contains(stdout, "feature-b") || !strings.Contains(stdout, "feature-c") {
 			t.Error("all worktrees should be listed")
 		}
@@ -358,18 +358,18 @@ func TestE2E_Journey_CompleteWorktreeLifecycle(t *testing.T) {
 		for _, name := range []string{"feature-a", "feature-b", "feature-c"} {
 			path := filepath.Join(repoPath, "worktrees", name)
 			os.WriteFile(filepath.Join(path, name+".txt"), []byte(name), 0644)
-			runJVSInWorktree(t, repoPath, name, "snapshot", name+" work")
+			runJVSInWorktree(t, repoPath, name, "checkpoint", name+" work")
 		}
 	})
 
 	// Rename
 	t.Run("rename_worktree", func(t *testing.T) {
-		_, _, code := runJVSInRepo(t, repoPath, "worktree", "rename", "feature-c", "feature-final")
+		_, _, code := runJVSInRepo(t, repoPath, "workspace", "rename", "feature-c", "feature-final")
 		if code != 0 {
 			t.Fatal("rename failed")
 		}
 
-		stdout, _, _ := runJVSInRepo(t, repoPath, "worktree", "list")
+		stdout, _, _ := runJVSInRepo(t, repoPath, "workspace", "list")
 		if strings.Contains(stdout, "feature-c") {
 			t.Error("old name should not exist")
 		}
@@ -380,10 +380,10 @@ func TestE2E_Journey_CompleteWorktreeLifecycle(t *testing.T) {
 
 	// Remove
 	t.Run("remove_worktrees", func(t *testing.T) {
-		runJVSInRepo(t, repoPath, "worktree", "remove", "feature-a")
-		runJVSInRepo(t, repoPath, "worktree", "remove", "feature-b")
+		runJVSInRepo(t, repoPath, "workspace", "remove", "feature-a")
+		runJVSInRepo(t, repoPath, "workspace", "remove", "feature-b")
 
-		stdout, _, _ := runJVSInRepo(t, repoPath, "worktree", "list")
+		stdout, _, _ := runJVSInRepo(t, repoPath, "workspace", "list")
 		if strings.Contains(stdout, "feature-a") || strings.Contains(stdout, "feature-b") {
 			t.Error("removed worktrees should not appear")
 		}
@@ -391,7 +391,7 @@ func TestE2E_Journey_CompleteWorktreeLifecycle(t *testing.T) {
 
 	// Cannot remove main
 	t.Run("cannot_remove_main", func(t *testing.T) {
-		_, _, code := runJVSInRepo(t, repoPath, "worktree", "remove", "main")
+		_, _, code := runJVSInRepo(t, repoPath, "workspace", "remove", "main")
 		if code == 0 {
 			t.Error("should not be able to remove main")
 		}
@@ -406,21 +406,21 @@ func TestE2E_Journey_GCWithActiveWorktrees(t *testing.T) {
 	// Create main snapshots
 	for i := 1; i <= 3; i++ {
 		os.WriteFile(filepath.Join(mainPath, "main.txt"), []byte(string(rune('a'+i))), 0644)
-		runJVSInRepo(t, repoPath, "snapshot", "main")
+		runJVSInRepo(t, repoPath, "checkpoint", "main")
 	}
 
 	// Create worktree with snapshots
-	runJVSInRepo(t, repoPath, "worktree", "fork", "active-feature")
+	runJVSInRepo(t, repoPath, "fork", "active-feature")
 	featurePath := filepath.Join(repoPath, "worktrees", "active-feature")
 	os.WriteFile(filepath.Join(featurePath, "feature.txt"), []byte("active"), 0644)
-	runJVSInWorktree(t, repoPath, "active-feature", "snapshot", "active")
+	runJVSInWorktree(t, repoPath, "active-feature", "checkpoint", "active")
 
 	// Create and remove worktree (creates orphan)
-	runJVSInRepo(t, repoPath, "worktree", "fork", "removed-feature")
+	runJVSInRepo(t, repoPath, "fork", "removed-feature")
 	removedPath := filepath.Join(repoPath, "worktrees", "removed-feature")
 	os.WriteFile(filepath.Join(removedPath, "removed.txt"), []byte("removed"), 0644)
-	runJVSInWorktree(t, repoPath, "removed-feature", "snapshot", "will-be-orphaned")
-	runJVSInRepo(t, repoPath, "worktree", "remove", "removed-feature")
+	runJVSInWorktree(t, repoPath, "removed-feature", "checkpoint", "will-be-orphaned")
+	runJVSInRepo(t, repoPath, "workspace", "remove", "removed-feature")
 
 	// Run GC
 	t.Run("gc_preserves_active", func(t *testing.T) {
@@ -434,7 +434,7 @@ func TestE2E_Journey_GCWithActiveWorktrees(t *testing.T) {
 		}
 
 		// Active worktree should still work
-		_, _, code := runJVSInWorktree(t, repoPath, "active-feature", "snapshot", "still active")
+		_, _, code := runJVSInWorktree(t, repoPath, "active-feature", "checkpoint", "still active")
 		if code != 0 {
 			t.Error("active worktree should still work")
 		}
@@ -455,7 +455,7 @@ func TestE2E_Journey_DoctorRepairsIssues(t *testing.T) {
 	jvsPath := filepath.Join(repoPath, ".jvs")
 
 	// Create healthy state
-	runJVSInRepo(t, repoPath, "snapshot", "healthy")
+	runJVSInRepo(t, repoPath, "checkpoint", "healthy")
 
 	// Introduce issues
 	t.Run("introduce_issues", func(t *testing.T) {

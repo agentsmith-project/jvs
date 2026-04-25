@@ -72,7 +72,8 @@ func runCloneFull(sourceArg, destArg string) error {
 		capabilities.Warnings...,
 	)
 	degraded := degradedReasons(transferResult)
-	effectiveEngine := model.EngineType(effectiveTransferMode(transferEngine, transferResult))
+	transferMode := model.EngineType(effectiveTransferMode(transferEngine, transferResult))
+	effectiveEngine := detectEngine(destRoot)
 
 	output := map[string]any{
 		"scope":                  "full",
@@ -84,7 +85,7 @@ func runCloneFull(sourceArg, destArg string) error {
 		"copy_mode":              fullCloneCopyMode,
 		"requested_engine":       model.EngineCopy,
 		"transfer_engine":        transferEngine,
-		"transfer_mode":          string(effectiveEngine),
+		"transfer_mode":          string(transferMode),
 		"optimized_transfer":     false,
 		"runtime_state_excluded": true,
 		"degraded_reasons":       stableStringSlice(degraded),
@@ -115,9 +116,9 @@ func runCloneFull(sourceArg, destArg string) error {
 }
 
 func runCloneCurrent(sourceArg, destArg string) error {
-	sourceRepo, sourceWorktree, sourceWorkspace, err := discoverSourceWorkspace(sourceArg)
+	sourceRepo, sourceWorkspace, err := discoverCurrentCloneSource(sourceArg)
 	if err != nil {
-		return fmt.Errorf("discover source workspace: %w", err)
+		return fmt.Errorf("discover source repository: %w", err)
 	}
 	if err := rejectContainsJVS(sourceWorkspace); err != nil {
 		return err
@@ -153,7 +154,8 @@ func runCloneCurrent(sourceArg, destArg string) error {
 		return err
 	}
 
-	note := fmt.Sprintf("initial clone from %s workspace %s", sourceRepo.Root, sourceWorktree)
+	sourceWorkspaceName := "main"
+	note := fmt.Sprintf("initial clone from %s workspace %s", sourceRepo.Root, sourceWorkspaceName)
 	desc, err := createInitialCheckpoint(r.Root, note, []string{"clone"})
 	if err != nil {
 		return fmt.Errorf("create initial checkpoint: %w", err)
@@ -162,15 +164,14 @@ func runCloneCurrent(sourceArg, destArg string) error {
 	output := map[string]any{
 		"scope":              "current",
 		"requested_scope":    "current",
-		"source_workspace":   sourceWorktree,
 		"repo_root":          r.Root,
 		"repo_id":            r.RepoID,
 		"main_workspace":     mainWorkspace,
-		"provenance":         map[string]any{"source_repo": sourceRepo.Root, "source_workspace": sourceWorktree, "scope": "current"},
+		"provenance":         map[string]any{"source_repo": sourceRepo.Root, "source_workspace": sourceWorkspaceName, "scope": "current"},
 		"initial_checkpoint": desc.SnapshotID,
 		"engine":             desc.Engine,
 	}
-	applyTransferJSONFields(output, transferPlan)
+	applyTransferJSONFields(output, transferPlan, desc.Engine)
 	if jsonOutput {
 		return outputJSON(output)
 	}
@@ -178,7 +179,7 @@ func runCloneCurrent(sourceArg, destArg string) error {
 	fmt.Printf("Cloned current workspace into new JVS repository\n")
 	fmt.Printf("  Scope: current\n")
 	fmt.Printf("  Source repo: %s\n", sourceRepo.Root)
-	fmt.Printf("  Source workspace: %s\n", sourceWorktree)
+	fmt.Printf("  Source workspace: %s\n", sourceWorkspaceName)
 	fmt.Printf("  Repo root: %s\n", r.Root)
 	fmt.Printf("  Main workspace: %s\n", mainWorkspace)
 	fmt.Printf("  Initial checkpoint: %s\n", desc.SnapshotID)
@@ -208,29 +209,32 @@ func discoverRepoRoot(path string) (string, error) {
 	return r.Root, nil
 }
 
-func discoverSourceWorkspace(path string) (*repo.Repo, string, string, error) {
+func discoverCurrentCloneSource(path string) (*repo.Repo, string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return nil, "", "", fmt.Errorf("resolve path: %w", err)
+		return nil, "", fmt.Errorf("resolve path: %w", err)
 	}
-	r, wtName, err := repo.DiscoverWorktree(abs)
-	if err == nil && wtName != "" {
-		workspace, err := repo.WorktreePayloadPath(r.Root, wtName)
-		if err != nil {
-			return nil, "", "", err
-		}
-		return r, wtName, workspace, nil
-	}
-
-	r, err = repo.Discover(abs)
+	abs = filepath.Clean(abs)
+	r, err := repo.Discover(abs)
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", err
+	}
+	argResolved, err := resolveSetupPath(abs)
+	if err != nil {
+		return nil, "", err
+	}
+	rootResolved, err := resolveSetupPath(r.Root)
+	if err != nil {
+		return nil, "", err
+	}
+	if argResolved.Physical != rootResolved.Physical {
+		return nil, "", fmt.Errorf("clone --scope current source must be the repository root; got %s inside repository %s. Use the repository root path for now; selecting a source workspace will require a future --source-workspace option", argResolved.Lexical, r.Root)
 	}
 	workspace, err := repo.WorktreePayloadPath(r.Root, "main")
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", err
 	}
-	return r, "main", workspace, nil
+	return r, workspace, nil
 }
 
 func cloneFullRepository(sourceRoot, destRoot string) (*engine.CloneResult, model.EngineType, error) {
@@ -245,7 +249,8 @@ func cloneFullRepository(sourceRoot, destRoot string) (*engine.CloneResult, mode
 }
 
 func copyFullRepositoryTree(sourceRoot, destRoot string) (*engine.CloneResult, error) {
-	result := &engine.CloneResult{}
+	result := engine.NewCloneResult(model.EngineCopy)
+	result.AddDegradation("portable-copy-metadata: xattrs and ACLs are not preserved", model.EngineCopy)
 	var dirs []cloneDirMode
 
 	err := filepath.WalkDir(sourceRoot, func(path string, entry fs.DirEntry, walkErr error) error {

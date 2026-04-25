@@ -80,6 +80,36 @@ func TestFileAppender_HashChain(t *testing.T) {
 	assert.NotEmpty(t, records[1].RecordHash)
 }
 
+func TestVerifyFileDetectsRecordHashTamper(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "audit.jsonl")
+
+	appender := audit.NewFileAppender(logPath)
+	require.NoError(t, appender.Append(model.EventTypeSnapshotCreate, "main", "1708300800000-a3f7c1b2", map[string]any{
+		"note": "before",
+	}))
+
+	data, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	lines := bytes.Split(bytes.TrimSpace(data), []byte("\n"))
+	require.Len(t, lines, 1)
+
+	var record map[string]any
+	require.NoError(t, json.Unmarshal(lines[0], &record))
+	details, ok := record["details"].(map[string]any)
+	require.True(t, ok)
+	details["note"] = "after"
+	lines[0], err = json.Marshal(record)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(logPath, append(lines[0], '\n'), 0644))
+
+	issues, err := audit.VerifyFile(logPath)
+	require.NoError(t, err)
+	require.Len(t, issues, 1)
+	assert.Equal(t, "E_AUDIT_RECORD_HASH_MISMATCH", issues[0].ErrorCode)
+	assert.Equal(t, 1, issues[0].Line)
+}
+
 func TestFileAppender_ConcurrentAppends(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "audit.jsonl")

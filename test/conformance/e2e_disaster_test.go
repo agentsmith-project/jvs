@@ -25,11 +25,11 @@ func TestE2E_Disaster_DetectAndRepair(t *testing.T) {
 	// Create healthy snapshot
 	t.Run("create_healthy_state", func(t *testing.T) {
 		os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte("data"), 0644)
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "healthy")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "healthy")
 		if code != 0 {
 			t.Fatalf("snapshot failed: %s", stderr)
 		}
-		if !strings.Contains(stdout, "Created snapshot") {
+		if !strings.Contains(stdout, "Created checkpoint") {
 			t.Errorf("expected success message, got: %s", stdout)
 		}
 	})
@@ -52,7 +52,7 @@ func TestE2E_Disaster_DetectAndRepair(t *testing.T) {
 		if err := os.MkdirAll(intentsPath, 0755); err != nil {
 			t.Fatalf("failed to create intents dir: %v", err)
 		}
-		intentContent := `{"status":"in_progress","operation":"snapshot"}`
+		intentContent := `{"status":"in_progress","operation":"checkpoint"}`
 		os.WriteFile(filepath.Join(intentsPath, "crashed.json"), []byte(intentContent), 0644)
 	})
 
@@ -115,11 +115,11 @@ func TestE2E_Disaster_DetectAndRepair(t *testing.T) {
 	// Step 9: Resume normal operations
 	t.Run("resume_operations", func(t *testing.T) {
 		os.WriteFile(filepath.Join(mainPath, "recovered.txt"), []byte("recovered"), 0644)
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "post-recovery")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "post-recovery")
 		if code != 0 {
 			t.Fatalf("post-recovery snapshot failed: %s", stderr)
 		}
-		if !strings.Contains(stdout, "Created snapshot") {
+		if !strings.Contains(stdout, "Created checkpoint") {
 			t.Errorf("expected success message, got: %s", stdout)
 		}
 	})
@@ -131,7 +131,7 @@ func TestE2E_Disaster_OrphanIntents(t *testing.T) {
 	jvsPath := filepath.Join(repoPath, ".jvs")
 
 	// Create healthy state
-	runJVSInRepo(t, repoPath, "snapshot", "healthy")
+	runJVSInRepo(t, repoPath, "checkpoint", "healthy")
 
 	// Create orphan intent
 	t.Run("create_orphan_intent", func(t *testing.T) {
@@ -177,7 +177,7 @@ func TestE2E_Disaster_PartialSnapshot(t *testing.T) {
 	jvsPath := filepath.Join(repoPath, ".jvs")
 
 	// Create healthy state
-	runJVSInRepo(t, repoPath, "snapshot", "healthy")
+	runJVSInRepo(t, repoPath, "checkpoint", "healthy")
 
 	// Simulate partial snapshot (has .tmp but no .READY)
 	t.Run("create_partial_snapshot", func(t *testing.T) {
@@ -220,9 +220,9 @@ func TestE2E_Disaster_CorruptedDescriptor(t *testing.T) {
 
 	// Create snapshot and get its ID
 	os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte("test"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "test-snapshot")
+	runJVSInRepo(t, repoPath, "checkpoint", "test-snapshot")
 
-	stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--json")
+	stdout, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "list", "--json")
 	snapshotIDs := extractAllSnapshotIDs(stdout)
 	if len(snapshotIDs) == 0 {
 		t.Fatal("expected at least one snapshot")
@@ -271,10 +271,10 @@ func TestE2E_Disaster_MissingReadyMarker(t *testing.T) {
 	jvsPath := filepath.Join(repoPath, ".jvs")
 
 	// Create healthy snapshot
-	runJVSInRepo(t, repoPath, "snapshot", "healthy")
+	runJVSInRepo(t, repoPath, "checkpoint", "healthy")
 
 	// Get snapshot ID
-	stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--json")
+	stdout, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "list", "--json")
 	ids := extractAllSnapshotIDs(stdout)
 	if len(ids) == 0 {
 		t.Fatal("need at least one snapshot")
@@ -314,7 +314,7 @@ func TestE2E_Disaster_RecoveryWorkflow(t *testing.T) {
 	// Setup: create multiple healthy snapshots
 	for i := 1; i <= 3; i++ {
 		os.WriteFile(filepath.Join(mainPath, "version.txt"), []byte(string(rune('0'+i))), 0644)
-		runJVSInRepo(t, repoPath, "snapshot", "version")
+		runJVSInRepo(t, repoPath, "checkpoint", "version")
 	}
 
 	// Simulate multiple crash artifacts
@@ -373,11 +373,11 @@ func TestE2E_Disaster_RecoveryWorkflow(t *testing.T) {
 	// Resume operations
 	t.Run("resume_operations", func(t *testing.T) {
 		os.WriteFile(filepath.Join(mainPath, "recovered.txt"), []byte("recovered"), 0644)
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "after-recovery")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "after-recovery")
 		if code != 0 {
 			t.Fatalf("should be able to create snapshots: %s", stderr)
 		}
-		if !strings.Contains(stdout, "Created snapshot") {
+		if !strings.Contains(stdout, "Created checkpoint") {
 			t.Errorf("expected success: %s", stdout)
 		}
 	})

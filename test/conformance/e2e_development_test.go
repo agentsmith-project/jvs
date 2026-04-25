@@ -128,11 +128,11 @@ func TestE2E_Development_LineageChain(t *testing.T) {
 	// Create a series of snapshots
 	for i := 1; i <= 5; i++ {
 		os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte(string(rune('a'+i-1))), 0644)
-		runJVSInRepo(t, repoPath, "snapshot", "step")
+		runJVSInRepo(t, repoPath, "checkpoint", "step")
 	}
 
 	// Get history and verify lineage
-	stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--json")
+	stdout, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "list", "--json")
 	snapshots := extractAllSnapshotIDs(stdout)
 
 	if len(snapshots) != 5 {

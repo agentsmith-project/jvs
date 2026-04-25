@@ -7,8 +7,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/jvs-project/jvs/internal/engine"
 )
 
 type contractSmokeEnvelope struct {
@@ -324,16 +327,6 @@ func TestContract_DirtyWorkspaceRemoveRejectedByDefault(t *testing.T) {
 		t.Fatalf("dirty workspace file was removed despite rejection: %v", err)
 	}
 
-	stdout, stderr, code = runJVSInRepo(t, repoPath, "worktree", "remove", "feature")
-	if code == 0 {
-		t.Fatalf("legacy dirty workspace remove unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
-	}
-	if !strings.Contains(stderr, "dirty") {
-		t.Fatalf("legacy dirty remove error did not mention dirty state: stdout=%s stderr=%s", stdout, stderr)
-	}
-	if _, err := os.Stat(featureFile); err != nil {
-		t.Fatalf("legacy dirty workspace file was removed despite rejection: %v", err)
-	}
 }
 
 func TestContract_PublicHelpHidesInternalCommandsAndUnpublishedFlags(t *testing.T) {
@@ -406,6 +399,76 @@ func TestContract_CloneCurrentUsesWorkspaceVocabulary(t *testing.T) {
 	}
 }
 
+func TestContract_CloneCurrentRejectsWorkspacePathSource(t *testing.T) {
+	repoPath, cleanup := initTestRepo(t)
+	defer cleanup()
+
+	dest := filepath.Join(t.TempDir(), "current-copy")
+	stdout, stderr, code := runJVS(t, t.TempDir(), "--json", "clone", filepath.Join(repoPath, "main"), dest, "--scope", "current")
+	if code == 0 {
+		t.Fatalf("clone current with workspace source unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("clone current workspace-source JSON error wrote stderr: %q", stderr)
+	}
+	env := decodeContractSmokeEnvelope(t, stdout)
+	if env.OK {
+		t.Fatalf("clone current workspace-source returned ok envelope: %s", stdout)
+	}
+	errData, ok := env.Error.(map[string]any)
+	if !ok {
+		t.Fatalf("clone current workspace-source error was not an object: %#v\n%s", env.Error, stdout)
+	}
+	message, _ := errData["message"].(string)
+	hint, _ := errData["hint"].(string)
+	if !strings.Contains(message, "repository root") || !strings.Contains(message+hint, "source-workspace") {
+		t.Fatalf("clone current workspace-source error lacked guidance: %#v\n%s", errData, stdout)
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatalf("clone current workspace-source created destination: %v", err)
+	}
+}
+
+func TestContract_CloneCurrentJSONSeparatesTransferFromMaterializationEngine(t *testing.T) {
+	dir := t.TempDir()
+	report, err := engine.ProbeCapabilities(dir, true)
+	if err != nil {
+		t.Fatalf("probe temp capabilities: %v", err)
+	}
+	if report.JuiceFS.Supported {
+		t.Skip("test requires a non-JuiceFS temp directory")
+	}
+
+	if stdout, stderr, code := runJVS(t, dir, "init", "source"); code != 0 {
+		t.Fatalf("init source failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	repoPath := filepath.Join(dir, "source")
+	if err := os.WriteFile(filepath.Join(repoPath, "main", "file.txt"), []byte("v1"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("JVS_SNAPSHOT_ENGINE", "juicefs-clone")
+	t.Setenv("JVS_ENGINE", "")
+	dest := filepath.Join(dir, "dest")
+	stdout, stderr, code := runJVS(t, dir, "--json", "clone", repoPath, dest, "--scope", "current")
+	if code != 0 {
+		t.Fatalf("clone current failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	data := decodeContractSmokeDataMap(t, stdout)
+	if data["effective_engine"] != "juicefs-clone" {
+		t.Fatalf("effective_engine must describe future materialization: %#v\n%s", data["effective_engine"], stdout)
+	}
+	if data["transfer_engine"] != "copy" {
+		t.Fatalf("transfer_engine must describe this transfer: %#v\n%s", data["transfer_engine"], stdout)
+	}
+	if data["transfer_engine"] == data["effective_engine"] {
+		t.Fatalf("transfer_engine and effective_engine were not separated: %s", stdout)
+	}
+	if _, ok := data["degraded_reasons"].([]any); !ok {
+		t.Fatalf("clone current degraded_reasons must be an array: %s", stdout)
+	}
+}
+
 func TestContract_JSONArgValidationReportsCommand(t *testing.T) {
 	stdout, stderr, code := runJVS(t, t.TempDir(), "--json", "diff")
 	if code == 0 {
@@ -417,6 +480,85 @@ func TestContract_JSONArgValidationReportsCommand(t *testing.T) {
 	env := decodeContractSmokeEnvelope(t, stdout)
 	if env.OK || env.Command != "diff" {
 		t.Fatalf("unexpected JSON error envelope: %s", stdout)
+	}
+}
+
+func TestContract_DoctorVerifyIntegrityContracts(t *testing.T) {
+	repoPath, cleanup := initTestRepo(t)
+	defer cleanup()
+
+	stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "doctor", "--repair-list")
+	if code != 0 {
+		t.Fatalf("doctor --repair-list failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	env := decodeContractSmokeEnvelope(t, stdout)
+	var actions []map[string]any
+	if err := json.Unmarshal(env.Data, &actions); err != nil {
+		t.Fatalf("decode repair list: %v\n%s", err, stdout)
+	}
+	var ids []string
+	for _, action := range actions {
+		id, _ := action["id"].(string)
+		ids = append(ids, id)
+	}
+	wantIDs := []string{"clean_locks", "clean_runtime_tmp", "clean_runtime_operations"}
+	if strings.Join(ids, ",") != strings.Join(wantIDs, ",") {
+		t.Fatalf("unexpected repair list ids %v in %s", ids, stdout)
+	}
+	for _, forbidden := range []string{"rebuild", "audit_repair", "advance", "clean_tmp", "clean_intents"} {
+		if strings.Contains(stdout, forbidden) {
+			t.Fatalf("repair list exposed non-public action %q:\n%s", forbidden, stdout)
+		}
+	}
+
+	stdout, stderr, code = runJVSInRepo(t, repoPath, "--json", "doctor", "--repair-runtime", "clean_runtime_tmp")
+	if code == 0 {
+		t.Fatalf("doctor --repair-runtime with arg unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("doctor usage error wrote stderr in JSON mode: %q", stderr)
+	}
+	env = decodeContractSmokeEnvelope(t, stdout)
+	if env.OK || env.Command != "doctor" {
+		t.Fatalf("unexpected doctor usage envelope: %s", stdout)
+	}
+	errData, ok := env.Error.(map[string]any)
+	if !ok || errData["code"] != "E_USAGE" {
+		t.Fatalf("unexpected doctor usage error: %#v\n%s", env.Error, stdout)
+	}
+
+	if err := os.WriteFile(filepath.Join(repoPath, ".jvs-tmp-contract"), []byte("tmp"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code = runJVSInRepo(t, repoPath, "--json", "doctor", "--repair-runtime")
+	if code != 0 {
+		t.Fatalf("doctor --repair-runtime failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	env = decodeContractSmokeEnvelope(t, stdout)
+	var doctorData map[string]any
+	if err := json.Unmarshal(env.Data, &doctorData); err != nil {
+		t.Fatalf("decode doctor repair data: %v\n%s", err, stdout)
+	}
+	repairs, ok := doctorData["repairs"].([]any)
+	if !ok || len(repairs) == 0 {
+		t.Fatalf("doctor repair JSON missing repairs: %s", stdout)
+	}
+	assertContractDataOmitsInternalFields(t, stdout)
+
+	stdout, stderr, code = runJVSInRepo(t, repoPath, "--json", "verify", "--all", "1708300800000-deadbeef")
+	if code == 0 {
+		t.Fatalf("verify --all with checkpoint unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("verify usage error wrote stderr in JSON mode: %q", stderr)
+	}
+	env = decodeContractSmokeEnvelope(t, stdout)
+	if env.OK || env.Command != "verify" {
+		t.Fatalf("unexpected verify usage envelope: %s", stdout)
+	}
+	errData, ok = env.Error.(map[string]any)
+	if !ok || errData["code"] != "E_USAGE" {
+		t.Fatalf("unexpected verify usage error: %#v\n%s", env.Error, stdout)
 	}
 }
 
@@ -453,6 +595,69 @@ func TestContract_SetupJSONContract_InitAndCapability(t *testing.T) {
 	}
 	if _, ok := capabilityData["write_probe"].(bool); !ok {
 		t.Fatalf("capability write_probe must be a bool: %s", stdout)
+	}
+}
+
+func TestContract_SetupRejectsPhysicalOverlapViaSymlinkParent(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	sourceData := filepath.Join(source, "data")
+	if err := os.MkdirAll(sourceData, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceData, "file.txt"), []byte("v1"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	linkParent := filepath.Join(dir, "link-to-data")
+	requireContractSymlink(t, sourceData, linkParent)
+	dest := filepath.Join(linkParent, "repo")
+
+	stdout, stderr, code := runJVS(t, dir, "--json", "import", source, dest)
+	if code == 0 {
+		t.Fatalf("overlapping import unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("overlapping import JSON error wrote stderr: %q", stderr)
+	}
+	env := decodeContractSmokeEnvelope(t, stdout)
+	if env.OK {
+		t.Fatalf("overlapping import returned ok envelope: %s", stdout)
+	}
+	errData, ok := env.Error.(map[string]any)
+	if !ok {
+		t.Fatalf("overlapping import error was not an object: %#v\n%s", env.Error, stdout)
+	}
+	if !strings.Contains(strings.ToLower(errData["message"].(string)), "physical path overlap") {
+		t.Fatalf("overlapping import error did not mention physical overlap: %#v\n%s", errData, stdout)
+	}
+	if _, err := os.Stat(filepath.Join(sourceData, "repo", ".jvs")); !os.IsNotExist(err) {
+		t.Fatalf("overlapping import created repo metadata: %v", err)
+	}
+}
+
+func TestContract_CapabilityJSONIncludesMetadataPreservationAndPerformanceClass(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "capability-target")
+	if err := os.Mkdir(target, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runJVS(t, dir, "--json", "capability", target)
+	if code != 0 {
+		t.Fatalf("capability failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	data := decodeContractSmokeDataMap(t, stdout)
+	if class, ok := data["performance_class"].(string); !ok || class == "" {
+		t.Fatalf("capability performance_class must be a non-empty string: %s", stdout)
+	}
+	metadata, ok := data["metadata_preservation"].(map[string]any)
+	if !ok {
+		t.Fatalf("capability metadata_preservation must be an object: %s", stdout)
+	}
+	for _, field := range []string{"symlinks", "hardlinks", "mode", "timestamps", "xattrs", "acls"} {
+		if value, _ := metadata[field].(string); value == "" {
+			t.Fatalf("capability metadata_preservation.%s must be non-empty: %s", field, stdout)
+		}
 	}
 }
 
@@ -610,6 +815,16 @@ func assertContractSetupJSONData(t *testing.T, stdout string) map[string]any {
 	}
 
 	return data
+}
+
+func requireContractSymlink(t *testing.T, oldname, newname string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior differs on Windows")
+	}
+	if err := os.Symlink(oldname, newname); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
 }
 
 func assertContractDataOmitsInternalFields(t *testing.T, stdout string) {

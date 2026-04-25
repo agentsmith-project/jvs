@@ -24,11 +24,11 @@ func TestE2E_Integrity_VerifyPasses(t *testing.T) {
 	// Create snapshot
 	t.Run("create_snapshot", func(t *testing.T) {
 		os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("exact content"), 0644)
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "original")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "original")
 		if code != 0 {
 			t.Fatalf("snapshot failed: %s", stderr)
 		}
-		if !strings.Contains(stdout, "Created snapshot") {
+		if !strings.Contains(stdout, "Created checkpoint") {
 			t.Errorf("expected success message, got: %s", stdout)
 		}
 	})
@@ -36,7 +36,7 @@ func TestE2E_Integrity_VerifyPasses(t *testing.T) {
 	// Get snapshot ID
 	var snapshotID string
 	t.Run("get_snapshot_id", func(t *testing.T) {
-		stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--json")
+		stdout, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "list", "--json")
 		ids := extractAllSnapshotIDs(stdout)
 		if len(ids) == 0 {
 			t.Fatal("expected at least one snapshot")
@@ -76,10 +76,10 @@ func TestE2E_Integrity_DetectTampering(t *testing.T) {
 
 	// Create snapshot
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("original content"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "original")
+	runJVSInRepo(t, repoPath, "checkpoint", "original")
 
 	// Get snapshot ID
-	stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--json")
+	stdout, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "list", "--json")
 	ids := extractAllSnapshotIDs(stdout)
 	if len(ids) == 0 {
 		t.Fatal("expected at least one snapshot")
@@ -154,7 +154,7 @@ func TestE2E_Integrity_MultipleSnapshots(t *testing.T) {
 	// Create multiple snapshots
 	for i := 1; i <= 5; i++ {
 		os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte(string(rune('a'+i))), 0644)
-		runJVSInRepo(t, repoPath, "snapshot", "snapshot")
+		runJVSInRepo(t, repoPath, "checkpoint", "checkpoint")
 	}
 
 	// Verify all
@@ -170,7 +170,7 @@ func TestE2E_Integrity_MultipleSnapshots(t *testing.T) {
 
 	// Verify individual snapshots
 	t.Run("verify_individual", func(t *testing.T) {
-		stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--json")
+		stdout, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "list", "--json")
 		ids := extractAllSnapshotIDs(stdout)
 
 		for _, id := range ids {
@@ -189,10 +189,10 @@ func TestE2E_Integrity_VerifyByTag(t *testing.T) {
 
 	// Create snapshots with tags
 	os.WriteFile(filepath.Join(mainPath, "version.txt"), []byte("1.0"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "v1.0", "--tag", "release", "--tag", "v1.0")
+	runJVSInRepo(t, repoPath, "checkpoint", "v1.0", "--tag", "release", "--tag", "v1.0")
 
 	os.WriteFile(filepath.Join(mainPath, "version.txt"), []byte("2.0"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "v2.0", "--tag", "release", "--tag", "v2.0")
+	runJVSInRepo(t, repoPath, "checkpoint", "v2.0", "--tag", "release", "--tag", "v2.0")
 
 	// Verify with --all (includes all tagged)
 	t.Run("verify_all_tagged", func(t *testing.T) {
@@ -214,11 +214,11 @@ func TestE2E_Integrity_VerifyAfterRestore(t *testing.T) {
 	// Create snapshots
 	for _, ver := range []string{"A", "B", "C"} {
 		os.WriteFile(filepath.Join(mainPath, "state.txt"), []byte(ver), 0644)
-		runJVSInRepo(t, repoPath, "snapshot", "state "+ver)
+		runJVSInRepo(t, repoPath, "checkpoint", "state "+ver)
 	}
 
 	// Get snapshot IDs
-	stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--json")
+	stdout, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "list", "--json")
 	ids := extractAllSnapshotIDs(stdout)
 
 	// Restore to middle snapshot
@@ -259,7 +259,7 @@ func TestE2E_Integrity_VerifyJsonOutput(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 
 	// Create snapshot
-	runJVSInRepo(t, repoPath, "snapshot", "test")
+	runJVSInRepo(t, repoPath, "checkpoint", "test")
 
 	// Get JSON output
 	t.Run("json_output", func(t *testing.T) {
@@ -287,10 +287,10 @@ func TestE2E_Integrity_ChecksumVerification(t *testing.T) {
 	// Create file with known content
 	content := "checksum test content"
 	os.WriteFile(filepath.Join(mainPath, "test.txt"), []byte(content), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "checksum-test")
+	runJVSInRepo(t, repoPath, "checkpoint", "checksum-test")
 
 	// Get snapshot ID
-	stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--json")
+	stdout, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "list", "--json")
 	ids := extractAllSnapshotIDs(stdout)
 	if len(ids) == 0 {
 		t.Fatal("expected snapshot")
@@ -329,13 +329,13 @@ func TestE2E_Integrity_WorktreeVerification(t *testing.T) {
 
 	// Create snapshot in main
 	os.WriteFile(filepath.Join(mainPath, "main.txt"), []byte("main"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "main-snap")
+	runJVSInRepo(t, repoPath, "checkpoint", "main-snap")
 
 	// Fork worktree and create snapshot
-	runJVSInRepo(t, repoPath, "worktree", "fork", "feature")
+	runJVSInRepo(t, repoPath, "fork", "feature")
 	featurePath := filepath.Join(repoPath, "worktrees", "feature")
 	os.WriteFile(filepath.Join(featurePath, "feature.txt"), []byte("feature"), 0644)
-	runJVSInWorktree(t, repoPath, "feature", "snapshot", "feature-snap")
+	runJVSInWorktree(t, repoPath, "feature", "checkpoint", "feature-snap")
 
 	// Verify all snapshots
 	t.Run("verify_all_worktrees", func(t *testing.T) {
@@ -356,14 +356,14 @@ func TestE2E_Integrity_AfterGC(t *testing.T) {
 
 	// Create snapshots
 	os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte("main"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "main")
+	runJVSInRepo(t, repoPath, "checkpoint", "main")
 
 	// Create and remove worktree
-	runJVSInRepo(t, repoPath, "worktree", "fork", "temp")
+	runJVSInRepo(t, repoPath, "fork", "temp")
 	featurePath := filepath.Join(repoPath, "worktrees", "temp")
 	os.WriteFile(filepath.Join(featurePath, "temp.txt"), []byte("temp"), 0644)
-	runJVSInWorktree(t, repoPath, "temp", "snapshot", "temp")
-	runJVSInRepo(t, repoPath, "worktree", "remove", "temp")
+	runJVSInWorktree(t, repoPath, "temp", "checkpoint", "temp")
+	runJVSInRepo(t, repoPath, "workspace", "remove", "temp")
 
 	// Run GC
 	planOut, _, _ := runJVSInRepo(t, repoPath, "gc", "plan", "--json")

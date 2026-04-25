@@ -19,13 +19,13 @@ func TestE2E_EdgeCases_SnapshotWithEmptyPayload(t *testing.T) {
 	// Snapshot with empty worktree
 	t.Run("empty_snapshot", func(t *testing.T) {
 		// main/ exists but is empty
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "empty baseline")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "empty baseline")
 		if code != 0 {
 			t.Logf("Empty snapshot failed (may be expected): %s", stderr)
 		} else {
 			t.Logf("Empty snapshot succeeded: %s", stdout)
 			// Should still have created a snapshot
-			if !strings.Contains(stdout, "Created snapshot") {
+			if !strings.Contains(stdout, "Created checkpoint") {
 				t.Error("expected success message")
 			}
 		}
@@ -55,11 +55,11 @@ func TestE2E_EdgeCases_ForkToExistingName(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 
 	// Create first worktree
-	runJVSInRepo(t, repoPath, "worktree", "fork", "feature")
+	runJVSInRepo(t, repoPath, "fork", "feature")
 
 	// Try to create worktree with same name
 	t.Run("fork_duplicate_name", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "worktree", "fork", "feature")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "fork", "feature")
 		if code == 0 {
 			t.Error("fork should fail for existing worktree name")
 		}
@@ -75,7 +75,7 @@ func TestE2E_EdgeCases_RemoveNonExistentWorktree(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 
 	t.Run("remove_nonexistent", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "worktree", "remove", "nonexistent-worktree")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "workspace", "remove", "nonexistent-worktree")
 		if code == 0 {
 			t.Log("remove of non-existent worktree succeeded (idempotent)")
 		} else {
@@ -92,11 +92,11 @@ func TestE2E_EdgeCases_RenameToExistingName(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 
 	// Create two worktrees
-	runJVSInRepo(t, repoPath, "worktree", "fork", "feature-a")
-	runJVSInRepo(t, repoPath, "worktree", "fork", "feature-b")
+	runJVSInRepo(t, repoPath, "fork", "feature-a")
+	runJVSInRepo(t, repoPath, "fork", "feature-b")
 
 	t.Run("rename_to_existing", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "worktree", "rename", "feature-a", "feature-b")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "workspace", "rename", "feature-a", "feature-b")
 		if code == 0 {
 			t.Error("rename should fail when target name exists")
 		}
@@ -116,7 +116,7 @@ func TestE2E_EdgeCases_InvalidTagName(t *testing.T) {
 
 	t.Run("tag_with_spaces", func(t *testing.T) {
 		// Tags with spaces might be rejected or handled
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "test", "--tag", "tag with spaces")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "test", "--tag", "tag with spaces")
 		if code != 0 {
 			t.Logf("Tag with spaces rejected (expected): %s", stderr)
 		} else {
@@ -148,13 +148,13 @@ func TestE2E_EdgeCases_RestoreWhenHistorical(t *testing.T) {
 
 	// Create two snapshots
 	os.WriteFile(filepath.Join(mainPath, "state.txt"), []byte("first"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "first", "--tag", "v1")
+	runJVSInRepo(t, repoPath, "checkpoint", "first", "--tag", "v1")
 
 	os.WriteFile(filepath.Join(mainPath, "state.txt"), []byte("second"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "second", "--tag", "v2")
+	runJVSInRepo(t, repoPath, "checkpoint", "second", "--tag", "v2")
 
 	// Get snapshot IDs
-	stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--json")
+	stdout, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "list", "--json")
 	ids := extractAllSnapshotIDs(stdout)
 	if len(ids) < 2 {
 		t.Fatal("need at least 2 snapshots")
@@ -222,11 +222,11 @@ func TestE2E_EdgeCases_LongSnapshotNote(t *testing.T) {
 	longNote := strings.Repeat("This is a very long snapshot note. ", 50)
 
 	t.Run("long_note", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "snapshot", longNote)
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", longNote)
 		if code != 0 {
 			t.Errorf("snapshot with long note should succeed: %s", stderr)
 		} else {
-			if !strings.Contains(stdout, "Created snapshot") {
+			if !strings.Contains(stdout, "Created checkpoint") {
 				t.Error("expected success message")
 			}
 		}
@@ -242,7 +242,7 @@ func TestE2E_EdgeCases_MultipleTags(t *testing.T) {
 
 	// Create snapshot with multiple tags
 	t.Run("multiple_tags", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "multi-tag snapshot",
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "multi-tag snapshot",
 			"--tag", "v1.0",
 			"--tag", "release",
 			"--tag", "stable",
@@ -251,13 +251,13 @@ func TestE2E_EdgeCases_MultipleTags(t *testing.T) {
 		if code != 0 {
 			t.Errorf("snapshot with multiple tags should succeed: %s", stderr)
 		} else {
-			if !strings.Contains(stdout, "Created snapshot") {
+			if !strings.Contains(stdout, "Created checkpoint") {
 				t.Error("expected success message")
 			}
 		}
 
 		// Verify tags were stored
-		stdout, _, _ = runJVSInRepo(t, repoPath, "history")
+		stdout, _, _ = runJVSInRepo(t, repoPath, "checkpoint", "list")
 		if !strings.Contains(stdout, "v1.0") || !strings.Contains(stdout, "release") {
 			t.Logf("History output: %s", stdout)
 		}
@@ -284,13 +284,13 @@ func TestE2E_EdgeCases_SpecialCharactersInFilename(t *testing.T) {
 	}
 
 	t.Run("snapshot_special_chars", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "special chars")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "special chars")
 		if code != 0 {
 			t.Errorf("snapshot with special filenames should succeed: %s", stderr)
 		}
 
 		// Restore and verify files are preserved
-		stdout, _, _ = runJVSInRepo(t, repoPath, "history", "--json")
+		stdout, _, _ = runJVSInRepo(t, repoPath, "checkpoint", "list", "--json")
 		ids := extractAllSnapshotIDs(stdout)
 		if len(ids) > 0 {
 			runJVSInRepo(t, repoPath, "restore", "nonexistent-test-id")
@@ -316,7 +316,7 @@ func TestE2E_EdgeCases_DeeplyNestedDirectory(t *testing.T) {
 	os.WriteFile(filepath.Join(deepPath, "deep.txt"), []byte("deep content"), 0644)
 
 	t.Run("deep_nesting", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "deep nested content")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "deep nested content")
 		if code != 0 {
 			t.Errorf("snapshot with deep nesting should succeed: %s", stderr)
 		}
@@ -337,7 +337,7 @@ func TestE2E_EdgeCases_LargeFile(t *testing.T) {
 	os.WriteFile(filepath.Join(mainPath, "large.bin"), largeContent, 0644)
 
 	t.Run("large_file", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "large file snapshot")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "large file snapshot")
 		if code != 0 {
 			t.Errorf("snapshot with large file should succeed: %s", stderr)
 		}
@@ -359,7 +359,7 @@ func TestE2E_EdgeCases_ManySmallFiles(t *testing.T) {
 	}
 
 	t.Run("many_small_files", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "many files")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "many files")
 		if code != 0 {
 			t.Errorf("snapshot with many files should succeed: %s", stderr)
 		}
@@ -373,7 +373,7 @@ func TestE2E_EdgeCases_RestoreSameSnapshot(t *testing.T) {
 	mainPath := filepath.Join(repoPath, "main")
 
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "original")
+	runJVSInRepo(t, repoPath, "checkpoint", "original")
 
 	t.Run("restore_same_snapshot", func(t *testing.T) {
 		stdout, stderr, code := runJVSInRepo(t, repoPath, "restore", "latest")
@@ -389,7 +389,7 @@ func TestE2E_EdgeCases_ListEmptyHistory(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 
 	t.Run("empty_history", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "history")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "list")
 		// Should not fail, just show empty history
 		if code != 0 {
 			t.Logf("History command failed: %s", stderr)
@@ -418,7 +418,7 @@ func TestE2E_EdgeCases_DoctorOnHealthyRepo(t *testing.T) {
 	mainPath := filepath.Join(repoPath, "main")
 
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "healthy")
+	runJVSInRepo(t, repoPath, "checkpoint", "healthy")
 
 	t.Run("doctor_healthy", func(t *testing.T) {
 		stdout, stderr, code := runJVSInRepo(t, repoPath, "doctor")
@@ -436,7 +436,7 @@ func TestE2E_ErrorHandling_InvalidWorktreeCommands(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 
 	t.Run("path_nonexistent", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "worktree", "path", "nonexistent")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "workspace", "path", "nonexistent")
 		if code == 0 {
 			t.Log("path of nonexistent worktree succeeded (may show error)")
 		}
@@ -447,7 +447,7 @@ func TestE2E_ErrorHandling_InvalidWorktreeCommands(t *testing.T) {
 	})
 
 	t.Run("rename_nonexistent", func(t *testing.T) {
-		stdout, _, code := runJVSInRepo(t, repoPath, "worktree", "rename", "nonexistent", "newname")
+		stdout, _, code := runJVSInRepo(t, repoPath, "workspace", "rename", "nonexistent", "newname")
 		if code == 0 {
 			t.Log("rename of nonexistent succeeded (may show error)")
 		}
@@ -461,12 +461,12 @@ func TestE2E_ErrorHandling_SnapshotConflicts(t *testing.T) {
 	mainPath := filepath.Join(repoPath, "main")
 
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "first", "--tag", "release")
+	runJVSInRepo(t, repoPath, "checkpoint", "first", "--tag", "release")
 
 	t.Run("duplicate_tag", func(t *testing.T) {
 		// Create another snapshot with same tag
 		os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("updated"), 0644)
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "second", "--tag", "release")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "second", "--tag", "release")
 		if code != 0 {
 			t.Logf("Duplicate tag rejected: %s", stderr)
 		} else {
@@ -482,21 +482,21 @@ func TestE2E_Worktree_MergeLikeScenario(t *testing.T) {
 
 	// Create baseline
 	os.WriteFile(filepath.Join(mainPath, "shared.txt"), []byte("shared content"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "baseline")
+	runJVSInRepo(t, repoPath, "checkpoint", "baseline")
 
 	// Fork feature branch
-	runJVSInRepo(t, repoPath, "worktree", "fork", "feature")
+	runJVSInRepo(t, repoPath, "fork", "feature")
 	featurePath := filepath.Join(repoPath, "worktrees", "feature")
 
 	// Work on feature in parallel with main work
 	t.Run("parallel_development", func(t *testing.T) {
 		// Feature branch adds file
 		os.WriteFile(filepath.Join(featurePath, "feature.txt"), []byte("feature work"), 0644)
-		runJVSInWorktree(t, repoPath, "feature", "snapshot", "feature added")
+		runJVSInWorktree(t, repoPath, "feature", "checkpoint", "feature added")
 
 		// Main branch also evolves
 		os.WriteFile(filepath.Join(mainPath, "main.txt"), []byte("main work"), 0644)
-		runJVSInRepo(t, repoPath, "snapshot", "main update")
+		runJVSInRepo(t, repoPath, "checkpoint", "main update")
 
 		// Feature should still have baseline's shared.txt
 		content := readFile(t, featurePath, "shared.txt")
@@ -513,7 +513,7 @@ func TestE2E_Worktree_MergeLikeScenario(t *testing.T) {
 	// "Merge" by restoring from feature and making it the new main
 	t.Run("manual_merge", func(t *testing.T) {
 		// Get feature's latest snapshot ID
-		stdout, _, _ := runJVSInWorktree(t, repoPath, "feature", "history", "--json")
+		stdout, _, _ := runJVSInWorktree(t, repoPath, "feature", "checkpoint", "list", "--json")
 		ids := extractAllSnapshotIDs(stdout)
 		if len(ids) == 0 {
 			t.Fatal("feature should have snapshots")
@@ -544,7 +544,7 @@ func TestE2E_Engine_Fallback(t *testing.T) {
 
 	// Create snapshot - should use configured engine and fallback if needed
 	t.Run("snapshot_with_engine", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "test engine")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "test engine")
 		if code != 0 {
 			t.Errorf("snapshot should work with engine fallback: %s", stderr)
 		}
@@ -573,7 +573,7 @@ func TestE2E_EdgeCases_UnicodeFilenames(t *testing.T) {
 	}
 
 	t.Run("unicode_filenames", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "unicode test")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "unicode test")
 		if code != 0 {
 			t.Errorf("snapshot with unicode filenames should succeed: %s", stderr)
 		}

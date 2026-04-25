@@ -28,7 +28,7 @@ func (e *CopyEngine) Name() model.EngineType {
 // Clone recursively copies src to dst.
 // Returns a degraded result if hardlinks were detected (they become separate copies).
 func (e *CopyEngine) Clone(src, dst string) (*CloneResult, error) {
-	result := &CloneResult{}
+	result := NewCloneResult(model.EngineCopy)
 
 	seenInodes := make(map[uint64]string)
 	var dirs []dirMode
@@ -47,8 +47,7 @@ func (e *CopyEngine) Clone(src, dst string) (*CloneResult, error) {
 		if !info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
 			if ino, ok := fileInode(info); ok {
 				if seenInodes[ino] != "" {
-					result.Degraded = true
-					result.Degradations = append(result.Degradations, "hardlink")
+					result.AddDegradation("hardlink", model.EngineCopy)
 				} else {
 					seenInodes[ino] = path
 				}

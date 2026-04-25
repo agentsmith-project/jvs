@@ -52,16 +52,21 @@ func (id SnapshotID) IsValid() bool {
 
 // Descriptor is the on-disk snapshot metadata.
 type Descriptor struct {
-	SnapshotID         SnapshotID     `json:"snapshot_id"`
-	ParentID           *SnapshotID    `json:"parent_id,omitempty"`
-	WorktreeName       string         `json:"worktree_name"`
-	CreatedAt          time.Time      `json:"created_at"`
-	Note               string         `json:"note,omitempty"`
-	Tags               []string       `json:"tags,omitempty"`
-	Engine             EngineType     `json:"engine"`
-	PayloadRootHash    HashValue      `json:"payload_root_hash"`
-	DescriptorChecksum HashValue      `json:"descriptor_checksum"`
-	IntegrityState     IntegrityState `json:"integrity_state"`
+	SnapshotID           SnapshotID            `json:"snapshot_id"`
+	ParentID             *SnapshotID           `json:"parent_id,omitempty"`
+	WorktreeName         string                `json:"worktree_name"`
+	CreatedAt            time.Time             `json:"created_at"`
+	Note                 string                `json:"note,omitempty"`
+	Tags                 []string              `json:"tags,omitempty"`
+	Engine               EngineType            `json:"engine"`
+	ActualEngine         EngineType            `json:"actual_engine,omitempty"`
+	EffectiveEngine      EngineType            `json:"effective_engine,omitempty"`
+	DegradedReasons      []string              `json:"degraded_reasons,omitempty"`
+	MetadataPreservation *MetadataPreservation `json:"metadata_preservation,omitempty"`
+	PerformanceClass     string                `json:"performance_class,omitempty"`
+	PayloadRootHash      HashValue             `json:"payload_root_hash"`
+	DescriptorChecksum   HashValue             `json:"descriptor_checksum"`
+	IntegrityState       IntegrityState        `json:"integrity_state"`
 	// PartialPaths is set for partial snapshots, listing the specific paths included.
 	// Empty or nil means a full worktree snapshot.
 	PartialPaths []string `json:"partial_paths,omitempty"`

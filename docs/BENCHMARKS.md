@@ -29,6 +29,8 @@ Run a specific benchmark:
 go test -bench=BenchmarkSnapshotCreation_CopyEngine_Small -benchmem ./internal/snapshot/
 ```
 
+Note: Benchmark names and package paths below are Go test identifiers from internal packages; they may retain internal snapshot/worktree vocabulary. Public CLI examples should use checkpoint, workspace, and fork.
+
 ## Benchmark Categories
 
 ### Snapshot Operations (`internal/snapshot/bench_test.go`)
@@ -65,7 +67,7 @@ go test -bench=BenchmarkSnapshotCreation_CopyEngine_Small -benchmem ./internal/s
 | `BenchmarkRestore_MultiFile` | 2,172,883 | 460 | 508,972 | 8,467 | ✅ |
 | `BenchmarkRestore_MultiFile_Large` | 13,491,429 | 74 | 1,431,251 | 19,545 | ✅ |
 | `BenchmarkRestoreToLatest` | 5,416,713 | 185 | 2,200,924 | 39,365 | ✅ |
-| `BenchmarkRestore_DetachedState` | 6,450,542 | 155 | 2,641,551 | 47,298 | ✅ |
+| Restore from historical checkpoint | 6,450,542 | 155 | 2,641,551 | 47,298 | ✅ |
 | `BenchmarkRestore_IntegrityVerification` | 5,293,811 | 189 | 2,152,842 | 38,495 | ✅ |
 | `BenchmarkRestore_SnapshotToSnapshot` | 5,474,538 | 183 | 2,238,155 | 40,036 | ✅ |
 | `BenchmarkRestore_EmptyWorktree` | 6,457,379 | 155 | 2,601,160 | 46,557 | ✅ |
@@ -98,15 +100,15 @@ go test -bench=BenchmarkSnapshotCreation_CopyEngine_Small -benchmem ./internal/s
 - **Small files (<100KB)**: Completes in ~5.5-7.6ms
 - **Medium files (~1MB)**: Completes in ~2.5-2.8ms
 - **Multi-file large (1000 files)**: ~13.5ms with ~1.4MB allocations
-- **Detached state restore**: ~6.5ms (includes integrity verification)
-- **Empty worktree restore**: ~6.5ms (similar to content replace due to verification overhead)
+- **Historical checkpoint restore**: ~6.5ms (includes integrity verification)
+- **Empty workspace restore**: ~6.5ms (similar to content replace due to verification overhead)
 
 ### Catalog Operations
 - **ListAll_Empty**: ~1.6μs (fast path)
 - **ListAll_Single**: ~7.7μs
-- **ListAll_Many**: ~327μs for 50 snapshots (~6.5μs per snapshot)
+- **ListAll_Many**: ~327μs for 50 checkpoints (~6.5μs per checkpoint)
 - **Find by tag**: ~8.3μs (optimized index lookup)
-- **Find by worktree**: ~59μs (requires filtering)
+- **Find by workspace**: ~59μs (requires filtering)
 
 ### Integrity Verification
 - **Checksum only**: ~10.6μs (SHA-256 of descriptor)
@@ -117,10 +119,10 @@ go test -bench=BenchmarkSnapshotCreation_CopyEngine_Small -benchmem ./internal/s
 
 Key allocations to track:
 
-- **Large snapshots**: 1000 files ~47K allocations (~37MB)
+- **Large checkpoints**: 1000 files ~47K allocations (~37MB)
 - **Large restores**: 1000 files ~20K allocations (~1.4MB)
 - **ListAll(50)**: ~1.2K allocations (~91KB)
-- **GC delete operations**: Scale heavily with snapshot count (509K allocations for 100 snapshots)
+- **GC delete operations**: Scale heavily with checkpoint count (509K allocations for 100 checkpoints)
 
 ## Performance Regression Detection
 
@@ -148,9 +150,9 @@ When making changes to critical paths:
 2. **Memory allocation patterns**:
    - Snapshot creation: ~50K-53K allocations for small files (setup overhead dominates)
    - Restore operations: ~40K-54K allocations per operation
-   - Large snapshots (1000 files): ~47K allocations, ~37MB
+   - Large checkpoints (1000 files): ~47K allocations, ~37MB
    - Large restores (1000 files): ~20K allocations, ~1.4MB
-   - GC delete operations: Scale heavily with snapshot count (509K allocations for 100 snapshots)
+   - GC delete operations: Scale heavily with checkpoint count (509K allocations for 100 checkpoints)
 
 3. **Filesystem matters**: Benchmarks run on tmpfs; results will vary on:
    - ext4/xfs: Reflink performance improves significantly
@@ -160,16 +162,16 @@ When making changes to critical paths:
 4. **Concurrency**: Current implementation is single-threaded; parallel snapshot/restore is a future optimization
 
 5. **GC Performance**:
-   - Planning scales linearly with snapshot count (~112μs for 10 snapshots)
-   - Deleting snapshots is the most expensive GC operation (~8.2ms for single, ~60ms for 100)
+   - Planning scales linearly with checkpoint count (~112μs for 10 checkpoints)
+   - Deleting checkpoints is the most expensive GC operation (~8.2ms for single, ~60ms for 100)
    - Lineage traversal is efficient (~767μs for complex histories)
    - Empty repo operations are very fast (~27μs)
 
 ## Additional Benchmark Opportunities
 
 Future benchmark areas to consider:
-- [ ] Worktree forking performance
+- [ ] Workspace forking performance
 - [ ] Lock acquisition overhead
 - [ ] Concurrent operations
-- [ ] Large-scale scenarios (10K+ snapshots, 100K+ files)
+- [ ] Large-scale scenarios (10K+ checkpoints, 100K+ files)
 - [ ] Cross-engine performance comparison under various filesystems

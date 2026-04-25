@@ -172,19 +172,19 @@ func TestWorktree_Fork(t *testing.T) {
 	dataPath := filepath.Join(repoPath, "main", "data.txt")
 	os.WriteFile(dataPath, []byte("original"), 0644)
 
-	runJVSInRepo(t, repoPath, "snapshot", "v1")
+	runJVSInRepo(t, repoPath, "checkpoint", "v1")
 
 	// Fork from current position
-	stdout, stderr, code := runJVSInRepo(t, repoPath, "worktree", "fork", "feature")
+	stdout, stderr, code := runJVSInRepo(t, repoPath, "fork", "feature")
 	if code != 0 {
 		t.Fatalf("fork failed: %s", stderr)
 	}
-	if !strings.Contains(stdout, "Created worktree") {
+	if !strings.Contains(stdout, "Created workspace") {
 		t.Errorf("expected success message, got: %s", stdout)
 	}
 
 	// Verify new worktree exists
-	stdout, _, _ = runJVSInRepo(t, repoPath, "worktree", "list")
+	stdout, _, _ = runJVSInRepo(t, repoPath, "workspace", "list")
 	if !strings.Contains(stdout, "feature") {
 		t.Error("feature worktree should exist")
 	}
@@ -207,13 +207,13 @@ func TestWorktree_ForkFromSnapshot(t *testing.T) {
 	// Create two snapshots
 	dataPath := filepath.Join(repoPath, "main", "data.txt")
 	os.WriteFile(dataPath, []byte("first"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "v1")
+	runJVSInRepo(t, repoPath, "checkpoint", "v1")
 
 	os.WriteFile(dataPath, []byte("second"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "v2")
+	runJVSInRepo(t, repoPath, "checkpoint", "v2")
 
 	// Get first snapshot ID
-	stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--json")
+	stdout, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "list", "--json")
 	snapshots := extractAllSnapshotIDs(stdout)
 	if len(snapshots) < 2 {
 		t.Fatal("expected at least 2 snapshots")
@@ -221,7 +221,7 @@ func TestWorktree_ForkFromSnapshot(t *testing.T) {
 	firstSnapshot := snapshots[len(snapshots)-1] // oldest
 
 	// Fork from first snapshot
-	_, stderr, code := runJVSInRepo(t, repoPath, "worktree", "fork", firstSnapshot, "from-first")
+	_, stderr, code := runJVSInRepo(t, repoPath, "fork", firstSnapshot, "from-first")
 	if code != 0 {
 		t.Fatalf("fork from snapshot failed: %s", stderr)
 	}
@@ -272,10 +272,10 @@ func TestWorktree_ForkByTag(t *testing.T) {
 	dataPath := filepath.Join(repoPath, "main", "data.txt")
 	os.WriteFile(dataPath, []byte("tagged content"), 0644)
 
-	runJVSInRepo(t, repoPath, "snapshot", "release v1", "--tag", "v1.0")
+	runJVSInRepo(t, repoPath, "checkpoint", "release v1", "--tag", "v1.0")
 
 	// Fork by tag
-	_, stderr, code := runJVSInRepo(t, repoPath, "worktree", "fork", "v1.0", "hotfix")
+	_, stderr, code := runJVSInRepo(t, repoPath, "fork", "v1.0", "hotfix")
 	if code != 0 {
 		t.Fatalf("fork by tag failed: %s", stderr)
 	}
@@ -303,15 +303,14 @@ func extractAllSnapshotIDs(historyJSON string) []string {
 	var ids []string
 	lines := strings.Split(historyJSON, "\n")
 	for _, line := range lines {
-		for _, field := range []string{"checkpoint_id", "snapshot_id"} {
-			if !strings.Contains(line, `"`+field+`"`) {
-				continue
-			}
-			parts := strings.Split(line, `"`)
-			for i, p := range parts {
-				if p == field && i+2 < len(parts) {
-					ids = append(ids, parts[i+2])
-				}
+		const field = "checkpoint_id"
+		if !strings.Contains(line, `"`+field+`"`) {
+			continue
+		}
+		parts := strings.Split(line, `"`)
+		for i, p := range parts {
+			if p == field && i+2 < len(parts) {
+				ids = append(ids, parts[i+2])
 			}
 		}
 	}

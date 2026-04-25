@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jvs-project/jvs/internal/verify"
+	"github.com/jvs-project/jvs/pkg/errclass"
 	"github.com/jvs-project/jvs/pkg/model"
 )
 
@@ -25,7 +26,12 @@ Examples:
   jvs verify                    # Verify all checkpoints
   jvs verify 1771589abc         # Verify specific checkpoint
   jvs verify --all              # Verify all checkpoints`,
-	Args: cobra.MaximumNArgs(1),
+	Args: func(cmd *cobra.Command, args []string) error {
+		if verifyAll && len(args) > 0 {
+			return errclass.ErrUsage.WithMessage("verify --all does not accept a checkpoint id")
+		}
+		return cobra.MaximumNArgs(1)(cmd, args)
+	},
 	Run: func(cmd *cobra.Command, args []string) {
 		r := requireRepo()
 
@@ -58,7 +64,11 @@ Examples:
 				if res.TamperDetected {
 					status = "TAMPERED"
 				}
-				fmt.Printf("%s  %s\n", res.SnapshotID, status)
+				errCode := ""
+				if res.ErrorCode != "" {
+					errCode = fmt.Sprintf("  [%s]", publicErrorCodeVocabulary(res.ErrorCode))
+				}
+				fmt.Printf("%s  %s%s\n", res.SnapshotID, status, errCode)
 			}
 
 			if tampered {
@@ -84,7 +94,11 @@ Examples:
 			fmt.Printf("  Checksum: %v\n", result.ChecksumValid)
 			fmt.Printf("  Payload hash: %v\n", result.PayloadHashValid)
 			if result.TamperDetected {
-				fmt.Printf("  TAMPER DETECTED: %s\n", result.Error)
+				errCode := ""
+				if result.ErrorCode != "" {
+					errCode = fmt.Sprintf(" [%s]", publicErrorCodeVocabulary(result.ErrorCode))
+				}
+				fmt.Printf("  TAMPER DETECTED%s: %s\n", errCode, publicContractVocabulary(result.Error))
 				os.Exit(1)
 			}
 		}

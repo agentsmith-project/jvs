@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
+	"github.com/jvs-project/jvs/internal/engine"
 	"github.com/jvs-project/jvs/internal/repo"
 	"github.com/jvs-project/jvs/internal/snapshot"
 	"github.com/jvs-project/jvs/pkg/errclass"
@@ -93,6 +95,23 @@ func TestImportCommand_RejectsSourceContainingJVS(t *testing.T) {
 	require.NoDirExists(t, dest)
 }
 
+func TestImportCommand_RejectsPhysicalOverlapViaSymlinkParent(t *testing.T) {
+	base := t.TempDir()
+	source := filepath.Join(base, "source")
+	realSubdir := filepath.Join(source, "data")
+	require.NoError(t, os.MkdirAll(realSubdir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(realSubdir, "file.txt"), []byte("hello"), 0644))
+
+	linkParent := filepath.Join(base, "link-to-data")
+	requireLifecycleSymlink(t, realSubdir, linkParent)
+	dest := filepath.Join(linkParent, "repo")
+
+	_, err := executeCommand(createTestRootCmd(), "import", source, dest)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "physical path overlap")
+	require.NoDirExists(t, filepath.Join(realSubdir, "repo", ".jvs"))
+}
+
 func TestCloneCommand_FullCopiesHistoryAndCreatesNewIdentity(t *testing.T) {
 	base := t.TempDir()
 	source := filepath.Join(base, "source")
@@ -122,6 +141,23 @@ func TestCloneCommand_FullCopiesHistoryAndCreatesNewIdentity(t *testing.T) {
 	destSnaps, err := snapshot.ListAll(dest)
 	require.NoError(t, err)
 	require.Len(t, destSnaps, len(sourceSnaps))
+}
+
+func TestCloneCommand_FullRejectsPhysicalOverlapViaSymlinkParent(t *testing.T) {
+	base := t.TempDir()
+	source := filepath.Join(base, "source")
+	_, err := executeCommand(createTestRootCmd(), "init", source)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(source, "main", "file.txt"), []byte("v1"), 0644))
+
+	linkParent := filepath.Join(base, "link-to-main")
+	requireLifecycleSymlink(t, filepath.Join(source, "main"), linkParent)
+	dest := filepath.Join(linkParent, "repo")
+
+	_, err = executeCommand(createTestRootCmd(), "clone", source, dest, "--scope", "full")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "physical path overlap")
+	require.NoDirExists(t, filepath.Join(source, "main", "repo", ".jvs"))
 }
 
 func TestCloneCommand_FullExcludesRuntimeLockState(t *testing.T) {
@@ -245,6 +281,64 @@ func TestCloneCommand_CurrentCopiesWorkspaceAndDisconnectsHistory(t *testing.T) 
 	require.Contains(t, destSnaps[0].Note, "clone")
 }
 
+func TestCloneCurrentJSONSeparatesTransferFromMaterializationEngine(t *testing.T) {
+	base := t.TempDir()
+	report, err := engine.ProbeCapabilities(base, true)
+	require.NoError(t, err)
+	if report.JuiceFS.Supported {
+		t.Skip("test requires a non-JuiceFS temp directory")
+	}
+
+	source := filepath.Join(base, "source")
+	dest := filepath.Join(base, "dest")
+	_, err = executeCommand(createTestRootCmd(), "init", source)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(source, "main", "file.txt"), []byte("v1"), 0644))
+
+	t.Setenv("JVS_SNAPSHOT_ENGINE", "juicefs-clone")
+	t.Setenv("JVS_ENGINE", "")
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "clone", source, dest, "--scope", "current")
+	require.NoError(t, err)
+
+	got := decodeJSONDataForTest(t, stdout)
+	require.Equal(t, "juicefs-clone", got["engine"])
+	require.Equal(t, "juicefs-clone", got["effective_engine"])
+	require.Equal(t, "copy", got["transfer_engine"])
+	require.NotEqual(t, got["transfer_engine"], got["effective_engine"])
+	require.IsType(t, []any{}, got["degraded_reasons"])
+}
+
+func TestCloneCommand_CurrentRejectsPhysicalOverlapViaSymlinkParent(t *testing.T) {
+	base := t.TempDir()
+	source := filepath.Join(base, "source")
+	_, err := executeCommand(createTestRootCmd(), "init", source)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(source, "main", "file.txt"), []byte("v1"), 0644))
+
+	linkParent := filepath.Join(base, "link-to-main")
+	requireLifecycleSymlink(t, filepath.Join(source, "main"), linkParent)
+	dest := filepath.Join(linkParent, "repo")
+
+	_, err = executeCommand(createTestRootCmd(), "clone", source, dest, "--scope", "current")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "physical path overlap")
+	require.NoDirExists(t, filepath.Join(source, "main", "repo", ".jvs"))
+}
+
+func TestCloneCurrentRejectsWorkspacePathSource(t *testing.T) {
+	base := t.TempDir()
+	source := filepath.Join(base, "source")
+	dest := filepath.Join(base, "dest")
+	_, err := executeCommand(createTestRootCmd(), "init", source)
+	require.NoError(t, err)
+
+	_, err = executeCommand(createTestRootCmd(), "clone", filepath.Join(source, "main"), dest, "--scope", "current")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "source must be the repository root")
+	require.Contains(t, err.Error(), "source-workspace")
+	require.NoDirExists(t, dest)
+}
+
 func TestCloneCommand_CurrentRejectsBusySource(t *testing.T) {
 	base := t.TempDir()
 	source := filepath.Join(base, "source")
@@ -296,6 +390,21 @@ func TestCapabilityCommand_JSONShape(t *testing.T) {
 	require.Equal(t, "unknown", writeCapability["confidence"])
 }
 
+func TestCapabilityJSONIncludesMetadataPreservationAndPerformanceClass(t *testing.T) {
+	target := t.TempDir()
+
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "capability", target)
+	require.NoError(t, err)
+
+	got := decodeJSONDataForTest(t, stdout)
+	require.NotEmpty(t, got["performance_class"])
+	metadata, ok := got["metadata_preservation"].(map[string]any)
+	require.True(t, ok, "metadata_preservation must be an object: %s", stdout)
+	for _, field := range []string{"symlinks", "hardlinks", "mode", "timestamps", "xattrs", "acls"} {
+		require.NotEmpty(t, metadata[field], "metadata_preservation.%s must be set", field)
+	}
+}
+
 func TestCapabilityCommand_WriteProbeConfirmsCopyAndCleansUp(t *testing.T) {
 	target := t.TempDir()
 
@@ -314,6 +423,29 @@ func TestCapabilityCommand_WriteProbeConfirmsCopyAndCleansUp(t *testing.T) {
 	leftovers, err := filepath.Glob(filepath.Join(target, ".jvs-capability-*"))
 	require.NoError(t, err)
 	require.Empty(t, leftovers)
+}
+
+func TestPerformanceDocsDoNotUseUnsupportedEngineFlagOrUnconditionalO1Claims(t *testing.T) {
+	performance, err := os.ReadFile(filepath.Join("..", "..", "docs", "PERFORMANCE.md"))
+	require.NoError(t, err)
+	results, err := os.ReadFile(filepath.Join("..", "..", "docs", "PERFORMANCE_RESULTS.md"))
+	require.NoError(t, err)
+
+	combined := string(performance) + "\n" + string(results)
+	require.NotContains(t, combined, "--engine")
+	require.NotContains(t, string(performance), "Unlimited")
+	require.NotContains(t, string(results), "TB/s")
+	require.NotContains(t, string(results), "Snapshot time is O(1) with juicefs-clone engine")
+}
+
+func requireLifecycleSymlink(t *testing.T, oldname, newname string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior differs on Windows")
+	}
+	if err := os.Symlink(oldname, newname); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
 }
 
 func readRepoIDForTest(t *testing.T, root string) string {

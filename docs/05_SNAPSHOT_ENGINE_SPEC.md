@@ -21,10 +21,10 @@ Recursive deep copy.
 
 Override: `JVS_SNAPSHOT_ENGINE=juicefs-clone|reflink-copy|copy`
 
-Engine performance characteristics (Constitution §1):
-- `juicefs-clone`: O(1) via CoW metadata operation (independent of file count and data size)
-- `reflink-copy`: O(n) file-count walk, but O(1) per-file data copy via reflink (no data duplication)
-- `copy`: O(n) deep copy — graceful fallback when CoW is unavailable
+Engine performance classes (Constitution §1):
+- `juicefs-clone`: constant-time metadata clone when source and destination are on a supported JuiceFS mount and the `juicefs` CLI succeeds.
+- `reflink-copy`: linear tree walk with copy-on-write data sharing for files where reflink succeeds.
+- `copy`: linear data copy fallback.
 
 ## Metadata behavior declaration (MUST)
 Implementation MUST define behavior for:
@@ -35,6 +35,23 @@ Implementation MUST define behavior for:
 - ACLs
 
 If preservation is degraded, command MUST fail or write explicit degraded fields. Silent downgrade is forbidden.
+
+For v0, hardlink identity is not guaranteed by the public engine metadata contract. `metadata_preservation.hardlinks` MUST describe hardlink identity as not guaranteed rather than promising per-occurrence hardlink accounting.
+
+Public setup JSON MUST expose:
+- `effective_engine`: the engine expected for subsequent materialization in the target repository.
+- `transfer_engine`: for import/clone setup commands, the requested source-to-destination transfer strategy selected for this command.
+- `transfer_mode`: the actual transfer class after fallback for this command.
+- `degraded_reasons`: machine-readable reasons for this command's transfer degradation only.
+- `metadata_preservation`: the preservation contract for `effective_engine`.
+- `performance_class`: the performance class for `effective_engine`.
+
+Snapshot descriptors MUST record materialization metadata from the engine clone result:
+- `engine`: requested materialization engine.
+- `actual_engine`: engine that wrote the payload.
+- `effective_engine`: actual public materialization class after fallback.
+- `degraded_reasons`: degradation reasons for that materialization.
+- `metadata_preservation` and `performance_class`.
 
 ## Atomic publish and durability protocol (MUST)
 1. Verify preconditions (source exists, consistency policy).

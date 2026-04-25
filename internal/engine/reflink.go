@@ -30,7 +30,7 @@ func (e *ReflinkEngine) Name() model.EngineType {
 
 // Clone performs a reflink copy if supported, falls back to regular copy otherwise.
 func (e *ReflinkEngine) Clone(src, dst string) (*CloneResult, error) {
-	result := &CloneResult{}
+	result := NewCloneResult(model.EngineReflinkCopy)
 	var dirs []dirMode
 
 	if err := os.MkdirAll(dst, 0755); err != nil {
@@ -61,8 +61,7 @@ func (e *ReflinkEngine) Clone(src, dst string) (*CloneResult, error) {
 
 		default:
 			if err := reflinkFile(path, dstPath, info); err != nil {
-				result.Degraded = true
-				result.Degradations = append(result.Degradations, "reflink")
+				result.AddDegradation("reflink", model.EngineCopy)
 				return e.copyFile(path, dstPath, info)
 			}
 			return nil

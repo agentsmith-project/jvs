@@ -532,6 +532,10 @@ func createTestRootCmd() *cobra.Command {
 	diffStatOnly = false
 	cloneScope = "full"
 	capabilityWriteProbe = false
+	doctorStrict = false
+	doctorRepair = false
+	doctorRepairList = false
+	verifyAll = false
 
 	// Create a new root command
 	cmd := &cobra.Command{
@@ -729,7 +733,7 @@ func TestDoctorCommand_Repair(t *testing.T) {
 
 	// Run doctor repair
 	cmd2 := createTestRootCmd()
-	_, err = executeCommand(cmd2, "doctor", "--repair-runtime", "clean_tmp")
+	_, err = executeCommand(cmd2, "doctor", "--repair-runtime")
 	require.NoError(t, err)
 
 	// Verify tmp file is cleaned

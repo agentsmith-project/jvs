@@ -9,6 +9,16 @@ const (
 	EngineCopy         EngineType = "copy"
 )
 
+// MetadataPreservation describes metadata semantics for an engine choice.
+type MetadataPreservation struct {
+	Symlinks   string `json:"symlinks"`
+	Hardlinks  string `json:"hardlinks"`
+	Mode       string `json:"mode"`
+	Timestamps string `json:"timestamps"`
+	Xattrs     string `json:"xattrs"`
+	ACLs       string `json:"acls"`
+}
+
 // IntegrityState represents the verification status of a snapshot.
 type IntegrityState string
 

@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jvs-project/jvs/internal/doctor"
+	"github.com/jvs-project/jvs/pkg/errclass"
 )
 
 var (
@@ -23,6 +24,12 @@ var doctorCmd = &cobra.Command{
 Runs diagnostic checks on the repository and reports any issues.
 Use --strict to include full checkpoint integrity verification.
 Use --repair-runtime to execute safe automatic repairs.`,
+	Args: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return nil
+		}
+		return errclass.ErrUsage.WithMessage("doctor does not accept positional arguments")
+	},
 	Run: func(cmd *cobra.Command, args []string) {
 		r := requireRepo()
 
@@ -47,15 +54,17 @@ Use --repair-runtime to execute safe automatic repairs.`,
 		}
 
 		// If --repair-runtime, execute safe repairs first
+		var repairs []doctor.RepairResult
 		if doctorRepair {
-			results, err := doc.Repair([]string{"clean_locks", "clean_tmp", "clean_intents"})
+			results, err := doc.Repair(doctor.RuntimeRepairActionIDs())
 			if err != nil {
 				fmtErr("repair: %v", err)
 				os.Exit(1)
 			}
+			repairs = results
 			if !jsonOutput {
 				for _, r := range results {
-					fmt.Printf("Repair %s: %s\n", r.Action, r.Message)
+					fmt.Printf("Repair %s: %s\n", r.Action, publicContractVocabulary(r.Message))
 				}
 			}
 		}
@@ -67,7 +76,7 @@ Use --repair-runtime to execute safe automatic repairs.`,
 		}
 
 		if jsonOutput {
-			outputJSON(publicDoctor(result))
+			outputJSON(publicDoctorWithRepairs(result, repairs))
 			if !result.Healthy {
 				os.Exit(1)
 			}
@@ -83,9 +92,9 @@ Use --repair-runtime to execute safe automatic repairs.`,
 		for _, f := range result.Findings {
 			errCode := ""
 			if f.ErrorCode != "" {
-				errCode = fmt.Sprintf(" [%s]", f.ErrorCode)
+				errCode = fmt.Sprintf(" [%s]", publicErrorCodeVocabulary(f.ErrorCode))
 			}
-			fmt.Printf("  [%s] %s: %s%s\n", f.Severity, f.Category, f.Description, errCode)
+			fmt.Printf("  [%s] %s: %s%s\n", f.Severity, publicContractVocabulary(f.Category), publicContractVocabulary(f.Description), errCode)
 		}
 
 		if !result.Healthy {

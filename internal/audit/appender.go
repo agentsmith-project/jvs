@@ -22,6 +22,21 @@ type FileAppender struct {
 	mu   sync.Mutex
 }
 
+const (
+	ErrorCodeAuditRecordMalformed     = "E_AUDIT_RECORD_MALFORMED"
+	ErrorCodeAuditChainBroken         = "E_AUDIT_CHAIN_BROKEN"
+	ErrorCodeAuditRecordHashMismatch  = "E_AUDIT_RECORD_HASH_MISMATCH"
+	ErrorCodeAuditRecordHashRecompute = "E_AUDIT_RECORD_HASH_RECOMPUTE_FAILED"
+)
+
+// Issue describes an audit log integrity issue.
+type Issue struct {
+	Line      int
+	Severity  string
+	ErrorCode string
+	Message   string
+}
+
 // NewFileAppender creates a new FileAppender.
 func NewFileAppender(path string) *FileAppender {
 	return &FileAppender{path: path}
@@ -105,6 +120,68 @@ func (a *FileAppender) GetLastRecordHash() (model.HashValue, error) {
 	defer file.Close()
 
 	return a.getLastRecordHashLocked(file)
+}
+
+// VerifyFile verifies audit record hashes and hash-chain linkage.
+func VerifyFile(path string) ([]Issue, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("open audit log: %w", err)
+	}
+	defer file.Close()
+
+	var issues []Issue
+	var expectedPrevHash model.HashValue
+	lineNum := 0
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		lineNum++
+		var record model.AuditRecord
+		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
+			issues = append(issues, Issue{
+				Line:      lineNum,
+				Severity:  "warning",
+				ErrorCode: ErrorCodeAuditRecordMalformed,
+				Message:   fmt.Sprintf("malformed record at line %d", lineNum),
+			})
+			continue
+		}
+
+		if record.PrevHash != expectedPrevHash {
+			issues = append(issues, Issue{
+				Line:      lineNum,
+				Severity:  "critical",
+				ErrorCode: ErrorCodeAuditChainBroken,
+				Message:   fmt.Sprintf("audit hash chain broken at line %d", lineNum),
+			})
+		}
+
+		computedHash, err := computeRecordHash(&record)
+		if err != nil {
+			issues = append(issues, Issue{
+				Line:      lineNum,
+				Severity:  "warning",
+				ErrorCode: ErrorCodeAuditRecordHashRecompute,
+				Message:   fmt.Sprintf("cannot recompute audit record hash at line %d: %v", lineNum, err),
+			})
+		} else if computedHash != record.RecordHash {
+			issues = append(issues, Issue{
+				Line:      lineNum,
+				Severity:  "critical",
+				ErrorCode: ErrorCodeAuditRecordHashMismatch,
+				Message:   fmt.Sprintf("audit record hash mismatch at line %d", lineNum),
+			})
+		}
+
+		expectedPrevHash = record.RecordHash
+	}
+	if err := scanner.Err(); err != nil {
+		return issues, fmt.Errorf("scan audit log: %w", err)
+	}
+	return issues, nil
 }
 
 func (a *FileAppender) getLastRecordHashLocked(file *os.File) (model.HashValue, error) {

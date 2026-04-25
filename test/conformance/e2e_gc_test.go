@@ -26,24 +26,24 @@ func TestE2E_GC_OrphanedSnapshots(t *testing.T) {
 	t.Run("create_main_snapshots", func(t *testing.T) {
 		for i := 1; i <= 5; i++ {
 			os.WriteFile(filepath.Join(mainPath, "main.txt"), []byte("main"+string(rune('0'+i))), 0644)
-			runJVSInRepo(t, repoPath, "snapshot", "main snapshot")
+			runJVSInRepo(t, repoPath, "checkpoint", "main snapshot")
 		}
 	})
 
 	// Step 2: Fork worktree and create snapshots there
 	t.Run("create_worktree_snapshots", func(t *testing.T) {
-		runJVSInRepo(t, repoPath, "worktree", "fork", "old-feature")
+		runJVSInRepo(t, repoPath, "fork", "old-feature")
 		featurePath := filepath.Join(repoPath, "worktrees", "old-feature")
 
 		for i := 1; i <= 3; i++ {
 			os.WriteFile(filepath.Join(featurePath, "feat.txt"), []byte("feat"+string(rune('0'+i))), 0644)
-			runJVSInWorktree(t, repoPath, "old-feature", "snapshot", "feature snapshot")
+			runJVSInWorktree(t, repoPath, "old-feature", "checkpoint", "feature snapshot")
 		}
 	})
 
 	// Step 3: Remove the worktree (snapshots become orphaned)
 	t.Run("remove_worktree", func(t *testing.T) {
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "worktree", "remove", "old-feature")
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "workspace", "remove", "old-feature")
 		if code != 0 {
 			t.Fatalf("remove worktree failed: %s", stderr)
 		}
@@ -87,7 +87,7 @@ func TestE2E_GC_OrphanedSnapshots(t *testing.T) {
 
 	// Step 6: Verify main snapshots still exist
 	t.Run("verify_main_intact", func(t *testing.T) {
-		stdout, _, _ := runJVSInRepo(t, repoPath, "history")
+		stdout, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "list")
 		// Main snapshots should still be present
 		count := strings.Count(stdout, "main snapshot")
 		if count < 5 {
@@ -189,14 +189,14 @@ func TestE2E_GC_ProtectsActiveSnapshots(t *testing.T) {
 	// Create snapshots in main
 	for i := 1; i <= 3; i++ {
 		os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte(string(rune('a'+i))), 0644)
-		runJVSInRepo(t, repoPath, "snapshot", "protected")
+		runJVSInRepo(t, repoPath, "checkpoint", "protected")
 	}
 
 	// Fork worktree and create snapshots
-	runJVSInRepo(t, repoPath, "worktree", "fork", "active-feature")
+	runJVSInRepo(t, repoPath, "fork", "active-feature")
 	featurePath := filepath.Join(repoPath, "worktrees", "active-feature")
 	os.WriteFile(filepath.Join(featurePath, "feature.txt"), []byte("active"), 0644)
-	runJVSInWorktree(t, repoPath, "active-feature", "snapshot", "active feature")
+	runJVSInWorktree(t, repoPath, "active-feature", "checkpoint", "active feature")
 
 	// Run GC plan
 	t.Run("gc_plan", func(t *testing.T) {
@@ -212,7 +212,7 @@ func TestE2E_GC_ProtectsActiveSnapshots(t *testing.T) {
 
 	// Verify all snapshots still exist
 	t.Run("all_snapshots_exist", func(t *testing.T) {
-		stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--all", "--json")
+		stdout, _, _ := runJVSInRepo(t, repoPath, "--json", "checkpoint", "list")
 		// Should have main + feature snapshots
 		count := getSnapshotCount(stdout)
 		if count < 4 {
@@ -226,7 +226,7 @@ func TestE2E_GC_TwoPhaseProtocol(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 
 	// Create initial state
-	runJVSInRepo(t, repoPath, "snapshot", "initial")
+	runJVSInRepo(t, repoPath, "checkpoint", "initial")
 
 	// Phase 1: Plan
 	t.Run("phase1_plan", func(t *testing.T) {
@@ -255,20 +255,20 @@ func TestE2E_GC_AfterWorktreeRemoval(t *testing.T) {
 
 	// Create main snapshots
 	os.WriteFile(filepath.Join(mainPath, "main.txt"), []byte("main"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "main-v1", "--tag", "main")
+	runJVSInRepo(t, repoPath, "checkpoint", "main-v1", "--tag", "main")
 
 	// Create and populate worktree
-	runJVSInRepo(t, repoPath, "worktree", "fork", "temp-work")
+	runJVSInRepo(t, repoPath, "fork", "temp-work")
 	featurePath := filepath.Join(repoPath, "worktrees", "temp-work")
 	os.WriteFile(filepath.Join(featurePath, "temp.txt"), []byte("temp"), 0644)
-	runJVSInWorktree(t, repoPath, "temp-work", "snapshot", "temp-v1", "--tag", "temp")
+	runJVSInWorktree(t, repoPath, "temp-work", "checkpoint", "temp-v1", "--tag", "temp")
 
 	// Get history before removal
-	stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--all", "--json")
+	stdout, _, _ := runJVSInRepo(t, repoPath, "--json", "checkpoint", "list")
 	countBefore := getSnapshotCount(stdout)
 
 	// Remove worktree
-	runJVSInRepo(t, repoPath, "worktree", "remove", "temp-work")
+	runJVSInRepo(t, repoPath, "workspace", "remove", "temp-work")
 
 	// Run GC plan and execute
 	t.Run("gc_after_removal", func(t *testing.T) {
@@ -289,7 +289,7 @@ func TestE2E_GC_AfterWorktreeRemoval(t *testing.T) {
 
 	// Verify history changed (temp snapshots should be removed if GC works)
 	t.Run("history_after_gc", func(t *testing.T) {
-		stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--all", "--json")
+		stdout, _, _ := runJVSInRepo(t, repoPath, "--json", "checkpoint", "list")
 		countAfter := getSnapshotCount(stdout)
 
 		// At minimum, main snapshot should exist
@@ -308,11 +308,11 @@ func TestE2E_GC_DoctorHealthyAfter(t *testing.T) {
 
 	// Create content
 	os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte("test"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "v1")
+	runJVSInRepo(t, repoPath, "checkpoint", "v1")
 
 	// Create and remove worktree
-	runJVSInRepo(t, repoPath, "worktree", "fork", "to-remove")
-	runJVSInRepo(t, repoPath, "worktree", "remove", "to-remove")
+	runJVSInRepo(t, repoPath, "fork", "to-remove")
+	runJVSInRepo(t, repoPath, "workspace", "remove", "to-remove")
 
 	// Run GC
 	planOut, _, _ := runJVSInRepo(t, repoPath, "gc", "plan", "--json")
@@ -343,20 +343,20 @@ func TestE2E_GC_MultipleWorktreeRemoval(t *testing.T) {
 
 	// Create main baseline
 	os.WriteFile(filepath.Join(mainPath, "baseline.txt"), []byte("base"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "baseline")
+	runJVSInRepo(t, repoPath, "checkpoint", "baseline")
 
 	// Create multiple worktrees with snapshots
 	worktrees := []string{"feature-1", "feature-2", "feature-3"}
 	for _, name := range worktrees {
-		runJVSInRepo(t, repoPath, "worktree", "fork", name)
+		runJVSInRepo(t, repoPath, "fork", name)
 		featurePath := filepath.Join(repoPath, "worktrees", name)
 		os.WriteFile(filepath.Join(featurePath, name+".txt"), []byte(name), 0644)
-		runJVSInWorktree(t, repoPath, name, "snapshot", name+"-snapshot")
+		runJVSInWorktree(t, repoPath, name, "checkpoint", name+"-snapshot")
 	}
 
 	// Remove all worktrees
 	for _, name := range worktrees {
-		runJVSInRepo(t, repoPath, "worktree", "remove", name)
+		runJVSInRepo(t, repoPath, "workspace", "remove", name)
 	}
 
 	// Run GC

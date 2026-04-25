@@ -39,8 +39,7 @@ func (e *JuiceFSEngine) Clone(src, dst string) (*CloneResult, error) {
 		if err != nil {
 			return nil, err
 		}
-		result.Degraded = true
-		result.Degradations = append(result.Degradations, "juicefs-not-available")
+		result.AddDegradation("juicefs-not-available", model.EngineCopy)
 		return result, nil
 	}
 
@@ -51,8 +50,7 @@ func (e *JuiceFSEngine) Clone(src, dst string) (*CloneResult, error) {
 		if err != nil {
 			return nil, err
 		}
-		result.Degraded = true
-		result.Degradations = append(result.Degradations, "not-on-juicefs")
+		result.AddDegradation("not-on-juicefs", model.EngineCopy)
 		return result, nil
 	}
 
@@ -67,12 +65,11 @@ func (e *JuiceFSEngine) Clone(src, dst string) (*CloneResult, error) {
 		if err != nil {
 			return nil, err
 		}
-		result.Degraded = true
-		result.Degradations = append(result.Degradations, "juicefs-clone-failed")
+		result.AddDegradation("juicefs-clone-failed", model.EngineCopy)
 		return result, nil
 	}
 
-	return &CloneResult{Degraded: false}, nil
+	return NewCloneResult(model.EngineJuiceFSClone), nil
 }
 
 func (e *JuiceFSEngine) isJuiceFSAvailable() bool {

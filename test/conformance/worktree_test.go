@@ -12,12 +12,13 @@ import (
 // Test 10: Worktree create succeeds
 func TestWorktree_Create(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
+	createWorktreeTestBaseline(t, repoPath)
 
-	stdout, stderr, code := runJVSInRepo(t, repoPath, "worktree", "create", "feature")
+	stdout, stderr, code := runJVSInRepo(t, repoPath, "fork", "feature")
 	if code != 0 {
 		t.Fatalf("worktree create failed: %s", stderr)
 	}
-	if !strings.Contains(stdout, "Created worktree") {
+	if !strings.Contains(stdout, "Created workspace") {
 		t.Errorf("expected success message, got: %s", stdout)
 	}
 }
@@ -25,11 +26,12 @@ func TestWorktree_Create(t *testing.T) {
 // Test 11: Worktree list shows all worktrees
 func TestWorktree_List(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
+	createWorktreeTestBaseline(t, repoPath)
 
 	// Create additional worktree
-	runJVSInRepo(t, repoPath, "worktree", "create", "feature")
+	runJVSInRepo(t, repoPath, "fork", "feature")
 
-	stdout, _, code := runJVSInRepo(t, repoPath, "worktree", "list")
+	stdout, _, code := runJVSInRepo(t, repoPath, "workspace", "list")
 	if code != 0 {
 		t.Fatal("worktree list failed")
 	}
@@ -41,10 +43,11 @@ func TestWorktree_List(t *testing.T) {
 // Test 12: Worktree rename succeeds
 func TestWorktree_Rename(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
+	createWorktreeTestBaseline(t, repoPath)
 
-	runJVSInRepo(t, repoPath, "worktree", "create", "old-name")
+	runJVSInRepo(t, repoPath, "fork", "old-name")
 
-	stdout, stderr, code := runJVSInRepo(t, repoPath, "worktree", "rename", "old-name", "new-name")
+	stdout, stderr, code := runJVSInRepo(t, repoPath, "workspace", "rename", "old-name", "new-name")
 	if code != 0 {
 		t.Fatalf("worktree rename failed: %s", stderr)
 	}
@@ -56,10 +59,11 @@ func TestWorktree_Rename(t *testing.T) {
 // Test 13: Worktree remove succeeds
 func TestWorktree_Remove(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
+	createWorktreeTestBaseline(t, repoPath)
 
-	runJVSInRepo(t, repoPath, "worktree", "create", "to-delete")
+	runJVSInRepo(t, repoPath, "fork", "to-delete")
 
-	stdout, stderr, code := runJVSInRepo(t, repoPath, "worktree", "remove", "to-delete")
+	stdout, stderr, code := runJVSInRepo(t, repoPath, "workspace", "remove", "to-delete")
 	if code != 0 {
 		t.Fatalf("worktree remove failed: %s", stderr)
 	}
@@ -72,7 +76,7 @@ func TestWorktree_Remove(t *testing.T) {
 func TestWorktree_CannotRemoveMain(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 
-	_, _, code := runJVSInRepo(t, repoPath, "worktree", "remove", "main")
+	_, _, code := runJVSInRepo(t, repoPath, "workspace", "remove", "main")
 	if code == 0 {
 		t.Error("should not be able to remove main worktree")
 	}
@@ -82,7 +86,7 @@ func TestWorktree_CannotRemoveMain(t *testing.T) {
 func TestWorktree_Path(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 
-	stdout, _, code := runJVSInRepo(t, repoPath, "worktree", "path", "main")
+	stdout, _, code := runJVSInRepo(t, repoPath, "workspace", "path", "main")
 	if code != 0 {
 		t.Fatal("worktree path failed")
 	}
@@ -91,7 +95,7 @@ func TestWorktree_Path(t *testing.T) {
 	}
 }
 
-// Test 16: Worktree create new worktree is empty
+// Test 16: Forked workspace materializes the selected checkpoint
 func TestWorktree_CreateIsEmpty(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 
@@ -100,14 +104,25 @@ func TestWorktree_CreateIsEmpty(t *testing.T) {
 	os.WriteFile(dataPath, []byte("test content"), 0644)
 
 	// Create snapshot
-	runJVSInRepo(t, repoPath, "snapshot", "v1")
+	runJVSInRepo(t, repoPath, "checkpoint", "v1")
 
 	// Create worktree
-	runJVSInRepo(t, repoPath, "worktree", "create", "feature")
+	runJVSInRepo(t, repoPath, "fork", "feature")
 
-	// Feature worktree should be empty (new worktree)
+	// Feature workspace should contain the forked checkpoint contents.
 	featurePath := filepath.Join(repoPath, "worktrees", "feature")
-	if _, err := os.Stat(filepath.Join(featurePath, "data.txt")); !os.IsNotExist(err) {
-		t.Error("new worktree should be empty")
+	if _, err := os.Stat(filepath.Join(featurePath, "data.txt")); err != nil {
+		t.Fatalf("forked workspace should contain data.txt: %v", err)
+	}
+}
+
+func createWorktreeTestBaseline(t *testing.T, repoPath string) {
+	t.Helper()
+	dataPath := filepath.Join(repoPath, "main", "baseline.txt")
+	if err := os.WriteFile(dataPath, []byte("baseline"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "baseline"); code != 0 {
+		t.Fatalf("baseline checkpoint failed: %s", stderr)
 	}
 }

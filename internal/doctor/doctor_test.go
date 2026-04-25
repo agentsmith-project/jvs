@@ -306,16 +306,29 @@ func TestDoctor_ListRepairActions(t *testing.T) {
 	doc := doctor.NewDoctor(repoPath)
 
 	actions := doc.ListRepairActions()
-	assert.NotEmpty(t, actions)
-
-	// Check for expected actions
-	actionMap := make(map[string]bool)
-	for _, a := range actions {
-		actionMap[a.ID] = true
+	require.Len(t, actions, 3)
+	assert.Equal(t, "clean_locks", actions[0].ID)
+	assert.Equal(t, "clean_runtime_tmp", actions[1].ID)
+	assert.Equal(t, "clean_runtime_operations", actions[2].ID)
+	for _, action := range actions {
+		assert.True(t, action.AutoSafe, action.ID)
+		assert.NotEmpty(t, action.Description, action.ID)
 	}
-	assert.True(t, actionMap["clean_tmp"])
-	assert.True(t, actionMap["clean_intents"])
-	assert.True(t, actionMap["advance_head"])
+}
+
+func TestDoctorRepairListOnlyListsExecutableActions(t *testing.T) {
+	repoPath := setupTestRepo(t)
+
+	actions := doctor.NewDoctor(repoPath).ListRepairActions()
+	var ids []string
+	for _, action := range actions {
+		ids = append(ids, action.ID)
+	}
+
+	assert.Equal(t, []string{"clean_locks", "clean_runtime_tmp", "clean_runtime_operations"}, ids)
+	assert.NotContains(t, ids, "rebuild_index")
+	assert.NotContains(t, ids, "audit_repair")
+	assert.NotContains(t, ids, "advance_head")
 }
 
 func TestDoctor_Repair_CleanTmp(t *testing.T) {
@@ -326,10 +339,10 @@ func TestDoctor_Repair_CleanTmp(t *testing.T) {
 	os.WriteFile(filepath.Join(repoPath, ".jvs-tmp-orphan2"), []byte("data"), 0644)
 
 	doc := doctor.NewDoctor(repoPath)
-	results, err := doc.Repair([]string{"clean_tmp"})
+	results, err := doc.Repair([]string{"clean_runtime_tmp"})
 	require.NoError(t, err)
 	assert.Len(t, results, 1)
-	assert.Equal(t, "clean_tmp", results[0].Action)
+	assert.Equal(t, "clean_runtime_tmp", results[0].Action)
 	assert.True(t, results[0].Success)
 	assert.Equal(t, 2, results[0].Cleaned)
 
@@ -345,7 +358,7 @@ func TestDoctorRepairReturnsRepoBusyWhenMutationLockHeld(t *testing.T) {
 	require.NoError(t, err)
 	defer held.Release()
 
-	_, err = doctor.NewDoctor(repoPath).Repair([]string{"clean_tmp"})
+	_, err = doctor.NewDoctor(repoPath).Repair([]string{"clean_runtime_tmp"})
 	require.ErrorIs(t, err, errclass.ErrRepoBusy)
 }
 
@@ -354,7 +367,7 @@ func TestDoctorRepairCleanTmpDoesNotDeleteUserPayloadByName(t *testing.T) {
 	userPayloadTmp := filepath.Join(repoPath, "main", ".jvs-tmp-user-data")
 	require.NoError(t, os.WriteFile(userPayloadTmp, []byte("payload"), 0644))
 
-	results, err := doctor.NewDoctor(repoPath).Repair([]string{"clean_tmp"})
+	results, err := doctor.NewDoctor(repoPath).Repair([]string{"clean_runtime_tmp"})
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.True(t, results[0].Success)
@@ -371,10 +384,10 @@ func TestDoctor_Repair_CleanIntents(t *testing.T) {
 	os.WriteFile(filepath.Join(intentsDir, "orphan2.json"), []byte("{}"), 0644)
 
 	doc := doctor.NewDoctor(repoPath)
-	results, err := doc.Repair([]string{"clean_intents"})
+	results, err := doc.Repair([]string{"clean_runtime_operations"})
 	require.NoError(t, err)
 	assert.Len(t, results, 1)
-	assert.Equal(t, "clean_intents", results[0].Action)
+	assert.Equal(t, "clean_runtime_operations", results[0].Action)
 	assert.True(t, results[0].Success)
 	assert.Equal(t, 2, results[0].Cleaned)
 
@@ -389,7 +402,7 @@ func TestDoctor_Repair_CleanIntentsRemovesStaleSnapshotIntentWithoutEvidence(t *
 	intentPath := writeSnapshotIntent(t, repoPath, snapshotID, "main")
 
 	doc := doctor.NewDoctor(repoPath)
-	results, err := doc.Repair([]string{"clean_intents"})
+	results, err := doc.Repair([]string{"clean_runtime_operations"})
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.True(t, results[0].Success)
@@ -407,7 +420,7 @@ func TestDoctor_Repair_CleanIntentsRetainsRecoverablePublishIntent(t *testing.T)
 	require.NoError(t, os.WriteFile(staleIntent, []byte("{}"), 0644))
 
 	doc := doctor.NewDoctor(repoPath)
-	results, err := doc.Repair([]string{"clean_intents"})
+	results, err := doc.Repair([]string{"clean_runtime_operations"})
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.True(t, results[0].Success)
@@ -430,7 +443,7 @@ func TestDoctor_Repair_CleanIntentsRetainsHeadUpdateIntentReferencedByMetadata(t
 	intentPath := writeSnapshotIntent(t, repoPath, snapshotID, "main")
 
 	doc := doctor.NewDoctor(repoPath)
-	results, err := doc.Repair([]string{"clean_intents"})
+	results, err := doc.Repair([]string{"clean_runtime_operations"})
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.True(t, results[0].Success)
@@ -448,7 +461,7 @@ func TestDoctor_Repair_CleanIntentsRetainsMalformedIntentReferencingPublishedSna
 	require.NoError(t, os.WriteFile(intentPath, []byte(`{"snapshot_id":`), 0644))
 
 	doc := doctor.NewDoctor(repoPath)
-	results, err := doc.Repair([]string{"clean_intents"})
+	results, err := doc.Repair([]string{"clean_runtime_operations"})
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.True(t, results[0].Success)
@@ -463,7 +476,7 @@ func TestDoctor_Repair_CleanIntentsRetainedIntentStillProtectsSnapshotFromGC(t *
 	intentPath := writeSnapshotIntent(t, repoPath, snapshotID, "temp")
 
 	doc := doctor.NewDoctor(repoPath)
-	results, err := doc.Repair([]string{"clean_intents"})
+	results, err := doc.Repair([]string{"clean_runtime_operations"})
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	require.True(t, results[0].Success)
@@ -674,7 +687,7 @@ func TestDoctor_Repair_MultipleActions(t *testing.T) {
 	os.WriteFile(filepath.Join(intentsDir, "orphan.json"), []byte("{}"), 0644)
 
 	doc := doctor.NewDoctor(repoPath)
-	results, err := doc.Repair([]string{"clean_tmp", "clean_intents"})
+	results, err := doc.Repair([]string{"clean_runtime_tmp", "clean_runtime_operations"})
 	require.NoError(t, err)
 	assert.Len(t, results, 2)
 	assert.True(t, results[0].Success)
@@ -782,7 +795,7 @@ func TestDoctor_Repair_CleanTmp_SnapshotTmp(t *testing.T) {
 	os.MkdirAll(filepath.Join(snapshotsDir, "something.tmp"), 0755)
 
 	doc := doctor.NewDoctor(repoPath)
-	results, err := doc.Repair([]string{"clean_tmp"})
+	results, err := doc.Repair([]string{"clean_runtime_tmp"})
 	require.NoError(t, err)
 	assert.True(t, results[0].Success)
 	assert.GreaterOrEqual(t, results[0].Cleaned, 1)
@@ -805,7 +818,7 @@ func TestDoctor_Repair_CleanTmpRejectsSymlinkedSnapshotsDirWithoutDeletingOutsid
 	}
 
 	doc := doctor.NewDoctor(repoPath)
-	results, err := doc.Repair([]string{"clean_tmp"})
+	results, err := doc.Repair([]string{"clean_runtime_tmp"})
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.False(t, results[0].Success)
@@ -826,7 +839,7 @@ func TestDoctor_Repair_CleanIntentsRejectsSymlinkedIntentsDirWithoutDeletingOuts
 	}
 
 	doc := doctor.NewDoctor(repoPath)
-	results, err := doc.Repair([]string{"clean_intents"})
+	results, err := doc.Repair([]string{"clean_runtime_operations"})
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.False(t, results[0].Success)
@@ -930,7 +943,7 @@ func TestDoctor_Repair_WithOrphanTmp(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir1, "partial.dat"), []byte("data"), 0644))
 
 	doc := doctor.NewDoctor(repoPath)
-	results, err := doc.Repair([]string{"clean_tmp"})
+	results, err := doc.Repair([]string{"clean_runtime_tmp"})
 	require.NoError(t, err)
 
 	assert.Len(t, results, 1)
@@ -1005,6 +1018,75 @@ func TestDoctor_Check_SnapshotIntegrity_CorruptedDescriptorUnhealthy(t *testing.
 		}
 	}
 	assert.True(t, found, "expected corrupted descriptor to be a critical integrity finding")
+}
+
+func TestDoctorStrictReportsDescriptorWithoutPayload(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := createTestSnapshot(t, repoPath)
+	require.NoError(t, os.RemoveAll(filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID))))
+
+	result, err := doctor.NewDoctor(repoPath).Check(true)
+	require.NoError(t, err)
+
+	assert.False(t, result.Healthy)
+	assertFindingCode(t, result, "integrity", "E_PAYLOAD_MISSING")
+}
+
+func TestStrictDoctorFailsDanglingLatestCheckpoint(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	danglingID := model.NewSnapshotID()
+
+	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	cfg.LatestSnapshotID = danglingID
+	require.NoError(t, repo.WriteWorktreeConfig(repoPath, "main", cfg))
+
+	result, err := doctor.NewDoctor(repoPath).Check(true)
+	require.NoError(t, err)
+
+	assert.False(t, result.Healthy)
+	assertFindingCode(t, result, "integrity", "E_DESCRIPTOR_MISSING")
+}
+
+func TestStrictDoctorPayloadMismatchHasStableErrorCode(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := createTestSnapshot(t, repoPath)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID), "tampered.txt"),
+		[]byte("tampered"),
+		0644,
+	))
+
+	result, err := doctor.NewDoctor(repoPath).Check(true)
+	require.NoError(t, err)
+
+	assert.False(t, result.Healthy)
+	assertFindingCode(t, result, "integrity", "E_PAYLOAD_HASH_MISMATCH")
+}
+
+func TestStrictDoctorAuditDetectsRecordHashTamper(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	createTestSnapshot(t, repoPath)
+
+	auditPath := filepath.Join(repoPath, ".jvs", "audit", "audit.jsonl")
+	lines := readAuditJSONLines(t, auditPath)
+	require.NotEmpty(t, lines)
+
+	var record map[string]any
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &record))
+	details, ok := record["details"].(map[string]any)
+	require.True(t, ok)
+	details["note"] = "tampered after hash"
+	tampered, err := json.Marshal(record)
+	require.NoError(t, err)
+	lines[0] = string(tampered)
+	require.NoError(t, os.WriteFile(auditPath, []byte(strings.Join(lines, "\n")+"\n"), 0644))
+
+	result, err := doctor.NewDoctor(repoPath).Check(true)
+	require.NoError(t, err)
+
+	assert.False(t, result.Healthy)
+	assertFindingCode(t, result, "audit", "E_AUDIT_RECORD_HASH_MISMATCH")
 }
 
 func TestDoctor_Check_MissingReadyMarkerUnhealthy(t *testing.T) {
@@ -1265,6 +1347,18 @@ func assertNoTmpFinding(t *testing.T, result *doctor.Result, severity string, su
 			t.Fatalf("unexpected tmp finding severity %s containing %q in %#v", severity, substrings, result.Findings)
 		}
 	}
+}
+
+func readAuditJSONLines(t *testing.T, path string) []string {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return nil
+	}
+	return lines
 }
 
 func assertFindingCode(t *testing.T, result *doctor.Result, category, code string) {

@@ -181,3 +181,76 @@ func TestComputeDescriptorChecksum_DifferentEngineTypes(t *testing.T) {
 
 	assert.NotEqual(t, hash1, hash2, "different engine types should produce different checksums")
 }
+
+func TestComputeDescriptorChecksum_IncludesEngineMetadataFields(t *testing.T) {
+	desc := &model.Descriptor{
+		SnapshotID:      "1708300800000-a3f7c1b2",
+		WorktreeName:    "main",
+		CreatedAt:       time.Date(2024, 2, 19, 12, 30, 45, 0, time.UTC),
+		Engine:          model.EngineJuiceFSClone,
+		ActualEngine:    model.EngineJuiceFSClone,
+		EffectiveEngine: model.EngineCopy,
+		DegradedReasons: []string{"juicefs-clone unavailable"},
+		MetadataPreservation: &model.MetadataPreservation{
+			Symlinks:   "preserved",
+			Hardlinks:  "not guaranteed",
+			Mode:       "preserved",
+			Timestamps: "preserved",
+			Xattrs:     "not preserved",
+			ACLs:       "not preserved",
+		},
+		PerformanceClass: "linear-data-copy",
+		PayloadRootHash:  "abc123def456",
+	}
+
+	baseline, err := integrity.ComputeDescriptorChecksum(desc)
+	require.NoError(t, err)
+
+	cases := map[string]func(*model.Descriptor){
+		"actual_engine": func(mutated *model.Descriptor) {
+			mutated.ActualEngine = model.EngineCopy
+		},
+		"effective_engine": func(mutated *model.Descriptor) {
+			mutated.EffectiveEngine = model.EngineReflinkCopy
+		},
+		"degraded_reasons": func(mutated *model.Descriptor) {
+			mutated.DegradedReasons = []string{"reflink fallback", "hardlink identity not guaranteed"}
+		},
+		"metadata_preservation": func(mutated *model.Descriptor) {
+			mutated.MetadataPreservation = &model.MetadataPreservation{
+				Symlinks:   "preserved",
+				Hardlinks:  "preserved",
+				Mode:       "preserved",
+				Timestamps: "preserved",
+				Xattrs:     "filesystem-dependent",
+				ACLs:       "filesystem-dependent",
+			}
+		},
+		"performance_class": func(mutated *model.Descriptor) {
+			mutated.PerformanceClass = "constant-time-metadata-clone"
+		},
+	}
+
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			mutated := cloneDescriptorForChecksumTest(desc)
+			mutate(mutated)
+
+			hash, err := integrity.ComputeDescriptorChecksum(mutated)
+			require.NoError(t, err)
+			assert.NotEqual(t, baseline, hash, "%s must be covered by descriptor checksum", name)
+		})
+	}
+}
+
+func cloneDescriptorForChecksumTest(desc *model.Descriptor) *model.Descriptor {
+	cloned := *desc
+	cloned.Tags = append([]string(nil), desc.Tags...)
+	cloned.DegradedReasons = append([]string(nil), desc.DegradedReasons...)
+	cloned.PartialPaths = append([]string(nil), desc.PartialPaths...)
+	if desc.MetadataPreservation != nil {
+		metadata := *desc.MetadataPreservation
+		cloned.MetadataPreservation = &metadata
+	}
+	return &cloned
+}

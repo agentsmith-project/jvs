@@ -4,27 +4,27 @@ This document captures typical user scenarios and expected behaviors for JVS (Ju
 
 ## Core Concepts
 
-### Worktree States
+### Workspace States
 
-| State | Description | Can Snapshot? |
+| State | Description | Can Checkpoint? |
 |-------|-------------|---------------|
-| **EMPTY** | Newly created worktree, no snapshots yet | No (nothing to snapshot) |
-| **HEAD** | At the latest snapshot of the lineage | Yes |
-| **DETACHED** | At a historical snapshot | No (must fork first) |
+| **EMPTY** | Newly created workspace, no checkpoints yet | No (nothing to checkpoint) |
+| **latest** | At the latest checkpoint of the lineage | Yes |
+| **historical** | At a historical checkpoint | No (must fork first) |
 
 ### State Transitions
 
 ```
-EMPTY ──[snapshot]──► HEAD ◄──[restore HEAD]──► DETACHED
+EMPTY ──[checkpoint]──► latest ◄──[restore latest]──► historical
                           │                         │
                           │     [restore <id>]      │
                           └────────────────────────►│
                           │                         │
-                          │    [worktree fork]      │
+                          │    [workspace fork]      │
                           │◄────────────────────────┤
                           │                         │
-                          │   [worktree fork]       │
-                          └──────► NEW HEAD ◄───────┘
+                          │   [workspace fork]       │
+                          └──────► NEW latest ◄───────┘
 ```
 
 ---
@@ -42,28 +42,28 @@ $ cd myproject/main
 # Work on project...
 $ echo "version 1" > file.txt
 
-# Create first snapshot
-$ jvs snapshot "initial version"
-Created snapshot 1771589366482-abc12345
+# Create first checkpoint
+$ jvs checkpoint "initial version"
+Created checkpoint 1771589366482-abc12345
 
 # Continue working...
 $ echo "version 2" > file.txt
 
-# Create another snapshot
-$ jvs snapshot "updated content"
-Created snapshot 1771589366483-def78901
+# Create another checkpoint
+$ jvs checkpoint "updated content"
+Created checkpoint 1771589366483-def78901
 
 # View history
-$ jvs history
-1771589  2026-02-21 10:30  updated content     [HEAD]
+$ jvs checkpoint list
+1771589  2026-02-21 10:30  updated content     [latest]
 1771588  2026-02-21 10:25  initial version
-◄── you are here (HEAD)
+◄── you are here (latest)
 ```
 
 **Key Behaviors**:
-- Each snapshot automatically becomes the new HEAD
-- User can always create new snapshots (in HEAD state)
-- Files in worktree are always "live" - what you see is what you have
+- Each checkpoint automatically becomes the new latest
+- User can always create new checkpoints (in latest state)
+- Files in workspace are always "live" - what you see is what you have
 
 ---
 
@@ -72,115 +72,115 @@ $ jvs history
 **User Goal**: Look at how the project looked at a previous point in time.
 
 ```bash
-# Current state: at HEAD
-$ jvs history
-1771589  2026-02-21 10:30  release v2     [HEAD]
+# Current state: at latest
+$ jvs checkpoint list
+1771589  2026-02-21 10:30  release v2     [latest]
 1771588  2026-02-21 10:25  release v1
 1771587  2026-02-21 10:20  initial
-◄── you are here (HEAD)
+◄── you are here (latest)
 
-# Restore to historical snapshot
+# Restore to historical checkpoint
 $ jvs restore 1771587
-Restored to snapshot 1771587-xyz78901
-Worktree is now in DETACHED state.
+Restored to checkpoint 1771587-xyz78901
+Workspace is now at a historical checkpoint.
 
 $ cat file.txt
 initial content  # Files now show historical state
 
 # History shows we're at a historical point
-$ jvs history
-1771589  2026-02-21 10:30  release v2     [HEAD]
+$ jvs checkpoint list
+1771589  2026-02-21 10:30  release v2     [latest]
 1771588  2026-02-21 10:25  release v1
 1771587  2026-02-21 10:20  initial
-◄── you are here (detached)
+◄── you are here (historical)
 
 # Just looking around, now want to go back to latest
-$ jvs restore HEAD
-Restored to latest snapshot 1771589
-Worktree is back at HEAD state.
+$ jvs restore latest
+Restored to latest checkpoint 1771589
+Workspace is back at latest state.
 ```
 
 **Key Behaviors**:
 - `restore <id>` always does inplace restore (no separate "safe restore")
-- After restore, worktree is in DETACHED state
-- `restore HEAD` brings back to the latest state
-- No data loss - all snapshots in the lineage are preserved
+- After restore, the workspace differs from latest until you restore latest or fork
+- `restore latest` brings back to the latest state
+- No data loss - all checkpoints in the lineage are preserved
 
 ---
 
 ## Scenario 3: Creating a Branch from History
 
-**User Goal**: Found a bug introduced after a certain snapshot, want to create a fix branch from that point.
+**User Goal**: Found a bug introduced after a certain checkpoint, want to create a fix branch from that point.
 
 ```bash
 # Restore to the known-good point
 $ jvs restore 1771587
-Restored to snapshot 1771587
-Worktree is now in DETACHED state.
+Restored to checkpoint 1771587
+Workspace is now at a historical checkpoint.
 
 # Verify this is the right starting point
 $ cat file.txt
 known good content
 
-# Try to create snapshot - NOT ALLOWED in detached state
-$ jvs snapshot "bugfix attempt"
-Error: cannot create snapshot in detached state
+# Try to create checkpoint - NOT ALLOWED in current differs from latest
+$ jvs checkpoint "bugfix attempt"
+Error: cannot create checkpoint in current differs from latest
 
-You are currently at snapshot '1771587' (historical).
+You are currently at checkpoint '1771587' (historical).
 To continue working from this point:
 
-    jvs worktree fork bugfix-branch
+    jvs fork bugfix-branch
 
 Or return to the latest state:
 
-    jvs restore HEAD
+    jvs restore latest
 
-# Create a new worktree from current position
-$ jvs worktree fork bugfix-branch
-Created worktree 'bugfix-branch' from snapshot 1771587
-Worktree is at HEAD state - you can now create snapshots.
+# Create a new workspace from current position
+$ jvs fork bugfix-branch
+Created workspace 'bugfix-branch' from checkpoint 1771587
+Workspace is at latest state - you can now create checkpoints.
 
 # Switch to the new branch
-$ cd ../worktrees/bugfix-branch
+$ cd "$(jvs workspace path bugfix-branch)"
 
-# Now can make changes and snapshot
+# Now can make changes and checkpoint
 $ echo "bugfix applied" > file.txt
-$ jvs snapshot "fixed the bug"
-Created snapshot 1771590-aaa11111
+$ jvs checkpoint "fixed the bug"
+Created checkpoint 1771590-aaa11111
 ```
 
 **Key Behaviors**:
-- Cannot create snapshots in detached state (prevents history corruption)
-- Must use `worktree fork` to create a new branch
-- Fork from current position by omitting snapshot ID
+- Cannot create checkpoints in current differs from latest (prevents history corruption)
+- Must use `workspace fork` to create a new branch
+- Fork from current position by omitting checkpoint ID
 
 ---
 
-## Scenario 4: Fork from Any Snapshot
+## Scenario 4: Fork from Any Checkpoint
 
 **User Goal**: Create an experimental branch from any historical point.
 
 ```bash
-# Fork from specific snapshot (even while at HEAD)
-$ jvs worktree fork 1771588 experiment-v1
-Created worktree 'experiment-v1' from snapshot 1771588
+# Fork from specific checkpoint (even while at latest)
+$ jvs fork 1771588 experiment-v1
+Created workspace 'experiment-v1' from checkpoint 1771588
 
 # Or fork from current position
 $ jvs restore 1771587
-$ jvs worktree fork experiment-v2
-Created worktree 'experiment-v2' from snapshot 1771587
+$ jvs fork experiment-v2
+Created workspace 'experiment-v2' from checkpoint 1771587
 
-# List all worktrees
-$ jvs worktree list
-main              /repo/main              HEAD at 1771589
-experiment-v1     /repo/worktrees/exp-1   HEAD at 1771588
-experiment-v2     /repo/worktrees/exp-2   HEAD at 1771587
+# List all workspaces
+$ jvs workspace list
+main              /repo/main              latest at 1771589
+experiment-v1     /path/from/workspace/path   latest at 1771588
+experiment-v2     /path/from/workspace/path   latest at 1771587
 ```
 
 **Key Behaviors**:
-- `worktree fork <id> <name>` - fork from specific snapshot
-- `worktree fork <name>` - fork from current position (convenient shorthand)
-- New worktree is always at HEAD state (can snapshot immediately)
+- `workspace fork <id> <name>` - fork from specific checkpoint
+- `workspace fork <name>` - fork from current position (convenient shorthand)
+- New workspace is always at latest state (can checkpoint immediately)
 
 ---
 
@@ -190,34 +190,34 @@ experiment-v2     /repo/worktrees/exp-2   HEAD at 1771587
 
 ```bash
 # Create feature branches from main
-$ jvs worktree fork feature-auth
-Created worktree 'feature-auth'
+$ jvs fork feature-auth
+Created workspace 'feature-auth'
 
-$ jvs worktree fork feature-ui
-Created worktree 'feature-ui'
+$ jvs fork feature-ui
+Created workspace 'feature-ui'
 
 # Work on auth feature
-$ cd /repo/worktrees/feature-auth
+$ cd "$(jvs workspace path feature-auth)"
 $ echo "auth implementation" > auth.py
-$ jvs snapshot "auth module complete"
-Created snapshot 1771590-aaa11111
+$ jvs checkpoint "auth module complete"
+Created checkpoint 1771590-aaa11111
 
 # Work on UI feature (independent)
-$ cd /repo/worktrees/feature-ui
+$ cd "$(jvs workspace path feature-ui)"
 $ echo "ui implementation" > ui.py
-$ jvs snapshot "ui module complete"
-Created snapshot 1771591-bbb22222
+$ jvs checkpoint "ui module complete"
+Created checkpoint 1771591-bbb22222
 
 # Both features have independent lineages
-# main worktree unchanged
+# main workspace unchanged
 $ cd /repo/main
-$ jvs history
+$ jvs checkpoint list
 # Only shows main's history, not feature branches
 ```
 
 **Key Behaviors**:
-- Each worktree has its own independent snapshot lineage
-- No "merging" needed - worktrees are isolated
+- Each workspace has its own independent checkpoint lineage
+- No "merging" needed - workspaces are isolated
 - JuiceFS handles storage efficiency (CoW)
 
 ---
@@ -232,62 +232,62 @@ $ cat file.txt
 terrible mistake
 
 # View history to find good state
-$ jvs history
-1771589  2026-02-21 10:30  bad changes       [HEAD]
+$ jvs checkpoint list
+1771589  2026-02-21 10:30  bad changes       [latest]
 1771588  2026-02-21 10:25  good state
-◄── you are here (HEAD)
+◄── you are here (latest)
 
 # Restore to good state
 $ jvs restore 1771588
-Restored to snapshot 1771588
-Worktree is now in DETACHED state.
+Restored to checkpoint 1771588
+Workspace is now at a historical checkpoint.
 
 $ cat file.txt
 good content here  # Back to good state
 
-# Option A: Discard the bad snapshot, continue from here
-$ jvs worktree fork main-v2
-# ... continue in new worktree ...
+# Option A: Discard the bad checkpoint, continue from here
+$ jvs fork main-v2
+# ... continue in new workspace ...
 
-# Option B: Go back to HEAD and try again
-$ jvs restore HEAD
-# Back at bad state, but can fix and create new snapshot
+# Option B: Go back to latest and try again
+$ jvs restore latest
+# Back at bad state, but can fix and create new checkpoint
 ```
 
 **Key Behaviors**:
-- Restoring doesn't delete any snapshots
+- Restoring doesn't delete any checkpoints
 - User can always explore and return to any state
-- "Bad" snapshots can be cleaned up later via GC
+- "Bad" checkpoints can be cleaned up later via GC
 
 ---
 
 ## Scenario 7: Using Tags for Releases
 
-**User Goal**: Mark important snapshots with tags for easy reference.
+**User Goal**: Mark important checkpoints with tags for easy reference.
 
 ```bash
-# Create snapshot with tags
-$ jvs snapshot "release 1.0" --tag v1.0 --tag release --tag stable
-Created snapshot 1771589-abc12345
+# Create checkpoint with tags
+$ jvs checkpoint "release 1.0" --tag v1.0 --tag release --tag stable
+Created checkpoint 1771589-abc12345
 
-# Create more snapshots
-$ jvs snapshot "release 1.1" --tag v1.1 --tag release
-Created snapshot 1771590-def78901
+# Create more checkpoints
+$ jvs checkpoint "release 1.1" --tag v1.1 --tag release
+Created checkpoint 1771590-def78901
 
 # Find by tag
-$ jvs history --tag release
+$ jvs checkpoint list | grep release
 1771590  2026-02-21 10:30  release 1.1  [v1.1, release]
 1771589  2026-02-21 10:25  release 1.0  [v1.0, release, stable]
 
 # Restore by tag (using fuzzy match)
 $ jvs restore v1.0
-Restored to snapshot 1771589 (v1.0)
-Worktree is now in DETACHED state.
+Restored to checkpoint 1771589 (v1.0)
+Workspace is now at a historical checkpoint.
 ```
 
 **Key Behaviors**:
-- Tags are metadata on snapshots
-- Multiple tags per snapshot allowed
+- Tags are metadata on checkpoints
+- Multiple tags per checkpoint allowed
 - Fuzzy match by tag or note prefix
 
 ---
@@ -296,46 +296,46 @@ Worktree is now in DETACHED state.
 
 | Command | Description | State Change |
 |---------|-------------|--------------|
-| `jvs snapshot [note]` | Create snapshot | HEAD → HEAD (new head) |
-| `jvs restore <id>` | Restore to snapshot | Any → DETACHED |
-| `jvs restore HEAD` | Restore to latest | DETACHED → HEAD |
-| `jvs worktree fork [name]` | Fork from current | (creates new HEAD) |
-| `jvs worktree fork <id> [name]` | Fork from snapshot | (creates new HEAD) |
-| `jvs history` | Show snapshot history | (no change) |
+| `jvs checkpoint [note]` | Create checkpoint | latest → latest (new head) |
+| `jvs restore <id>` | Restore to checkpoint | Any → historical |
+| `jvs restore latest` | Restore to latest | historical → latest |
+| `jvs fork [name]` | Fork from current | (creates new latest) |
+| `jvs fork <id> [name]` | Fork from checkpoint | (creates new latest) |
+| `jvs checkpoint list` | Show checkpoint history | (no change) |
 
 ---
 
 ## Error Messages and Guidance
 
-### Snapshot in Detached State
+### Checkpoint While Current Differs From Latest
 
 ```
-$ jvs snapshot "my changes"
-Error: cannot create snapshot in detached state
+$ jvs checkpoint "my changes"
+Error: cannot create checkpoint in current differs from latest
 
-You are currently at snapshot '1771587' (historical).
+You are currently at checkpoint '1771587' (historical).
 To continue working from this point:
 
-    jvs worktree fork <name>        # Create new worktree from here
-    jvs restore HEAD                # Return to latest state
+    jvs fork <name>        # Create new workspace from here
+    jvs restore latest                # Return to latest state
 ```
 
-### Restore Non-existent Snapshot
+### Restore Non-existent Checkpoint
 
 ```
 $ jvs restore nonexistent
-Error: snapshot not found: nonexistent
+Error: checkpoint not found: nonexistent
 
-Use 'jvs history' to see available snapshots.
+Use 'jvs checkpoint list' to see available checkpoints.
 ```
 
 ### Fork with Existing Name
 
 ```
-$ jvs worktree fork existing-name
-Error: worktree 'existing-name' already exists
+$ jvs fork existing-name
+Error: workspace 'existing-name' already exists
 
-Use 'jvs worktree list' to see existing worktrees.
+Use 'jvs workspace list' to see existing workspaces.
 ```
 
 ---
@@ -350,4 +350,4 @@ Use 'jvs worktree list' to see existing worktrees.
 
 4. **Clear State Indication**: `history` always shows current position.
 
-5. **No Surprise Data Loss**: All snapshots are preserved until explicit GC.
+5. **No Surprise Data Loss**: All checkpoints are preserved until explicit GC.

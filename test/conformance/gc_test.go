@@ -12,8 +12,8 @@ func TestGC_Plan(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 
 	// Create some snapshots
-	runJVSInRepo(t, repoPath, "snapshot", "v1")
-	runJVSInRepo(t, repoPath, "snapshot", "v2")
+	runJVSInRepo(t, repoPath, "checkpoint", "v1")
+	runJVSInRepo(t, repoPath, "checkpoint", "v2")
 
 	// Create GC plan
 	stdout, stderr, code := runJVSInRepo(t, repoPath, "gc", "plan")
@@ -67,7 +67,7 @@ func TestDoctor_Strict(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 
 	// Create snapshot
-	runJVSInRepo(t, repoPath, "snapshot", "v1")
+	runJVSInRepo(t, repoPath, "checkpoint", "v1")
 
 	stdout, stderr, code := runJVSInRepo(t, repoPath, "doctor", "--strict")
 	if code != 0 {

@@ -144,14 +144,14 @@ func TestRegression_TemplateExample(t *testing.T) {
 	})
 
 	// Action: Create a snapshot
-	stdout, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "test snapshot")
+	stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "test snapshot")
 
 	// Assertion: Verify success
 	assert.Equal(t, 0, code, "snapshot should succeed")
 	assert.NotEmpty(t, stdout, "should have output")
 
 	// Verify snapshot was created
-	history, _, _ := runJVSInRepo(t, repoPath, "history")
+	history, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "list")
 	assert.Contains(t, history, "test snapshot", "snapshot should appear in history")
 	assert.NotContains(t, stderr, "error", "should not show errors")
 }
@@ -194,14 +194,14 @@ func TestRegression_SnapshotEmptyNote(t *testing.T) {
 	repoPath := initTestRepo(t)
 
 	// Create a snapshot with an empty note (explicit empty string)
-	_, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "")
+	_, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "")
 
 	// Should succeed
 	assert.Equal(t, 0, code, "snapshot with empty note should succeed")
 	assert.NotContains(t, stderr, "error", "should not show error for empty note")
 
 	// Verify snapshot was created - history should show it
-	stdout, _, _ := runJVSInRepo(t, repoPath, "history")
+	stdout, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "list")
 	// History output contains the timestamp and (no note) marker
 	assert.Contains(t, stdout, "(no note)", "history should show (no note) for empty note")
 }
@@ -218,14 +218,14 @@ func TestRegression_HistoryWithTags(t *testing.T) {
 	repoPath := initTestRepo(t)
 
 	// Create snapshots with different tags
-	runJVSInRepo(t, repoPath, "snapshot", "first snapshot", "--tag", "v1.0")
-	runJVSInRepo(t, repoPath, "snapshot", "second snapshot", "--tag", "stable")
+	runJVSInRepo(t, repoPath, "checkpoint", "first snapshot", "--tag", "v1.0")
+	runJVSInRepo(t, repoPath, "checkpoint", "second snapshot", "--tag", "stable")
 
-	// Filter by tag
-	stdout, _, code := runJVSInRepo(t, repoPath, "history", "--tag", "v1.0")
+	// List checkpoints and verify tags are displayed.
+	stdout, _, code := runJVSInRepo(t, repoPath, "--json", "checkpoint", "list")
 
-	assert.Equal(t, 0, code, "history with tag filter should succeed")
-	assert.Contains(t, stdout, "v1.0", "filtered history should show the tag")
+	assert.Equal(t, 0, code, "checkpoint list should succeed")
+	assert.Contains(t, stdout, "v1.0", "checkpoint list should show the tag")
 }
 
 // TestRegression_MultipleTags tests that multiple tags can be attached to a snapshot.
@@ -239,20 +239,16 @@ func TestRegression_MultipleTags(t *testing.T) {
 	repoPath := initTestRepo(t)
 
 	// Create snapshot with multiple tags
-	stdout, _, code := runJVSInRepo(t, repoPath, "snapshot", "multi-tag snapshot",
+	stdout, _, code := runJVSInRepo(t, repoPath, "checkpoint", "multi-tag snapshot",
 		"--tag", "v1.0", "--tag", "stable", "--tag", "release")
 
 	assert.Equal(t, 0, code, "snapshot with multiple tags should succeed")
 	assert.NotContains(t, stdout, "error", "should not show errors")
 
 	// Verify all tags are preserved
-	stdout, _, _ = runJVSInRepo(t, repoPath, "history", "--tag", "v1.0")
+	stdout, _, _ = runJVSInRepo(t, repoPath, "--json", "checkpoint", "list")
 	assert.Contains(t, stdout, "v1.0", "should find v1.0 tag")
-
-	stdout, _, _ = runJVSInRepo(t, repoPath, "history", "--tag", "stable")
 	assert.Contains(t, stdout, "stable", "should find stable tag")
-
-	stdout, _, _ = runJVSInRepo(t, repoPath, "history", "--tag", "release")
 	assert.Contains(t, stdout, "release", "should find release tag")
 }
 
@@ -269,14 +265,14 @@ func TestRegression_RestoreLatest(t *testing.T) {
 
 	// Create initial snapshot
 	createFiles(t, mainPath, map[string]string{"file1.txt": "content1"})
-	runJVSInRepo(t, repoPath, "snapshot", "first snapshot")
+	runJVSInRepo(t, repoPath, "checkpoint", "first snapshot")
 
 	// Create second snapshot
 	createFiles(t, mainPath, map[string]string{"file2.txt": "content2"})
-	runJVSInRepo(t, repoPath, "snapshot", "second snapshot")
+	runJVSInRepo(t, repoPath, "checkpoint", "second snapshot")
 
 	// Restore to first snapshot
-	history1, _, _ := runJVSInRepo(t, repoPath, "history")
+	history1, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "list")
 	lines := strings.Split(strings.TrimSpace(history1), "\n")
 	if len(lines) > 0 {
 		// Extract first snapshot ID (skip header lines if any)
@@ -311,11 +307,11 @@ func TestRegression_WorktreeFork(t *testing.T) {
 
 	// Create a snapshot
 	createFiles(t, mainPath, map[string]string{"original.txt": "content"})
-	stdout, _, _ := runJVSInRepo(t, repoPath, "snapshot", "original snapshot")
+	stdout, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "original snapshot")
 	snapshotID := extractSnapshotID(stdout)
 
 	// Fork a new worktree from the snapshot
-	stdout, _, code := runJVSInRepo(t, repoPath, "worktree", "fork", snapshotID, "feature-branch")
+	stdout, _, code := runJVSInRepo(t, repoPath, "fork", snapshotID, "feature-branch")
 
 	assert.Equal(t, 0, code, "worktree fork should succeed")
 	assert.NotContains(t, stdout, "error", "should not show errors")
@@ -344,7 +340,7 @@ func TestRegression_GCWithEmptySnapshot(t *testing.T) {
 	repoPath := initTestRepo(t)
 
 	// Create an initial snapshot (no files yet)
-	runJVSInRepo(t, repoPath, "snapshot", "empty snapshot")
+	runJVSInRepo(t, repoPath, "checkpoint", "empty snapshot")
 
 	// Plan GC - should not panic
 	stdout, _, code := runJVSInRepo(t, repoPath, "gc", "plan")
@@ -406,11 +402,11 @@ func extractSnapshotID(output string) string {
 	for _, line := range lines {
 		// Look for "Created snapshot" message or similar
 		if strings.Contains(line, "Created snapshot") ||
-			strings.Contains(line, "snapshot") {
-			// Extract ID after "snapshot" keyword
+			strings.Contains(line, "checkpoint") {
+			// Extract ID after "checkpoint" keyword
 			parts := strings.Fields(line)
 			for i, part := range parts {
-				if strings.Contains(part, "snapshot") && i+1 < len(parts) {
+				if strings.Contains(part, "checkpoint") && i+1 < len(parts) {
 					candidate := strings.TrimSpace(parts[i+1])
 					if strings.Contains(candidate, "-") && len(candidate) > 10 {
 						return candidate
@@ -450,10 +446,17 @@ func extractSnapshotIDFromHistory(historyOutput string) string {
 // Fixed: 2026-02-28
 func TestRegression_CanSnapshotNewWorktree(t *testing.T) {
 	repoPath := initTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
 
-	// Create a brand-new worktree
-	_, stderr, code := runJVSInRepo(t, repoPath, "worktree", "create", "fresh")
-	assert.Equal(t, 0, code, "worktree create should succeed: %s", stderr)
+	createFiles(t, mainPath, map[string]string{
+		"baseline.txt": "base",
+	})
+	_, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "baseline")
+	assert.Equal(t, 0, code, "baseline checkpoint should succeed: %s", stderr)
+
+	// Create a brand-new workspace from the current checkpoint.
+	_, stderr, code = runJVSInRepo(t, repoPath, "fork", "fresh")
+	assert.Equal(t, 0, code, "fork should succeed: %s", stderr)
 
 	freshPath := filepath.Join(repoPath, "worktrees", "fresh")
 
@@ -462,15 +465,15 @@ func TestRegression_CanSnapshotNewWorktree(t *testing.T) {
 		"hello.txt": "world",
 	})
 
-	// Snapshot from within the fresh worktree (first-ever snapshot)
-	stdout, stderr, code := runJVS(t, freshPath, "snapshot", "first snapshot in fresh worktree")
-	assert.Equal(t, 0, code, "first snapshot in new worktree should succeed: %s", stderr)
-	assert.NotEmpty(t, stdout, "snapshot should produce output")
+	// Checkpoint from within the fresh workspace.
+	stdout, stderr, code := runJVS(t, freshPath, "checkpoint", "first snapshot in fresh worktree")
+	assert.Equal(t, 0, code, "first checkpoint in new workspace should succeed: %s", stderr)
+	assert.NotEmpty(t, stdout, "checkpoint should produce output")
 
-	// History should list the snapshot
-	histOut, _, _ := runJVS(t, freshPath, "history")
+	// Checkpoint list should show the checkpoint.
+	histOut, _, _ := runJVS(t, freshPath, "checkpoint", "list")
 	assert.Contains(t, histOut, "first snapshot in fresh worktree",
-		"history should show the snapshot note")
+		"checkpoint list should show the checkpoint note")
 }
 
 // TestRegression_GCRespectsRetentionPolicy verifies that GC Plan() honours
@@ -483,7 +486,7 @@ func TestRegression_GCRespectsRetentionPolicy(t *testing.T) {
 	repoPath := initTestRepo(t)
 
 	// Create a snapshot so the repo is non-empty
-	_, stderr, code := runJVSInRepo(t, repoPath, "snapshot", "protected snapshot")
+	_, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "protected snapshot")
 	assert.Equal(t, 0, code, "snapshot should succeed: %s", stderr)
 
 	// Run gc plan

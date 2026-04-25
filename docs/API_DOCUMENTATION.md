@@ -11,7 +11,7 @@ JVS can be used as a Go library for programmatic workspace versioning. The publi
 
 | Package | Purpose |
 |---------|---------|
-| `pkg/model` | Core data models (Snapshot, Worktree, GC) |
+| `pkg/model` | Core data models for checkpoints, workspaces, and GC |
 | `pkg/config` | Configuration file handling |
 | `pkg/errclass` | Stable error classes |
 | `pkg/uuidutil` | UUID generation utilities |
@@ -34,16 +34,16 @@ import (
 )
 
 func main() {
-    // Generate a new snapshot ID
+    // Generate a new checkpoint ID
     id := model.NewSnapshotID()
-    fmt.Printf("Snapshot ID: %s\n", id.String())
+    fmt.Printf("Checkpoint ID: %s\n", id.String())
     fmt.Printf("Short ID: %s\n", id.ShortID())
 }
 ```
 
 ---
 
-## pkg/model
+## Internal Compatibility: pkg/model
 
 ### SnapshotID
 
@@ -180,7 +180,7 @@ const (
 
 ---
 
-## pkg/model - Worktree
+## Internal Compatibility: pkg/model Workspace Storage
 
 ### WorktreeConfig
 
@@ -206,7 +206,7 @@ type WorktreeConfig struct {
 
 ---
 
-## pkg/model - GC
+## Internal Compatibility: pkg/model GC Storage
 
 ### GCPolicy
 
@@ -253,7 +253,7 @@ type Tombstone struct {
 
 ---
 
-## pkg/model - Audit
+## Internal Compatibility: pkg/model Audit Storage
 
 ### AuditRecord
 
@@ -523,7 +523,7 @@ reporter.Complete("Hash computed")
 
 ## Integration Example
 
-Creating a snapshot programmatically:
+Creating a checkpoint programmatically:
 
 ```go
 package main
@@ -535,8 +535,8 @@ import (
     "github.com/jvs-project/jvs/pkg/jsonutil"
 )
 
-func CreateSnapshot(worktreePath, note string, tags []string) (*model.Descriptor, error) {
-    // 1. Generate snapshot ID
+func CreateCheckpoint(workspacePath, note string, tags []string) (*model.Descriptor, error) {
+    // 1. Generate checkpoint ID
     id := model.NewSnapshotID()
 
     // 2. Create intent record (for crash recovery)

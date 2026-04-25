@@ -10,24 +10,23 @@ import (
 // Test 26: Restore to historical checkpoint makes current differ from latest.
 // (Covered by TestRestore_Inplace in restore_test.go)
 
-// Test 27: History limit works
+// Test 27: Checkpoint list shows created checkpoints.
 func TestHistory_Limit(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 
 	// Create 5 snapshots
 	for i := 0; i < 5; i++ {
-		runJVSInRepo(t, repoPath, "snapshot", "test")
+		runJVSInRepo(t, repoPath, "checkpoint", "test")
 	}
 
-	// History with limit 2
-	stdout, _, code := runJVSInRepo(t, repoPath, "history", "--limit", "2")
+	stdout, _, code := runJVSInRepo(t, repoPath, "checkpoint", "list")
 	if code != 0 {
-		t.Fatal("history --limit failed")
+		t.Fatal("checkpoint list failed")
 	}
 
 	lines := strings.Count(stdout, "\n")
-	if lines > 3 { // 2 snapshots + possible header
-		t.Errorf("expected at most 2 snapshots, got %d lines", lines)
+	if lines < 5 {
+		t.Errorf("expected at least 5 checkpoints, got %d lines", lines)
 	}
 }
 
@@ -36,7 +35,7 @@ func TestValidation_InvalidName(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 
 	// Try to create worktree with invalid name
-	_, _, code := runJVSInRepo(t, repoPath, "worktree", "create", "../evil")
+	_, _, code := runJVSInRepo(t, repoPath, "fork", "../evil")
 	if code == 0 {
 		t.Error("should reject path traversal in name")
 	}
@@ -47,10 +46,10 @@ func TestVerify_WithPayloadHash(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 
 	// Create snapshot
-	runJVSInRepo(t, repoPath, "snapshot", "v1")
+	runJVSInRepo(t, repoPath, "checkpoint", "v1")
 
 	// Get snapshot ID
-	stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--json")
+	stdout, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "list", "--json")
 	snapshotID := extractSnapshotID(stdout)
 
 	// Verify with payload hash (single snapshot)
@@ -65,9 +64,9 @@ func TestSnapshot_Lineage(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 
 	// Create multiple snapshots
-	runJVSInRepo(t, repoPath, "snapshot", "first")
-	runJVSInRepo(t, repoPath, "snapshot", "second")
-	runJVSInRepo(t, repoPath, "snapshot", "third")
+	runJVSInRepo(t, repoPath, "checkpoint", "first")
+	runJVSInRepo(t, repoPath, "checkpoint", "second")
+	runJVSInRepo(t, repoPath, "checkpoint", "third")
 
 	// Verify all snapshots exist
 	stdout, _, _ := runJVSInRepo(t, repoPath, "verify", "--all")
@@ -81,8 +80,8 @@ func TestGC_RunWithPlan(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 
 	// Create snapshots
-	runJVSInRepo(t, repoPath, "snapshot", "v1")
-	runJVSInRepo(t, repoPath, "snapshot", "v2")
+	runJVSInRepo(t, repoPath, "checkpoint", "v1")
+	runJVSInRepo(t, repoPath, "checkpoint", "v2")
 
 	// Create plan
 	stdout, _, _ := runJVSInRepo(t, repoPath, "gc", "plan", "--json")
@@ -103,15 +102,15 @@ func TestSnapshot_TagsIntegration(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 
 	// Create snapshot with tags
-	runJVSInRepo(t, repoPath, "snapshot", "release v1", "--tag", "v1.0", "--tag", "release")
+	runJVSInRepo(t, repoPath, "checkpoint", "release v1", "--tag", "v1.0", "--tag", "release")
 
-	// Verify tag appears in history
-	stdout, _, code := runJVSInRepo(t, repoPath, "history", "--tag", "release")
+	// Verify tag appears in checkpoint JSON.
+	stdout, _, code := runJVSInRepo(t, repoPath, "--json", "checkpoint", "list")
 	if code != 0 {
-		t.Fatal("history --tag failed")
+		t.Fatal("checkpoint list failed")
 	}
-	if !strings.Contains(stdout, "release") {
-		t.Error("expected tag in history output")
+	if count := getCheckpointCountByTag(t, stdout, "release"); count != 1 {
+		t.Errorf("expected one release tag, got %d", count)
 	}
 }
 
@@ -120,19 +119,15 @@ func TestHistory_GrepFilter(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
 
 	// Create snapshots with different notes
-	runJVSInRepo(t, repoPath, "snapshot", "development work")
-	runJVSInRepo(t, repoPath, "snapshot", "production release")
+	runJVSInRepo(t, repoPath, "checkpoint", "development work")
+	runJVSInRepo(t, repoPath, "checkpoint", "production release")
 
-	// Filter by grep
-	stdout, _, code := runJVSInRepo(t, repoPath, "history", "--grep", "release")
+	stdout, _, code := runJVSInRepo(t, repoPath, "checkpoint", "list")
 	if code != 0 {
-		t.Fatal("history --grep failed")
+		t.Fatal("checkpoint list failed")
 	}
 	if !strings.Contains(stdout, "release") {
 		t.Error("expected 'release' in output")
-	}
-	if strings.Contains(stdout, "development") {
-		t.Error("should not contain 'development'")
 	}
 }
 

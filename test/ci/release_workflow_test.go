@@ -113,6 +113,68 @@ func TestWorkflowSetupGoUsesModuleVersion(t *testing.T) {
 	}
 }
 
+func TestWorkflowUsesPinnedLintTools(t *testing.T) {
+	root := repoRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read CI workflow: %v", err)
+	}
+	workflowText := string(data)
+	if strings.Contains(workflowText, "github.com/golangci/golangci-lint/cmd/golangci-lint@latest") {
+		t.Fatalf("CI workflow must not install golangci-lint with @latest")
+	}
+
+	workflow := readWorkflow(t, root)
+	jobs := requireMappingValue(t, workflow, "jobs")
+	for _, jobName := range []string{"lint", "release-gate"} {
+		job := requireMappingValue(t, jobs, jobName)
+		if !jobRuns(job, "make tools") {
+			t.Fatalf("%s job must install pinned tools through make tools", jobName)
+		}
+	}
+}
+
+func TestMakefilePinsGolangCILintTooling(t *testing.T) {
+	root := repoRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	makefile := string(data)
+
+	if !strings.Contains(makefile, "GOLANGCI_LINT_VERSION ?= v1.64.8") {
+		t.Fatalf("Makefile must expose pinned GOLANGCI_LINT_VERSION v1.64.8")
+	}
+	if !strings.Contains(makefile, "GOLANGCI_LINT_PACKAGE := github.com/golangci/golangci-lint/cmd/golangci-lint") {
+		t.Fatalf("Makefile must expose the golangci-lint package path")
+	}
+	if strings.Contains(makefile, "github.com/golangci/golangci-lint/cmd/golangci-lint@latest") {
+		t.Fatalf("Makefile must not install golangci-lint with @latest")
+	}
+	if !strings.Contains(makeTargetLine(t, makefile, "tools"), "tools:") {
+		t.Fatalf("Makefile must expose a tools target")
+	}
+
+	toolsCommands := makeTargetCommands(makefile, "tools")
+	if !commandsContain(toolsCommands, "go install $(GOLANGCI_LINT_PACKAGE)@$(GOLANGCI_LINT_VERSION)") {
+		t.Fatalf("tools target must install golangci-lint using the pinned Makefile version")
+	}
+
+	lintCommands := makeTargetCommands(makefile, "lint")
+	if !commandsContain(lintCommands, "command -v golangci-lint") {
+		t.Fatalf("lint target must first locate golangci-lint with command -v")
+	}
+	if !commandsContain(lintCommands, "go env GOPATH") {
+		t.Fatalf("lint target must fall back to GOPATH/bin when golangci-lint is not on PATH")
+	}
+	if !commandsContain(lintCommands, "--version") || !commandsContain(lintCommands, "version $(GOLANGCI_LINT_VERSION)") {
+		t.Fatalf("lint target must verify the golangci-lint binary version before running it")
+	}
+	if !commandsContain(lintCommands, "go install $(GOLANGCI_LINT_PACKAGE)@$(GOLANGCI_LINT_VERSION)") {
+		t.Fatalf("lint target must install the pinned golangci-lint binary when no matching binary is available")
+	}
+}
+
 func TestMakefileReleaseGateRunsCIContract(t *testing.T) {
 	root := repoRoot(t)
 	data, err := os.ReadFile(filepath.Join(root, "Makefile"))
@@ -126,9 +188,14 @@ func TestMakefileReleaseGateRunsCIContract(t *testing.T) {
 		t.Fatalf("ci-contract target must run the CI workflow contract tests")
 	}
 
+	docsContractCommands := makeTargetCommands(makefile, "docs-contract")
+	if !commandsContain(docsContractCommands, "-run 'TestDocs_|TestConformancePublicProfileUsesStableCommands'") {
+		t.Fatalf("docs-contract target must run all docs contract tests")
+	}
+
 	releaseGateLine := makeTargetLine(t, makefile, "release-gate")
 	deps := strings.Fields(strings.TrimSpace(strings.TrimPrefix(releaseGateLine, "release-gate:")))
-	for _, want := range []string{"ci-contract", "test-race", "test-cover", "lint", "build", "conformance", "library", "regression", "fuzz"} {
+	for _, want := range []string{"tools", "ci-contract", "test-race", "test-cover", "lint", "build", "conformance", "library", "regression", "fuzz"} {
 		if !stringSliceContains(deps, want) {
 			t.Fatalf("release-gate target dependencies %v must include %s", deps, want)
 		}

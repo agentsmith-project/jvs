@@ -60,9 +60,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Install golangci-lint
-        run: |
-          go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+        run: make tools
 
       - name: golangci-lint
         run: make lint
@@ -170,9 +168,7 @@ jobs:
         run: go mod download
 
       - name: Install golangci-lint
-        run: |
-          go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+        run: make tools
 
       - name: Run release gate
         run: make release-gate

@@ -2,7 +2,6 @@
 package doctor
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jvs-project/jvs/internal/audit"
 	"github.com/jvs-project/jvs/internal/integrity"
 	"github.com/jvs-project/jvs/internal/repo"
 	"github.com/jvs-project/jvs/internal/verify"
@@ -63,6 +63,13 @@ type RepairAction struct {
 	AutoSafe    bool   `json:"auto_safe"`
 }
 
+type repairActionDef struct {
+	RepairAction
+	RuntimeSafe bool
+	Implemented bool
+	run         func(*Doctor) RepairResult
+}
+
 // RepairResult contains the result of a repair operation.
 type RepairResult struct {
 	Action  string `json:"action"`
@@ -76,21 +83,93 @@ type Doctor struct {
 	repoRoot string
 }
 
+const (
+	RepairCleanLocks             = "clean_locks"
+	RepairCleanRuntimeTmp        = "clean_runtime_tmp"
+	RepairCleanRuntimeOperations = "clean_runtime_operations"
+)
+
+var repairRegistry = []repairActionDef{
+	{
+		RepairAction: RepairAction{
+			ID:          RepairCleanLocks,
+			Description: "Remove stale repository mutation locks",
+			AutoSafe:    true,
+		},
+		RuntimeSafe: true,
+		Implemented: true,
+		run: func(d *Doctor) RepairResult {
+			return d.repairCleanLocks()
+		},
+	},
+	{
+		RepairAction: RepairAction{
+			ID:          RepairCleanRuntimeTmp,
+			Description: "Remove stale runtime temporary files",
+			AutoSafe:    true,
+		},
+		RuntimeSafe: true,
+		Implemented: true,
+		run: func(d *Doctor) RepairResult {
+			result := d.repairCleanTmp()
+			result.Action = RepairCleanRuntimeTmp
+			return result
+		},
+	},
+	{
+		RepairAction: RepairAction{
+			ID:          RepairCleanRuntimeOperations,
+			Description: "Remove stale runtime operation records",
+			AutoSafe:    true,
+		},
+		RuntimeSafe: true,
+		Implemented: true,
+		run: func(d *Doctor) RepairResult {
+			result := d.repairCleanIntents()
+			result.Action = RepairCleanRuntimeOperations
+			return result
+		},
+	},
+	{
+		RepairAction: RepairAction{
+			ID:          "advance_head",
+			Description: "Advance stale internal current metadata to latest READY",
+			AutoSafe:    false,
+		},
+		Implemented: true,
+		run: func(d *Doctor) RepairResult {
+			return d.repairAdvanceHead()
+		},
+	},
+}
+
 // NewDoctor creates a new doctor.
 func NewDoctor(repoRoot string) *Doctor {
 	return &Doctor{repoRoot: repoRoot}
 }
 
-// ListRepairActions returns all available repair actions.
+// ListRepairActions returns executable public runtime-safe repair actions.
 func (d *Doctor) ListRepairActions() []RepairAction {
-	return []RepairAction{
-		{ID: "clean_locks", Description: "Remove safely stale repository mutation locks", AutoSafe: true},
-		{ID: "clean_tmp", Description: "Remove orphan .tmp files and directories", AutoSafe: true},
-		{ID: "clean_intents", Description: "Remove completed/abandoned intent files", AutoSafe: true},
-		{ID: "rebuild_index", Description: "Rebuild index from snapshot state", AutoSafe: false},
-		{ID: "audit_repair", Description: "Recompute audit hash chain", AutoSafe: false},
-		{ID: "advance_head", Description: "Advance stale head to latest READY", AutoSafe: false},
+	actions := make([]RepairAction, 0, len(repairRegistry))
+	for _, def := range repairRegistry {
+		if !def.RuntimeSafe || !def.Implemented || def.run == nil {
+			continue
+		}
+		actions = append(actions, def.RepairAction)
 	}
+	return actions
+}
+
+// RuntimeRepairActionIDs returns executable public runtime-safe repair IDs.
+func RuntimeRepairActionIDs() []string {
+	ids := make([]string, 0, len(repairRegistry))
+	for _, def := range repairRegistry {
+		if !def.RuntimeSafe || !def.Implemented || def.run == nil {
+			continue
+		}
+		ids = append(ids, def.ID)
+	}
+	return ids
 }
 
 // Repair executes the specified repair actions.
@@ -98,8 +177,13 @@ func (d *Doctor) Repair(actions []string) ([]RepairResult, error) {
 	var results []RepairResult
 	var lockedActions []string
 	for _, action := range actions {
-		if action == "clean_locks" {
-			results = append(results, d.repairCleanLocks())
+		def, ok := repairActionByID(action)
+		if !ok || !def.Implemented || def.run == nil {
+			results = append(results, unknownRepairResult(action))
+			continue
+		}
+		if action == RepairCleanLocks {
+			results = append(results, def.run(d))
 			continue
 		}
 		lockedActions = append(lockedActions, action)
@@ -121,24 +205,31 @@ func (d *Doctor) Repair(actions []string) ([]RepairResult, error) {
 func (d *Doctor) repair(actions []string) ([]RepairResult, error) {
 	results := []RepairResult{}
 	for _, action := range actions {
-		switch action {
-		case "clean_locks":
-			results = append(results, d.repairCleanLocks())
-		case "clean_tmp":
-			results = append(results, d.repairCleanTmp())
-		case "clean_intents":
-			results = append(results, d.repairCleanIntents())
-		case "advance_head":
-			results = append(results, d.repairAdvanceHead())
-		default:
-			results = append(results, RepairResult{
-				Action:  action,
-				Success: false,
-				Message: "unknown repair action",
-			})
+		def, ok := repairActionByID(action)
+		if !ok || !def.Implemented || def.run == nil {
+			results = append(results, unknownRepairResult(action))
+			continue
 		}
+		results = append(results, def.run(d))
 	}
 	return results, nil
+}
+
+func repairActionByID(id string) (repairActionDef, bool) {
+	for _, def := range repairRegistry {
+		if def.ID == id {
+			return def, true
+		}
+	}
+	return repairActionDef{}, false
+}
+
+func unknownRepairResult(action string) RepairResult {
+	return RepairResult{
+		Action:  action,
+		Success: false,
+		Message: "unknown repair action",
+	}
 }
 
 func (d *Doctor) repairCleanLocks() RepairResult {
@@ -1058,6 +1149,7 @@ func (d *Doctor) checkSnapshotIntegrity(result *Result) {
 				Category:    "integrity",
 				Description: description,
 				Severity:    severity,
+				ErrorCode:   r.ErrorCode,
 			})
 		}
 	}
@@ -1135,57 +1227,23 @@ func (d *Doctor) checkOrphanTmp(result *Result) {
 // checkAuditChain verifies the audit log hash chain integrity.
 func (d *Doctor) checkAuditChain(result *Result) {
 	auditPath := filepath.Join(d.repoRoot, ".jvs", "audit", "audit.jsonl")
-	file, err := os.Open(auditPath)
-	if os.IsNotExist(err) {
-		return // No audit log yet is OK
-	}
+	issues, err := audit.VerifyFile(auditPath)
 	if err != nil {
 		result.Findings = append(result.Findings, Finding{
 			Category:    "audit",
-			Description: fmt.Sprintf("cannot open audit log: %v", err),
+			Description: fmt.Sprintf("cannot verify audit log: %v", err),
 			Severity:    "warning",
 			Path:        auditPath,
 		})
 		return
 	}
-	defer file.Close()
 
-	var prevHash model.HashValue
-	var lineNum int
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		lineNum++
-		var record model.AuditRecord
-		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
-			result.Findings = append(result.Findings, Finding{
-				Category:    "audit",
-				Description: fmt.Sprintf("malformed record at line %d", lineNum),
-				Severity:    "warning",
-				Path:        auditPath,
-			})
-			continue
-		}
-
-		// Verify chain linkage (skip first record which has empty prevHash)
-		if prevHash != "" && record.PrevHash != prevHash {
-			result.Findings = append(result.Findings, Finding{
-				Category:    "audit",
-				Description: fmt.Sprintf("audit hash chain broken at line %d", lineNum),
-				Severity:    "critical",
-				ErrorCode:   "E_AUDIT_CHAIN_BROKEN",
-				Path:        auditPath,
-			})
-			result.Healthy = false
-			return
-		}
-		prevHash = record.RecordHash
-	}
-
-	if err := scanner.Err(); err != nil {
+	for _, issue := range issues {
 		result.Findings = append(result.Findings, Finding{
 			Category:    "audit",
-			Description: fmt.Sprintf("error reading audit log: %v", err),
-			Severity:    "warning",
+			Description: issue.Message,
+			Severity:    issue.Severity,
+			ErrorCode:   issue.ErrorCode,
 			Path:        auditPath,
 		})
 	}

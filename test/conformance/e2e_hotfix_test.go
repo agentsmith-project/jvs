@@ -147,16 +147,16 @@ func TestE2E_Hotfix_FromStableTag(t *testing.T) {
 
 	// Create stable release
 	os.WriteFile(versionPath, []byte("3.0.0"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "stable 3.0", "--tag", "v3.0.0", "--tag", "stable")
+	runJVSInRepo(t, repoPath, "checkpoint", "stable 3.0", "--tag", "v3.0.0", "--tag", "stable")
 
 	// Create unstable development
 	os.WriteFile(versionPath, []byte("4.0.0-dev"), 0644)
-	runJVSInRepo(t, repoPath, "snapshot", "dev 4.0", "--tag", "dev")
+	runJVSInRepo(t, repoPath, "checkpoint", "dev 4.0", "--tag", "dev")
 
 	// Emergency: need to fix stable
 	t.Run("hotfix_from_stable", func(t *testing.T) {
 		// Fork directly from stable tag
-		_, stderr, code := runJVSInRepo(t, repoPath, "worktree", "fork", "stable", "hotfix-3.0")
+		_, stderr, code := runJVSInRepo(t, repoPath, "fork", "stable", "hotfix-3.0")
 		if code != 0 {
 			t.Fatalf("fork from stable failed: %s", stderr)
 		}
@@ -170,7 +170,7 @@ func TestE2E_Hotfix_FromStableTag(t *testing.T) {
 		// Apply hotfix
 		hotfixVersionPath := filepath.Join(repoPath, "worktrees", "hotfix-3.0", "VERSION")
 		os.WriteFile(hotfixVersionPath, []byte("3.0.1"), 0644)
-		runJVSInWorktree(t, repoPath, "hotfix-3.0", "snapshot", "hotfix 3.0.1",
+		runJVSInWorktree(t, repoPath, "hotfix-3.0", "checkpoint", "hotfix 3.0.1",
 			"--tag", "v3.0.1", "--tag", "hotfix")
 	})
 
@@ -191,19 +191,19 @@ func TestE2E_Hotfix_MultipleHotfixBranches(t *testing.T) {
 	// Create multiple releases
 	for _, ver := range []string{"1.0", "2.0", "3.0"} {
 		os.WriteFile(filepath.Join(mainPath, "VERSION"), []byte(ver), 0644)
-		runJVSInRepo(t, repoPath, "snapshot", "v"+ver, "--tag", "v"+ver)
+		runJVSInRepo(t, repoPath, "checkpoint", "v"+ver, "--tag", "v"+ver)
 	}
 
 	// Create hotfix branches from different versions
 	t.Run("create_multiple_hotfixes", func(t *testing.T) {
 		// Hotfix for v1.0
-		_, _, code := runJVSInRepo(t, repoPath, "worktree", "fork", "v1.0", "hotfix-1.x")
+		_, _, code := runJVSInRepo(t, repoPath, "fork", "v1.0", "hotfix-1.x")
 		if code != 0 {
 			t.Fatal("failed to fork hotfix-1.x")
 		}
 
 		// Hotfix for v2.0
-		_, _, code = runJVSInRepo(t, repoPath, "worktree", "fork", "v2.0", "hotfix-2.x")
+		_, _, code = runJVSInRepo(t, repoPath, "fork", "v2.0", "hotfix-2.x")
 		if code != 0 {
 			t.Fatal("failed to fork hotfix-2.x")
 		}
@@ -224,11 +224,11 @@ func TestE2E_Hotfix_MultipleHotfixBranches(t *testing.T) {
 	t.Run("apply_hotfixes", func(t *testing.T) {
 		// Hotfix 1.x -> 1.0.1
 		os.WriteFile(filepath.Join(repoPath, "worktrees", "hotfix-1.x", "VERSION"), []byte("1.0.1"), 0644)
-		runJVSInWorktree(t, repoPath, "hotfix-1.x", "snapshot", "hotfix 1.0.1", "--tag", "v1.0.1")
+		runJVSInWorktree(t, repoPath, "hotfix-1.x", "checkpoint", "hotfix 1.0.1", "--tag", "v1.0.1")
 
 		// Hotfix 2.x -> 2.0.1
 		os.WriteFile(filepath.Join(repoPath, "worktrees", "hotfix-2.x", "VERSION"), []byte("2.0.1"), 0644)
-		runJVSInWorktree(t, repoPath, "hotfix-2.x", "snapshot", "hotfix 2.0.1", "--tag", "v2.0.1")
+		runJVSInWorktree(t, repoPath, "hotfix-2.x", "checkpoint", "hotfix 2.0.1", "--tag", "v2.0.1")
 
 		// Verify independence
 		ver1 := readFile(t, filepath.Join(repoPath, "worktrees", "hotfix-1.x"), "VERSION")
@@ -248,11 +248,11 @@ func TestE2E_Hotfix_RestoreBySnapshotID(t *testing.T) {
 	// Create versions
 	for _, ver := range []string{"A", "B", "C"} {
 		os.WriteFile(filepath.Join(mainPath, "state.txt"), []byte(ver), 0644)
-		runJVSInRepo(t, repoPath, "snapshot", "state "+ver)
+		runJVSInRepo(t, repoPath, "checkpoint", "state "+ver)
 	}
 
 	// Get snapshot ID for state B
-	stdout, _, _ := runJVSInRepo(t, repoPath, "history", "--json")
+	stdout, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "list", "--json")
 	snapshots := extractAllSnapshotIDs(stdout)
 	if len(snapshots) < 3 {
 		t.Fatal("expected at least 3 snapshots")
@@ -272,7 +272,7 @@ func TestE2E_Hotfix_RestoreBySnapshotID(t *testing.T) {
 		}
 
 		// Fork from this state
-		_, _, code = runJVSInRepo(t, repoPath, "worktree", "fork", "from-state-b")
+		_, _, code = runJVSInRepo(t, repoPath, "fork", "from-state-b")
 		if code != 0 {
 			t.Fatal("fork failed")
 		}

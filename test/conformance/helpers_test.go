@@ -159,10 +159,35 @@ func extractJSONField(jsonOutput, field string) string {
 	return jsonOutput[start : start+end]
 }
 
-// getSnapshotCount returns the number of snapshots in history JSON output.
+// getSnapshotCount returns the number of checkpoints in list JSON output.
 func getSnapshotCount(historyJSON string) int {
-	// Count occurrences of "snapshot_id" in the output
-	return bytes.Count([]byte(historyJSON), []byte(`"snapshot_id"`))
+	return bytes.Count([]byte(historyJSON), []byte(`"checkpoint_id"`))
+}
+
+type checkpointListJSONRecord struct {
+	Tags []string `json:"tags"`
+}
+
+func getCheckpointCountByTag(t *testing.T, checkpointListJSON, tag string) int {
+	t.Helper()
+	var envelope cliJSONEnvelope
+	if err := json.Unmarshal([]byte(checkpointListJSON), &envelope); err != nil {
+		t.Fatalf("decode checkpoint list envelope: %v\n%s", err, checkpointListJSON)
+	}
+	var records []checkpointListJSONRecord
+	if err := json.Unmarshal(envelope.Data, &records); err != nil {
+		t.Fatalf("decode checkpoint list data: %v\n%s", err, checkpointListJSON)
+	}
+	count := 0
+	for _, record := range records {
+		for _, got := range record.Tags {
+			if got == tag {
+				count++
+				break
+			}
+		}
+	}
+	return count
 }
 
 type cliJSONEnvelope struct {
@@ -209,16 +234,15 @@ func requireWorkspaceCurrentLatest(t *testing.T, repoPath, current, latest strin
 	}
 }
 
-// extractSnapshotIDByTag extracts a snapshot ID that has a specific tag.
+// extractSnapshotIDByTag extracts a checkpoint ID that has a specific tag.
 func extractSnapshotIDByTag(historyJSON, tag string) string {
 	lines := bytes.Split([]byte(historyJSON), []byte("\n"))
 	var currentSnapshotID string
 	for _, line := range lines {
-		// Extract snapshot_id
-		if bytes.Contains(line, []byte(`"snapshot_id"`)) {
+		if bytes.Contains(line, []byte(`"checkpoint_id"`)) {
 			parts := bytes.Split(line, []byte(`"`))
 			for i, p := range parts {
-				if string(p) == "snapshot_id" && i+2 < len(parts) {
+				if string(p) == "checkpoint_id" && i+2 < len(parts) {
 					currentSnapshotID = string(parts[i+2])
 				}
 			}

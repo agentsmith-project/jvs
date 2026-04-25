@@ -7,7 +7,7 @@
 
 ## Overview
 
-This guide helps game developers use JVS for versioning large game assets that Git cannot handle efficiently. JVS complements your existing version control workflow by providing O(1) snapshots for binary assets.
+This guide helps game developers use JVS for versioning large game assets that Git cannot handle efficiently. JVS complements your existing version control workflow by providing O(1) checkpoints for binary assets.
 
 ---
 
@@ -15,12 +15,12 @@ This guide helps game developers use JVS for versioning large game assets that G
 
 | Problem | Git + Git LFS | JVS |
 |---------|---------------|-----|
-| 5GB texture files | Slow clone, bandwidth costs | O(1) snapshot, instant restore |
-| Repository size | Blobs grow endlessly | Snapshots are references |
-| Asset history | LFS pointer complexity | Simple snapshot/restore |
-| Team collaboration | Merge conflicts on binaries | Fork worktrees instead |
+| 5GB texture files | Slow clone, bandwidth costs | O(1) checkpoint, instant restore |
+| Repository size | Blobs grow endlessly | Checkpoints are references |
+| Asset history | LFS pointer complexity | Simple checkpoint/restore |
+| Team collaboration | Merge conflicts on binaries | Fork workspaces instead |
 
-**Key Benefit:** Snapshot your entire `Assets/` folder in seconds, regardless of size.
+**Key Benefit:** Checkpoint your entire `Assets/` folder in seconds, regardless of size.
 
 ---
 
@@ -57,7 +57,7 @@ cd mygame/main
 **Structure created:**
 ```
 /mnt/juicefs/game-projects/mygame/
-├── .jvs/           # JVS metadata (never snapshot this)
+├── .jvs/           # JVS metadata (never checkpoint this)
 └── main/           # Your workspace (this is where you work)
 ```
 
@@ -68,25 +68,25 @@ cd mygame/main
 cp -r ~/UnityProjects/MyGame/Assets/* .
 cp -r ~/UnityProjects/MyGame/ProjectSettings/* .
 
-# Create initial snapshot
-jvs snapshot "Initial Unity project import" --tag unity --tag baseline
+# Create initial checkpoint
+jvs checkpoint "Initial Unity project import" --tag unity --tag baseline
 ```
 
 **What just happened:**
-- JVS created a snapshot of your entire workspace
-- The snapshot is a reference (O(1) operation), not a copy
-- Tags help you find this snapshot later
+- JVS created a checkpoint of your entire workspace
+- The checkpoint is a reference (O(1) operation), not a copy
+- Tags help you find this checkpoint later
 
 ### Step 3: Create Your First Asset Version
 
 ```bash
 # Before working on an asset, create a checkpoint
-jvs snapshot "Before character model work" --tag prework
+jvs checkpoint "Before character model work" --tag prework
 
 # ... work in Unity/Unreal ...
 
-# After finishing, snapshot the new version
-jvs snapshot "Character model v2: added armor details" --tag character --tag v2
+# After finishing, checkpoint the new version
+jvs checkpoint "Character model v2: added armor details" --tag character --tag v2
 ```
 
 ### Step 4: Restore if Something Goes Wrong
@@ -95,8 +95,8 @@ jvs snapshot "Character model v2: added armor details" --tag character --tag v2
 # Oops, made a mistake? Restore to previous state
 jvs restore --latest-tag prework
 
-# Or restore to a specific snapshot
-jvs restore abc123  # Use snapshot ID from jvs history
+# Or restore to a specific checkpoint
+jvs restore abc123  # Use checkpoint ID from jvs checkpoint list
 ```
 
 ---
@@ -149,13 +149,13 @@ cd /mnt/juicefs/game-projects/mygame/main
 jvs restore baseline
 
 # Before major work
-jvs snapshot "Before animation work $(date +%Y-%m-%d)" --tag prework
+jvs checkpoint "Before animation work $(date +%Y-%m-%d)" --tag prework
 
 # After work
-jvs snapshot "Animation: player run cycle v3" --tag animation --tag $(date +%Y-%m-%d)
+jvs checkpoint "Animation: player run cycle v3" --tag animation --tag $(date +%Y-%m-%d)
 
 # View today's work
-jvs history --tag $(date +%Y-%m-%d)
+jvs checkpoint list | grep $(date +%Y-%m-%d)
 ```
 
 ### Unity Build Integration
@@ -166,8 +166,8 @@ Add this to your build script (before creating the build):
 #!/bin/bash
 # build_with_snapshot.sh
 
-# Create pre-build snapshot
-jvs snapshot "Pre-build: $(date +%Y-%m-%d-%H%M)" --tag prebuild
+# Create pre-build checkpoint
+jvs checkpoint "Pre-build: $(date +%Y-%m-%d-%H%M)" --tag prebuild
 
 # Run Unity build
 /Applications/Unity/Hub/Editor/2022.3.0f1/Unity.app/Contents/MacOS/Unity \
@@ -175,11 +175,11 @@ jvs snapshot "Pre-build: $(date +%Y-%m-%d-%H%M)" --tag prebuild
   -projectPath "$(pwd)" \
   -executeMethod BuildScript.BuildAll
 
-# If build succeeds, create post-build snapshot
+# If build succeeds, create post-build checkpoint
 if [ $? -eq 0 ]; then
-    jvs snapshot "Build success: v$(cat version.txt)" --tag build --tag success
+    jvs checkpoint "Build success: v$(cat version.txt)" --tag build --tag success
 else
-    jvs snapshot "Build failed: $(date +%Y-%m-%d-%H%M)" --tag build --tag failed
+    jvs checkpoint "Build failed: $(date +%Y-%m-%d-%H%M)" --tag build --tag failed
     exit 1
 fi
 ```
@@ -230,12 +230,12 @@ EOF
 
 ```bash
 # Before opening Unreal Editor
-jvs snapshot "Before editor session" --tag prework
+jvs checkpoint "Before editor session" --tag prework
 
 # Work in Unreal Editor...
 
 # After closing editor
-jvs snapshot "New level: main menu v2" --tag level --tag $(date +%Y-%m-%d)
+jvs checkpoint "New level: main menu v2" --tag level --tag $(date +%Y-%m-%d)
 ```
 
 ---
@@ -249,14 +249,14 @@ If you work on multiple games/projects:
 cd /mnt/juicefs/studio
 jvs init studio-projects
 
-# Create worktree for each game
+# Create workspace for each game
 cd studio-projects/main
-jvs worktree fork game1-mobile
-jvs worktree fork game1-pc
-jvs worktree fork shared-assets
+jvs fork game1-mobile
+jvs fork game1-pc
+jvs fork shared-assets
 
 # Work on different games independently
-cd worktrees/game1-mobile/main
+cd "$(jvs workspace path game1-mobile)"
 jvs restore baseline
 # ... work on mobile version ...
 
@@ -279,7 +279,7 @@ git add Assets/Scripts/
 git commit -m "Update player controller"
 
 # Use JVS for binary assets
-jvs snapshot "Updated character model" --tag assets
+jvs checkpoint "Updated character model" --tag assets
 ```
 
 ### Option 2: Asset Handoff via JVS
@@ -287,60 +287,56 @@ jvs snapshot "Updated character model" --tag assets
 ```bash
 # Artist A: Work on asset
 cd /mnt/juicefs/game-projects/mygame/main
-jvs snapshot "Character model ready for review" --tag review --tag character
+jvs checkpoint "Character model ready for review" --tag review --tag character
 
 # Artist B: Review asset
 jvs restore --latest-tag review
 # Review in Unity...
-jvs snapshot "Character model approved" --tag approved --tag character
+jvs checkpoint "Character model approved" --tag approved --tag character
 ```
 
 ---
 
 ## Best Practices
 
-### 1. Snapshot Semantic Milestones
+### 1. Checkpoint Semantic Milestones
 
 ```bash
 # Good: Descriptive
-jvs snapshot "MainMenu: Added background animation v2"
+jvs checkpoint "MainMenu: Added background animation v2"
 
 # Bad: Generic
-jvs snapshot "work"
-jvs snapshot "update"
+jvs checkpoint "work"
+jvs checkpoint "update"
 ```
 
 ### 2. Use Tags for Organization
 
 ```bash
 # Tag by asset type
-jvs snapshot "New character" --tag character --tag models
+jvs checkpoint "New character" --tag character --tag models
 
 # Tag by milestone
-jvs snapshot "Alpha build ready" --tag alpha --tag build
+jvs checkpoint "Alpha build ready" --tag alpha --tag build
 
 # Tag by date
-jvs snapshot "Daily checkpoint" --tag $(date +%Y-%m-%d)
+jvs checkpoint "Daily checkpoint" --tag $(date +%Y-%m-%d)
 ```
 
-### 3. Partial Snapshots for Large Projects
+### 3. Keep Build Outputs Outside the Workspace
 
 ```bash
-# Snapshot only Assets/ (exclude builds, cache)
-jvs snapshot "Assets update" --paths Assets/
-
-# Snapshot specific subfolder
-jvs snapshot "New audio assets" --paths Assets/Audio/
+# Keep build and cache directories outside the workspace when they should not
+# be checkpointed.
+jvs checkpoint "Assets update"
+jvs checkpoint "New audio assets"
 ```
 
 ### 4. Regular Garbage Collection
 
 ```bash
-# Keep daily snapshots for 30 days
-jvs gc plan --keep-daily 30
-
 # Preview what will be deleted
-jvs gc run --plan-id <plan-id> --dry-run
+jvs gc plan
 
 # Actually run GC
 jvs gc run --plan-id <plan-id>
@@ -355,47 +351,47 @@ jvs gc run --plan-id <plan-id>
 ```bash
 # Oops, deleted important asset
 # 1. Check history
-jvs history | grep "important asset"
+jvs checkpoint list | grep "important asset"
 
-# 2. Restore to snapshot with the asset
+# 2. Restore to checkpoint with the asset
 jvs restore abc123
 
 # 3. Copy asset to safe location
 cp Assets/Important/asset.fbx ~/backup/
 
 # 4. Return to latest state
-jvs restore HEAD
+jvs restore latest
 ```
 
 ### Comparing Asset Versions
 
 ```bash
-# List snapshots for a specific asset
-jvs history --grep "character model"
+# List checkpoints and filter in your shell
+jvs checkpoint list | grep "character model"
 
-# View snapshot details
-jvs inspect abc123
+# Use JSON output when automation needs checkpoint IDs and metadata
+jvs checkpoint list --json
 ```
 
 ### Creating Asset Variants
 
 ```bash
 # Create baseline
-jvs snapshot "Character base model" --tag character --tag baseline
+jvs checkpoint "Character base model" --tag character --tag baseline
 
 # Fork for variant
-jvs worktree fork character-armored
-cd worktrees/character-armored/main
+jvs fork character-armored
+cd "$(jvs workspace path character-armored)"
 
 # Modify armor...
-jvs snapshot "Character: armored variant" --tag character --tag armored
+jvs checkpoint "Character: armored variant" --tag character --tag armored
 ```
 
 ---
 
 ## Troubleshooting
 
-### Problem: Snapshot is slow
+### Problem: Checkpoint is slow
 
 **Solution:** Make sure you're using juicefs-clone engine
 ```bash
@@ -411,15 +407,15 @@ jvs doctor --json | grep engine
 df -T | grep juicefs
 ```
 
-### Problem: Can't find specific snapshot
+### Problem: Can't find specific checkpoint
 
 **Solution:** Use tags and grep
 ```bash
 # Find by tag
-jvs history --tag character
+jvs checkpoint list | grep character
 
 # Find by content in note
-jvs history | grep "animation"
+jvs checkpoint list | grep "animation"
 ```
 
 ---

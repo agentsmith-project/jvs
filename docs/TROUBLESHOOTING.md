@@ -19,10 +19,10 @@ Before diving into specific issues, run these commands to assess repository heal
 # 1. Check repository health
 jvs doctor --strict
 
-# 2. Verify all snapshots
+# 2. Verify all checkpoints
 jvs verify --all
 
-# 3. Check current worktree status
+# 3. Check current workspace status
 jvs status
 ```
 
@@ -34,10 +34,10 @@ jvs status
 
 **Symptom:**
 ```
-Error: no suitable snapshot engine available
+Error: no suitable checkpoint engine available
 ```
 
-**Cause:** JVS cannot find a working snapshot engine. This happens when:
+**Cause:** JVS cannot find a working checkpoint engine. This happens when:
 - JuiceFS is not mounted (for juicefs-clone engine)
 - Filesystem doesn't support reflink (for reflink engine)
 - Copy engine fallback is disabled
@@ -49,9 +49,9 @@ Error: no suitable snapshot engine available
    mount | grep juicefs
    ```
 
-2. **Test engine explicitly:**
+2. **Probe engine support:**
    ```bash
-   jvs init test --engine copy
+   jvs capability .
    ```
 
 3. **Check engine availability:**
@@ -67,16 +67,16 @@ Error: no suitable snapshot engine available
 
 ---
 
-## Snapshot Creation Issues
+## Checkpoint Creation Issues
 
-### Problem: "failed to create snapshot: partial snapshot detected"
+### Problem: "failed to create checkpoint: partial checkpoint detected"
 
 **Symptom:**
 ```
-Error: partial snapshot detected - .READY file missing
+Error: partial checkpoint detected - .READY file missing
 ```
 
-**Cause:** A previous snapshot creation was interrupted (crash, power failure).
+**Cause:** A previous checkpoint creation was interrupted (crash, power failure).
 
 **Solutions:**
 
@@ -100,18 +100,18 @@ Error: partial snapshot detected - .READY file missing
 
 **Symptom:**
 ```
-Error: cannot create snapshot: workspace has uncommitted changes
+Error: cannot create checkpoint: workspace has uncommitted changes
 ```
 
-**Note:** This is not a JVS error in v7.0. JVS creates snapshots of whatever state exists.
+**Note:** This is not a JVS error in v7.0. JVS creates checkpoints of whatever state exists.
 
 **Solution:** If you want to clean up before snapshotting:
 ```bash
-# Reset to last snapshot first
-jvs restore HEAD
+# Reset to last checkpoint first
+jvs restore latest
 
-# Then snapshot clean state
-jvs snapshot "Clean state"
+# Then checkpoint clean state
+jvs checkpoint "Clean state"
 ```
 
 ---
@@ -125,18 +125,18 @@ jvs snapshot "Clean state"
 Error: descriptor not found: abc123
 ```
 
-**Cause:** Snapshot ID doesn't exist or was garbage collected.
+**Cause:** Checkpoint ID doesn't exist or was garbage collected.
 
 **Solutions:**
 
-1. **List available snapshots:**
+1. **List available checkpoints:**
    ```bash
-   jvs history
+   jvs checkpoint list
    ```
 
 2. **Use fuzzy search:**
    ```bash
-   jvs restore abc  # Will search for snapshots starting with "abc"
+   jvs restore abc  # Will search for checkpoints starting with "abc"
    ```
 
 3. **Restore by tag:**
@@ -146,27 +146,27 @@ Error: descriptor not found: abc123
 
 ---
 
-### Problem: "worktree is in detached state"
+### Problem: "workspace is in current differs from latest"
 
 **Symptom:**
 ```
-Warning: worktree is in detached state
-Cannot create snapshot while detached
+Warning: workspace is in current differs from latest
+Cannot create checkpoint while current differs from latest
 ```
 
-**Cause:** You restored to a historical snapshot that is not the latest (HEAD).
+**Cause:** You restored to a historical checkpoint that is not the latest (latest).
 
 **Solutions:**
 
 1. **Return to latest state:**
    ```bash
-   jvs restore HEAD
+   jvs restore latest
    ```
 
 2. **Create a fork to continue work:**
    ```bash
-   jvs worktree fork my-branch
-   cd ../worktrees/my-branch
+   jvs fork my-branch
+   cd "$(jvs workspace path my-branch)"
    ```
 
 ---
@@ -177,7 +177,7 @@ Cannot create snapshot while detached
 
 **Symptom:**
 ```
-Error: descriptor checksum mismatch for snapshot abc123
+Error: descriptor checksum mismatch for checkpoint abc123
 ```
 
 **Cause:** Descriptor file was modified or corrupted.
@@ -186,8 +186,8 @@ Error: descriptor checksum mismatch for snapshot abc123
 
 1. **Check if this is expected:**
    ```bash
-   # Was this snapshot recently created?
-   jvs history --format json | grep abc123
+   # Was this checkpoint recently created?
+   jvs checkpoint list --json | grep abc123
    ```
 
 2. **Escalate if unexpected:**
@@ -200,16 +200,16 @@ Error: descriptor checksum mismatch for snapshot abc123
 
 **Symptom:**
 ```
-Error: payload root hash mismatch for snapshot abc123
+Error: payload root hash mismatch for checkpoint abc123
 ```
 
-**Cause:** Payload files were modified after snapshot was created.
+**Cause:** Payload files were modified after checkpoint was created.
 
 **Solutions:**
 
 1. **Identify changed files:**
    ```bash
-   # Find files with modification time after snapshot
+   # Find files with modification time after checkpoint
    find . -newer .jvs/snapshots/abc123 -ls
    ```
 
@@ -234,20 +234,20 @@ Error: GC plan not found: plan-123
 **Solution:**
 ```bash
 # Create a new plan
-jvs gc plan --keep-daily 7
+jvs gc plan
 ```
 
 ---
 
-### Problem: "cannot delete protected snapshot"
+### Problem: "cannot delete protected checkpoint"
 
 **Symptom:**
 ```
-Error: cannot delete snapshot: snapshot is protected
+Error: cannot delete checkpoint: checkpoint is protected
 ```
 
-**Cause:** Snapshot is protected by:
-- Being the HEAD snapshot
+**Cause:** Checkpoint is protected by:
+- Being the latest checkpoint
 - Having a protection pin
 - Matching retention policy
 
@@ -255,57 +255,57 @@ Error: cannot delete snapshot: snapshot is protected
 
 1. **Check protection status:**
    ```bash
-   jvs history --format json | jq '.protection'
+   jvs checkpoint list --json | jq '.protection'
    ```
 
-2. **Override protection (use carefully):**
+2. **Review the retention plan:**
    ```bash
-   jvs gc plan --keep-daily 7 --allow-protected
+   jvs gc plan
    ```
 
 ---
 
-## Worktree Issues
+## Workspace Issues
 
-### Problem: "worktree not found"
+### Problem: "workspace not found"
 
 **Symptom:**
 ```
-Error: worktree not found: my-worktree
+Error: workspace not found: my-workspace
 ```
 
-**Cause:** Worktree config is missing or worktree was removed.
+**Cause:** Workspace config is missing or workspace was removed.
 
 **Solutions:**
 
-1. **List available worktrees:**
+1. **List available workspaces:**
    ```bash
-   jvs worktree list
+   jvs workspace list
    ```
 
-2. **Recreate worktree:**
+2. **Recreate workspace:**
    ```bash
-   jvs worktree fork my-worktree --from <snapshot-id>
+   jvs fork my-workspace --from <checkpoint-id>
    ```
 
 ---
 
-### Problem: "cannot remove current worktree"
+### Problem: "cannot remove current workspace"
 
 **Symptom:**
 ```
-Error: cannot remove worktree: currently in this worktree
+Error: cannot remove workspace: currently in this workspace
 ```
 
-**Cause:** You're trying to remove the worktree you're currently in.
+**Cause:** You're trying to remove the workspace you're currently in.
 
 **Solution:**
 ```bash
-# Switch to a different worktree first
-cd ../main  # or any other worktree
+# Switch to a different workspace first
+cd ../main  # or any other workspace
 
 # Then remove
-jvs worktree remove my-worktree
+jvs workspace remove my-workspace
 ```
 
 ---
@@ -337,19 +337,19 @@ Error: permission denied: .jvs/descriptors/
 
 ---
 
-### Problem: "cannot write to worktree"
+### Problem: "cannot write to workspace"
 
 **Symptom:**
 ```
 Error: permission denied when restoring
 ```
 
-**Cause:** Insufficient permissions on worktree directory.
+**Cause:** Insufficient permissions on workspace directory.
 
 **Solution:**
 ```bash
-# Ensure you have write access to worktree
-chmod u+w /path/to/worktree
+# Ensure you have write access to workspace
+chmod u+w /path/to/workspace
 ```
 
 ---
@@ -391,7 +391,7 @@ Error: audit chain broken at record xyz
 Error: no space left on device
 ```
 
-**Cause:** Insufficient disk space for snapshots.
+**Cause:** Insufficient disk space for checkpoints.
 
 **Solutions:**
 
@@ -403,7 +403,7 @@ Error: no space left on device
 
 2. **Run garbage collection:**
    ```bash
-   jvs gc plan --keep-daily 7
+   jvs gc plan
    jvs gc run --plan-id <plan-id>
    ```
 
@@ -447,9 +447,9 @@ Error: juicefs-clone failed: operation not permitted
 
 ## Performance Issues
 
-### Problem: "slow snapshot creation"
+### Problem: "slow checkpoint creation"
 
-**Symptom:** Snapshots take much longer than expected.
+**Symptom:** Checkpoints take much longer than expected.
 
 **Possible Causes:**
 
@@ -472,8 +472,8 @@ Error: juicefs-clone failed: operation not permitted
    ```
 
 **Solutions:**
-- Use JuiceFS with juicefs-clone engine for O(1) snapshots
-- Consider fewer, larger snapshots instead of many small ones
+- Use JuiceFS with juicefs-clone engine for O(1) checkpoints
+- Consider fewer, larger checkpoints instead of many small ones
 - Run during off-peak hours
 
 ---
@@ -486,14 +486,14 @@ Error: juicefs-clone failed: operation not permitted
 
 **Solutions:**
 
-1. **Verify specific snapshots:**
+1. **Verify specific checkpoints:**
    ```bash
    jvs verify abc123 --no-payload  # Skip hash computation
    ```
 
 2. **Run during off-peak hours**
 
-3. **Use verify for recent snapshots only:**
+3. **Use verify for recent checkpoints only:**
    ```bash
    jvs verify --since "2026-02-20"
    ```
@@ -509,7 +509,7 @@ Error: juicefs-clone failed: operation not permitted
 E_RUNTIME_STATE: orphan intent files detected
 ```
 
-**Cause:** Crash during snapshot creation left temporary files.
+**Cause:** Crash during checkpoint creation left temporary files.
 
 **Solution:**
 ```bash
@@ -561,12 +561,12 @@ jvs doctor --strict --repair-runtime
 
 | Error Code | Description | Common Fix |
 |------------|-------------|-------------|
-| `E_NAME_INVALID` | Invalid worktree/snapshot name | Use valid characters `[a-zA-Z0-9._-]+` |
+| `E_NAME_INVALID` | Invalid workspace/checkpoint name | Use valid characters `[a-zA-Z0-9._-]+` |
 | `E_PATH_ESCAPE` | Path traversal attempt | Use valid path within repository |
 | `E_DESCRIPTOR_CORRUPT` | Descriptor checksum failed | Investigate, preserve evidence |
 | `E_PAYLOAD_HASH_MISMATCH` | Payload hash mismatch | Identify changed files |
-| `E_LINEAGE_BROKEN` | Parent snapshot missing | Check history, rebuild index |
-| `E_PARTIAL_SNAPSHOT` | Incomplete snapshot | Run `jvs doctor --repair-runtime` |
+| `E_LINEAGE_BROKEN` | Parent checkpoint missing | Check history, rebuild index |
+| `E_PARTIAL_SNAPSHOT` | Incomplete checkpoint | Run `jvs doctor --repair-runtime` |
 | `E_GC_PLAN_MISMATCH` | GC plan ID mismatch | Create new plan |
 | `E_FORMAT_UNSUPPORTED` | Format version too old/new | Upgrade JVS |
 | `E_AUDIT_CHAIN_BROKEN` | Audit hash chain broken | Run `jvs doctor --repair-runtime` |

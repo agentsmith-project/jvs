@@ -338,6 +338,7 @@ func TestVerifier_VerifySnapshot_PayloadTampering(t *testing.T) {
 	assert.False(t, result.PayloadHashValid)
 	assert.True(t, result.TamperDetected)
 	assert.Equal(t, "critical", result.Severity)
+	assert.Equal(t, "E_PAYLOAD_HASH_MISMATCH", result.ErrorCode)
 }
 
 func TestVerifier_VerifyAll_WithMixedResults(t *testing.T) {
@@ -394,6 +395,41 @@ func TestVerifier_VerifyAll_WithNonDirectoryEntries(t *testing.T) {
 	assert.Len(t, results, 1)
 }
 
+func TestVerifyAllReportsDescriptorWithoutPayload(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := model.SnapshotID("1708300800000-deadbeef")
+	writeLineageDescriptor(t, repoPath, snapshotID, nil)
+
+	results, err := verify.NewVerifier(repoPath).VerifyAll(true)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, snapshotID, results[0].SnapshotID)
+	assert.True(t, results[0].TamperDetected)
+	assert.Equal(t, "E_PAYLOAD_MISSING", results[0].ErrorCode)
+}
+
+func TestVerifyAllReportsWorkspaceCurrentLatestRefs(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	currentID := model.SnapshotID("1708300800000-deadbeef")
+	latestID := model.SnapshotID("1708300900000-feedface")
+
+	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	cfg.HeadSnapshotID = currentID
+	cfg.LatestSnapshotID = latestID
+	require.NoError(t, repo.WriteWorktreeConfig(repoPath, "main", cfg))
+
+	results, err := verify.NewVerifier(repoPath).VerifyAll(true)
+	require.NoError(t, err)
+	require.Len(t, results, 2)
+	got := map[model.SnapshotID]string{}
+	for _, result := range results {
+		got[result.SnapshotID] = result.ErrorCode
+	}
+	assert.Equal(t, "E_DESCRIPTOR_MISSING", got[currentID])
+	assert.Equal(t, "E_DESCRIPTOR_MISSING", got[latestID])
+}
+
 func TestVerifier_VerifyAllSkipsTmpAndInvalidSnapshotDirNames(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	validID := createTestSnapshot(t, repoPath)
@@ -419,9 +455,11 @@ func TestVerifier_VerifyAll_WithDeletedSnapshotsDir(t *testing.T) {
 	require.NoError(t, os.RemoveAll(snapshotsDir))
 
 	v := verify.NewVerifier(repoPath)
-	results, err := v.VerifyAll(false)
+	results, err := v.VerifyAll(true)
 	require.NoError(t, err)
-	assert.Empty(t, results)
+	require.Len(t, results, 1)
+	assert.True(t, results[0].TamperDetected)
+	assert.Equal(t, "E_PAYLOAD_MISSING", results[0].ErrorCode)
 }
 
 func TestVerifier_VerifySnapshot_WithCorruptedDescriptor(t *testing.T) {

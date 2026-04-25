@@ -14,22 +14,11 @@ import (
 // Excludes: descriptor_checksum, integrity_state (per spec 04)
 // Includes all other fields to ensure tamper detection.
 func ComputeDescriptorChecksum(desc *model.Descriptor) (model.HashValue, error) {
-	checksumDesc := &model.Descriptor{
-		SnapshotID:      desc.SnapshotID,
-		ParentID:        desc.ParentID,
-		WorktreeName:    desc.WorktreeName,
-		CreatedAt:       desc.CreatedAt,
-		Note:            desc.Note,
-		Tags:            desc.Tags,
-		Engine:          desc.Engine,
-		PayloadRootHash: desc.PayloadRootHash,
-		PartialPaths:    desc.PartialPaths,
-		Compression:     desc.Compression,
-		// DescriptorChecksum: excluded
-		// IntegrityState: excluded
-	}
+	checksumDesc := *desc
+	checksumDesc.DescriptorChecksum = ""
+	checksumDesc.IntegrityState = ""
 
-	data, err := jsonutil.CanonicalMarshal(checksumDesc)
+	data, err := jsonutil.CanonicalMarshal(&checksumDesc)
 	if err != nil {
 		return "", fmt.Errorf("canonical marshal descriptor: %w", err)
 	}

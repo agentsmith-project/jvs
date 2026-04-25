@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jvs-project/jvs/internal/engine"
@@ -37,6 +38,23 @@ func TestProbeCapabilities_WriteProbeConfirmsCopyAndCleansUp(t *testing.T) {
 	leftovers, err := filepath.Glob(filepath.Join(target, ".jvs-capability-*"))
 	require.NoError(t, err)
 	require.Empty(t, leftovers)
+}
+
+func TestMetadataPreservationContractDoesNotPromiseHardlinkOccurrenceReporting(t *testing.T) {
+	for _, engineType := range []model.EngineType{
+		model.EngineJuiceFSClone,
+		model.EngineReflinkCopy,
+		model.EngineCopy,
+	} {
+		t.Run(string(engineType), func(t *testing.T) {
+			metadata := engine.MetadataPreservationForEngine(engineType)
+			hardlinks := strings.ToLower(metadata.Hardlinks)
+
+			require.Contains(t, hardlinks, "not guaranteed")
+			require.NotContains(t, hardlinks, "report")
+			require.NotContains(t, hardlinks, "detect")
+		})
+	}
 }
 
 func TestTransferPlanner_DegradesReflinkPairOnce(t *testing.T) {

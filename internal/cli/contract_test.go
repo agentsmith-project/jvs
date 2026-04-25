@@ -404,6 +404,140 @@ func TestCLIJSONErrorEnvelope_ArgValidationReportsCommand(t *testing.T) {
 	assert.JSONEq(t, `null`, string(env.Data))
 }
 
+func TestDoctorRepairRuntimeRejectsPositionalArgs(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "testrepo")
+	originalWd, _ := os.Getwd()
+	defer os.Chdir(originalWd)
+	require.NoError(t, os.Chdir(dir))
+	cmd := createTestRootCmd()
+	_, err := executeCommand(cmd, "init", "testrepo")
+	require.NoError(t, err)
+
+	stdout, stderr, exitCode := runContractSubprocess(t, filepath.Join(repoPath, "main"), "--json", "doctor", "--repair-runtime", "clean_runtime_tmp")
+
+	require.Equal(t, 1, exitCode)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	env := decodeContractEnvelope(t, stdout)
+	assert.False(t, env.OK)
+	assert.Equal(t, "doctor", env.Command)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, "E_USAGE", env.Error.Code)
+	assert.JSONEq(t, `null`, string(env.Data))
+}
+
+func TestDoctorRepairRuntimeJSONIncludesRepairResults(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "testrepo")
+	originalWd, _ := os.Getwd()
+	defer os.Chdir(originalWd)
+	require.NoError(t, os.Chdir(dir))
+	cmd := createTestRootCmd()
+	_, err := executeCommand(cmd, "init", "testrepo")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(repoPath, ".jvs-tmp-orphan"), []byte("tmp"), 0644))
+
+	stdout, stderr, exitCode := runContractSubprocess(t, filepath.Join(repoPath, "main"), "--json", "doctor", "--repair-runtime")
+
+	require.Equal(t, 0, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	env := decodeContractEnvelope(t, stdout)
+	assert.True(t, env.OK)
+	var data map[string]any
+	require.NoError(t, json.Unmarshal(env.Data, &data), stdout)
+	assert.Equal(t, true, data["healthy"])
+	repairs, ok := data["repairs"].([]any)
+	require.True(t, ok, "doctor repair JSON must include repairs: %s", stdout)
+	require.NotEmpty(t, repairs)
+	actions := map[string]bool{}
+	for _, raw := range repairs {
+		repair, ok := raw.(map[string]any)
+		require.True(t, ok)
+		action, _ := repair["action"].(string)
+		actions[action] = true
+	}
+	assert.True(t, actions["clean_locks"])
+	assert.True(t, actions["clean_runtime_tmp"])
+	assert.True(t, actions["clean_runtime_operations"])
+}
+
+func TestDoctorHumanOutputUsesPublicVocabulary(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "testrepo")
+	originalWd, _ := os.Getwd()
+	defer os.Chdir(originalWd)
+	require.NoError(t, os.Chdir(dir))
+	cmd := createTestRootCmd()
+	_, err := executeCommand(cmd, "init", "testrepo")
+	require.NoError(t, err)
+	require.NoError(t, os.RemoveAll(filepath.Join(repoPath, "main")))
+
+	stdout, stderr, exitCode := runContractSubprocess(t, repoPath, "doctor")
+
+	require.Equal(t, 1, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	lower := strings.ToLower(stdout)
+	assert.Contains(t, lower, "workspace")
+	assert.NotContains(t, lower, "worktree")
+	assert.NotContains(t, lower, "snapshot")
+	assert.NotContains(t, lower, "head")
+}
+
+func TestVerifyAllRejectsCheckpointArg(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "testrepo")
+	originalWd, _ := os.Getwd()
+	defer os.Chdir(originalWd)
+	require.NoError(t, os.Chdir(dir))
+	cmd := createTestRootCmd()
+	_, err := executeCommand(cmd, "init", "testrepo")
+	require.NoError(t, err)
+
+	stdout, stderr, exitCode := runContractSubprocess(t, filepath.Join(repoPath, "main"), "--json", "verify", "--all", "1708300800000-deadbeef")
+
+	require.Equal(t, 1, exitCode)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	env := decodeContractEnvelope(t, stdout)
+	assert.False(t, env.OK)
+	assert.Equal(t, "verify", env.Command)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, "E_USAGE", env.Error.Code)
+	assert.JSONEq(t, `null`, string(env.Data))
+}
+
+func TestVerifyPayloadMismatchHasErrorCodeAndNonzeroExit(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "testrepo")
+	mainPath := filepath.Join(repoPath, "main")
+	originalWd, _ := os.Getwd()
+	defer os.Chdir(originalWd)
+	require.NoError(t, os.Chdir(dir))
+	cmd := createTestRootCmd()
+	_, err := executeCommand(cmd, "init", "testrepo")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("before"), 0644))
+
+	stdout, stderr, exitCode := runContractSubprocess(t, mainPath, "--json", "checkpoint", "before")
+	require.Equal(t, 0, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+	checkpointData := decodeContractDataMap(t, stdout)
+	checkpointID, _ := checkpointData["checkpoint_id"].(string)
+	require.NotEmpty(t, checkpointID)
+	require.NoError(t, os.WriteFile(filepath.Join(repoPath, ".jvs", "snapshots", checkpointID, "tampered.txt"), []byte("tampered"), 0644))
+
+	stdout, stderr, exitCode = runContractSubprocess(t, mainPath, "--json", "verify", checkpointID)
+
+	require.Equal(t, 1, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	env := decodeContractEnvelope(t, stdout)
+	assert.True(t, env.OK)
+	var data map[string]any
+	require.NoError(t, json.Unmarshal(env.Data, &data), stdout)
+	assert.Equal(t, true, data["tamper_detected"])
+	assert.Equal(t, "E_PAYLOAD_HASH_MISMATCH", data["error_code"])
+	assert.NotContains(t, strings.ToLower(fmt.Sprint(data["error"])), "snapshot")
+	assert.NotContains(t, strings.ToLower(fmt.Sprint(data["error"])), "worktree")
+}
+
 func TestCLIContractSubprocess(t *testing.T) {
 	if os.Getenv("JVS_CONTRACT_SUBPROCESS") != "1" {
 		t.Skip("contract subprocess helper")
@@ -445,6 +579,16 @@ func decodeContractEnvelope(t *testing.T, stdout string) contractEnvelope {
 	require.True(t, errors.Is(err, io.EOF), "stdout must contain exactly one JSON value: %q", stdout)
 
 	return env
+}
+
+func decodeContractDataMap(t *testing.T, stdout string) map[string]any {
+	t.Helper()
+
+	env := decodeContractEnvelope(t, stdout)
+	require.True(t, env.OK, stdout)
+	var data map[string]any
+	require.NoError(t, json.Unmarshal(env.Data, &data), stdout)
+	return data
 }
 
 func assertSetupJSONContractForTest(t *testing.T, stdout string) map[string]any {
