@@ -6,8 +6,14 @@ line. The public vocabulary is repo, workspace, checkpoint, `current`,
 
 ## Conventions
 
-- Commands resolve a repository and, when needed, a workspace from the current
-  path.
+- path-scoped setup commands (`init`, `import`, `clone`, and `capability`) are
+  repo-free. They operate on explicit path arguments and do not require CWD to
+  be inside a JVS repo.
+- Repo-scoped and workspace-scoped commands require CWD to be inside a JVS
+  repo and resolve that repo from the current path.
+- For repo-scoped and workspace-scoped commands, `--repo` is an assertion, not
+  an alternate discovery root. It must resolve to the current repo or to a path
+  inside the current repo.
 - Global flags: `--repo <repo-root>`, `--workspace <name>`, `--json`,
   `--debug`, `--no-progress`, and `--no-color`.
 - Non-zero exit means failure.
@@ -53,28 +59,59 @@ Checkpoint refs accepted by workspace commands:
 `dirty` is reserved for uncheckpointed workspace contents and is not a
 checkpoint ref. Notes/messages are not refs.
 
-## Setup and Repo Commands
+## Setup Commands
 
 ### `jvs init <repo-path> [--json]`
 
-Create a new repo with `.jvs/` metadata and an empty `main` workspace.
+Create a new repo with `.jvs/` metadata and an empty `main` workspace at the
+explicit path. This is a path-scoped setup command and is repo-free.
 
 ### `jvs import <existing-dir> <repo-path> [--json]`
 
 Create a new repo from an existing directory of user files and create an
 initial checkpoint tagged `import`. The source must not contain `.jvs/`
-metadata and must not overlap the destination repo.
+metadata and must not overlap the destination repo. This is a path-scoped
+setup command and is repo-free.
 
 ### `jvs clone <source-repo> <dest-repo> [--scope full|current] [--json]`
 
-Copy a local JVS repo to a new destination. `--scope full` copies the repo;
-`--scope current` creates a new repo from the source's current workspace.
-This is a local filesystem operation, not a remote protocol.
+Copy a local JVS repo to a new destination. This is a path-scoped setup
+command and is repo-free. It is a local filesystem operation, not a remote
+protocol.
+
+`--scope current` copies the live source workspace contents into the
+destination repo's `main` workspace, creates exactly one initial checkpoint
+tagged `clone`, and makes that checkpoint both `current` and `latest`. It does
+not preserve source history or other workspaces.
+
+`--scope full` creates a new repo identity while preserving user-visible
+checkpoints, workspaces, and refs from the source repo. It must exclude runtime
+locks and intents and rebuild clean runtime directories in the destination.
 
 ### `jvs capability <target-path> [--write-probe] [--json]`
 
-Probe JuiceFS clone, reflink, and copy support for a target path. Without
-`--write-probe`, the reflink result may be conservative.
+Probe JuiceFS clone, reflink, and copy support for a target path. This is a
+path-scoped setup command and is repo-free. Without `--write-probe`, the
+reflink result may be conservative.
+
+### Setup JSON
+
+Setup commands that support `--json` must expose stable engine and filesystem
+messaging:
+
+- `capabilities`: the target or destination capability report.
+- `effective_engine`: the engine expected for subsequent materialization in a
+  created repo, or the recommended engine for `capability`.
+- `warnings`: user-visible filesystem or engine caveats; empty when there are
+  none.
+- `transfer_engine`: for `import` and `clone`, the engine or transfer strategy
+  used to copy source data.
+- `degraded_reasons`: for `import` and `clone`, machine-readable reasons a
+  requested optimized transfer fell back or preserved less metadata.
+- `optimized_transfer`: for `clone --scope full`, true only when the full clone
+  used an optimized filesystem transfer rather than portable recursive copy.
+
+## Repo Commands
 
 ### `jvs info [--json]`
 
@@ -98,6 +135,11 @@ not require a repo or workspace and does not define JSON output.
 
 ## Workspace Commands
 
+`workspace list`, `workspace rename`, and `workspace remove` are repo-scoped.
+`workspace path <name>` is repo-scoped. `workspace path` without `<name>` is
+workspace-scoped and resolves the current workspace from CWD or
+`--workspace`.
+
 ### `jvs status [--json]`
 
 Show the targeted workspace state.
@@ -115,7 +157,7 @@ Required `data` fields:
 
 ### `jvs workspace list [--json]`
 
-List registered workspaces.
+List registered workspaces in the resolved repo.
 
 ### `jvs workspace path [<name>]`
 
@@ -124,7 +166,7 @@ workspace is used.
 
 ### `jvs workspace rename <old> <new> [--json]`
 
-Rename a workspace.
+Rename a workspace in the resolved repo.
 
 ### `jvs workspace remove <name> [--force] [--json]`
 

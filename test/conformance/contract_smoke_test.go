@@ -4,6 +4,7 @@ package conformance
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -127,6 +128,44 @@ func TestContract_TargetingRepoFlagStatusUsesRealCWDWorkspace(t *testing.T) {
 
 	repoA := filepath.Join(dir, "repoA")
 	repoB := filepath.Join(dir, "repoB")
+
+	outside := filepath.Join(dir, "outside")
+	if err := os.Mkdir(outside, 0755); err != nil {
+		t.Fatal(err)
+	}
+	outsideCases := []struct {
+		name    string
+		command string
+		args    []string
+	}{
+		{name: "info", command: "info", args: []string{"--json", "--repo", repoA, "info"}},
+		{name: "status", command: "status", args: []string{"--json", "--repo", repoA, "status"}},
+		{name: "workspace_list", command: "workspace list", args: []string{"--json", "--repo", repoA, "workspace", "list"}},
+	}
+	for _, tc := range outsideCases {
+		t.Run("outside_"+tc.name, func(t *testing.T) {
+			stdout, stderr, code := runJVS(t, outside, tc.args...)
+			if code == 0 {
+				t.Fatalf("outside repo %s unexpectedly succeeded: stdout=%s stderr=%s", tc.name, stdout, stderr)
+			}
+			if strings.TrimSpace(stderr) != "" {
+				t.Fatalf("outside repo JSON error wrote stderr: %q", stderr)
+			}
+			env := decodeContractSmokeEnvelope(t, stdout)
+			if env.OK || env.Command != tc.command {
+				t.Fatalf("unexpected outside repo envelope: %s", stdout)
+			}
+			errData, ok := env.Error.(map[string]any)
+			if !ok {
+				t.Fatalf("outside repo error was not an object: %#v\n%s", env.Error, stdout)
+			}
+			if errData["code"] != "E_NOT_REPO" {
+				t.Fatalf("outside repo used wrong code: %#v", errData)
+			}
+			assertContractPublicErrorVocabulary(t, env.Error, stdout)
+		})
+	}
+
 	stdout, stderr, code := runJVS(t, filepath.Join(repoA, "main"), "--json", "--repo", repoA, "status")
 	if code != 0 {
 		t.Fatalf("status with matching --repo failed: stdout=%s stderr=%s", stdout, stderr)
@@ -134,6 +173,28 @@ func TestContract_TargetingRepoFlagStatusUsesRealCWDWorkspace(t *testing.T) {
 	env := decodeContractSmokeEnvelope(t, stdout)
 	if !env.OK || env.Workspace == nil || *env.Workspace != "main" {
 		t.Fatalf("status did not infer main workspace from real CWD: %s", stdout)
+	}
+
+	stdout, stderr, code = runJVS(t, repoA, "--json", "--workspace", "main", "status")
+	if code != 0 {
+		t.Fatalf("status with --workspace from repo root failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	env = decodeContractSmokeEnvelope(t, stdout)
+	if !env.OK || env.Workspace == nil || *env.Workspace != "main" {
+		t.Fatalf("status did not accept --workspace from repo root: %s", stdout)
+	}
+
+	subdir := filepath.Join(repoA, "main", "subdir")
+	if err := os.Mkdir(subdir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code = runJVS(t, subdir, "--json", "--repo", filepath.Join(repoA, "main"), "status")
+	if code != 0 {
+		t.Fatalf("status with --repo path inside same repo failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	env = decodeContractSmokeEnvelope(t, stdout)
+	if !env.OK || env.Workspace == nil || *env.Workspace != "main" {
+		t.Fatalf("status did not accept --repo path inside same repo: %s", stdout)
 	}
 
 	stdout, stderr, code = runJVS(t, filepath.Join(repoB, "main"), "--json", "--repo", repoA, "status")
@@ -154,6 +215,27 @@ func TestContract_TargetingRepoFlagStatusUsesRealCWDWorkspace(t *testing.T) {
 	if errData["code"] != "E_TARGET_MISMATCH" {
 		t.Fatalf("targeting mismatch used wrong code: %#v", errData)
 	}
+	assertContractPublicErrorVocabulary(t, env.Error, stdout)
+
+	stdout, stderr, code = runJVS(t, filepath.Join(repoB, "main"), "--json", "--repo", repoA, "--workspace", "main", "status")
+	if code == 0 {
+		t.Fatalf("status with mismatched --repo and --workspace unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("targeting mismatch with --workspace wrote stderr in JSON mode: %q", stderr)
+	}
+	env = decodeContractSmokeEnvelope(t, stdout)
+	if env.OK {
+		t.Fatalf("targeting mismatch with --workspace returned ok envelope: %s", stdout)
+	}
+	errData, ok = env.Error.(map[string]any)
+	if !ok {
+		t.Fatalf("targeting mismatch with --workspace error was not an object: %#v\n%s", env.Error, stdout)
+	}
+	if errData["code"] != "E_TARGET_MISMATCH" {
+		t.Fatalf("targeting mismatch with --workspace used wrong code: %#v", errData)
+	}
+	assertContractPublicErrorVocabulary(t, env.Error, stdout)
 }
 
 func TestContract_DoctorAndGCJSONDoNotExposeInternalFields(t *testing.T) {
@@ -338,6 +420,42 @@ func TestContract_JSONArgValidationReportsCommand(t *testing.T) {
 	}
 }
 
+func TestContract_SetupJSONContract_InitAndCapability(t *testing.T) {
+	dir := t.TempDir()
+
+	initTarget := filepath.Join(dir, "initrepo")
+	stdout, stderr, code := runJVS(t, dir, "--json", "init", initTarget)
+	if code != 0 {
+		t.Fatalf("init failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("init --json wrote stderr: %q", stderr)
+	}
+	initData := assertContractSetupJSONData(t, stdout)
+	if initData["repo_root"] != initTarget {
+		t.Fatalf("init repo_root mismatch: %#v\n%s", initData["repo_root"], stdout)
+	}
+
+	capabilityTarget := filepath.Join(dir, "capability-target")
+	if err := os.Mkdir(capabilityTarget, 0755); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code = runJVS(t, dir, "--json", "capability", capabilityTarget)
+	if code != 0 {
+		t.Fatalf("capability failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("capability --json wrote stderr: %q", stderr)
+	}
+	capabilityData := assertContractSetupJSONData(t, stdout)
+	if capabilityData["target_path"] != capabilityTarget {
+		t.Fatalf("capability target_path mismatch: %#v\n%s", capabilityData["target_path"], stdout)
+	}
+	if _, ok := capabilityData["write_probe"].(bool); !ok {
+		t.Fatalf("capability write_probe must be a bool: %s", stdout)
+	}
+}
+
 func TestContract_PublicJSONVocabularyUsesCheckpointsAndWorkspaces(t *testing.T) {
 	repoPath, cleanup := initTestRepo(t)
 	defer cleanup()
@@ -427,14 +545,36 @@ func TestContract_DocsCommandSmoke(t *testing.T) {
 
 func decodeContractSmokeEnvelope(t *testing.T, stdout string) contractSmokeEnvelope {
 	t.Helper()
+	dec := json.NewDecoder(strings.NewReader(stdout))
 	var env contractSmokeEnvelope
-	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
+	if err := dec.Decode(&env); err != nil {
 		t.Fatalf("decode JSON envelope: %v\n%s", err, stdout)
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		t.Fatalf("stdout must contain exactly one JSON value: %s", stdout)
 	}
 	if len(env.Data) == 0 {
 		t.Fatalf("JSON output missing data field: %s", stdout)
 	}
 	return env
+}
+
+func assertContractPublicErrorVocabulary(t *testing.T, errValue any, stdout string) {
+	t.Helper()
+	errData, ok := errValue.(map[string]any)
+	if !ok {
+		t.Fatalf("error was not an object: %#v\n%s", errValue, stdout)
+	}
+	for _, field := range []string{"code", "message", "hint"} {
+		value, _ := errData[field].(string)
+		lower := strings.ToLower(value)
+		for _, legacy := range []string{"worktree", "snapshot", "history"} {
+			if strings.Contains(lower, legacy) {
+				t.Fatalf("public error leaked %q in %s: %s", legacy, field, stdout)
+			}
+		}
+	}
 }
 
 func decodeContractSmokeDataMap(t *testing.T, stdout string) map[string]any {
@@ -444,6 +584,31 @@ func decodeContractSmokeDataMap(t *testing.T, stdout string) map[string]any {
 	if err := json.Unmarshal(env.Data, &data); err != nil {
 		t.Fatalf("decode JSON data: %v\n%s", err, stdout)
 	}
+	return data
+}
+
+func assertContractSetupJSONData(t *testing.T, stdout string) map[string]any {
+	t.Helper()
+	data := decodeContractSmokeDataMap(t, stdout)
+
+	capabilities, ok := data["capabilities"].(map[string]any)
+	if !ok {
+		t.Fatalf("setup JSON data.capabilities must be an object: %s", stdout)
+	}
+	for _, field := range []string{"write", "juicefs", "reflink", "copy"} {
+		if _, ok := capabilities[field].(map[string]any); !ok {
+			t.Fatalf("setup JSON data.capabilities.%s must be an object: %s", field, stdout)
+		}
+	}
+
+	effectiveEngine, ok := data["effective_engine"].(string)
+	if !ok || effectiveEngine == "" {
+		t.Fatalf("setup JSON data.effective_engine must be a non-empty string: %s", stdout)
+	}
+	if _, ok := data["warnings"].([]any); !ok {
+		t.Fatalf("setup JSON data.warnings must be an array: %s", stdout)
+	}
+
 	return data
 }
 

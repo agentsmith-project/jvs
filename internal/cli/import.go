@@ -6,7 +6,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jvs-project/jvs/internal/engine"
 	"github.com/jvs-project/jvs/internal/repo"
 )
 
@@ -32,9 +31,11 @@ var importCmd = &cobra.Command{
 		}
 
 		mainWorkspace := filepath.Join(r.Root, "main")
-		eng := newCloneEngine(r.Root)
-		transferResult, transferEngine, err := cloneDirectory(source, mainWorkspace, eng)
+		transferPlan, err := planTransfer(source, mainWorkspace, r.Root)
 		if err != nil {
+			return fmt.Errorf("plan source transfer: %w", err)
+		}
+		if _, err := cloneDirectory(source, mainWorkspace, transferPlan); err != nil {
 			return fmt.Errorf("copy source into main workspace: %w", err)
 		}
 
@@ -43,34 +44,37 @@ var importCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("create initial checkpoint: %w", err)
 		}
-		capabilities, err := engine.ProbeCapabilities(r.Root, false)
-		if err != nil {
-			return fmt.Errorf("probe capabilities: %w", err)
-		}
 
 		output := map[string]any{
+			"scope":              "import",
+			"requested_scope":    "import",
 			"repo_root":          r.Root,
 			"main_workspace":     mainWorkspace,
 			"provenance":         source,
 			"initial_checkpoint": desc.SnapshotID,
 			"engine":             desc.Engine,
-			"transfer_mode":      effectiveTransferMode(transferEngine, transferResult),
-			"degraded_reasons":   degradedReasons(transferResult),
-			"capabilities":       capabilities,
 		}
+		applyTransferJSONFields(output, transferPlan)
 		if jsonOutput {
 			return outputJSON(output)
 		}
 
 		fmt.Printf("Imported directory into JVS repository\n")
+		fmt.Printf("  Scope: import\n")
 		fmt.Printf("  Repo root: %s\n", r.Root)
 		fmt.Printf("  Main workspace: %s\n", mainWorkspace)
 		fmt.Printf("  Provenance: %s\n", source)
 		fmt.Printf("  Initial checkpoint: %s\n", desc.SnapshotID)
 		fmt.Printf("  Engine: %s\n", desc.Engine)
-		fmt.Printf("  Transfer mode: %s\n", output["transfer_mode"])
-		for _, reason := range degradedReasons(transferResult) {
+		fmt.Printf("  Requested engine: %s\n", transferPlan.RequestedEngine)
+		fmt.Printf("  Transfer engine: %s\n", transferPlan.TransferEngine)
+		fmt.Printf("  Effective engine: %s\n", transferPlan.EffectiveEngine)
+		fmt.Printf("  Optimized transfer: %t\n", transferPlan.OptimizedTransfer)
+		for _, reason := range transferPlan.DegradedReasons {
 			fmt.Printf("  Degraded: %s\n", reason)
+		}
+		for _, warning := range transferPlan.Warnings {
+			fmt.Printf("  Warning: %s\n", warning)
 		}
 		return nil
 	},

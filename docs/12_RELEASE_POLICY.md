@@ -62,9 +62,15 @@ release artifacts.
 - `current`, `latest`, and `dirty` semantics are tested across restore, fork,
   checkpoint, diff, and status flows.
 - Repo and workspace resolution is tested from repo roots, workspace roots,
-  nested workspace paths, and explicit `--repo` / `--workspace` selections.
-- `init`, `import`, `clone`, and `capability` are covered because they define
-  how users enter the system.
+  nested workspace paths, explicit `--repo` assertions, and `--workspace`
+  selections.
+- `--repo` is tested as an assertion for commands that operate on an existing
+  repo.
+- `init`, `import`, `clone`, and `capability` are covered as repo-free,
+  path-scoped setup commands because they define how users enter the system.
+- Setup JSON is tested for stable capability, effective engine, transfer
+  engine, warnings, degraded reasons, and full-clone optimized transfer
+  fields.
 
 ## Breaking Change Process
 

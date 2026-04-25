@@ -65,7 +65,7 @@ func TestCLIJSONEnvelope_InfoIsSingleObject(t *testing.T) {
 	assert.Contains(t, data, "format_version")
 }
 
-func TestCLITargetingRepoFlag_InfoFromOutsideRepo(t *testing.T) {
+func TestCLITargetingRepoFlag_RejectsOutsideAnyRepo(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 	defer os.Chdir(originalWd)
@@ -78,21 +78,38 @@ func TestCLITargetingRepoFlag_InfoFromOutsideRepo(t *testing.T) {
 	repoRoot := filepath.Join(dir, "testrepo")
 	outside := filepath.Join(dir, "outside")
 	require.NoError(t, os.Mkdir(outside, 0755))
-	require.NoError(t, os.Chdir(outside))
 
-	cmd = createTestRootCmd()
-	stdout, err := executeCommand(cmd, "--json", "--repo", repoRoot, "info")
-	require.NoError(t, err)
+	cases := []struct {
+		name    string
+		command string
+		args    []string
+	}{
+		{name: "info", command: "info", args: []string{"--json", "--repo", repoRoot, "info"}},
+		{name: "status", command: "status", args: []string{"--json", "--repo", repoRoot, "status"}},
+		{name: "workspace_list", command: "workspace list", args: []string{"--json", "--repo", repoRoot, "workspace", "list"}},
+	}
 
-	env := decodeContractEnvelope(t, stdout)
-	assert.True(t, env.OK)
-	assert.Equal(t, "info", env.Command)
-	require.NotNil(t, env.RepoRoot)
-	assert.Equal(t, repoRoot, *env.RepoRoot)
-	assert.Nil(t, env.Workspace)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, exitCode := runContractSubprocess(t, outside, tc.args...)
+
+			require.Equal(t, 1, exitCode)
+			assert.Empty(t, strings.TrimSpace(stderr))
+
+			env := decodeContractEnvelope(t, stdout)
+			assert.False(t, env.OK)
+			assert.Equal(t, tc.command, env.Command)
+			assert.Nil(t, env.RepoRoot)
+			assert.Nil(t, env.Workspace)
+			require.NotNil(t, env.Error)
+			assert.Equal(t, "E_NOT_REPO", env.Error.Code)
+			assertPublicErrorOmitsLegacyVocabulary(t, env.Error)
+			assert.JSONEq(t, `null`, string(env.Data))
+		})
+	}
 }
 
-func TestCLITargetingWorkspaceFlag_HistoryFromRepoRoot(t *testing.T) {
+func TestCLITargetingWorkspaceFlag_StatusFromRepoRoot(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 	defer os.Chdir(originalWd)
@@ -106,17 +123,21 @@ func TestCLITargetingWorkspaceFlag_HistoryFromRepoRoot(t *testing.T) {
 	require.NoError(t, os.Chdir(repoRoot))
 
 	cmd = createTestRootCmd()
-	stdout, err := executeCommand(cmd, "--json", "--repo", repoRoot, "--workspace", "main", "history")
+	stdout, err := executeCommand(cmd, "--json", "--workspace", "main", "status")
 	require.NoError(t, err)
 
 	env := decodeContractEnvelope(t, stdout)
 	assert.True(t, env.OK)
-	assert.Equal(t, "history", env.Command)
+	assert.Equal(t, "status", env.Command)
 	require.NotNil(t, env.RepoRoot)
 	assert.Equal(t, repoRoot, *env.RepoRoot)
 	require.NotNil(t, env.Workspace)
 	assert.Equal(t, "main", *env.Workspace)
-	assert.JSONEq(t, `[]`, string(env.Data))
+
+	var data map[string]any
+	require.NoError(t, json.Unmarshal(env.Data, &data))
+	assert.Equal(t, "main", data["workspace"])
+	assert.Equal(t, repoRoot, data["repo"])
 }
 
 func TestCLITargetingRepoFlag_StatusInfersWorkspaceFromRealCWD(t *testing.T) {
@@ -150,6 +171,60 @@ func TestCLITargetingRepoFlag_StatusInfersWorkspaceFromRealCWD(t *testing.T) {
 	assert.Equal(t, repoRoot, data["repo"])
 }
 
+func TestCLITargetingRepoFlag_StatusAcceptsPathInsideSameRepoFromSubdir(t *testing.T) {
+	dir := t.TempDir()
+	originalWd, _ := os.Getwd()
+	defer os.Chdir(originalWd)
+
+	require.NoError(t, os.Chdir(dir))
+	cmd := createTestRootCmd()
+	_, err := executeCommand(cmd, "init", "repoA")
+	require.NoError(t, err)
+
+	repoRoot := filepath.Join(dir, "repoA")
+	subdir := filepath.Join(repoRoot, "main", "subdir")
+	require.NoError(t, os.Mkdir(subdir, 0755))
+	require.NoError(t, os.Chdir(subdir))
+
+	cmd = createTestRootCmd()
+	stdout, err := executeCommand(cmd, "--json", "--repo", filepath.Join(repoRoot, "main"), "status")
+	require.NoError(t, err, stdout)
+
+	env := decodeContractEnvelope(t, stdout)
+	assert.True(t, env.OK)
+	assert.Equal(t, "status", env.Command)
+	require.NotNil(t, env.RepoRoot)
+	assert.Equal(t, repoRoot, *env.RepoRoot)
+	require.NotNil(t, env.Workspace)
+	assert.Equal(t, "main", *env.Workspace)
+}
+
+func TestCLITargetingRepoFlag_StatusAcceptsSymlinkedPathInsideSamePhysicalRepo(t *testing.T) {
+	dir := t.TempDir()
+	originalWd, _ := os.Getwd()
+	defer os.Chdir(originalWd)
+
+	require.NoError(t, os.Chdir(dir))
+	cmd := createTestRootCmd()
+	_, err := executeCommand(cmd, "init", "repoA")
+	require.NoError(t, err)
+
+	repoRoot := filepath.Join(dir, "repoA")
+	repoLink := filepath.Join(dir, "repo-link")
+	require.NoError(t, os.Symlink(repoRoot, repoLink))
+	require.NoError(t, os.Chdir(filepath.Join(repoRoot, "main")))
+
+	cmd = createTestRootCmd()
+	stdout, err := executeCommand(cmd, "--json", "--repo", filepath.Join(repoLink, "main"), "status")
+	require.NoError(t, err, stdout)
+
+	env := decodeContractEnvelope(t, stdout)
+	assert.True(t, env.OK)
+	assert.Equal(t, "status", env.Command)
+	require.NotNil(t, env.Workspace)
+	assert.Equal(t, "main", *env.Workspace)
+}
+
 func TestCLITargetingRepoFlag_StatusRejectsWorkspaceFromDifferentRepo(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
@@ -165,7 +240,7 @@ func TestCLITargetingRepoFlag_StatusRejectsWorkspaceFromDifferentRepo(t *testing
 
 	repoA := filepath.Join(dir, "repoA")
 	repoBMain := filepath.Join(dir, "repoB", "main")
-	stdout, stderr, exitCode := runContractSubprocess(t, repoBMain, "--json", "--repo", repoA, "status")
+	stdout, stderr, exitCode := runContractSubprocess(t, repoBMain, "--json", "--repo", repoA, "--workspace", "main", "status")
 
 	require.Equal(t, 1, exitCode)
 	assert.Empty(t, strings.TrimSpace(stderr))
@@ -181,7 +256,91 @@ func TestCLITargetingRepoFlag_StatusRejectsWorkspaceFromDifferentRepo(t *testing
 	assert.Contains(t, env.Error.Message, "targeting mismatch")
 	assert.Contains(t, env.Error.Message, repoA)
 	assert.Contains(t, env.Error.Message, filepath.Join(dir, "repoB"))
+	assertPublicErrorOmitsLegacyVocabulary(t, env.Error)
 	assert.JSONEq(t, `null`, string(env.Data))
+}
+
+func TestCLITargetingRepoFlag_RejectsDifferentRepoWithDuplicatedRepoID(t *testing.T) {
+	dir := t.TempDir()
+	originalWd, _ := os.Getwd()
+	defer os.Chdir(originalWd)
+
+	require.NoError(t, os.Chdir(dir))
+	cmd := createTestRootCmd()
+	_, err := executeCommand(cmd, "init", "repoA")
+	require.NoError(t, err)
+	cmd = createTestRootCmd()
+	_, err = executeCommand(cmd, "init", "repoB")
+	require.NoError(t, err)
+
+	repoA := filepath.Join(dir, "repoA")
+	repoB := filepath.Join(dir, "repoB")
+	repoAID, err := os.ReadFile(filepath.Join(repoA, ".jvs", "repo_id"))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(repoB, ".jvs", "repo_id"), repoAID, 0600))
+
+	stdout, stderr, exitCode := runContractSubprocess(t, filepath.Join(repoB, "main"), "--json", "--repo", repoA, "--workspace", "main", "status")
+
+	require.Equal(t, 1, exitCode)
+	assert.Empty(t, strings.TrimSpace(stderr))
+
+	env := decodeContractEnvelope(t, stdout)
+	assert.False(t, env.OK)
+	assert.Equal(t, "status", env.Command)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, "E_TARGET_MISMATCH", env.Error.Code)
+	assert.Contains(t, env.Error.Message, "targeting mismatch")
+	assert.Contains(t, env.Error.Message, repoA)
+	assert.Contains(t, env.Error.Message, repoB)
+	assertPublicErrorOmitsLegacyVocabulary(t, env.Error)
+	assert.JSONEq(t, `null`, string(env.Data))
+}
+
+func TestCLIPathScopedSetupCommandsRemainRepoFree(t *testing.T) {
+	dir := t.TempDir()
+	originalWd, _ := os.Getwd()
+	defer os.Chdir(originalWd)
+
+	outside := filepath.Join(dir, "outside")
+	require.NoError(t, os.Mkdir(outside, 0755))
+	require.NoError(t, os.Chdir(outside))
+	unusedRepoFlag := filepath.Join(dir, "missing-repo")
+
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "--repo", unusedRepoFlag, "init", "initrepo")
+	require.NoError(t, err, stdout)
+
+	sourceDir := filepath.Join(outside, "source")
+	require.NoError(t, os.Mkdir(sourceDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "file.txt"), []byte("import me"), 0644))
+	stdout, err = executeCommand(createTestRootCmd(), "--json", "--repo", unusedRepoFlag, "import", sourceDir, "importrepo")
+	require.NoError(t, err, stdout)
+
+	stdout, err = executeCommand(createTestRootCmd(), "--json", "--repo", unusedRepoFlag, "clone", "initrepo", "clonerepo")
+	require.NoError(t, err, stdout)
+
+	stdout, err = executeCommand(createTestRootCmd(), "--json", "--repo", unusedRepoFlag, "capability", outside)
+	require.NoError(t, err, stdout)
+}
+
+func TestCLISetupJSONContract_InitAndCapability(t *testing.T) {
+	dir := t.TempDir()
+	originalWd, _ := os.Getwd()
+	defer os.Chdir(originalWd)
+	require.NoError(t, os.Chdir(dir))
+
+	initTarget := filepath.Join(dir, "initrepo")
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "init", initTarget)
+	require.NoError(t, err, stdout)
+	initData := assertSetupJSONContractForTest(t, stdout)
+	assert.Equal(t, initTarget, initData["repo_root"])
+
+	capabilityTarget := filepath.Join(dir, "capability-target")
+	require.NoError(t, os.Mkdir(capabilityTarget, 0755))
+	stdout, err = executeCommand(createTestRootCmd(), "--json", "capability", capabilityTarget)
+	require.NoError(t, err, stdout)
+	capabilityData := assertSetupJSONContractForTest(t, stdout)
+	assert.Equal(t, capabilityTarget, capabilityData["target_path"])
+	assert.IsType(t, false, capabilityData["write_probe"])
 }
 
 func TestCLIJSONErrorEnvelope_NotRepo(t *testing.T) {
@@ -202,7 +361,7 @@ func TestCLIJSONErrorEnvelope_NotRepo(t *testing.T) {
 	assert.JSONEq(t, `null`, string(env.Data))
 }
 
-func TestCLIJSONErrorEnvelope_WorkspaceScopedRequiresWorkspace(t *testing.T) {
+func TestCLIJSONErrorEnvelope_StatusRequiresWorkspace(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 	defer os.Chdir(originalWd)
@@ -213,20 +372,21 @@ func TestCLIJSONErrorEnvelope_WorkspaceScopedRequiresWorkspace(t *testing.T) {
 	require.NoError(t, err)
 
 	repoRoot := filepath.Join(dir, "testrepo")
-	stdout, stderr, exitCode := runContractSubprocess(t, repoRoot, "--json", "history")
+	stdout, stderr, exitCode := runContractSubprocess(t, repoRoot, "--json", "status")
 
 	require.Equal(t, 1, exitCode)
 	assert.Empty(t, strings.TrimSpace(stderr))
 
 	env := decodeContractEnvelope(t, stdout)
 	assert.False(t, env.OK)
-	assert.Equal(t, "history", env.Command)
+	assert.Equal(t, "status", env.Command)
 	require.NotNil(t, env.RepoRoot)
 	assert.Equal(t, repoRoot, *env.RepoRoot)
 	assert.Nil(t, env.Workspace)
 	require.NotNil(t, env.Error)
 	assert.Equal(t, "E_NOT_WORKSPACE", env.Error.Code)
 	assert.Contains(t, env.Error.Message, "not inside a workspace")
+	assertPublicErrorOmitsLegacyVocabulary(t, env.Error)
 }
 
 func TestCLIJSONErrorEnvelope_ArgValidationReportsCommand(t *testing.T) {
@@ -285,6 +445,58 @@ func decodeContractEnvelope(t *testing.T, stdout string) contractEnvelope {
 	require.True(t, errors.Is(err, io.EOF), "stdout must contain exactly one JSON value: %q", stdout)
 
 	return env
+}
+
+func assertSetupJSONContractForTest(t *testing.T, stdout string) map[string]any {
+	t.Helper()
+
+	env := decodeContractEnvelope(t, stdout)
+	require.True(t, env.OK, stdout)
+
+	var data map[string]any
+	require.NoError(t, json.Unmarshal(env.Data, &data), stdout)
+	require.NotEmpty(t, data, stdout)
+
+	capabilities, ok := data["capabilities"].(map[string]any)
+	require.True(t, ok, "setup JSON data.capabilities must be an object: %s", stdout)
+	for _, field := range []string{"write", "juicefs", "reflink", "copy"} {
+		_, ok := capabilities[field].(map[string]any)
+		require.True(t, ok, "setup JSON data.capabilities.%s must be an object: %s", field, stdout)
+	}
+
+	effectiveEngine, ok := data["effective_engine"].(string)
+	require.True(t, ok, "setup JSON data.effective_engine must be a string: %s", stdout)
+	require.NotEmpty(t, effectiveEngine, stdout)
+
+	_, ok = data["warnings"].([]any)
+	require.True(t, ok, "setup JSON data.warnings must be an array: %s", stdout)
+
+	return data
+}
+
+func assertPublicErrorOmitsLegacyVocabulary(t *testing.T, errData *contractError) {
+	t.Helper()
+	require.NotNil(t, errData)
+	for _, value := range []string{errData.Code, errData.Message, errData.Hint} {
+		lower := strings.ToLower(value)
+		assert.NotContains(t, lower, "worktree")
+		assert.NotContains(t, lower, "snapshot")
+		assert.NotContains(t, lower, "history")
+	}
+}
+
+func assertPublicErrorOmitsLegacyVocabularyExcept(t *testing.T, errData *contractError, allowedValues ...string) {
+	t.Helper()
+	require.NotNil(t, errData)
+	for _, value := range []string{errData.Code, errData.Message, errData.Hint} {
+		for _, allowed := range allowedValues {
+			value = strings.ReplaceAll(value, allowed, "")
+		}
+		lower := strings.ToLower(value)
+		assert.NotContains(t, lower, "worktree")
+		assert.NotContains(t, lower, "snapshot")
+		assert.NotContains(t, lower, "history")
+	}
 }
 
 func runContractSubprocess(t *testing.T, cwd string, args ...string) (string, string, int) {

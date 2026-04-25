@@ -80,24 +80,37 @@ Global flags:
 jvs [--repo <repo-root>] [--workspace <name>] [--json] <command> ...
 ```
 
-Resolution order:
+Command classes:
 
-1. `--repo` sets the repo root. Without it, JVS walks upward from CWD until it
-   finds `.jvs/`.
-2. `--workspace` selects a registered workspace by name inside the resolved
+- path-scoped setup commands: `init`, `import`, `clone`, and `capability`.
+  These commands are repo-free: they operate on explicit path arguments, do
+  not require a current repo or workspace, and must not use `--repo` or
+  `--workspace` as substitutes for required path arguments.
+- Repo-scoped commands: `info`, `workspace list`, `workspace rename`,
+  `workspace remove`, `verify --all`, `doctor`, and `gc`. These commands
+  operate on the current repo.
+- Workspace-scoped commands: `status`, `checkpoint`, `checkpoint list`,
+  `diff`, `restore`, `fork`, and `workspace path` without `<name>`.
+- `workspace path <name>` is repo-scoped because the named workspace selects
+  the payload path inside the resolved repo.
+
+Resolution rules:
+
+1. path-scoped setup commands resolve only the explicit paths in their command
+   line and do not discover a current repo or workspace.
+2. Repo-scoped and workspace-scoped commands require CWD to be inside a JVS
+   repo. Without `--repo`, JVS walks upward from CWD until it finds `.jvs/`.
+   With `--repo`, the flag is an assertion, not an alternate discovery root:
+   it must resolve to the current repo or to a path inside the current repo,
+   otherwise the command fails with a targeting mismatch.
+3. `--workspace` selects a registered workspace by name inside the resolved
    repo.
-3. Without `--workspace`, workspace-scoped commands infer the workspace from
+4. Without `--workspace`, workspace-scoped commands infer the workspace from
    CWD if CWD is inside a registered workspace payload.
-4. If CWD is the repo root, outside the repo, or inside `.jvs/`,
-   workspace-scoped commands require `--workspace`.
-5. If `--repo` and the inferred CWD workspace disagree, the command fails
+5. If CWD is the repo root or inside `.jvs/`, workspace-scoped commands
+   require `--workspace`.
+6. If `--repo` and the inferred CWD workspace disagree, the command fails
    instead of guessing.
-
-Repo-scoped commands: `init`, `import`, `clone`, `capability`, `info`,
-`workspace list`, `verify --all`, `doctor`, and `gc`.
-
-Workspace-scoped commands: `status`, `checkpoint`, `restore`, `fork`,
-`workspace path`, `workspace remove`, and `workspace rename`.
 
 ## v0 Stable CLI Contract
 
@@ -115,13 +128,26 @@ jvs capability <target-path> [--write-probe]
 
 Rules:
 
-- `init` creates a new repo and an empty default `main` workspace.
-- `import` treats the source directory as payload and creates an initial
-  checkpoint in a new repo.
-- `clone` copies a local repo or current workspace into a new local repo. This
-  is not a remote protocol.
+- These are path-scoped setup commands and are repo-free. They do not depend
+  on CWD being inside a JVS repo.
+- `init` creates a new repo and an empty default `main` workspace at the
+  explicit `<repo-path>`.
+- `import` treats `<source-dir>` as payload, creates a new repo at
+  `<repo-path>`, and creates an initial checkpoint tagged `import`.
+- `clone --scope current` copies the live source workspace contents into the
+  destination repo's `main` workspace and publishes exactly one initial
+  checkpoint tagged `clone`. It does not copy source history or other
+  workspaces.
+- `clone --scope full` creates a new repo identity while preserving
+  user-visible checkpoints, workspaces, and refs. It excludes runtime
+  locks and intents and rebuilds clean runtime state at the destination.
+- `clone` is a local filesystem operation, not a remote protocol.
 - `capability` reports available materialization support for JuiceFS clone,
-  reflink, and copy.
+  reflink, and copy for the explicit target path.
+- Setup JSON must give automation stable engine and filesystem messaging:
+  `capabilities`, `effective_engine`, `warnings`, and, for transfer setup
+  commands, `transfer_engine` plus `degraded_reasons`. Full clone JSON also
+  reports `optimized_transfer`.
 
 ### Introspection
 

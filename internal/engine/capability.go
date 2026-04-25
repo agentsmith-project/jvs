@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/jvs-project/jvs/pkg/model"
 )
@@ -11,6 +12,7 @@ import (
 const (
 	CapabilityConfirmed = "confirmed"
 	CapabilityUnknown   = "unknown"
+	EngineAuto          = model.EngineType("auto")
 )
 
 // Capability describes whether one transfer mechanism can be used at a target.
@@ -27,6 +29,7 @@ type CapabilityReport struct {
 	TargetPath        string           `json:"target_path"`
 	ProbePath         string           `json:"probe_path"`
 	WriteProbe        bool             `json:"write_probe"`
+	Write             Capability       `json:"write"`
 	JuiceFS           Capability       `json:"juicefs"`
 	Reflink           Capability       `json:"reflink"`
 	Copy              Capability       `json:"copy"`
@@ -34,9 +37,81 @@ type CapabilityReport struct {
 	Warnings          []string         `json:"warnings,omitempty"`
 }
 
+// CapabilityProber is the filesystem probing surface used by capability
+// reporting and transfer planning. Tests can replace it without touching the
+// actual filesystem.
+type CapabilityProber interface {
+	ProbeCapabilities(targetPath string, writeProbe bool) (*CapabilityReport, error)
+	ProbeTransferPair(sourcePath, destinationPath string) (*TransferPairReport, error)
+}
+
+// TransferPairReport describes capabilities that depend on both source and
+// destination paths.
+type TransferPairReport struct {
+	SourcePath      string     `json:"source_path"`
+	DestinationPath string     `json:"destination_path"`
+	Reflink         Capability `json:"reflink"`
+	Warnings        []string   `json:"warnings,omitempty"`
+}
+
+// TransferPlanRequest contains the inputs needed to choose a transfer engine.
+type TransferPlanRequest struct {
+	SourcePath      string
+	DestinationPath string
+	CapabilityPath  string
+	RequestedEngine model.EngineType
+}
+
+// TransferSelectionRequest is passed to a selector after destination
+// capabilities are known.
+type TransferSelectionRequest struct {
+	RequestedEngine model.EngineType
+	Capabilities    *CapabilityReport
+}
+
+// TransferSelection is a destination-level engine choice before pair probes.
+type TransferSelection struct {
+	TransferEngine  model.EngineType
+	DegradedReasons []string
+	Warnings        []string
+}
+
+// TransferSelector chooses the destination-level engine from a capability
+// report and a requested engine.
+type TransferSelector interface {
+	SelectTransfer(TransferSelectionRequest) TransferSelection
+}
+
+// DefaultTransferSelector is the production selector.
+type DefaultTransferSelector struct{}
+
+// TransferPlanner plans source+destination transfers from shared capabilities.
+type TransferPlanner struct {
+	Prober   CapabilityProber
+	Selector TransferSelector
+}
+
+// TransferPlan is the contract surfaced by CLI lifecycle operations.
+type TransferPlan struct {
+	RequestedEngine   model.EngineType  `json:"requested_engine"`
+	TransferEngine    model.EngineType  `json:"transfer_engine"`
+	EffectiveEngine   model.EngineType  `json:"effective_engine"`
+	OptimizedTransfer bool              `json:"optimized_transfer"`
+	Capabilities      *CapabilityReport `json:"capabilities,omitempty"`
+	DegradedReasons   []string          `json:"degraded_reasons"`
+	Warnings          []string          `json:"warnings,omitempty"`
+}
+
+type filesystemCapabilityProber struct{}
+
 // ProbeCapabilities reports JuiceFS, reflink, and copy support for targetPath.
 // With writeProbe=false it does not create test files.
 func ProbeCapabilities(targetPath string, writeProbe bool) (*CapabilityReport, error) {
+	return filesystemCapabilityProber{}.ProbeCapabilities(targetPath, writeProbe)
+}
+
+// ProbeCapabilities reports JuiceFS, reflink, copy, and generic write support.
+func (filesystemCapabilityProber) ProbeCapabilities(targetPath string, writeProbe bool) (*CapabilityReport, error) {
 	target, err := filepath.Abs(targetPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolve target path: %w", err)
@@ -52,21 +127,217 @@ func ProbeCapabilities(targetPath string, writeProbe bool) (*CapabilityReport, e
 		TargetPath: target,
 		ProbePath:  probePath,
 		WriteProbe: writeProbe,
-		Copy: Capability{
-			Available:  true,
-			Supported:  true,
-			Confidence: CapabilityConfirmed,
-		},
-		Warnings: warnings,
+		Warnings:   warnings,
 	}
 
+	report.Write, report.Copy = probeWriteAndCopy(probePath, writeProbe)
+	probeDir, cleanup := createReusableProbeDir(probePath, writeProbe, report.Write)
+	if cleanup != nil {
+		defer cleanup()
+	}
 	report.JuiceFS = probeJuiceFS(probePath)
-	report.Reflink = probeReflink(probePath, writeProbe)
+	report.Reflink = probeReflink(probeDir, writeProbe, report.Write)
 	report.RecommendedEngine = recommendedEngine(report)
+	report.Warnings = append(report.Warnings, report.Write.Warnings...)
 	report.Warnings = append(report.Warnings, report.JuiceFS.Warnings...)
 	report.Warnings = append(report.Warnings, report.Reflink.Warnings...)
+	report.Warnings = append(report.Warnings, report.Copy.Warnings...)
+	report.Warnings = uniqueStrings(report.Warnings)
 
 	return report, nil
+}
+
+// ProbeTransferPair probes optimizations that require both source and
+// destination. It avoids mutating the source path.
+func (filesystemCapabilityProber) ProbeTransferPair(sourcePath, destinationPath string) (*TransferPairReport, error) {
+	source, err := filepath.Abs(sourcePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve source path: %w", err)
+	}
+	source = filepath.Clean(source)
+	destination, err := filepath.Abs(destinationPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve destination path: %w", err)
+	}
+	destination = filepath.Clean(destination)
+
+	if info, err := os.Stat(destination); err != nil {
+		return nil, fmt.Errorf("stat destination path: %w", err)
+	} else if !info.IsDir() {
+		return nil, fmt.Errorf("destination path is not a directory: %s", destination)
+	}
+
+	report := &TransferPairReport{
+		SourcePath:      source,
+		DestinationPath: destination,
+		Reflink: Capability{
+			Available:  true,
+			Supported:  false,
+			Confidence: CapabilityUnknown,
+		},
+	}
+
+	srcFile, info, found, err := firstRegularFile(source)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		warning := "no regular source file available to confirm source/destination reflink"
+		report.Reflink.Supported = true
+		report.Reflink.Confidence = CapabilityUnknown
+		report.Reflink.Warnings = append(report.Reflink.Warnings, warning)
+		report.Warnings = append(report.Warnings, warning)
+		return report, nil
+	}
+
+	tempDir, err := os.MkdirTemp(destination, ".jvs-transfer-pair-")
+	if err != nil {
+		warning := fmt.Sprintf("cannot create transfer pair probe directory: %v", err)
+		report.Reflink.Confidence = CapabilityConfirmed
+		report.Reflink.Warnings = append(report.Reflink.Warnings, warning)
+		report.Warnings = append(report.Warnings, warning)
+		return report, nil
+	}
+	defer os.RemoveAll(tempDir)
+
+	dstFile := filepath.Join(tempDir, "reflink")
+	if err := reflinkFile(srcFile, dstFile, info); err != nil {
+		warning := fmt.Sprintf("reflink pair probe failed: %v", err)
+		report.Reflink.Confidence = CapabilityConfirmed
+		report.Reflink.Warnings = append(report.Reflink.Warnings, warning)
+		report.Warnings = append(report.Warnings, warning)
+		return report, nil
+	}
+
+	report.Reflink.Supported = true
+	report.Reflink.Confidence = CapabilityConfirmed
+	return report, nil
+}
+
+// SelectTransfer chooses an engine using destination capabilities.
+func (DefaultTransferSelector) SelectTransfer(req TransferSelectionRequest) TransferSelection {
+	report := req.Capabilities
+	requested := req.RequestedEngine
+	if requested == "" {
+		requested = EngineAuto
+	}
+	if requested == EngineAuto {
+		requested = report.RecommendedEngine
+	}
+	if requested == "" {
+		requested = model.EngineCopy
+	}
+
+	switch requested {
+	case model.EngineJuiceFSClone:
+		if report.JuiceFS.Supported {
+			return TransferSelection{TransferEngine: model.EngineJuiceFSClone}
+		}
+		return TransferSelection{
+			TransferEngine:  model.EngineCopy,
+			DegradedReasons: []string{"juicefs-clone unavailable at destination"},
+			Warnings:        report.JuiceFS.Warnings,
+		}
+	case model.EngineReflinkCopy:
+		if report.Reflink.Supported {
+			return TransferSelection{TransferEngine: model.EngineReflinkCopy}
+		}
+		return TransferSelection{
+			TransferEngine:  model.EngineCopy,
+			DegradedReasons: []string{"reflink-copy unavailable at destination"},
+			Warnings:        report.Reflink.Warnings,
+		}
+	case model.EngineCopy:
+		return TransferSelection{TransferEngine: model.EngineCopy, Warnings: report.Copy.Warnings}
+	default:
+		return TransferSelection{
+			TransferEngine:  model.EngineCopy,
+			DegradedReasons: []string{fmt.Sprintf("unknown requested engine %q; using copy", req.RequestedEngine)},
+		}
+	}
+}
+
+// PlanTransfer uses destination write-probed capabilities plus pair probes to
+// select an engine for source+destination transfer operations.
+func PlanTransfer(req TransferPlanRequest) (*TransferPlan, error) {
+	return TransferPlanner{}.PlanTransfer(req)
+}
+
+// PlanTransfer uses destination write-probed capabilities plus pair probes to
+// select an engine for source+destination transfer operations.
+func (p TransferPlanner) PlanTransfer(req TransferPlanRequest) (*TransferPlan, error) {
+	prober := p.Prober
+	if prober == nil {
+		prober = filesystemCapabilityProber{}
+	}
+	selector := p.Selector
+	if selector == nil {
+		selector = DefaultTransferSelector{}
+	}
+
+	capabilityPath := req.CapabilityPath
+	if capabilityPath == "" {
+		capabilityPath = req.DestinationPath
+	}
+	report, err := prober.ProbeCapabilities(capabilityPath, true)
+	if err != nil {
+		return nil, err
+	}
+
+	requested := req.RequestedEngine
+	if requested == "" {
+		requested = EngineAuto
+	}
+	selection := selector.SelectTransfer(TransferSelectionRequest{
+		RequestedEngine: requested,
+		Capabilities:    report,
+	})
+	if selection.TransferEngine == "" {
+		selection.TransferEngine = model.EngineCopy
+	}
+
+	plan := &TransferPlan{
+		RequestedEngine:   requested,
+		TransferEngine:    selection.TransferEngine,
+		EffectiveEngine:   selection.TransferEngine,
+		OptimizedTransfer: optimizedTransfer(selection.TransferEngine),
+		Capabilities:      report,
+		DegradedReasons:   uniqueStrings(selection.DegradedReasons),
+		Warnings:          uniqueStrings(append(append([]string{}, report.Warnings...), selection.Warnings...)),
+	}
+
+	if plan.TransferEngine == model.EngineReflinkCopy {
+		pair, err := prober.ProbeTransferPair(req.SourcePath, req.DestinationPath)
+		if err != nil {
+			plan.degradeToCopy(fmt.Sprintf("reflink-copy source/destination probe failed: %v", err))
+		} else {
+			plan.Warnings = uniqueStrings(append(plan.Warnings, pair.Warnings...))
+			if !pair.Reflink.Supported {
+				reason := "reflink-copy unavailable for source/destination pair"
+				if detail := firstWarning(pair.Reflink.Warnings, pair.Warnings); detail != "" {
+					reason += ": " + detail
+				}
+				plan.degradeToCopy(reason)
+			}
+		}
+	}
+
+	if plan.TransferEngine == model.EngineCopy && report.Copy.Confidence == CapabilityConfirmed && !report.Copy.Supported {
+		return nil, fmt.Errorf("destination does not support copy writes: %s", strings.Join(report.Copy.Warnings, "; "))
+	}
+
+	plan.DegradedReasons = uniqueStrings(plan.DegradedReasons)
+	plan.Warnings = uniqueStrings(plan.Warnings)
+	return plan, nil
+}
+
+func (p *TransferPlan) degradeToCopy(reason string) {
+	p.TransferEngine = model.EngineCopy
+	p.EffectiveEngine = model.EngineCopy
+	p.OptimizedTransfer = false
+	if reason != "" {
+		p.DegradedReasons = append(p.DegradedReasons, reason)
+	}
 }
 
 func existingProbeDir(target string) (string, []string, error) {
@@ -119,7 +390,71 @@ func probeJuiceFS(path string) Capability {
 	return capability
 }
 
-func probeReflink(path string, writeProbe bool) Capability {
+func probeWriteAndCopy(path string, writeProbe bool) (Capability, Capability) {
+	writeCapability := Capability{
+		Available:  true,
+		Supported:  false,
+		Confidence: CapabilityUnknown,
+	}
+	copyCapability := Capability{
+		Available:  true,
+		Supported:  false,
+		Confidence: CapabilityUnknown,
+	}
+	if !writeProbe {
+		writeCapability.Warnings = append(writeCapability.Warnings, "write support requires --write-probe to confirm")
+		copyCapability.Warnings = append(copyCapability.Warnings, "copy support requires --write-probe to confirm destination writability")
+		return writeCapability, copyCapability
+	}
+
+	writeCapability.Confidence = CapabilityConfirmed
+	copyCapability.Confidence = CapabilityConfirmed
+	tempDir, err := os.MkdirTemp(path, ".jvs-capability-")
+	if err != nil {
+		warning := fmt.Sprintf("cannot create write probe directory: %v", err)
+		writeCapability.Warnings = append(writeCapability.Warnings, warning)
+		copyCapability.Warnings = append(copyCapability.Warnings, warning)
+		return writeCapability, copyCapability
+	}
+	defer os.RemoveAll(tempDir)
+
+	probeFile := filepath.Join(tempDir, "write")
+	if err := os.WriteFile(probeFile, []byte("jvs write probe"), 0600); err != nil {
+		warning := fmt.Sprintf("cannot write probe file: %v", err)
+		writeCapability.Warnings = append(writeCapability.Warnings, warning)
+		copyCapability.Warnings = append(copyCapability.Warnings, warning)
+		return writeCapability, copyCapability
+	}
+	if err := os.Remove(probeFile); err != nil {
+		warning := fmt.Sprintf("cannot remove probe file: %v", err)
+		writeCapability.Warnings = append(writeCapability.Warnings, warning)
+		copyCapability.Warnings = append(copyCapability.Warnings, warning)
+		return writeCapability, copyCapability
+	}
+	if err := os.Remove(tempDir); err != nil {
+		warning := fmt.Sprintf("cannot remove write probe directory: %v", err)
+		writeCapability.Warnings = append(writeCapability.Warnings, warning)
+		copyCapability.Warnings = append(copyCapability.Warnings, warning)
+		return writeCapability, copyCapability
+	}
+
+	writeCapability.Supported = true
+	copyCapability.Supported = true
+	return writeCapability, copyCapability
+}
+
+func createReusableProbeDir(path string, writeProbe bool, writeCapability Capability) (string, func()) {
+	if !writeProbe || !writeCapability.Supported {
+		return "", nil
+	}
+	tempDir, err := os.MkdirTemp(path, ".jvs-capability-")
+	if err != nil {
+		return "", nil
+	}
+	return tempDir, func() { _ = os.RemoveAll(tempDir) }
+}
+
+func probeReflink(probeDir string, writeProbe bool, writeCapability Capability) Capability {
 	capability := Capability{
 		Available:  true,
 		Supported:  false,
@@ -129,17 +464,19 @@ func probeReflink(path string, writeProbe bool) Capability {
 		capability.Warnings = append(capability.Warnings, "reflink support requires --write-probe to confirm")
 		return capability
 	}
-
-	tempDir, err := os.MkdirTemp(path, ".jvs-capability-")
-	if err != nil {
+	if !writeCapability.Supported {
 		capability.Confidence = CapabilityConfirmed
-		capability.Warnings = append(capability.Warnings, fmt.Sprintf("cannot create reflink probe directory: %v", err))
+		capability.Warnings = append(capability.Warnings, "reflink support requires writable destination")
 		return capability
 	}
-	defer os.RemoveAll(tempDir)
+	if probeDir == "" {
+		capability.Confidence = CapabilityConfirmed
+		capability.Warnings = append(capability.Warnings, "cannot create reflink probe directory")
+		return capability
+	}
 
-	src := filepath.Join(tempDir, "src")
-	dst := filepath.Join(tempDir, "dst")
+	src := filepath.Join(probeDir, "src")
+	dst := filepath.Join(probeDir, "dst")
 	if err := os.WriteFile(src, []byte("jvs reflink probe"), 0600); err != nil {
 		capability.Confidence = CapabilityConfirmed
 		capability.Warnings = append(capability.Warnings, fmt.Sprintf("cannot write reflink probe file: %v", err))
@@ -168,7 +505,70 @@ func recommendedEngine(report *CapabilityReport) model.EngineType {
 		return model.EngineJuiceFSClone
 	case report.Reflink.Supported:
 		return model.EngineReflinkCopy
-	default:
+	case report.Copy.Supported || (report.Copy.Available && report.Copy.Confidence == CapabilityUnknown):
 		return model.EngineCopy
+	default:
+		return ""
 	}
+}
+
+func firstRegularFile(root string) (string, os.FileInfo, bool, error) {
+	info, err := os.Lstat(root)
+	if err != nil {
+		return "", nil, false, fmt.Errorf("stat source path: %w", err)
+	}
+	if !info.IsDir() {
+		if info.Mode().IsRegular() {
+			return root, info, true, nil
+		}
+		return "", nil, false, nil
+	}
+
+	var foundPath string
+	var foundInfo os.FileInfo
+	errStop := fmt.Errorf("found regular file")
+	err = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			foundPath = path
+			foundInfo = info
+			return errStop
+		}
+		return nil
+	})
+	if err != nil && err != errStop {
+		return "", nil, false, fmt.Errorf("scan source for pair probe: %w", err)
+	}
+	return foundPath, foundInfo, foundPath != "", nil
+}
+
+func optimizedTransfer(engineType model.EngineType) bool {
+	return engineType == model.EngineJuiceFSClone || engineType == model.EngineReflinkCopy
+}
+
+func firstWarning(groups ...[]string) string {
+	for _, group := range groups {
+		if len(group) > 0 {
+			return group[0]
+		}
+	}
+	return ""
+}
+
+func uniqueStrings(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := map[string]struct{}{}
+	for _, value := range in {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }

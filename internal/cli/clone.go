@@ -63,22 +63,33 @@ func runCloneFull(sourceArg, destArg string) error {
 	if err != nil {
 		return fmt.Errorf("write cloned repository identity: %w", err)
 	}
-	capabilities, err := engine.ProbeCapabilities(destRoot, false)
+	capabilities, err := engine.ProbeCapabilities(destRoot, true)
 	if err != nil {
 		return fmt.Errorf("probe destination capabilities: %w", err)
 	}
+	warnings := appendUniqueStrings(
+		[]string{"full clone uses byte copy; runtime lock and intent state are excluded"},
+		capabilities.Warnings...,
+	)
+	degraded := degradedReasons(transferResult)
+	effectiveEngine := model.EngineType(effectiveTransferMode(transferEngine, transferResult))
 
 	output := map[string]any{
-		"scope":            "full",
-		"source_repo":      sourceRoot,
-		"provenance":       map[string]any{"source_repo": sourceRoot, "scope": "full"},
-		"repo_root":        destRoot,
-		"repo_id":          newRepoID,
-		"copy_mode":        fullCloneCopyMode,
-		"transfer_mode":    effectiveTransferMode(transferEngine, transferResult),
-		"degraded_reasons": degradedReasons(transferResult),
-		"capabilities":     capabilities,
+		"scope":                  "full",
+		"requested_scope":        "full",
+		"source_repo":            sourceRoot,
+		"provenance":             map[string]any{"source_repo": sourceRoot, "scope": "full"},
+		"repo_root":              destRoot,
+		"repo_id":                newRepoID,
+		"copy_mode":              fullCloneCopyMode,
+		"requested_engine":       model.EngineCopy,
+		"transfer_engine":        transferEngine,
+		"transfer_mode":          string(effectiveEngine),
+		"optimized_transfer":     false,
+		"runtime_state_excluded": true,
+		"degraded_reasons":       stableStringSlice(degraded),
 	}
+	applySetupJSONFields(output, capabilities, effectiveEngine, warnings)
 	if jsonOutput {
 		return outputJSON(output)
 	}
@@ -89,9 +100,16 @@ func runCloneFull(sourceArg, destArg string) error {
 	fmt.Printf("  Repo root: %s\n", destRoot)
 	fmt.Printf("  Repo ID: %s\n", newRepoID)
 	fmt.Printf("  Copy mode: %s\n", fullCloneCopyMode)
-	fmt.Printf("  Transfer mode: %s\n", output["transfer_mode"])
-	for _, reason := range degradedReasons(transferResult) {
+	fmt.Printf("  Requested engine: %s\n", model.EngineCopy)
+	fmt.Printf("  Transfer engine: %s\n", transferEngine)
+	fmt.Printf("  Effective engine: %s\n", output["effective_engine"])
+	fmt.Printf("  Optimized transfer: false\n")
+	fmt.Printf("  Runtime state excluded: true\n")
+	for _, reason := range degraded {
 		fmt.Printf("  Degraded: %s\n", reason)
+	}
+	for _, warning := range warnings {
+		fmt.Printf("  Warning: %s\n", warning)
 	}
 	return nil
 }
@@ -114,8 +132,7 @@ func runCloneCurrent(sourceArg, destArg string) error {
 
 	var r *repo.Repo
 	var mainWorkspace string
-	var transferResult *engine.CloneResult
-	var transferEngine model.EngineType
+	var transferPlan *engine.TransferPlan
 	if err := repo.WithMutationLock(sourceRepo.Root, "clone current", func() error {
 		var err error
 		r, err = repo.InitTarget(destRoot)
@@ -124,9 +141,11 @@ func runCloneCurrent(sourceArg, destArg string) error {
 		}
 		mainWorkspace = filepath.Join(r.Root, "main")
 
-		eng := newCloneEngine(r.Root)
-		transferResult, transferEngine, err = cloneDirectory(sourceWorkspace, mainWorkspace, eng)
+		transferPlan, err = planTransfer(sourceWorkspace, mainWorkspace, r.Root)
 		if err != nil {
+			return fmt.Errorf("plan current workspace transfer: %w", err)
+		}
+		if _, err := cloneDirectory(sourceWorkspace, mainWorkspace, transferPlan); err != nil {
 			return fmt.Errorf("copy current workspace: %w", err)
 		}
 		return nil
@@ -139,13 +158,10 @@ func runCloneCurrent(sourceArg, destArg string) error {
 	if err != nil {
 		return fmt.Errorf("create initial checkpoint: %w", err)
 	}
-	capabilities, err := engine.ProbeCapabilities(r.Root, false)
-	if err != nil {
-		return fmt.Errorf("probe destination capabilities: %w", err)
-	}
 
 	output := map[string]any{
 		"scope":              "current",
+		"requested_scope":    "current",
 		"source_workspace":   sourceWorktree,
 		"repo_root":          r.Root,
 		"repo_id":            r.RepoID,
@@ -153,10 +169,8 @@ func runCloneCurrent(sourceArg, destArg string) error {
 		"provenance":         map[string]any{"source_repo": sourceRepo.Root, "source_workspace": sourceWorktree, "scope": "current"},
 		"initial_checkpoint": desc.SnapshotID,
 		"engine":             desc.Engine,
-		"transfer_mode":      effectiveTransferMode(transferEngine, transferResult),
-		"degraded_reasons":   degradedReasons(transferResult),
-		"capabilities":       capabilities,
 	}
+	applyTransferJSONFields(output, transferPlan)
 	if jsonOutput {
 		return outputJSON(output)
 	}
@@ -169,9 +183,15 @@ func runCloneCurrent(sourceArg, destArg string) error {
 	fmt.Printf("  Main workspace: %s\n", mainWorkspace)
 	fmt.Printf("  Initial checkpoint: %s\n", desc.SnapshotID)
 	fmt.Printf("  Engine: %s\n", desc.Engine)
-	fmt.Printf("  Transfer mode: %s\n", output["transfer_mode"])
-	for _, reason := range degradedReasons(transferResult) {
+	fmt.Printf("  Requested engine: %s\n", transferPlan.RequestedEngine)
+	fmt.Printf("  Transfer engine: %s\n", transferPlan.TransferEngine)
+	fmt.Printf("  Effective engine: %s\n", transferPlan.EffectiveEngine)
+	fmt.Printf("  Optimized transfer: %t\n", transferPlan.OptimizedTransfer)
+	for _, reason := range transferPlan.DegradedReasons {
 		fmt.Printf("  Degraded: %s\n", reason)
+	}
+	for _, warning := range transferPlan.Warnings {
+		fmt.Printf("  Warning: %s\n", warning)
 	}
 	return nil
 }

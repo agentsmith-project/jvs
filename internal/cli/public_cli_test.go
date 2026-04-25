@@ -448,6 +448,142 @@ func TestPublicCLIWorkspaceRemoveRejectsDirtyByDefault(t *testing.T) {
 	assert.NoDirExists(t, filepath.Join(repoPath, "worktrees", "feature"))
 }
 
+func TestPublicCLIStableJSONErrorsUsePublicVocabulary(t *testing.T) {
+	repoPath, _ := setupPublicCLIRepo(t, "publicerrors")
+	require.NoError(t, os.Chdir(repoPath))
+
+	stdout, stderr, exitCode := runContractSubprocess(t, repoPath, "--json", "status")
+	require.Equal(t, 1, exitCode, "status unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+
+	env := decodeContractEnvelope(t, stdout)
+	assert.False(t, env.OK)
+	assert.Equal(t, "status", env.Command)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, "E_NOT_WORKSPACE", env.Error.Code)
+	assertPublicErrorOmitsLegacyVocabulary(t, env.Error)
+	assert.JSONEq(t, `null`, string(env.Data))
+}
+
+func TestPublicCLIErrorsPreserveUserRepoPathsWithSpacesAndLegacyWords(t *testing.T) {
+	dir := t.TempDir()
+	originalWd, _ := os.Getwd()
+	defer os.Chdir(originalWd)
+
+	require.NoError(t, os.Chdir(dir))
+	cmd := createTestRootCmd()
+	_, err := executeCommand(cmd, "init", "target worktree snapshot history")
+	require.NoError(t, err)
+	cmd = createTestRootCmd()
+	_, err = executeCommand(cmd, "init", "current worktree snapshot history")
+	require.NoError(t, err)
+
+	targetRepo := filepath.Join(dir, "target worktree snapshot history")
+	currentRepo := filepath.Join(dir, "current worktree snapshot history")
+	stdout, stderr, exitCode := runContractSubprocess(
+		t,
+		filepath.Join(currentRepo, "main"),
+		"--json", "--repo", targetRepo, "--workspace", "main", "status",
+	)
+	require.Equal(t, 1, exitCode, "mismatched repo unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+
+	env := decodeContractEnvelope(t, stdout)
+	assert.False(t, env.OK)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, "E_TARGET_MISMATCH", env.Error.Code)
+	assert.Contains(t, env.Error.Message, "targeting mismatch")
+	assert.Contains(t, env.Error.Message, targetRepo)
+	assert.Contains(t, env.Error.Message, currentRepo)
+	assertPublicErrorOmitsLegacyVocabularyExcept(t, env.Error, targetRepo, currentRepo)
+	assert.JSONEq(t, `null`, string(env.Data))
+
+	stdout, stderr, exitCode = runContractSubprocess(
+		t,
+		filepath.Join(currentRepo, "main"),
+		"--repo", targetRepo, "--workspace", "main", "status",
+	)
+	require.Equal(t, 1, exitCode, "mismatched repo unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stdout))
+	assert.Contains(t, stderr, targetRepo)
+	assert.Contains(t, stderr, currentRepo)
+	sanitized := strings.ReplaceAll(stderr, targetRepo, "")
+	sanitized = strings.ReplaceAll(sanitized, currentRepo, "")
+	assert.NotContains(t, strings.ToLower(sanitized), "worktree")
+	assert.NotContains(t, strings.ToLower(sanitized), "snapshot")
+	assert.NotContains(t, strings.ToLower(sanitized), "history")
+}
+
+func TestPublicCLIJSONErrorsPreserveUserRepoPathWhenTargetIsMissing(t *testing.T) {
+	repoPath, _ := setupPublicCLIRepo(t, "missingtarget")
+
+	missingTarget := "missing worktree snapshot history"
+	stdout, stderr, exitCode := runContractSubprocess(t, filepath.Join(repoPath, "main"), "--json", "--repo", missingTarget, "info")
+	require.Equal(t, 1, exitCode, "missing --repo unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+
+	env := decodeContractEnvelope(t, stdout)
+	assert.False(t, env.OK)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, "E_NOT_REPO", env.Error.Code)
+	assert.Contains(t, env.Error.Message, missingTarget)
+	assertPublicErrorOmitsLegacyVocabularyExcept(t, env.Error, missingTarget)
+	assert.JSONEq(t, `null`, string(env.Data))
+
+	stdout, stderr, exitCode = runContractSubprocess(t, filepath.Join(repoPath, "main"), "--repo", missingTarget, "status")
+	require.Equal(t, 1, exitCode, "missing --repo unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stdout))
+	assert.Contains(t, stderr, missingTarget)
+	sanitized := strings.ReplaceAll(stderr, missingTarget, "")
+	assert.NotContains(t, strings.ToLower(sanitized), "worktree")
+	assert.NotContains(t, strings.ToLower(sanitized), "snapshot")
+	assert.NotContains(t, strings.ToLower(sanitized), "history")
+
+	stdout, stderr, exitCode = runContractSubprocess(t, filepath.Join(repoPath, "main"), "--repo", missingTarget, "info")
+	require.Equal(t, 1, exitCode, "missing --repo unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stdout))
+	assert.Contains(t, stderr, missingTarget)
+	sanitized = strings.ReplaceAll(stderr, missingTarget, "")
+	assert.NotContains(t, strings.ToLower(sanitized), "worktree")
+	assert.NotContains(t, strings.ToLower(sanitized), "snapshot")
+	assert.NotContains(t, strings.ToLower(sanitized), "history")
+}
+
+func TestPublicCLIJSONImportOverlapPreservesParenthesizedUserPaths(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source worktree snapshot history")
+	dest := filepath.Join(source, "child repo")
+	require.NoError(t, os.Mkdir(source, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(source, "file.txt"), []byte("source"), 0644))
+
+	stdout, stderr, exitCode := runContractSubprocess(t, dir, "--json", "import", source, dest)
+	require.Equal(t, 1, exitCode, "overlapping import unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+
+	env := decodeContractEnvelope(t, stdout)
+	assert.False(t, env.OK)
+	assert.Equal(t, "import", env.Command)
+	require.NotNil(t, env.Error)
+	assert.Contains(t, env.Error.Message, source)
+	assert.Contains(t, env.Error.Message, dest)
+	assertPublicErrorOmitsLegacyVocabularyExcept(t, env.Error, source, dest)
+	assert.JSONEq(t, `null`, string(env.Data))
+}
+
+func TestPublicCLIErrorVocabularyPreservesQuotedUserText(t *testing.T) {
+	got := publicCLIErrorVocabulary(`snapshot "worktree-snapshot-history" history`)
+	assert.Equal(t, `checkpoint "worktree-snapshot-history" checkpoint list`, got)
+	assert.Equal(t, "source_workspace total_checkpoints checkpoint_id", publicCLIErrorVocabulary("source_worktree total_snapshots snapshot_id"))
+	got = publicCLIErrorVocabulary("snapshot /tmp/missing worktree snapshot history, history")
+	assert.Equal(t, "checkpoint /tmp/missing worktree snapshot history, checkpoint list", got)
+	got = publicCLIErrorVocabulary("--repo is not inside a JVS repository: missing worktree snapshot history")
+	assert.Equal(t, "--repo is not inside a JVS repository: missing worktree snapshot history", got)
+	got = publicCLIErrorVocabulary("snapshot (/tmp/missing worktree snapshot history) history")
+	assert.Equal(t, "checkpoint (/tmp/missing worktree snapshot history) checkpoint list", got)
+	got = publicCLIErrorVocabulary("snapshot (worktree snapshot history) history")
+	assert.Equal(t, "checkpoint (workspace checkpoint checkpoint list) checkpoint list", got)
+}
+
 func TestPublicCLIJSONUsesCheckpointWorkspaceTerms(t *testing.T) {
 	setupPublicCLIRepo(t, "terms")
 

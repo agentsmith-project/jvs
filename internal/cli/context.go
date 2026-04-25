@@ -96,7 +96,7 @@ func resolveWorkspaceScoped() (*cliDiscoveryContext, error) {
 	if ctx.Workspace == "" {
 		return nil, errclass.ErrNotWorkspace.
 			WithMessage("not inside a workspace").
-			WithHint("Run from main/ or worktrees/<name>, or pass --workspace <name>.")
+			WithHint("Run from a workspace directory such as main/, or pass --workspace <name>.")
 	}
 	workspace, err := resolveNamedWorkspace(ctx.Repo.Root, ctx.Workspace)
 	if err != nil {
@@ -114,25 +114,109 @@ func discoveryStarts() (repoStart string, workspaceStart string, err error) {
 	}
 
 	workspaceStart = cwd
-	repoStart = cwd
+	currentRepo, err := repo.Discover(cwd)
+	if err != nil {
+		return "", "", errclass.ErrNotRepo.
+			WithMessage("not a JVS repository (or any parent)").
+			WithHint(suggestInit())
+	}
+	if err := canonicalizeRepoRoot(currentRepo); err != nil {
+		return "", "", err
+	}
+
+	repoStart = currentRepo.Root
 	if targetRepoPath != "" {
-		path, err := filepath.Abs(targetRepoPath)
+		targetRepo, err := resolveRepoFlagTarget(targetRepoPath)
 		if err != nil {
-			return "", "", errclass.ErrUsage.WithMessagef("resolve --repo: %v", err)
+			return "", "", err
 		}
-		if info, err := os.Stat(path); err != nil {
-			return "", "", errclass.ErrNotRepo.
-				WithMessagef("not a JVS repository: %s", targetRepoPath).
-				WithHint(suggestInit())
-		} else if !info.IsDir() {
-			return "", "", errclass.ErrNotRepo.
-				WithMessagef("--repo must be a directory: %s", targetRepoPath).
-				WithHint(suggestInit())
+		recordResolvedTarget(targetRepo.Root, "")
+		same, err := sameRepo(currentRepo, targetRepo)
+		if err != nil {
+			return "", "", err
 		}
-		repoStart = path
+		if !same {
+			return "", "", errclass.ErrTargetMismatch.WithMessagef(
+				"targeting mismatch: --repo resolves to %s, but current directory belongs to %s",
+				cleanRepoRoot(targetRepo.Root), cleanRepoRoot(currentRepo.Root),
+			)
+		}
+		repoStart = targetRepo.Root
 	}
 
 	return repoStart, workspaceStart, nil
+}
+
+func resolveRepoFlagTarget(path string) (*repo.Repo, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, errclass.ErrUsage.WithMessagef("resolve --repo: %v", err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return nil, errclass.ErrNotRepo.
+			WithMessagef("--repo is not inside a JVS repository: %s", path).
+			WithHint("Pass --repo as this repository root or a path inside it.")
+	}
+	discoveryStart := abs
+	if !info.IsDir() {
+		discoveryStart = filepath.Dir(abs)
+	}
+	r, err := repo.Discover(discoveryStart)
+	if err != nil {
+		return nil, errclass.ErrNotRepo.
+			WithMessagef("--repo is not inside a JVS repository: %s", path).
+			WithHint("Pass --repo as this repository root or a path inside it.")
+	}
+	if err := canonicalizeRepoRoot(r); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+func canonicalizeRepoRoot(r *repo.Repo) error {
+	root, err := canonicalPhysicalRepoRoot(r.Root)
+	if err != nil {
+		return errclass.ErrUsage.WithMessagef("resolve repository root: %v", err)
+	}
+	r.Root = root
+	return nil
+}
+
+func sameRepo(a, b *repo.Repo) (bool, error) {
+	return sameRepoRoot(a.Root, b.Root)
+}
+
+func sameRepoRoot(a, b string) (bool, error) {
+	aRoot, err := canonicalPhysicalRepoRoot(a)
+	if err != nil {
+		return false, errclass.ErrUsage.WithMessagef("resolve repository root: %v", err)
+	}
+	bRoot, err := canonicalPhysicalRepoRoot(b)
+	if err != nil {
+		return false, errclass.ErrUsage.WithMessagef("resolve repository root: %v", err)
+	}
+	return aRoot == bRoot, nil
+}
+
+func cleanRepoRoot(path string) string {
+	root, err := canonicalPhysicalRepoRoot(path)
+	if err == nil {
+		return root
+	}
+	return filepath.Clean(path)
+}
+
+func canonicalPhysicalRepoRoot(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	realPath, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(realPath), nil
 }
 
 func resolveOptionalWorkspace(r *repo.Repo, start string) (string, error) {
@@ -148,10 +232,14 @@ func workspaceFromPath(repoRoot, path string) (string, error) {
 	if err != nil || workspace == "" {
 		return "", nil
 	}
-	if filepath.Clean(r.Root) != filepath.Clean(repoRoot) {
+	same, err := sameRepoRoot(r.Root, repoRoot)
+	if err != nil {
+		return "", err
+	}
+	if !same {
 		return "", errclass.ErrTargetMismatch.WithMessagef(
 			"targeting mismatch: --repo resolves to %s, but current workspace %q belongs to %s",
-			filepath.Clean(repoRoot), workspace, filepath.Clean(r.Root),
+			cleanRepoRoot(repoRoot), workspace, cleanRepoRoot(r.Root),
 		)
 	}
 	return workspace, nil
@@ -195,13 +283,13 @@ func emitJSONErrorOnce(err error) {
 func printCLIError(err error) {
 	var jvsErr *errclass.JVSError
 	if errors.As(err, &jvsErr) {
-		if jvsErr.Code == errclass.ErrNotRepo.Code {
+		if jvsErr.Code == errclass.ErrNotRepo.Code && isGenericNotRepoMessage(jvsErr.Message) {
 			fmt.Fprintln(os.Stderr, formatNotInRepositoryError())
 			return
 		}
 		message := jvsErr.Message
 		if message == "" {
-			message = jvsErr.Code
+			message = publicErrorCodeVocabulary(jvsErr.Code)
 		}
 		printHumanError(message, jvsErr.Hint)
 		return
@@ -210,6 +298,9 @@ func printCLIError(err error) {
 }
 
 func printHumanError(message, hint string) {
+	message = publicCLIErrorVocabulary(message)
+	hint = publicCLIErrorVocabulary(hint)
+
 	// Colorize the error prefix
 	prefix := "jvs: "
 	if color.Enabled() {

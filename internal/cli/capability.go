@@ -20,16 +20,28 @@ var capabilityCmd = &cobra.Command{
 			return err
 		}
 		if jsonOutput {
-			return outputJSON(report)
+			output := map[string]any{
+				"target_path":        report.TargetPath,
+				"probe_path":         report.ProbePath,
+				"write_probe":        report.WriteProbe,
+				"write":              report.Write,
+				"juicefs":            report.JuiceFS,
+				"reflink":            report.Reflink,
+				"copy":               report.Copy,
+				"recommended_engine": report.RecommendedEngine,
+			}
+			applySetupJSONFields(output, report, report.RecommendedEngine, report.Warnings)
+			return outputJSON(output)
 		}
 
 		fmt.Printf("Target: %s\n", report.TargetPath)
 		if report.ProbePath != report.TargetPath {
 			fmt.Printf("  Probe path: %s\n", report.ProbePath)
 		}
+		fmt.Printf("  Write: supported=%t confidence=%s\n", report.Write.Supported, report.Write.Confidence)
 		fmt.Printf("  JuiceFS: available=%t supported=%t\n", report.JuiceFS.Available, report.JuiceFS.Supported)
 		fmt.Printf("  Reflink: supported=%t confidence=%s\n", report.Reflink.Supported, report.Reflink.Confidence)
-		fmt.Printf("  Copy: supported=%t\n", report.Copy.Supported)
+		fmt.Printf("  Copy: supported=%t confidence=%s\n", report.Copy.Supported, report.Copy.Confidence)
 		fmt.Printf("  Recommended engine: %s\n", report.RecommendedEngine)
 		for _, warning := range report.Warnings {
 			fmt.Printf("  Warning: %s\n", warning)
@@ -39,6 +51,6 @@ var capabilityCmd = &cobra.Command{
 }
 
 func init() {
-	capabilityCmd.Flags().BoolVar(&capabilityWriteProbe, "write-probe", false, "create temporary files to confirm reflink support")
+	capabilityCmd.Flags().BoolVar(&capabilityWriteProbe, "write-probe", false, "create temporary files to confirm write, remove, and reflink support")
 	rootCmd.AddCommand(capabilityCmd)
 }

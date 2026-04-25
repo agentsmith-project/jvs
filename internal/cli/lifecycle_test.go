@@ -58,9 +58,16 @@ func TestImportCommand_CopiesSourceCreatesInitialCheckpoint(t *testing.T) {
 	require.NoError(t, err)
 
 	got := decodeJSONDataForTest(t, stdout)
+	require.Equal(t, "import", got["scope"])
+	require.Equal(t, "import", got["requested_scope"])
 	require.Equal(t, source, got["provenance"])
 	require.NotEmpty(t, got["initial_checkpoint"])
 	require.NotEmpty(t, got["engine"])
+	require.NotEmpty(t, got["requested_engine"])
+	require.NotEmpty(t, got["transfer_engine"])
+	require.NotEmpty(t, got["effective_engine"])
+	require.IsType(t, true, got["optimized_transfer"])
+	require.Contains(t, got, "warnings")
 	require.FileExists(t, filepath.Join(source, "dir", "file.txt"))
 	require.FileExists(t, filepath.Join(dest, "main", "dir", "file.txt"))
 
@@ -134,7 +141,14 @@ func TestCloneCommand_FullExcludesRuntimeLockState(t *testing.T) {
 
 	got := decodeJSONDataForTest(t, stdout)
 	require.Equal(t, "full", got["scope"])
+	require.Equal(t, "full", got["requested_scope"])
 	require.Equal(t, "full-repository", got["copy_mode"])
+	require.Equal(t, "copy", got["requested_engine"])
+	require.Equal(t, "copy", got["transfer_engine"])
+	require.Equal(t, "copy", got["effective_engine"])
+	require.Equal(t, false, got["optimized_transfer"])
+	require.Equal(t, true, got["runtime_state_excluded"])
+	require.Contains(t, got, "warnings")
 	require.DirExists(t, filepath.Join(dest, ".jvs", "locks"))
 	require.NoFileExists(t, filepath.Join(dest, ".jvs", "locks", "stale.lock"))
 	require.NoDirExists(t, filepath.Join(dest, ".jvs", "locks", "repo.lock"))
@@ -207,7 +221,13 @@ func TestCloneCommand_CurrentCopiesWorkspaceAndDisconnectsHistory(t *testing.T) 
 
 	got := decodeJSONDataForTest(t, stdout)
 	require.Equal(t, "current", got["scope"])
+	require.Equal(t, "current", got["requested_scope"])
 	require.NotEmpty(t, got["initial_checkpoint"])
+	require.NotEmpty(t, got["requested_engine"])
+	require.NotEmpty(t, got["transfer_engine"])
+	require.NotEmpty(t, got["effective_engine"])
+	require.IsType(t, true, got["optimized_transfer"])
+	require.Contains(t, got, "warnings")
 	require.NotContains(t, stdout, "source_worktree")
 	provenance, ok := got["provenance"].(map[string]any)
 	require.True(t, ok)
@@ -269,7 +289,31 @@ func TestCapabilityCommand_JSONShape(t *testing.T) {
 	require.Contains(t, got, "copy")
 
 	copyCapability := got["copy"].(map[string]any)
+	require.Equal(t, false, copyCapability["supported"])
+	require.Equal(t, "unknown", copyCapability["confidence"])
+	writeCapability := got["write"].(map[string]any)
+	require.Equal(t, false, writeCapability["supported"])
+	require.Equal(t, "unknown", writeCapability["confidence"])
+}
+
+func TestCapabilityCommand_WriteProbeConfirmsCopyAndCleansUp(t *testing.T) {
+	target := t.TempDir()
+
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "capability", target, "--write-probe")
+	require.NoError(t, err)
+
+	got := decodeJSONDataForTest(t, stdout)
+	require.Equal(t, true, got["write_probe"])
+	copyCapability := got["copy"].(map[string]any)
 	require.Equal(t, true, copyCapability["supported"])
+	require.Equal(t, "confirmed", copyCapability["confidence"])
+	writeCapability := got["write"].(map[string]any)
+	require.Equal(t, true, writeCapability["supported"])
+	require.Equal(t, "confirmed", writeCapability["confidence"])
+
+	leftovers, err := filepath.Glob(filepath.Join(target, ".jvs-capability-*"))
+	require.NoError(t, err)
+	require.Empty(t, leftovers)
 }
 
 func readRepoIDForTest(t *testing.T, root string) string {

@@ -43,11 +43,21 @@ The `release` profile is mandatory before any pre-release or v0 tag.
 
 ### Repo and Workspace Resolution
 
-- Commands resolve the repository from the current path or `--repo`.
-- Workspace commands resolve the targeted workspace from the current path or
-  `--workspace`.
+- path-scoped setup commands (`init`, `import`, `clone`, and `capability`) are
+  repo-free and resolve only their explicit path arguments.
+- Repo-scoped and workspace-scoped commands require CWD to be inside a JVS
+  repo and resolve the repository from the current path.
+- For repo-scoped and workspace-scoped commands, `--repo` is an assertion, not
+  an alternate discovery root; it must resolve to the current repo or a path
+  inside the current repo.
+- Workspace-scoped commands resolve the targeted workspace from the current
+  path or `--workspace`.
 - Running from the repo root and from nested workspace paths produces the same
   targeted state when the same workspace is selected.
+- `workspace list`, `workspace rename`, and `workspace remove` are
+  repo-scoped.
+- `workspace path <name>` is repo-scoped; `workspace path` without a name is
+  workspace-scoped.
 - `jvs workspace path [name]` returns a canonical path.
 - No command mutates the caller's shell CWD.
 
@@ -58,13 +68,20 @@ The `release` profile is mandatory before any pre-release or v0 tag.
 - `jvs import <existing-dir> <repo-path>` copies user files into a new repo,
   creates an initial checkpoint tagged `import`, rejects sources containing
   `.jvs/`, and rejects overlapping source and destination paths.
-- `jvs clone <source-repo> <dest-repo>` with `--scope full` preserves the
-  source repo's public state, while `--scope current` creates a new repo from
-  the source workspace's current contents.
+- `jvs clone <source-repo> <dest-repo>` with `--scope current` copies live
+  source workspace contents into the destination `main` workspace and creates
+  one initial checkpoint tagged `clone`.
+- `jvs clone <source-repo> <dest-repo>` with `--scope full` creates a new repo
+  identity, preserves user-visible checkpoints and workspaces, and excludes
+  runtime locks and intents.
 - `jvs clone` is validated as a local filesystem operation and does not expose
   remote push or pull semantics.
 - `jvs capability <target-path>` reports engine support in both probe modes,
   including conservative results when `--write-probe` is omitted.
+- Setup JSON reports stable filesystem and engine messaging: `capabilities`,
+  `effective_engine`, `warnings`, and, for transfer setup commands,
+  `transfer_engine` and `degraded_reasons`.
+- Full clone JSON additionally reports `optimized_transfer`.
 
 ### Status, Refs, and State
 
