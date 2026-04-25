@@ -232,27 +232,78 @@ func appendUniqueStrings(base []string, values ...string) []string {
 	return out
 }
 
+type setupMaterialization struct {
+	EffectiveEngine      model.EngineType
+	MetadataPreservation model.MetadataPreservation
+	PerformanceClass     string
+}
+
 func applySetupJSONFields(output map[string]any, capabilities *engine.CapabilityReport, effectiveEngine model.EngineType, warnings []string) {
+	applySetupMaterializationJSONFields(output, capabilities, setupMaterializationForEngine(effectiveEngine), warnings)
+}
+
+func applySetupMaterializationJSONFields(output map[string]any, capabilities *engine.CapabilityReport, materialization setupMaterialization, warnings []string) {
 	output["capabilities"] = capabilities
-	output["effective_engine"] = effectiveEngine
-	output["metadata_preservation"] = engine.MetadataPreservationForEngine(effectiveEngine)
-	output["performance_class"] = engine.PerformanceClassForEngine(effectiveEngine)
+	output["effective_engine"] = materialization.EffectiveEngine
+	output["metadata_preservation"] = materialization.MetadataPreservation
+	output["performance_class"] = materialization.PerformanceClass
 	output["warnings"] = stableStringSlice(warnings)
 }
 
-func applyTransferJSONFields(output map[string]any, plan *engine.TransferPlan, materializationEngine model.EngineType) {
+func setupMaterializationForEngine(effectiveEngine model.EngineType) setupMaterialization {
+	return setupMaterialization{
+		EffectiveEngine:      effectiveEngine,
+		MetadataPreservation: engine.MetadataPreservationForEngine(effectiveEngine),
+		PerformanceClass:     engine.PerformanceClassForEngine(effectiveEngine),
+	}
+}
+
+func setupMaterializationFromDescriptor(desc *model.Descriptor, fallback model.EngineType) setupMaterialization {
+	effectiveEngine := fallback
+	metadataPreservation := model.MetadataPreservation{}
+	performanceClass := ""
+
+	if desc != nil {
+		effectiveEngine = desc.EffectiveEngine
+		if effectiveEngine == "" {
+			effectiveEngine = desc.ActualEngine
+		}
+		if effectiveEngine == "" {
+			effectiveEngine = desc.Engine
+		}
+		if desc.MetadataPreservation != nil {
+			metadataPreservation = *desc.MetadataPreservation
+		}
+		performanceClass = desc.PerformanceClass
+	}
+
+	if effectiveEngine == "" {
+		effectiveEngine = fallback
+	}
+	if metadataPreservation == (model.MetadataPreservation{}) {
+		metadataPreservation = engine.MetadataPreservationForEngine(effectiveEngine)
+	}
+	if performanceClass == "" {
+		performanceClass = engine.PerformanceClassForEngine(effectiveEngine)
+	}
+
+	return setupMaterialization{
+		EffectiveEngine:      effectiveEngine,
+		MetadataPreservation: metadataPreservation,
+		PerformanceClass:     performanceClass,
+	}
+}
+
+func applyTransferJSONFields(output map[string]any, plan *engine.TransferPlan, materializationDesc *model.Descriptor) {
 	if plan == nil {
 		return
-	}
-	if materializationEngine == "" {
-		materializationEngine = plan.EffectiveEngine
 	}
 	output["requested_engine"] = plan.RequestedEngine
 	output["transfer_engine"] = plan.TransferEngine
 	output["transfer_mode"] = string(plan.EffectiveEngine)
 	output["optimized_transfer"] = plan.OptimizedTransfer
 	output["degraded_reasons"] = stableStringSlice(plan.DegradedReasons)
-	applySetupJSONFields(output, plan.Capabilities, materializationEngine, plan.Warnings)
+	applySetupMaterializationJSONFields(output, plan.Capabilities, setupMaterializationFromDescriptor(materializationDesc, plan.EffectiveEngine), plan.Warnings)
 }
 
 func stableStringSlice(values []string) []string {

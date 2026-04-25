@@ -1,5 +1,12 @@
 # JVS Remote Sync Helper
 
+**Status:** Archived, non-release-facing
+
+> Archived note: this historical helper design is not part of the v0 public contract.
+> Current release-facing migration guidance lives in
+> [Migration & Backup](18_MIGRATION_AND_BACKUP.md). The helper commands below
+> are retained only as non-current design context.
+
 The `jvs-sync.sh` helper script enables convenient backup, restore, and migration of JVS repositories between machines and storage systems.
 
 ## Overview

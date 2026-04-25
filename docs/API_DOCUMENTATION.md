@@ -209,8 +209,8 @@ Snapshot engine type.
 type EngineType string
 
 const (
-    EngineJuiceFSClone EngineType = "juicefs-clone" // O(1) on JuiceFS
-    EngineReflink      EngineType = "reflink"        // O(1) on CoW filesystems
+    EngineJuiceFSClone EngineType = "juicefs-clone" // O(1) metadata clone on supported JuiceFS
+    EngineReflinkCopy  EngineType = "reflink-copy"   // per-file CoW copy on supported filesystems
     EngineCopy         EngineType = "copy"           // O(n) fallback
 )
 ```

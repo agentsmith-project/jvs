@@ -25,6 +25,13 @@ Destination MUST rebuild runtime state:
 jvs doctor --strict --repair-runtime
 ```
 
+## Release-facing migration notes
+Existing v0 repositories do not need an on-disk migration for the Phase 4 GA
+readiness update. After upgrading, run `jvs doctor --strict` and
+`jvs verify --all` on a representative repo. After a physical backup or storage
+migration, also run `jvs doctor --strict --repair-runtime` at the destination
+before verification.
+
 ## Migration flow
 1. mount source and destination volumes
 2. sync repository excluding runtime state

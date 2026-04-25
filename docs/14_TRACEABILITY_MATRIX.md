@@ -86,3 +86,9 @@ areas.
   - `docs/13_OPERATION_RUNBOOK.md`
 - Conformance execution:
   - `docs/11_CONFORMANCE_TEST_PLAN.md`
+- Phase 4 GA artifacts:
+  - `docs/99_CHANGELOG.md` (changelog and generated release-note source)
+  - `.github/workflows/ci.yml` (CI release workflow and release notes gate)
+  - `docs/PERFORMANCE_RESULTS.md` (GA performance result boundaries)
+  - `docs/18_MIGRATION_AND_BACKUP.md` (migration notes)
+  - `SECURITY.md` and `docs/SIGNING.md` (artifact verification)

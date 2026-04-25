@@ -206,34 +206,52 @@ jobs:
 
       - name: Generate release notes
         run: |
-          echo "## Build Artifacts" > release-notes.md
-          echo "" >> release-notes.md
-          echo "### Binaries" >> release-notes.md
-          echo "- \`jvs-linux-amd64\` - Linux x86_64" >> release-notes.md
-          echo "- \`jvs-linux-arm64\` - Linux ARM64" >> release-notes.md
-          echo "- \`jvs-darwin-amd64\` - macOS x86_64" >> release-notes.md
-          echo "- \`jvs-darwin-arm64\` - macOS ARM64 (Apple Silicon)" >> release-notes.md
-          echo "- \`jvs-windows-amd64.exe\` - Windows x86_64" >> release-notes.md
-          echo "" >> release-notes.md
-          echo "### Verification" >> release-notes.md
-          echo "All binaries are signed using Sigstore/cosign. To verify:" >> release-notes.md
-          echo "\`\`\`bash" >> release-notes.md
-          echo "cosign verify-blob jvs-linux-amd64 \\ " >> release-notes.md
-          echo "  --certificate-identity=https://github.com/jvs-project/jvs/.github/workflows/ci.yml@${GITHUB_REF} \\ " >> release-notes.md
-          echo "  --certificate-oidc-issuer=https://token.actions.githubusercontent.com" >> release-notes.md
-          echo "\`\`\`" >> release-notes.md
-          echo "" >> release-notes.md
-          echo "## Known limitations" >> release-notes.md
-          echo "- v0 does not include remote push/pull, signing commands, merge/rebase, or complex retention policy flags." >> release-notes.md
-          echo "- Full verification reads checkpoint payloads and can be I/O intensive on large workspaces." >> release-notes.md
-          echo "" >> release-notes.md
-          echo "## Risk labels" >> release-notes.md
-          echo "- integrity: descriptor checksum and payload hash detect independent corruption; coordinated descriptor-plus-checksum rewrite remains a v0 residual risk." >> release-notes.md
-          echo "- migration: runtime operation state must be rebuilt at the destination with jvs doctor --strict --repair-runtime." >> release-notes.md
-          echo "" >> release-notes.md
-          echo "## Migration notes" >> release-notes.md
-          echo "- Existing repositories do not need an on-disk migration for this release." >> release-notes.md
-          echo "- After upgrading, run jvs doctor --strict and jvs verify --all on a representative repo." >> release-notes.md
+          set -eu
+          RELEASE_TAG="${GITHUB_REF_NAME}"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            RELEASE_TAG="${{ github.event.inputs.tag }}"
+          fi
+          {
+            echo "## Build Artifacts"
+            echo ""
+            echo "### Binaries"
+            echo "- jvs-linux-amd64 - Linux x86_64"
+            echo "- jvs-linux-arm64 - Linux ARM64"
+            echo "- jvs-darwin-amd64 - macOS x86_64"
+            echo "- jvs-darwin-arm64 - macOS ARM64 (Apple Silicon)"
+            echo "- jvs-windows-amd64.exe - Windows x86_64"
+            echo "- SHA256SUMS - SHA-256 hashes for the published jvs-* artifacts"
+            echo ""
+            echo "### Verification"
+            echo "All binaries are signed using Sigstore/cosign. Download the binary with its matching .sig and .pem sidecars; see docs/SIGNING.md for the full guide."
+            echo ""
+            echo "    cosign verify-blob jvs-linux-amd64 \\"
+            echo "      --signature jvs-linux-amd64.sig \\"
+            echo "      --certificate jvs-linux-amd64.pem \\"
+            echo "      --certificate-identity=https://github.com/jvs-project/jvs/.github/workflows/ci.yml@${GITHUB_REF} \\"
+            echo "      --certificate-oidc-issuer=https://token.actions.githubusercontent.com"
+            echo ""
+            echo "Verify the checksum file with SHA256SUMS.sig and SHA256SUMS.pem, then run sha256sum -c --ignore-missing SHA256SUMS."
+            echo "- For tag-push releases, the signing certificate identity is the tag ref, for example refs/tags/${RELEASE_TAG}."
+            echo "- For manual workflow_dispatch releases, artifacts are checked out from refs/tags/${RELEASE_TAG} and published as ${RELEASE_TAG}, but the signing certificate identity remains the workflow ref (${GITHUB_REF}) that launched the run."
+            echo ""
+            echo "## Breaking changes"
+            echo "- None for the stable v0 public CLI contract."
+            echo ""
+            echo "## Known limitations"
+            echo "- v0 does not include remote push/pull, in-JVS signing commands, partial checkpoint contracts, compression contracts, merge/rebase, or complex retention policy flags."
+            echo "- Full verification reads checkpoint payloads and can be I/O intensive on large workspaces."
+            echo "- Descriptor signing and in-JVS trust policy remain outside the stable v0 repository format."
+            echo ""
+            echo "## Risk labels"
+            echo "- integrity: descriptor checksum and payload hash detect independent corruption; coordinated descriptor-plus-checksum rewrite remains a v0 residual risk."
+            echo "- migration: runtime operation state must be rebuilt at the destination with jvs doctor --strict --repair-runtime."
+            echo ""
+            echo "## Migration notes"
+            echo "- Existing repositories do not need an on-disk migration for this release."
+            echo "- After upgrading, run jvs doctor --strict and jvs verify --all on a representative repo."
+            echo "- After physical backup or storage migration, run jvs doctor --strict --repair-runtime at the destination before verification."
+          } > release-notes.md
 
       - name: Sign binaries with cosign
         run: |

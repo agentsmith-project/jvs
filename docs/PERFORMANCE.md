@@ -309,16 +309,22 @@ time jvs verify --all
 jvs doctor --json | jq '.timing'
 ```
 
-### Example Benchmarks
+### Regression Baseline Matrix
 
-| Workspace Size | Checkpoint (juicefs-clone) | Checkpoint (copy) | Verify |
-|----------------|------------------------|---------------|--------|
-| 1 GB | 0.1s | 2s | 3s |
-| 10 GB | 0.1s | 25s | 35s |
-| 100 GB | 0.1s | 250s | 380s |
-| 1 TB | 0.1s | 2500s | 3800s |
+Use this matrix to record local baselines for your own storage stack. Treat
+every number as environment-specific regression data, not a portable latency
+promise.
 
-*Benchmarks on NVMe SSD with JuiceFS backend*
+| Workload axis | Engine scope | Baseline signal |
+|---------------|--------------|-----------------|
+| Small to large workspace payloads | `juicefs-clone` on supported JuiceFS | Checkpoint and restore should track metadata-service health more than payload bytes |
+| Small to large workspace payloads | `reflink-copy` on CoW-capable filesystems | File-count and metadata traversal usually dominate, with file data shared by the filesystem |
+| Small to large workspace payloads | `copy` fallback | Payload bytes, disk throughput, and network I/O dominate |
+| Verification runs | Any engine | Payload hash cost scales with file count and bytes read |
+
+Store measured values with the benchmark command, engine, filesystem, hardware,
+cache state, and workload shape so future runs can detect regressions against
+the same environment.
 
 ---
 
@@ -374,7 +380,8 @@ jvs doctor --json | jq '.timing'
 **Larger workspaces:**
 - Ensure sufficient IOPS
 - Monitor hash computation time
-- Consider partial checkpoints (future feature)
+- Split independent payloads into separate repositories when needed; v0 does
+  not expose partial checkpoint contracts.
 
 ---
 

@@ -306,60 +306,36 @@ Examples:
 	Args: cobra.MaximumNArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
 		r, wtName := requireWorktree()
+		snapshotID, name, defaultCurrent, err := resolveLegacyWorktreeForkArgs(r.Root, args)
+		if err != nil {
+			fmtErr("%v", err)
+			os.Exit(1)
+		}
 
-		var snapshotID model.SnapshotID
-		var name string
+		if err := rejectDirtyWorkspace(r.Root, wtName, "fork", forkDiscardDirty, forkIncludeWorking); err != nil {
+			fmtErr("%v", err)
+			os.Exit(1)
+		}
 
-		// Parse arguments.
-		switch len(args) {
-		case 0:
-			// No args: use current checkpoint, auto-generate name.
-			mgr := worktree.NewManager(r.Root)
-			cfg, err := mgr.Get(wtName)
+		if forkIncludeWorking {
+			desc, err := createCheckpointDescriptor(r.Root, wtName, checkpointCreateOptions{
+				Note: "include working before fork",
+			})
 			if err != nil {
-				fmtErr("get current worktree: %v", err)
+				fmtErr("checkpoint working changes: %v", err)
 				os.Exit(1)
 			}
-			if cfg.HeadSnapshotID == "" {
-				fmtErr("current workspace has no checkpoints to fork from")
+			if defaultCurrent {
+				snapshotID = desc.SnapshotID
+			}
+		}
+
+		if defaultCurrent && snapshotID == "" {
+			snapshotID, err = legacyCurrentForkSnapshot(r.Root, wtName)
+			if err != nil {
+				fmtErr("%v", err)
 				os.Exit(1)
 			}
-			snapshotID = cfg.HeadSnapshotID
-			name = "" // auto-generate
-
-		case 1:
-			// One arg: could be checkpoint ref or name.
-			// Try to interpret as checkpoint ref first.
-			arg := args[0]
-
-			// Try to resolve as checkpoint.
-			id, err := resolveSnapshotID(r.Root, arg)
-			if err == nil {
-				// Successfully resolved as checkpoint.
-				snapshotID = id
-				name = "" // auto-generate
-			} else {
-				// Not a checkpoint, treat as name and use current.
-				mgr := worktree.NewManager(r.Root)
-				cfg, err := mgr.Get(wtName)
-				if err != nil {
-					fmtErr("get current worktree: %v", err)
-					os.Exit(1)
-				}
-				if cfg.HeadSnapshotID == "" {
-					fmtErr("current workspace has no checkpoints to fork from")
-					os.Exit(1)
-				}
-				snapshotID = cfg.HeadSnapshotID
-				name = arg
-			}
-
-		case 2:
-			// Two args: checkpoint ref and name.
-			snapshotArg := args[0]
-			name = args[1]
-
-			snapshotID = resolveSnapshotIDOrExit(r.Root, snapshotArg)
 		}
 
 		// Auto-generate name if not provided
@@ -401,9 +377,45 @@ Examples:
 	},
 }
 
+func resolveLegacyWorktreeForkArgs(repoRoot string, args []string) (model.SnapshotID, string, bool, error) {
+	switch len(args) {
+	case 0:
+		return "", "", true, nil
+	case 1:
+		arg := args[0]
+		id, err := resolveSnapshotID(repoRoot, arg)
+		if err == nil {
+			return id, "", false, nil
+		}
+		return "", arg, true, nil
+	case 2:
+		id, err := resolveSnapshotID(repoRoot, args[0])
+		if err != nil {
+			return "", "", false, err
+		}
+		return id, args[1], false, nil
+	default:
+		return "", "", false, fmt.Errorf("too many arguments")
+	}
+}
+
+func legacyCurrentForkSnapshot(repoRoot, wtName string) (model.SnapshotID, error) {
+	mgr := worktree.NewManager(repoRoot)
+	cfg, err := mgr.Get(wtName)
+	if err != nil {
+		return "", fmt.Errorf("get current worktree: %w", err)
+	}
+	if cfg.HeadSnapshotID == "" {
+		return "", fmt.Errorf("current workspace has no checkpoints to fork from")
+	}
+	return cfg.HeadSnapshotID, nil
+}
+
 func init() {
 	worktreeCreateCmd.Flags().StringVar(&worktreeCreateFrom, "from", "", "create from checkpoint (ID, tag, or note prefix)")
 	worktreeRemoveCmd.Flags().BoolVarP(&worktreeForce, "force", "f", false, "force removal when current differs from latest")
+	worktreeForkCmd.Flags().BoolVar(&forkDiscardDirty, "discard-dirty", false, "discard dirty workspace changes for this operation")
+	worktreeForkCmd.Flags().BoolVar(&forkIncludeWorking, "include-working", false, "checkpoint dirty workspace changes before this operation")
 	worktreeCmd.AddCommand(worktreeCreateCmd)
 	worktreeCmd.AddCommand(worktreeListCmd)
 	worktreeCmd.AddCommand(worktreePathCmd)

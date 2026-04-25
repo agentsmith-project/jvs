@@ -9,13 +9,13 @@
 
 ### What is JVS?
 
-**JVS** (Juicy Versioned Workspaces) is a **workspace versioning system** built on JuiceFS. It captures entire workspace states as checkpoints, providing O(1) version control for data-intensive workloads.
+**JVS** (Juicy Versioned Workspaces) is a **workspace versioning system** for filesystem-native checkpoints. On supported JuiceFS mounts, the `juicefs-clone` engine provides O(1) metadata-clone checkpoints for data-intensive workloads.
 
 **Key characteristics:**
 - Checkpoint-first (not diff-first like Git)
 - Filesystem-native (no virtualization)
 - Local-first (no remote protocol)
-- O(1) checkpoints via JuiceFS Copy-on-Write
+- Engine-scoped O(1) metadata-clone checkpoints via `juicefs-clone` on supported JuiceFS
 
 ---
 
@@ -25,7 +25,7 @@
 |--------|-----|-----|
 | **Unit of versioning** | Files/diffs | Entire workspace |
 | **Storage model** | Blob store + refs | Checkpoints + descriptors |
-| **Performance** | Slower with large files | O(1) regardless of size |
+| **Performance** | Slower with large files | O(1) with supported JuiceFS; linear with copy fallback |
 | **Use case** | Source code | Workspaces with data |
 | **Merge** | Text-based 3-way merge | No merge (fork instead) |
 | **Remote** | Push/pull to remotes | JuiceFS handles transport |
@@ -40,7 +40,7 @@ Git excels at text-based version control, but struggles with:
 - **Large datasets** (ML models, scientific data)
 - **Binary files** (storing full copies)
 - **Workspace reproducibility** (Git submodules are complex)
-- **O(1) checkpoints** (Git requires significant I/O for large files)
+- **Metadata-clone checkpoints on supported JuiceFS** (Git requires significant I/O for large files)
 
 JVS handles these use cases natively.
 
@@ -50,7 +50,7 @@ JVS handles these use cases natively.
 
 **Use JVS when:**
 - You have large datasets (10GB+ workspaces)
-- You need O(1) checkpoint/restore
+- You need metadata-clone checkpoint/restore on supported JuiceFS
 - You work with ML experiments that need exact reproduction
 - You use JuiceFS for storage
 - You want simple workspace versioning without Git complexity
@@ -80,7 +80,7 @@ JVS handles these use cases natively.
 - A filesystem (JuiceFS recommended, any POSIX FS works)
 
 **Optional but recommended:**
-- JuiceFS mount (for O(1) checkpoints)
+- Supported JuiceFS mount (for O(1) checkpoints)
 - CoW-capable filesystem (btrfs, XFS) for reflink engine
 
 ---
@@ -106,7 +106,7 @@ jvs --version
 
 **Yes!** JVS works on any POSIX filesystem:
 - **Without JuiceFS:** Uses copy engine (O(n) but functional)
-- **With JuiceFS:** Uses juicefs-clone engine (O(1), recommended)
+- **With supported JuiceFS:** Uses juicefs-clone engine (O(1), recommended)
 
 ---
 
@@ -143,11 +143,11 @@ When you restore to a historical checkpoint (not the latest), your workspace ent
 
 ---
 
-### What does O(1) checkpoint mean?
+### What does a JuiceFS metadata-clone checkpoint mean?
 
-With JuiceFS Copy-on-Write, creating a checkpoint is **constant time** - it doesn't matter if your workspace is 1GB or 1TB. The checkpoint is a metadata reference, not a copy.
-
-**Without JuiceFS:** Checkpoints take O(n) time proportional to workspace size.
+With the `juicefs-clone` engine on a supported JuiceFS mount, creating a
+checkpoint is a metadata operation rather than a data copy. The copy fallback
+remains O(n) in payload size and file count.
 
 ---
 
@@ -247,7 +247,7 @@ Use the stable CLI flags and environment for v0:
 
 ### Misconception: "JVS requires JuiceFS"
 
-**Reality:** JVS works on any filesystem. JuiceFS is recommended for O(1) performance but not required.
+**Reality:** JVS works on any filesystem. Supported JuiceFS mounts are recommended for O(1) performance but not required.
 
 ---
 
@@ -304,10 +304,15 @@ JVS v0 is designed for **single-writer** scenarios. Concurrent access from multi
 
 JVS metadata is minimal:
 - **Descriptors:** ~1-2KB per checkpoint
-- **Checkpoints:** Small reference files (juicefs-clone references)
+- **With `juicefs-clone`:** checkpoint payload materialization uses JuiceFS
+  metadata references rather than an additional data copy
+- **With `reflink-copy`:** the filesystem may share file data through CoW while
+  JVS still writes per-checkpoint descriptors
+- **With `copy`:** checkpoint payload storage grows with the copied data
 - **Audit log:** ~200 bytes per operation
 
-Your actual workspace data is stored once - checkpoints are references, not copies.
+Actual workspace storage depends on the selected engine and filesystem. The
+always-small JVS-owned data is the control metadata under `.jvs/`.
 
 ---
 
@@ -351,7 +356,7 @@ jvs doctor --strict --repair-runtime
 
 ### How can I speed up checkpoints?
 
-1. **Use JuiceFS** - Enables O(1) juicefs-clone engine
+1. **Use supported JuiceFS** - Enables the O(1) `juicefs-clone` metadata-clone engine
 2. **Use fast storage** - NVMe SSD, optimized storage
 3. **Reduce metadata** - Fewer files = faster hashing
 4. **Skip payload hash** - Use `--no-payload` for testing (not recommended for production)
@@ -372,9 +377,12 @@ Subsequent checkpoints are much faster (incremental hashing).
 
 JVS itself uses very little space (metadata only). Your workspace data storage depends on your filesystem (JuiceFS, NFS, local disk, etc.).
 
-With JuiceFS CoW:
-- Checkpoints: Minimal overhead (reference, not copy)
+With supported JuiceFS and `juicefs-clone`:
+- Checkpoint payload materialization: minimal additional data copy through
+  JuiceFS metadata references
 - Descriptors: ~1KB each
+
+With `copy`, payload storage grows with copied workspace data.
 
 ---
 
@@ -387,7 +395,7 @@ With JuiceFS CoW:
 | **Storage backend** | Any filesystem | Multiple backends (S3, GCS, etc.) |
 | **Architecture** | Filesystem-native | Cache + remote |
 | **Model tracking** | No (use Git/MLEM) | Yes (built-in) |
-| **Checkpoint speed** | O(1) with JuiceFS | O(n) |
+| **Checkpoint speed** | O(1) with supported JuiceFS | O(n) |
 | **Setup complexity** | Low | Medium |
 
 ---
@@ -398,7 +406,7 @@ With JuiceFS CoW:
 |--------|-----|---------|
 | **Versioning unit** | Entire workspace | Files (large files stored separately) |
 | **Workflow** | Checkpoint restore | Git checkout |
-| **O(1) operations** | Yes (with JuiceFS) | No |
+| **O(1) operations** | Yes (with supported JuiceFS) | No |
 | **Learning curve** | Simple | Moderate |
 
 ---

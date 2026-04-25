@@ -179,11 +179,12 @@ func runCloneCurrent(sourceArg, destArg string) error {
 		"initial_checkpoint": desc.SnapshotID,
 		"engine":             desc.Engine,
 	}
-	applyTransferJSONFields(output, transferPlan, desc.Engine)
+	applyTransferJSONFields(output, transferPlan, desc)
 	if jsonOutput {
 		return outputJSON(output)
 	}
 
+	materialization := setupMaterializationFromDescriptor(desc, transferPlan.EffectiveEngine)
 	fmt.Printf("Cloned current workspace into new JVS repository\n")
 	fmt.Printf("  Scope: current\n")
 	fmt.Printf("  Source repo: %s\n", sourceRepo.Root)
@@ -192,9 +193,11 @@ func runCloneCurrent(sourceArg, destArg string) error {
 	fmt.Printf("  Main workspace: %s\n", mainWorkspace)
 	fmt.Printf("  Initial checkpoint: %s\n", desc.SnapshotID)
 	fmt.Printf("  Engine: %s\n", desc.Engine)
+	fmt.Printf("  Effective engine: %s\n", materialization.EffectiveEngine)
+	fmt.Printf("  Performance class: %s\n", materialization.PerformanceClass)
 	fmt.Printf("  Requested engine: %s\n", transferPlan.RequestedEngine)
 	fmt.Printf("  Transfer engine: %s\n", transferPlan.TransferEngine)
-	fmt.Printf("  Effective engine: %s\n", transferPlan.EffectiveEngine)
+	fmt.Printf("  Transfer mode: %s\n", transferPlan.EffectiveEngine)
 	fmt.Printf("  Optimized transfer: %t\n", transferPlan.OptimizedTransfer)
 	for _, reason := range transferPlan.DegradedReasons {
 		fmt.Printf("  Degraded: %s\n", reason)

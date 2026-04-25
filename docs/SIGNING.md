@@ -4,9 +4,10 @@ Official tagged JVS release artifacts produced by the release workflow are signe
 with [Sigstore/cosign](https://github.com/sigstore/cosign) to provide
 distribution authenticity and integrity verification.
 
-Release artifact signing is separate from the v0 JVS repository format.
-Descriptor signing, signer trust policy, and in-JVS key management are not part
-of the stable v0 public contract.
+Release artifact signing is separate from the v0 JVS repository format and
+from any future in-repository trust model. Descriptor signing, signer trust
+policy, and in-JVS key management are not part of the stable v0 public
+contract.
 
 ## What is Signed?
 
@@ -49,7 +50,7 @@ wget https://github.com/jvs-project/jvs/releases/download/vX.Y.Z/jvs-linux-amd64
 cosign verify-blob jvs-linux-amd64 \
   --signature jvs-linux-amd64.sig \
   --certificate jvs-linux-amd64.pem \
-  --certificate-identity=https://github.com/jvs-project/jvs/.github/workflows/ci.yml@refs/tags/vX.Y.Z \
+  --certificate-identity=https://github.com/jvs-project/jvs/.github/workflows/ci.yml@<workflow-ref> \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com
 ```
 
@@ -72,7 +73,7 @@ wget https://github.com/jvs-project/jvs/releases/download/vX.Y.Z/SHA256SUMS.pem
 cosign verify-blob SHA256SUMS \
   --signature SHA256SUMS.sig \
   --certificate SHA256SUMS.pem \
-  --certificate-identity=https://github.com/jvs-project/jvs/.github/workflows/ci.yml@refs/tags/vX.Y.Z \
+  --certificate-identity=https://github.com/jvs-project/jvs/.github/workflows/ci.yml@<workflow-ref> \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com
 ```
 
@@ -84,12 +85,21 @@ sha256sum -c --ignore-missing SHA256SUMS
 
 ## Certificate Identity
 
-The release workflow signs artifacts with the following certificate identity:
+The release workflow signs artifacts with the following certificate identity
+shape:
 
-- **Identity**: `https://github.com/jvs-project/jvs/.github/workflows/ci.yml@refs/tags/vX.Y.Z`
+- **Identity**: `https://github.com/jvs-project/jvs/.github/workflows/ci.yml@<workflow-ref>`
 - **Issuer**: `https://token.actions.githubusercontent.com`
 
-This ensures the binary was built and signed by the official JVS CI workflow running on GitHub Actions.
+For tag-push releases, `<workflow-ref>` is the tag ref, for example
+`refs/tags/vX.Y.Z`. For manual `workflow_dispatch` releases, the release
+workflow checks out and publishes `refs/tags/<tag>`, but the signing
+certificate identity can remain the workflow ref that launched the run. Use the
+identity printed in the release notes or inspect the downloaded `.pem`
+certificate if you need to confirm the exact ref.
+
+This ensures the binary was built and signed by the official JVS CI workflow
+running on GitHub Actions.
 
 ## Checksum Verification Without Signature Validation
 

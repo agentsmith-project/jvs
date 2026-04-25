@@ -122,18 +122,24 @@ JVS relies on OS-level filesystem permissions for access control:
 
 ## Release Verification
 
-Release signing is not part of the stable v0 public contract yet. If a release
-channel publishes Sigstore/cosign artifacts, verify the downloaded binary before
-using it:
+Release artifact signing verifies distribution binaries and checksums. It is
+separate from descriptor signing or in-JVS trust policy, which are not part of
+the stable v0 repository format. For an official release, download the binary
+and its matching `.sig` and `.pem` sidecars before using it:
 
 ```bash
 cosign verify-blob jvs-linux-amd64 \
-  --certificate-identity https://github.com/jvs-project/jvs/.github/workflows/ci.yml@refs/tags/vX.Y.Z \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  --signature jvs-linux-amd64.sig \
+  --certificate jvs-linux-amd64.pem \
+  --certificate-identity=https://github.com/jvs-project/jvs/.github/workflows/ci.yml@<workflow-ref> \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com
 ```
 
-See [docs/SIGNING.md](docs/SIGNING.md) for verification instructions when
-signature artifacts are available.
+For tag-push releases, `<workflow-ref>` is usually `refs/tags/vX.Y.Z`. Manual
+`workflow_dispatch` releases may have a certificate identity bound to the
+workflow ref that launched the run while the artifacts are checked out from and
+published as the requested tag. See [docs/SIGNING.md](docs/SIGNING.md) for the
+full verification flow, including `SHA256SUMS.sig` and `SHA256SUMS.pem`.
 
 ---
 

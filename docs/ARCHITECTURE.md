@@ -400,13 +400,14 @@ non-visible until doctor reports or safely cleans them.
 
 | Operation | `juicefs-clone` on supported JuiceFS | `reflink-copy` when supported | `copy` fallback |
 | --- | --- | --- | --- |
-| Checkpoint materialization | Constant-time metadata clone | Linear tree walk with shared data blocks | Linear data copy |
-| Restore materialization | Constant-time metadata clone where available | Linear tree walk with shared data blocks | Linear data copy |
+| Checkpoint materialization | Constant-time metadata clone with `juicefs-clone` | Linear tree walk with shared data blocks | Linear data copy |
+| Restore materialization | Constant-time metadata clone with `juicefs-clone` where available | Linear tree walk with shared data blocks | Linear data copy |
 | Verify | Linear in payload size | Linear in payload size | Linear in payload size |
 | Cleanup planning | Linear in checkpoint graph size | Linear in checkpoint graph size | Linear in checkpoint graph size |
 
 JVS must report engine fallback and degradation reasons so automation can avoid
-assuming constant-time behavior when the filesystem cannot provide it.
+assuming `juicefs-clone` constant-time behavior when supported JuiceFS is not
+available.
 
 ---
 

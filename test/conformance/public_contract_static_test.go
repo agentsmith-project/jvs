@@ -19,6 +19,13 @@ var checkpointListBareJQSelector = regexp.MustCompile(`jq\s+-r\s+['"]\.\[(?:\]|[
 var traceabilityDocRefPattern = regexp.MustCompile("`((?:README\\.md|docs/[^`]+\\.md))`")
 var markdownDocLinkPattern = regexp.MustCompile(`\]\(([^)#]+\.md)(?:#[^)]+)?\)`)
 var stalePublicReleaseVocabularyPattern = regexp.MustCompile(`\bv7\.(?:[0-9]+|x)\b`)
+var releaseReadinessHeadingPattern = regexp.MustCompile(`(?m)^## v0\.[0-9]+\.[0-9]+ - [0-9]{4}-[0-9]{2}-[0-9]{2}$`)
+var releaseFacingPerformanceClaimPattern = regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_])(?:o\(1\)|instant(?:ly)?|constant-time|constant overhead)([^A-Za-z0-9_]|$)`)
+var releaseFacingStorageScopePattern = regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_-])juicefs-clone([^A-Za-z0-9_-]|$)|\bsupported\s+[^A-Za-z0-9_]*juicefs\b`)
+var negatedReleaseFacingPerformanceClaimPattern = regexp.MustCompile(`(?i)\bnot\s+(?:an?\s+)?(?:o\(1\)|instant(?:ly)?|constant-time|constant overhead)(?:[^A-Za-z0-9_]|$)`)
+var portableLatencyPromisePattern = regexp.MustCompile(`(?i)^\s*\|\s*\d+(?:\.\d+)?\s*(?:kb|mb|gb|tb|kib|mib|gib|tib)\b[^|]*\|.*\b\d+(?:\.\d+)?\s*(?:ms|s|sec|secs|second|seconds)\b`)
+var documentedEngineConstantPattern = regexp.MustCompile(`(?m)^\s*(Engine[A-Za-z0-9_]+)\s+EngineType\s*=\s*"([^"]+)"`)
+var checkpointReferenceClaimPattern = regexp.MustCompile(`(?i)\bcheckpoints?\b.*(?:\bsmall reference files\b|\breferences?,\s*not\s+(?:data\s+)?cop(?:y|ies)\b|\b(?:is|are)\s+(?:a\s+)?(?:metadata\s+)?references?\b)`)
 var numberedConformanceTestRef = regexp.MustCompile(`\b[Tt]ests?\s+\d`)
 var markdownBulletFieldPattern = regexp.MustCompile("^\\s*-\\s+`([A-Za-z0-9_]+)`")
 var backtickedFieldPattern = regexp.MustCompile("`([A-Za-z0-9_]+)`")
@@ -183,6 +190,16 @@ func TestDocs_ArchivedDocsDeclareNonReleaseFacingStatus(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDocs_AllMarkdownDocsAreReleaseClassified(t *testing.T) {
+	classified := append([]string{}, activePublicContractDocs()...)
+	classified = append(classified, archivedNonReleaseFacingDocs()...)
+	for _, doc := range markdownDocsUnder(t, "docs") {
+		if !stringSliceContains(classified, doc) {
+			t.Fatalf("%s must be active release-facing or explicitly archived/non-release-facing", doc)
+		}
 	}
 }
 
@@ -529,6 +546,14 @@ func TestDocs_APIStableGuidanceDoesNotBypassFacade(t *testing.T) {
 	})
 }
 
+func TestDocs_PublicEngineVocabularyMatchesModel(t *testing.T) {
+	want := engineConstantsFromModel(t)
+	body := readRepoFile(t, "docs/API_DOCUMENTATION.md")
+	section := markdownSectionByHeading(t, "docs/API_DOCUMENTATION.md", body, "### EngineType")
+	got := documentedEngineConstants(section)
+	assertSameStringSet(t, "docs/API_DOCUMENTATION.md EngineType constants", got, want)
+}
+
 func TestDocs_APIPublicExamplesUseStableFacade(t *testing.T) {
 	body := readRepoFile(t, "docs/API_DOCUMENTATION.md")
 	for _, heading := range []string{"## Quick Example", "## Integration Example"} {
@@ -793,29 +818,452 @@ func TestDocs_ChangelogLatestReleaseNotesHaveReadinessSections(t *testing.T) {
 	}
 }
 
-func TestDocs_PerformanceConstantClaimsAreEngineScoped(t *testing.T) {
-	for _, doc := range []string{"docs/PERFORMANCE.md", "docs/PERFORMANCE_RESULTS.md", "docs/BENCHMARKS.md"} {
+func TestDocs_ReleaseReadinessSectionsConsistentWithPolicy(t *testing.T) {
+	changelogEntry := firstChangelogEntry(readRepoFile(t, "docs/99_CHANGELOG.md"))
+	if !releaseReadinessHeadingPattern.MatchString(changelogEntry) {
+		t.Fatalf("latest changelog entry must be date/tag shaped like v0.x.y - YYYY-MM-DD")
+	}
+
+	for _, heading := range []string{
+		"### Highlights",
+		"### Breaking changes",
+		"### Known limitations",
+		"### Risk labels",
+		"### Migration notes",
+		"### Release artifacts",
+	} {
+		if !strings.Contains(changelogEntry, heading) {
+			t.Fatalf("latest changelog entry must include %q", heading)
+		}
+	}
+
+	workflowNotes := normalizeMarkdownEscapes(readRepoFile(t, ".github/workflows/ci.yml"))
+	for _, required := range []string{
+		"## Build Artifacts",
+		"### Binaries",
+		"### Verification",
+		"## Breaking changes",
+		"## Known limitations",
+		"## Risk labels",
+		"## Migration notes",
+		"SHA256SUMS",
+		".sig",
+		".pem",
+	} {
+		if !strings.Contains(workflowNotes, required) {
+			t.Fatalf("generated release notes must include %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"remote push/pull",
+		"signing commands",
+		"partial checkpoint contracts",
+		"compression contracts",
+		"merge/rebase",
+		"complex retention policy flags",
+		"integrity",
+		"migration",
+		"jvs doctor --strict",
+		"jvs verify --all",
+		"jvs doctor --strict --repair-runtime",
+	} {
+		requireReleaseReadinessText(t, "latest changelog entry", changelogEntry, required)
+		requireReleaseReadinessText(t, "generated release notes", workflowNotes, required)
+	}
+}
+
+func TestDocs_RiskLabelsMatchThreatModelAndReleaseNotes(t *testing.T) {
+	labels := riskLabelsFromThreatModel(t)
+	if len(labels) == 0 {
+		t.Fatalf("docs/10_THREAT_MODEL.md must define release risk labels")
+	}
+
+	changelogEntry := firstChangelogEntry(readRepoFile(t, "docs/99_CHANGELOG.md"))
+	workflowNotes := normalizeMarkdownEscapes(readRepoFile(t, ".github/workflows/ci.yml"))
+	for _, label := range labels {
+		requireReleaseReadinessText(t, "latest changelog entry", changelogEntry, label)
+		requireReleaseReadinessText(t, "generated release notes", workflowNotes, label)
+	}
+}
+
+func TestDocs_PerformanceClaimPatternMatchesO1(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{
+			name: "matches O(1) followed by punctuation",
+			line: "The `juicefs-clone` engine provides O(1), metadata-clone checkpoints on supported JuiceFS.",
+			want: true,
+		},
+		{
+			name: "matches O(1) followed by space",
+			line: "Checkpoint speed is O(1) with supported JuiceFS.",
+			want: true,
+		},
+		{
+			name: "matches constant-time",
+			line: "Restore uses constant-time metadata clone with supported `juicefs-clone`.",
+			want: true,
+		},
+		{
+			name: "ignores O(n)",
+			line: "The copy fallback remains O(n) in payload size and file count.",
+			want: false,
+		},
+		{
+			name: "ignores words containing instant",
+			line: "The instantiation code path is unrelated.",
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := releaseFacingPerformanceClaimPattern.MatchString(tt.line)
+			if got != tt.want {
+				t.Fatalf("releaseFacingPerformanceClaimPattern.MatchString(%q) = %v, want %v", tt.line, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDocs_PerformanceClaimsRequireRealEngineScope(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{
+			name: "juicefs clone engine scope",
+			line: "Checkpoint speed is O(1) with the `juicefs-clone` engine on supported JuiceFS.",
+			want: true,
+		},
+		{
+			name: "juicefs storage scope",
+			line: "O(1) operations are available on supported JuiceFS mounts.",
+			want: true,
+		},
+		{
+			name: "juicefs clone supported storage scope",
+			line: "`juicefs-clone` on supported JuiceFS provides O(1) whole-tree checkpoint restore.",
+			want: true,
+		},
+		{
+			name: "juicefs without support qualifier is not scope",
+			line: "Checkpoints are O(1) with JuiceFS.",
+			want: false,
+		},
+		{
+			name: "reflink copy is not whole tree constant scope",
+			line: "`reflink-copy` provides O(1) restore.",
+			want: false,
+		},
+		{
+			name: "copy on write is not whole tree constant scope",
+			line: "copy-on-write provides O(1) whole-tree checkpoint restore.",
+			want: false,
+		},
+		{
+			name: "cow is not whole tree constant scope",
+			line: "CoW checkpoints are constant-time for whole trees.",
+			want: false,
+		},
+		{
+			name: "reflink negative O1 disclaimer is allowed",
+			line: "`reflink-copy` still walks the tree and is not an O(1) whole-tree restore promise.",
+			want: true,
+		},
+		{
+			name: "with alone is not scope",
+			line: "Checkpoints are O(1) with healthy storage.",
+			want: false,
+		},
+		{
+			name: "on alone is not scope",
+			line: "Checkpoints are O(1) on production systems.",
+			want: false,
+		},
+		{
+			name: "engine alone is not scope",
+			line: "Engine-scoped O(1) checkpoints are available.",
+			want: false,
+		},
+		{
+			name: "benchmark alone is not scope",
+			line: "Benchmark result: O(1) checkpoint creation.",
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := scopedPerformanceClaim(tt.line)
+			if got != tt.want {
+				t.Fatalf("scopedPerformanceClaim(%q) = %v, want %v", tt.line, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDocs_CheckpointReferenceClaimsRequireEngineScope(t *testing.T) {
+	tests := []struct {
+		name      string
+		line      string
+		wantClaim bool
+		wantScope bool
+	}{
+		{
+			name:      "juicefs clone reference claim",
+			line:      "With `juicefs-clone`, checkpoints are metadata references, not data copies.",
+			wantClaim: true,
+			wantScope: true,
+		},
+		{
+			name:      "supported juicefs reference claim",
+			line:      "On supported JuiceFS, checkpoints are references, not copies.",
+			wantClaim: true,
+			wantScope: true,
+		},
+		{
+			name:      "generic references not copies claim",
+			line:      "Your actual workspace data is stored once - checkpoints are references, not copies.",
+			wantClaim: true,
+			wantScope: false,
+		},
+		{
+			name:      "generic references not copies claim with negative O1 disclaimer",
+			line:      "Checkpoints are references, not copies; not O(1).",
+			wantClaim: true,
+			wantScope: false,
+		},
+		{
+			name:      "generic small reference files claim",
+			line:      "- **Checkpoints:** Small reference files",
+			wantClaim: true,
+			wantScope: false,
+		},
+		{
+			name:      "generic references claim",
+			line:      "| Repository size | Blobs grow endlessly | Checkpoints are references |",
+			wantClaim: true,
+			wantScope: false,
+		},
+		{
+			name:      "non reference claim",
+			line:      "Checkpoints are immutable.",
+			wantClaim: false,
+			wantScope: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotClaim := checkpointReferenceClaimPattern.MatchString(tt.line)
+			if gotClaim != tt.wantClaim {
+				t.Fatalf("checkpointReferenceClaimPattern.MatchString(%q) = %v, want %v", tt.line, gotClaim, tt.wantClaim)
+			}
+			if !gotClaim {
+				return
+			}
+			got := scopedCheckpointReferenceClaim(tt.line)
+			if got != tt.wantScope {
+				t.Fatalf("scopedCheckpointReferenceClaim(%q) = %v, want %v", tt.line, got, tt.wantScope)
+			}
+		})
+	}
+}
+
+func TestDocs_CheckpointReferenceClaimsAreEngineScopedAcrossReleaseFacingDocs(t *testing.T) {
+	for _, doc := range activePublicContractDocs() {
 		t.Run(doc, func(t *testing.T) {
 			scanPublicDocLines(t, doc, func(lineNo int, line string) {
-				lower := strings.ToLower(line)
-				if !strings.Contains(lower, "o(1)") &&
-					!strings.Contains(lower, "constant-time") &&
-					!strings.Contains(lower, "constant overhead") {
+				if !checkpointReferenceClaimPattern.MatchString(line) {
 					return
 				}
-				if strings.Contains(lower, "juicefs") ||
-					strings.Contains(lower, "reflink") ||
-					strings.Contains(lower, "engine") ||
-					strings.Contains(lower, "filesystem") ||
-					strings.Contains(lower, "metadata") ||
-					strings.Contains(lower, "supported") ||
-					strings.Contains(lower, "fallback") {
+				if scopedCheckpointReferenceClaim(line) {
 					return
 				}
-				t.Fatalf("%s:%d has an unscoped constant-time/O(1) claim:\n%s", doc, lineNo, line)
+				t.Fatalf("%s:%d has an unscoped checkpoint reference/not-copy storage claim:\n%s", doc, lineNo, line)
 			})
 		})
 	}
+}
+
+func TestDocs_PerformanceClaimsAreEngineScopedAcrossReleaseFacingDocs(t *testing.T) {
+	for _, doc := range activePublicContractDocs() {
+		t.Run(doc, func(t *testing.T) {
+			body := releaseFacingClaimBody(t, doc)
+			for lineNo, line := range strings.Split(body, "\n") {
+				if !releaseFacingPerformanceClaimPattern.MatchString(line) {
+					continue
+				}
+				if scopedPerformanceClaim(line) {
+					continue
+				}
+				t.Fatalf("%s:%d has an unscoped constant-time/O(1) claim:\n%s", doc, lineNo+1, line)
+			}
+		})
+	}
+}
+
+func TestDocs_PerformanceGuideAvoidsPortableLatencyPromises(t *testing.T) {
+	scanPublicDocLines(t, "docs/PERFORMANCE.md", func(lineNo int, line string) {
+		if portableLatencyPromisePattern.MatchString(line) {
+			t.Fatalf("docs/PERFORMANCE.md:%d publishes fixed size-to-latency numbers as portable guidance; use regression-baseline wording without fixed portable latency promises:\n%s", lineNo, line)
+		}
+	})
+}
+
+func TestDocs_PerformanceResultsCoverRequiredGAEngines(t *testing.T) {
+	results := readRepoFile(t, "docs/PERFORMANCE_RESULTS.md")
+	for _, required := range []string{
+		"## GA Result Boundaries (v0)",
+		"`juicefs-clone`",
+		"`reflink-copy`",
+		"`copy`",
+		"go test -bench=. -benchmem ./internal/snapshot/",
+		"go test -bench=. -benchmem ./internal/restore/",
+		"go test -bench=. -benchmem ./internal/gc/",
+	} {
+		if !strings.Contains(results, required) {
+			t.Fatalf("docs/PERFORMANCE_RESULTS.md must include current GA boundary/command %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"v7.2",
+		"v8.0",
+		"v7.3",
+		"make benchmark",
+		"scripts/benchmark.sh",
+		"scripts/collect_results.sh",
+		"scripts/compare_benchmarks.sh",
+		"N/A",
+		"Targets for",
+	} {
+		if strings.Contains(results, forbidden) {
+			t.Fatalf("docs/PERFORMANCE_RESULTS.md contains stale or unsupported benchmark language %q", forbidden)
+		}
+	}
+}
+
+func markdownDocsUnder(t *testing.T, dir string) []string {
+	t.Helper()
+	var docs []string
+	root := repoFile(t, dir)
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			return nil
+		}
+		rel, err := filepath.Rel(repoFile(t), path)
+		if err != nil {
+			return err
+		}
+		docs = append(docs, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", dir, err)
+	}
+	return docs
+}
+
+func normalizeMarkdownEscapes(body string) string {
+	return strings.ReplaceAll(body, "\\`", "`")
+}
+
+func requireReleaseReadinessText(t *testing.T, name, body, required string) {
+	t.Helper()
+	if !strings.Contains(strings.ToLower(body), strings.ToLower(required)) {
+		t.Fatalf("%s must include %q", name, required)
+	}
+}
+
+func riskLabelsFromThreatModel(t *testing.T) []string {
+	t.Helper()
+	threatModel := readRepoFile(t, "docs/10_THREAT_MODEL.md")
+	section := markdownSectionByHeading(t, "docs/10_THREAT_MODEL.md", threatModel, "## Risk labeling")
+	var labels []string
+	for _, line := range strings.Split(section, "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "- ") {
+			continue
+		}
+		match := backtickedFieldPattern.FindStringSubmatch(line)
+		if match != nil {
+			labels = append(labels, match[1])
+		}
+	}
+	return labels
+}
+
+func releaseFacingClaimBody(t *testing.T, doc string) string {
+	t.Helper()
+	body := readRepoFile(t, doc)
+	if doc == "docs/99_CHANGELOG.md" {
+		return firstChangelogEntry(body)
+	}
+	return body
+}
+
+func scopedPerformanceClaim(line string) bool {
+	return releaseFacingStorageScopePattern.MatchString(line) ||
+		negatedReleaseFacingPerformanceClaimPattern.MatchString(line)
+}
+
+func scopedCheckpointReferenceClaim(line string) bool {
+	return releaseFacingStorageScopePattern.MatchString(line)
+}
+
+func engineConstantsFromModel(t *testing.T) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	path := repoFile(t, "pkg/model/types.go")
+	file, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		t.Fatalf("parse pkg/model/types.go: %v", err)
+	}
+
+	var constants []string
+	ast.Inspect(file, func(node ast.Node) bool {
+		valueSpec, ok := node.(*ast.ValueSpec)
+		if !ok || len(valueSpec.Names) == 0 {
+			return true
+		}
+		typeIdent, ok := valueSpec.Type.(*ast.Ident)
+		if !ok || typeIdent.Name != "EngineType" {
+			return true
+		}
+		for i, name := range valueSpec.Names {
+			if i >= len(valueSpec.Values) {
+				continue
+			}
+			lit, ok := valueSpec.Values[i].(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				continue
+			}
+			value, err := strconv.Unquote(lit.Value)
+			if err != nil {
+				pos := fset.Position(lit.Pos())
+				t.Fatalf("%s:%d unquote engine constant %s: %v", path, pos.Line, name.Name, err)
+			}
+			constants = append(constants, name.Name+"="+value)
+		}
+		return true
+	})
+	if len(constants) == 0 {
+		t.Fatalf("pkg/model/types.go defines no EngineType constants")
+	}
+	return constants
+}
+
+func documentedEngineConstants(section string) []string {
+	var constants []string
+	for _, match := range documentedEngineConstantPattern.FindAllStringSubmatch(section, -1) {
+		constants = append(constants, match[1]+"="+match[2])
+	}
+	return constants
 }
 
 func publicRuntimeRepairActionIDs() []string {
@@ -909,7 +1357,11 @@ func activeReleaseFacingContractDocs() []string {
 
 func archivedNonReleaseFacingDocs() []string {
 	return []string{
+		"docs/JVS_SYNC.md",
+		"docs/SOURCES.md",
 		"docs/TEMPLATES.md",
+		"docs/plans/2026-02-20-jvs-go-implementation-design.md",
+		"docs/plans/2026-02-20-jvs-implementation-plan.md",
 	}
 }
 

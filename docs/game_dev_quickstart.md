@@ -7,7 +7,7 @@
 
 ## Overview
 
-This guide helps game developers use JVS for versioning large game assets that Git cannot handle efficiently. JVS complements your existing version control workflow by providing O(1) checkpoints for binary assets.
+This guide helps game developers use JVS for versioning large game assets that Git cannot handle efficiently. On supported JuiceFS mounts, JVS complements your existing version control workflow with O(1) metadata-clone checkpoints for binary assets.
 
 ---
 
@@ -15,18 +15,18 @@ This guide helps game developers use JVS for versioning large game assets that G
 
 | Problem | Git + Git LFS | JVS |
 |---------|---------------|-----|
-| 5GB texture files | Slow clone, bandwidth costs | O(1) checkpoint, instant restore |
-| Repository size | Blobs grow endlessly | Checkpoints are references |
+| 5GB texture files | Slow clone, bandwidth costs | O(1) metadata clone on supported JuiceFS |
+| Repository size | Blobs grow endlessly | With `juicefs-clone` on supported JuiceFS, checkpoints are references; copy fallback copies data |
 | Asset history | LFS pointer complexity | Simple checkpoint/restore |
 | Team collaboration | Merge conflicts on binaries | Fork workspaces instead |
 
-**Key Benefit:** Checkpoint your entire `Assets/` folder in seconds, regardless of size.
+**Key Benefit:** Checkpoint your entire `Assets/` folder with the best engine available; supported JuiceFS mounts use metadata clone, while copy fallback scales with payload size.
 
 ---
 
 ## Prerequisites
 
-1. **JuiceFS mounted** (recommended for O(1) performance)
+1. **Supported JuiceFS mounted** (recommended for O(1) performance)
    ```bash
    # Check if JuiceFS is mounted
    mount | grep juicefs
@@ -74,7 +74,8 @@ jvs checkpoint "Initial Unity project import" --tag unity --tag baseline
 
 **What just happened:**
 - JVS created a checkpoint of your entire workspace
-- The checkpoint is a reference (O(1) operation), not a copy
+- With `juicefs-clone` on supported JuiceFS, the checkpoint is a metadata
+  reference; copy fallback copies data
 - Tags help you find this checkpoint later
 
 ### Step 3: Create Your First Asset Version

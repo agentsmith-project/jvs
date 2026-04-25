@@ -7,7 +7,7 @@
 
 ## Overview
 
-This guide helps AI/ML engineers use JVS for creating deterministic, reproducible agent sandbox environments. JVS provides O(1) checkpoint and restore operations, enabling rapid iteration for agent experiments.
+This guide helps AI/ML engineers use JVS for creating deterministic, reproducible agent sandbox environments. On supported JuiceFS mounts, JVS can use `juicefs-clone` for O(1) metadata-clone checkpoints and restores; other engines fall back to filesystem-appropriate behavior.
 
 ---
 
@@ -15,18 +15,18 @@ This guide helps AI/ML engineers use JVS for creating deterministic, reproducibl
 
 | Problem | Docker | VMs | JVS |
 |---------|--------|-----|-----|
-| Environment reset | Slow rebuild | Very slow | Instant restore |
+| Environment reset | Slow rebuild | Very slow | Engine-scoped restore |
 | Deterministic state | Complex to set up | Complex to set up | Simple checkpoint/restore |
 | Parallel experiments | Container overhead | VM overhead | Workspace isolation |
 | State tracking | Volume management | Checkpoint management | Built-in history |
 
-**Key Benefit:** Reset agent environment to exact baseline state in <1 second, enabling thousands of experiments per day.
+**Key Benefit:** Reset agent environments to exact baseline state; supported JuiceFS mounts can use metadata-clone restores, while copy fallback scales with payload size.
 
 ---
 
 ## Prerequisites
 
-1. **JuiceFS mounted** (recommended for O(1) performance)
+1. **Supported JuiceFS mounted** (recommended for O(1) performance)
 2. **JVS installed**
 3. **Agent code** (Python, or any language)
 
@@ -427,7 +427,7 @@ jvs verify --all
 
 ## Performance Tips
 
-### Use JuiceFS for O(1) Checkpoints
+### Use Supported JuiceFS for O(1) Metadata-Clone Checkpoints
 
 ```bash
 # Check which engine you're using

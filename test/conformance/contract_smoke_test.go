@@ -445,14 +445,20 @@ func TestContract_CloneCurrentJSONSeparatesTransferFromMaterializationEngine(t *
 		t.Fatalf("clone current failed: stdout=%s stderr=%s", stdout, stderr)
 	}
 	data := decodeContractSmokeDataMap(t, stdout)
-	if data["effective_engine"] != "juicefs-clone" {
-		t.Fatalf("effective_engine must describe future materialization: %#v\n%s", data["effective_engine"], stdout)
+	if data["engine"] != "juicefs-clone" {
+		t.Fatalf("engine must preserve requested materialization engine: %#v\n%s", data["engine"], stdout)
+	}
+	if data["effective_engine"] != "copy" {
+		t.Fatalf("effective_engine must describe initial checkpoint materialization after fallback: %#v\n%s", data["effective_engine"], stdout)
+	}
+	if data["performance_class"] != "linear-data-copy" {
+		t.Fatalf("performance_class must match effective materialization engine: %#v\n%s", data["performance_class"], stdout)
 	}
 	if data["transfer_engine"] != "copy" {
 		t.Fatalf("transfer_engine must describe this transfer: %#v\n%s", data["transfer_engine"], stdout)
 	}
-	if data["transfer_engine"] == data["effective_engine"] {
-		t.Fatalf("transfer_engine and effective_engine were not separated: %s", stdout)
+	if data["transfer_mode"] != "copy" {
+		t.Fatalf("transfer_mode must describe transfer fallback: %#v\n%s", data["transfer_mode"], stdout)
 	}
 	if _, ok := data["degraded_reasons"].([]any); !ok {
 		t.Fatalf("clone current degraded_reasons must be an array: %s", stdout)

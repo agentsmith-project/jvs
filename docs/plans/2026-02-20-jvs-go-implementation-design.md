@@ -1,5 +1,10 @@
 # JVS Go Implementation Design
 
+**Status:** Archived, non-release-facing
+
+> Archived note: this historical implementation design is not part of the v0 public contract.
+> It is retained only as non-current design context.
+
 **Date:** 2026-02-20
 **Spec version:** v6.5
 **Current version:** v7.0

@@ -28,5 +28,9 @@
 - coordinated descriptor + checksum rewrite by attacker with filesystem write access (mitigated by signing in v1.x)
 
 ## Risk labeling
-Commands and JSON output MUST label high-risk states:
-- `best_effort` checkpoints
+Release notes and release-readiness docs MUST use these v0 risk labels:
+- `integrity`: descriptor checksum and payload hash detect independent
+  corruption; coordinated descriptor-plus-checksum rewrite is a v0 residual
+  risk.
+- `migration`: runtime operation state is non-portable and must be rebuilt at
+  the destination with `jvs doctor --strict --repair-runtime`.

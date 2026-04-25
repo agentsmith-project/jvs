@@ -151,6 +151,43 @@ func TestReleaseWorkflowNotesIncludeReadinessSections(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowNotesUseSigningGuideAndGASections(t *testing.T) {
+	root := repoRoot(t)
+	workflow := readWorkflow(t, root)
+	jobs := requireMappingValue(t, workflow, "jobs")
+	release := requireMappingValue(t, jobs, "release")
+	notes := requireStepNamed(t, release, "Generate release notes")
+	run := scalarValue(t, requireMappingValue(t, notes, "run"))
+
+	for _, required := range []string{
+		"docs/SIGNING.md",
+		"cosign verify-blob jvs-linux-amd64",
+		"--signature jvs-linux-amd64.sig",
+		"--certificate jvs-linux-amd64.pem",
+		"SHA256SUMS.sig",
+		"SHA256SUMS.pem",
+		"--certificate-identity=https://github.com/jvs-project/jvs/.github/workflows/ci.yml@${GITHUB_REF}",
+		"--certificate-oidc-issuer=https://token.actions.githubusercontent.com",
+		"signing certificate identity",
+		"workflow_dispatch",
+		"refs/tags",
+		"## Known limitations",
+		"remote push/pull",
+		"signing commands",
+		"partial checkpoint contracts",
+		"compression contracts",
+		"merge/rebase",
+		"complex retention policy flags",
+		"## Risk labels",
+		"integrity",
+		"migration",
+		"## Migration notes",
+		"jvs doctor --strict --repair-runtime",
+	} {
+		requireContains(t, run, required)
+	}
+}
+
 func TestMakefilePinsGolangCILintTooling(t *testing.T) {
 	root := repoRoot(t)
 	data, err := os.ReadFile(filepath.Join(root, "Makefile"))

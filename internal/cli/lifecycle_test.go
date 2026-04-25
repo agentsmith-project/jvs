@@ -386,10 +386,85 @@ func TestCloneCurrentJSONSeparatesTransferFromMaterializationEngine(t *testing.T
 
 	got := decodeJSONDataForTest(t, stdout)
 	require.Equal(t, "juicefs-clone", got["engine"])
-	require.Equal(t, "juicefs-clone", got["effective_engine"])
+	require.Equal(t, "copy", got["effective_engine"])
 	require.Equal(t, "copy", got["transfer_engine"])
-	require.NotEqual(t, got["transfer_engine"], got["effective_engine"])
+	require.Equal(t, "copy", got["transfer_mode"])
+	require.Equal(t, "linear-data-copy", got["performance_class"])
 	require.IsType(t, []any{}, got["degraded_reasons"])
+}
+
+func TestLifecycleJSONEffectiveEngineMatchesInitialCheckpointDescriptor(t *testing.T) {
+	base := t.TempDir()
+	report, err := engine.ProbeCapabilities(base, true)
+	require.NoError(t, err)
+	if report.JuiceFS.Supported {
+		t.Skip("test requires a non-JuiceFS temp directory")
+	}
+
+	t.Setenv("JVS_SNAPSHOT_ENGINE", string(model.EngineJuiceFSClone))
+	t.Setenv("JVS_ENGINE", "")
+
+	t.Run("import", func(t *testing.T) {
+		source := filepath.Join(base, "import-source")
+		dest := filepath.Join(base, "import-dest")
+		require.NoError(t, os.MkdirAll(source, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(source, "file.txt"), []byte("v1"), 0644))
+
+		stdout, err := executeCommand(createTestRootCmd(), "--json", "import", source, dest)
+		require.NoError(t, err)
+
+		requireLifecycleSetupJSONMatchesInitialDescriptor(t, stdout, dest)
+	})
+
+	t.Run("clone-current", func(t *testing.T) {
+		source := filepath.Join(base, "clone-source")
+		dest := filepath.Join(base, "clone-dest")
+		_, err := executeCommand(createTestRootCmd(), "init", source)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(source, "main", "file.txt"), []byte("v1"), 0644))
+
+		stdout, err := executeCommand(createTestRootCmd(), "--json", "clone", source, dest, "--scope", "current")
+		require.NoError(t, err)
+
+		requireLifecycleSetupJSONMatchesInitialDescriptor(t, stdout, dest)
+	})
+}
+
+func TestLifecycleJSONMaterializationFieldsPreferCheckpointDescriptor(t *testing.T) {
+	descriptorMetadata := model.MetadataPreservation{
+		Symlinks:   "descriptor-symlinks",
+		Hardlinks:  "descriptor-hardlinks",
+		Mode:       "descriptor-mode",
+		Timestamps: "descriptor-timestamps",
+		Ownership:  "descriptor-ownership",
+		Xattrs:     "descriptor-xattrs",
+		ACLs:       "descriptor-acls",
+	}
+	plan := &engine.TransferPlan{
+		RequestedEngine:   model.EngineJuiceFSClone,
+		TransferEngine:    model.EngineCopy,
+		EffectiveEngine:   model.EngineCopy,
+		OptimizedTransfer: false,
+		Capabilities:      &engine.CapabilityReport{},
+		DegradedReasons:   []string{"transfer degraded to copy"},
+		Warnings:          []string{"transfer warning"},
+	}
+	desc := &model.Descriptor{
+		Engine:               model.EngineJuiceFSClone,
+		ActualEngine:         model.EngineCopy,
+		EffectiveEngine:      model.EngineReflinkCopy,
+		MetadataPreservation: &descriptorMetadata,
+		PerformanceClass:     "descriptor-performance",
+	}
+
+	output := map[string]any{}
+	applyTransferJSONFields(output, plan, desc)
+
+	require.Equal(t, model.EngineCopy, output["transfer_engine"])
+	require.Equal(t, string(model.EngineCopy), output["transfer_mode"])
+	require.Equal(t, model.EngineReflinkCopy, output["effective_engine"])
+	require.Equal(t, descriptorMetadata, output["metadata_preservation"])
+	require.Equal(t, "descriptor-performance", output["performance_class"])
 }
 
 func TestCloneCommand_CurrentRejectsPhysicalOverlapViaSymlinkParent(t *testing.T) {
@@ -520,6 +595,30 @@ func TestPerformanceDocsDoNotUseUnsupportedEngineFlagOrUnconditionalO1Claims(t *
 	require.NotContains(t, string(performance), "Unlimited")
 	require.NotContains(t, string(results), "TB/s")
 	require.NotContains(t, string(results), "Snapshot time is O(1) with juicefs-clone engine")
+}
+
+func requireLifecycleSetupJSONMatchesInitialDescriptor(t *testing.T, stdout, repoRoot string) {
+	t.Helper()
+
+	got := decodeJSONDataForTest(t, stdout)
+	descs, err := snapshot.ListAll(repoRoot)
+	require.NoError(t, err)
+	require.Len(t, descs, 1)
+
+	desc := descs[0]
+	require.Equal(t, string(desc.SnapshotID), got["initial_checkpoint"])
+	require.Equal(t, string(model.EngineJuiceFSClone), got["requested_engine"])
+	require.Equal(t, string(model.EngineCopy), got["transfer_engine"])
+	require.Equal(t, string(model.EngineCopy), got["transfer_mode"])
+	require.IsType(t, []any{}, got["degraded_reasons"])
+
+	require.Equal(t, model.EngineJuiceFSClone, desc.Engine)
+	require.Equal(t, model.EngineCopy, desc.ActualEngine)
+	require.Equal(t, model.EngineCopy, desc.EffectiveEngine)
+	require.NotEmpty(t, desc.DegradedReasons)
+	require.Equal(t, string(desc.Engine), got["engine"])
+	require.Equal(t, string(desc.EffectiveEngine), got["effective_engine"])
+	require.Equal(t, desc.PerformanceClass, got["performance_class"])
 }
 
 func requireLifecycleSymlink(t *testing.T, oldname, newname string) {

@@ -1,5 +1,10 @@
 # JVS Go Implementation Plan
 
+**Status:** Archived, non-release-facing
+
+> Archived note: this historical implementation plan is not part of the v0 public contract.
+> It is retained only as non-current design context.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Implement the complete JVS v0.x CLI tool in Go, covering all v6.5 spec requirements with 29 conformance tests passing.

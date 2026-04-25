@@ -7,7 +7,7 @@
 
 ## Overview
 
-This guide helps data engineers use JVS for versioning large datasets in ETL pipelines. JVS provides O(1) checkpoints for TB-scale data, enabling reproducible data workflows.
+This guide helps data engineers use JVS for versioning large datasets in ETL pipelines. On supported JuiceFS mounts, JVS provides O(1) metadata-clone checkpoints for TB-scale data; fallback engines remain available for other filesystems.
 
 ---
 
@@ -15,18 +15,18 @@ This guide helps data engineers use JVS for versioning large datasets in ETL pip
 
 | Problem | Git + Git LFS | DVC | JVS |
 |---------|---------------|-----|-----|
-| TB-scale datasets | Doesn't scale | Complex cache management | O(1) checkpoints |
+| TB-scale datasets | Doesn't scale | Complex cache management | O(1) metadata clone on supported JuiceFS |
 | Pipeline integration | Manual | Requires DVC CLI | Simple CLI integration |
 | Data lineage | Manual tracking | DVC metrics | Checkpoint notes + tags |
 | Reproducibility | Difficult | Good | Excellent |
 
-**Key Benefit:** Checkpoint entire datasets (10GB-10TB) in seconds, enabling exact reproducibility.
+**Key Benefit:** Checkpoint entire datasets with engine behavior made explicit; supported JuiceFS mounts use metadata clone, while copy fallback scales with payload size.
 
 ---
 
 ## Prerequisites
 
-1. **JuiceFS mounted** (recommended for O(1) performance)
+1. **Supported JuiceFS mounted** (recommended for O(1) performance)
 2. **JVS installed**
 3. **ETL pipeline** (Python, SQL, or any tool)
 

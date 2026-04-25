@@ -71,8 +71,8 @@ jvs fork experiment-character
 ### Product Guidance
 
 - Keep checkpoint creation and restore boring and reliable.
-- Keep engine fallback visible; constant-time behavior depends on filesystem
-  support.
+- Keep engine fallback visible; `juicefs-clone` constant-time behavior depends
+  on supported JuiceFS.
 - Document integration scripts rather than building editor-specific product
   surfaces.
 - Do not add merge, rebase, file locking, or server orchestration to v0.

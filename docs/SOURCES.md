@@ -1,5 +1,12 @@
 # Sources referenced during design
 
+**Status:** Archived, non-release-facing
+
+> Archived note: this design bibliography is not part of the v0 public contract.
+> Release-facing guarantees are defined by the active specs and
+> conformance gates; the links below are retained only as non-current design
+> context.
+
 The following primary sources inform JVS behavior and constraints.
 
 ## JuiceFS

@@ -217,6 +217,133 @@ func TestPublicCLIDirtyForkRequiresExplicitChoice(t *testing.T) {
 	assert.Equal(t, "working", string(content))
 }
 
+func TestLegacyWorktreeForkDirtyNoCheckpointRequiresExplicitChoice(t *testing.T) {
+	repoPath, mainPath := setupPublicCLIRepo(t, "legacydirtyfreshfork")
+
+	require.NoError(t, os.WriteFile("file.txt", []byte("working"), 0644))
+
+	destPath := filepath.Join(repoPath, "worktrees", "branch")
+	stdout, stderr, exitCode := runContractSubprocess(t, mainPath, "worktree", "fork", "branch")
+	assert.Equal(t, 1, exitCode, "dirty legacy fork unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stdout))
+	assert.Contains(t, stderr, "dirty")
+	assert.Contains(t, stderr, "--include-working")
+	assert.Contains(t, stderr, "--discard-dirty")
+	assert.NotContains(t, stderr, "no checkpoints")
+	_, statErr := os.Stat(destPath)
+	assert.True(t, os.IsNotExist(statErr), "destination workspace should not exist: %v", statErr)
+
+	content, readErr := os.ReadFile("file.txt")
+	require.NoError(t, readErr)
+	assert.Equal(t, "working", string(content))
+}
+
+func TestLegacyWorktreeForkIncludeWorkingNoCheckpoint(t *testing.T) {
+	repoPath, mainPath := setupPublicCLIRepo(t, "legacyincludefreshfork")
+
+	require.NoError(t, os.WriteFile("file.txt", []byte("working"), 0644))
+
+	stdout, stderr, exitCode := runContractSubprocess(t, mainPath, "--json", "worktree", "fork", "working-branch", "--include-working")
+	require.Equal(t, 0, exitCode, "legacy include-working fork failed: stdout=%s stderr=%s", stdout, stderr)
+	require.Empty(t, strings.TrimSpace(stderr))
+	env := decodeContractEnvelope(t, stdout)
+	require.True(t, env.OK, stdout)
+	assert.Contains(t, stdout, `"name": "working-branch"`)
+
+	content, readErr := os.ReadFile(filepath.Join(repoPath, "worktrees", "working-branch", "file.txt"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "working", string(content))
+	status := readStatusForPublicCLI(t)
+	assert.False(t, status.Dirty)
+	assert.NotEmpty(t, status.Current)
+	assert.Equal(t, status.Current, status.Latest)
+}
+
+func TestLegacyWorktreeForkRejectsDirtyWorkspaceByDefault(t *testing.T) {
+	repoPath, mainPath := setupPublicCLIRepo(t, "legacydirtyfork")
+
+	require.NoError(t, os.WriteFile("file.txt", []byte("clean"), 0644))
+	createCheckpointForPublicCLI(t, "base")
+	require.NoError(t, os.WriteFile("file.txt", []byte("working"), 0644))
+
+	destPath := filepath.Join(repoPath, "worktrees", "legacy-branch")
+	stdout, stderr, exitCode := runContractSubprocess(t, mainPath, "worktree", "fork", "legacy-branch")
+	assert.Equal(t, 1, exitCode, "dirty legacy fork unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stdout))
+	assert.Contains(t, stderr, "dirty")
+	_, statErr := os.Stat(destPath)
+	assert.True(t, os.IsNotExist(statErr), "destination workspace should not exist: %v", statErr)
+
+	content, readErr := os.ReadFile("file.txt")
+	require.NoError(t, readErr)
+	assert.Equal(t, "working", string(content))
+}
+
+func TestLegacyWorktreeForkDirtyRequiresExplicitChoice(t *testing.T) {
+	repoPath, mainPath := setupPublicCLIRepo(t, "legacydirtyforkchoice")
+
+	require.NoError(t, os.WriteFile("file.txt", []byte("clean"), 0644))
+	createCheckpointForPublicCLI(t, "base")
+	require.NoError(t, os.WriteFile("file.txt", []byte("working"), 0644))
+
+	destPath := filepath.Join(repoPath, "worktrees", "legacy-choice")
+	stdout, stderr, exitCode := runContractSubprocess(t, mainPath, "worktree", "fork", "legacy-choice")
+	assert.Equal(t, 1, exitCode, "dirty legacy fork unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stdout))
+	assert.Contains(t, stderr, "--include-working")
+	assert.Contains(t, stderr, "--discard-dirty")
+	_, statErr := os.Stat(destPath)
+	assert.True(t, os.IsNotExist(statErr), "destination workspace should not exist: %v", statErr)
+
+	help, err := runPublicCLI(t, "worktree", "fork", "--help")
+	require.NoError(t, err, help)
+	assert.Contains(t, help, "--include-working")
+	assert.Contains(t, help, "--discard-dirty")
+}
+
+func TestLegacyWorktreeForkDiscardDirty(t *testing.T) {
+	repoPath, mainPath := setupPublicCLIRepo(t, "legacydiscardfork")
+
+	require.NoError(t, os.WriteFile("file.txt", []byte("clean"), 0644))
+	createCheckpointForPublicCLI(t, "base")
+	require.NoError(t, os.WriteFile("file.txt", []byte("working"), 0644))
+
+	stdout, stderr, exitCode := runContractSubprocess(t, mainPath, "--json", "worktree", "fork", "discard-branch", "--discard-dirty")
+	require.Equal(t, 0, exitCode, "legacy discard fork failed: stdout=%s stderr=%s", stdout, stderr)
+	require.Empty(t, strings.TrimSpace(stderr))
+	env := decodeContractEnvelope(t, stdout)
+	require.True(t, env.OK, stdout)
+	assert.Contains(t, stdout, `"name": "discard-branch"`)
+
+	content, readErr := os.ReadFile(filepath.Join(repoPath, "worktrees", "discard-branch", "file.txt"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "clean", string(content))
+	content, readErr = os.ReadFile("file.txt")
+	require.NoError(t, readErr)
+	assert.Equal(t, "working", string(content))
+}
+
+func TestLegacyWorktreeForkIncludeWorking(t *testing.T) {
+	repoPath, mainPath := setupPublicCLIRepo(t, "legacyincludefork")
+
+	require.NoError(t, os.WriteFile("file.txt", []byte("clean"), 0644))
+	createCheckpointForPublicCLI(t, "base")
+	require.NoError(t, os.WriteFile("file.txt", []byte("working"), 0644))
+
+	stdout, stderr, exitCode := runContractSubprocess(t, mainPath, "--json", "worktree", "fork", "working-branch", "--include-working")
+	require.Equal(t, 0, exitCode, "legacy include-working fork failed: stdout=%s stderr=%s", stdout, stderr)
+	require.Empty(t, strings.TrimSpace(stderr))
+	env := decodeContractEnvelope(t, stdout)
+	require.True(t, env.OK, stdout)
+	assert.Contains(t, stdout, `"name": "working-branch"`)
+
+	content, readErr := os.ReadFile(filepath.Join(repoPath, "worktrees", "working-branch", "file.txt"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "working", string(content))
+	status := readStatusForPublicCLI(t)
+	assert.False(t, status.Dirty)
+}
+
 func TestPublicCLIRefResolverConflictsAndNoFuzzyNotes(t *testing.T) {
 	setupPublicCLIRepo(t, "refrepo")
 

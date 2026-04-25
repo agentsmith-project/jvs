@@ -19,7 +19,7 @@ Thank you for your interest in contributing to JVS (Juicy Versioned Workspaces)!
 
 - **Go**: Version 1.25.6 or later
 - **Operating System**: Linux, macOS, or Windows (with WSL2)
-- **Storage**: JuiceFS mount (optional but recommended for O(1) checkpoints)
+- **Storage**: supported JuiceFS mount (optional but recommended for O(1) checkpoints)
 
 ### Building
 

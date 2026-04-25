@@ -50,7 +50,7 @@ jvs checkpoint "Exp1: ResNet50 architecture" --tag exp1 --tag model
 # Run experiment
 python train.py --epochs 100
 
-# Experiment failed? Roll back instantly
+# Experiment failed? Restore from the JuiceFS-backed checkpoint
 jvs restore exp1
 vim train.py          # Fix the issue
 jvs checkpoint "Exp1: ResNet50 with fix" --tag exp1 --tag model
@@ -71,7 +71,7 @@ jvs checkpoint list | grep exp
 # Training crashed after 10 hours, dataset is corrupted
 
 # Option 1: Roll back to last good checkpoint
-jvs restore exp1      # O(1) instant recovery!
+jvs restore exp1      # metadata-clone recovery when juicefs-clone is active
 
 # Option 2: Create a branch to investigate
 jvs fork investigation
@@ -96,7 +96,7 @@ jvs restore stable
 
 | Benefit | How JVS Helps |
 |---------|--------------|
-| Instant rollback | O(1) restore regardless of dataset size |
+| Engine-scoped rollback | Metadata-clone restore on supported JuiceFS; copy fallback scales with data size |
 | Experiment tracking | Tags + notes organize experiments |
 | Safe experimentation | Fork branches without affecting main |
 | Reproducibility | Exact workspace state captured |
@@ -112,7 +112,7 @@ jvs restore stable
 You're developing a microservice with:
 - Multiple developers working on different features
 - Need to test production bugs locally
-- Want to switch between feature branches instantly
+- Want to switch between feature branches without Git checkout churn
 
 ### Setup
 
@@ -199,9 +199,9 @@ jvs checkpoint "Hotfix: Critical memory leak" --tag hotfix --tag stable
 | Benefit | How JVS Helps |
 |---------|--------------|
 | Parallel development | Fork workspaces, no conflicts |
-| Instant context switch | `cd` + `jvs restore` |
+| Context switch | `cd` + `jvs restore` |
 | Bug investigation | Reproduction environment preserved |
-| Production rollback | O(1) restore minimizes downtime |
+| Production rollback | `juicefs-clone` restore can minimize downtime; copy fallback scales with data size |
 
 ---
 
@@ -301,7 +301,7 @@ jvs doctor --strict --repair-runtime
 | Benefit | How JVS Helps |
 |---------|--------------|
 | Incremental backup | JuiceFS handles data, JVS handles metadata |
-| Point-in-time recovery | Restore any checkpoint in O(1) |
+| Point-in-time recovery | Restore any checkpoint; supported JuiceFS can use metadata clone |
 | Space-efficient | Two-phase GC for unprotected checkpoints |
 | Disaster recovery | Separated metadata/payload |
 | Verification integrity | Two-layer verification detects corruption |
@@ -548,7 +548,7 @@ cd "$(jvs workspace path production)"
 
 # Rollback to previous stable immediately
 jvs restore stable
-# O(1) rollback, minimal downtime
+# Rollback; metadata clone on supported JuiceFS
 
 # Investigate in separate workspace
 jvs fork investigation
@@ -568,7 +568,7 @@ jvs checkpoint "Production v1.1.1: Hotfix" --tag production --tag stable
 |---------|--------------|
 | Environment isolation | Separate workspaces, no conflicts |
 | Safe promotion | Test in staging, promote to production |
-| Instant rollback | O(1) restore minimizes downtime |
+| Engine-scoped rollback | `juicefs-clone` restore can minimize downtime; copy fallback scales with data size |
 | Version tracking | Tag each environment version |
 
 ---
