@@ -88,12 +88,12 @@ var checkpointListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List checkpoints",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		r, err := discoverRequiredRepo()
+		r, workspaceName, err := discoverRequiredWorktree()
 		if err != nil {
 			return err
 		}
 
-		checkpoints, err := snapshot.ListAll(r.Root)
+		checkpoints, err := snapshot.Find(r.Root, snapshot.FilterOptions{WorktreeName: workspaceName})
 		if err != nil {
 			return err
 		}
@@ -105,7 +105,6 @@ var checkpointListCmd = &cobra.Command{
 			return nil
 		}
 
-		_, workspaceName, _ := discoverOptionalWorktree()
 		var current, latest model.SnapshotID
 		if workspaceName != "" {
 			if cfg, err := worktree.NewManager(r.Root).Get(workspaceName); err == nil {

@@ -105,6 +105,76 @@ func resolveCheckpointRef(repoRoot, workspaceName, ref string) (model.SnapshotID
 	}
 }
 
+func resolveCheckpointRefInWorkspace(repoRoot, workspaceName, ref string) (model.SnapshotID, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", errclass.ErrUsage.WithMessage("checkpoint ref is required")
+	}
+
+	switch ref {
+	case "current":
+		return resolveWorkspaceCheckpointRef(repoRoot, workspaceName, "current")
+	case "latest":
+		return resolveWorkspaceCheckpointRef(repoRoot, workspaceName, "latest")
+	case "dirty":
+		return "", errRefReserved.WithMessagef("%q is a reserved ref for working changes, not a checkpoint", ref)
+	}
+
+	if id := model.SnapshotID(ref); id.IsValid() {
+		desc, err := snapshot.LoadDescriptor(repoRoot, id)
+		if err != nil {
+			return "", checkpointRefDescriptorError(repoRoot, ref, id, err)
+		}
+		if desc.WorktreeName != workspaceName {
+			return "", errRefNotFound.WithMessagef("checkpoint ref %q not found", ref)
+		}
+		return id, nil
+	}
+
+	all, err := snapshot.ListCatalogEntries(repoRoot)
+	if err != nil {
+		return "", err
+	}
+
+	var idMatches []snapshot.CatalogEntry
+	for _, entry := range all {
+		if !strings.HasPrefix(string(entry.SnapshotID), ref) {
+			continue
+		}
+		if entry.DescriptorErr != nil || entry.Descriptor.WorktreeName == workspaceName {
+			idMatches = append(idMatches, entry)
+		}
+	}
+
+	var tagMatches []snapshot.CatalogEntry
+	for _, entry := range all {
+		if entry.DescriptorErr != nil || entry.Descriptor.WorktreeName != workspaceName {
+			continue
+		}
+		for _, tag := range entry.Descriptor.Tags {
+			if tag == ref {
+				tagMatches = append(tagMatches, entry)
+				break
+			}
+		}
+	}
+
+	corruptEntry, hasCatalogDescriptorError := firstCatalogDescriptorError(all)
+	knownAmbiguous := len(idMatches) > 1 || len(tagMatches) > 1 || (len(idMatches) > 0 && len(tagMatches) > 0 && idMatches[0].SnapshotID != tagMatches[0].SnapshotID)
+	switch {
+	case knownAmbiguous:
+		return "", errRefAmbiguous.WithMessagef("ambiguous checkpoint ref %q", ref)
+	case hasCatalogDescriptorError:
+		return "", checkpointRefDescriptorError(repoRoot, ref, corruptEntry.SnapshotID, corruptEntry.DescriptorErr)
+	case len(idMatches) == 1:
+		return resolvedCatalogEntryID(repoRoot, ref, idMatches[0])
+	case len(tagMatches) == 1:
+		return tagMatches[0].SnapshotID, nil
+	default:
+		return "", errRefNotFound.WithMessagef("checkpoint ref %q not found", ref)
+	}
+}
+
 func firstCatalogDescriptorError(entries []snapshot.CatalogEntry) (snapshot.CatalogEntry, bool) {
 	for _, entry := range entries {
 		if entry.DescriptorErr != nil {

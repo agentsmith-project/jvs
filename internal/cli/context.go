@@ -55,14 +55,6 @@ func discoverRequiredWorktree() (*repo.Repo, string, error) {
 	return ctx.Repo, ctx.Workspace, nil
 }
 
-func discoverOptionalWorktree() (*repo.Repo, string, error) {
-	ctx, err := resolveRepoScoped()
-	if err != nil {
-		return nil, "", err
-	}
-	return ctx.Repo, ctx.Workspace, nil
-}
-
 // resolveRepoScoped resolves commands that only require a repository.
 func resolveRepoScoped() (*cliDiscoveryContext, error) {
 	repoStart, workspaceStart, err := discoveryStarts()
@@ -94,9 +86,7 @@ func resolveWorkspaceScoped() (*cliDiscoveryContext, error) {
 		return nil, err
 	}
 	if ctx.Workspace == "" {
-		return nil, errclass.ErrNotWorkspace.
-			WithMessage("not inside a workspace").
-			WithHint("Run from a workspace directory such as main/, or pass --workspace <name>.")
+		return nil, notInsideWorkspaceError()
 	}
 	workspace, err := resolveNamedWorkspace(ctx.Repo.Root, ctx.Workspace)
 	if err != nil {
@@ -242,16 +232,29 @@ func workspaceFromPath(repoRoot, path string) (string, error) {
 			cleanRepoRoot(repoRoot), workspace, cleanRepoRoot(r.Root),
 		)
 	}
+	if _, err := repo.LoadWorktreeConfig(repoRoot, workspace); err != nil {
+		return "", nil
+	}
 	return workspace, nil
 }
 
 func resolveNamedWorkspace(repoRoot, name string) (string, error) {
 	if _, err := repo.LoadWorktreeConfig(repoRoot, name); err != nil {
-		return "", errclass.ErrNotWorkspace.
-			WithMessagef("workspace %q not found", name).
-			WithHint("Run jvs workspace list to see available workspaces.")
+		return "", missingWorkspaceError(name)
 	}
 	return name, nil
+}
+
+func notInsideWorkspaceError() error {
+	return errclass.ErrNotWorkspace.
+		WithMessage("not inside a workspace").
+		WithHint("Run from a workspace directory such as main/, or pass --workspace <name>.")
+}
+
+func missingWorkspaceError(name string) error {
+	return errclass.ErrNotWorkspace.
+		WithMessagef("workspace %q not found", name).
+		WithHint("Run jvs workspace list to see available workspaces.")
 }
 
 func fmtErr(format string, args ...any) {

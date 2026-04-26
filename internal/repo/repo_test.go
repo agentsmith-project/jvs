@@ -181,12 +181,28 @@ func TestDiscoverWorktree_NamedWorktree(t *testing.T) {
 	// Create config for worktree
 	cfgDir := filepath.Join(repoPath, ".jvs", "worktrees", "feature")
 	require.NoError(t, os.MkdirAll(cfgDir, 0755))
+	require.NoError(t, repo.WriteWorktreeConfig(repoPath, "feature", &model.WorktreeConfig{Name: "feature"}))
 
 	// Discover from named worktree
 	r, wtName, err := repo.DiscoverWorktree(wtPath)
 	require.NoError(t, err)
 	assert.Equal(t, repoPath, r.Root)
 	assert.Equal(t, "feature", wtName)
+}
+
+func TestDiscoverWorktreeRejectsFakePayloadWithRegisteredName(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "myrepo")
+	_, err := repo.Init(repoPath, "myrepo")
+	require.NoError(t, err)
+
+	fakeMain := filepath.Join(repoPath, "worktrees", "main", "nested")
+	require.NoError(t, os.MkdirAll(fakeMain, 0755))
+
+	r, wtName, err := repo.DiscoverWorktree(fakeMain)
+	require.NoError(t, err)
+	assert.Equal(t, repoPath, r.Root)
+	assert.Equal(t, "", wtName)
 }
 
 func TestDiscoverWorktree_FromJvsDir(t *testing.T) {

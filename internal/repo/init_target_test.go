@@ -3,6 +3,7 @@ package repo
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -56,4 +57,26 @@ func TestInitTarget_RejectsNestedRepository(t *testing.T) {
 	_, err = InitTarget(nested)
 	require.Error(t, err)
 	require.NoDirExists(t, filepath.Join(nested, ".jvs"))
+}
+
+func TestInitTarget_RejectsPhysicalNestedRepositoryViaSymlinkParent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior differs on Windows")
+	}
+
+	base := t.TempDir()
+	root := filepath.Join(base, "outer")
+	_, err := InitTarget(root)
+	require.NoError(t, err)
+
+	linkParent := filepath.Join(base, "link-to-main")
+	if err := os.Symlink(filepath.Join(root, "main"), linkParent); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	target := filepath.Join(linkParent, "nested")
+	_, err = InitTarget(target)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "nested repository")
+	require.NoDirExists(t, filepath.Join(root, "main", "nested", ".jvs"))
 }

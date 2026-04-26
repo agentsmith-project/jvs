@@ -36,7 +36,8 @@ type Repo struct {
 
 // ValidateInitTarget returns the absolute target path after enforcing the
 // repository creation rules: the target must be missing or empty, must not
-// already contain .jvs metadata, and must not be nested inside a JVS repo.
+// already contain .jvs metadata, and must not be lexically or physically nested
+// inside a JVS repo.
 func ValidateInitTarget(path string) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", fmt.Errorf("repository path must not be empty")
@@ -53,6 +54,15 @@ func ValidateInitTarget(path string) (string, error) {
 	}
 	if err := rejectNestedInitTarget(target); err != nil {
 		return "", err
+	}
+	physicalTarget, err := resolvePhysicalInitTarget(target)
+	if err != nil {
+		return "", fmt.Errorf("resolve repository target: %w", err)
+	}
+	if physicalTarget != target {
+		if err := rejectNestedInitTarget(physicalTarget); err != nil {
+			return "", fmt.Errorf("%w (physical target: %s)", err, physicalTarget)
+		}
 	}
 	return target, nil
 }
@@ -203,6 +213,43 @@ func rejectNestedInitTarget(target string) error {
 	}
 }
 
+func resolvePhysicalInitTarget(abs string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err == nil {
+		return filepath.Clean(resolved), nil
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("resolve symlinks for %s: %w", abs, err)
+	}
+
+	ancestor := abs
+	var suffix []string
+	for {
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			return "", fmt.Errorf("no existing ancestor for %s", abs)
+		}
+		suffix = append([]string{filepath.Base(ancestor)}, suffix...)
+		ancestor = parent
+
+		resolvedAncestor, err := filepath.EvalSymlinks(ancestor)
+		if err == nil {
+			info, statErr := os.Stat(resolvedAncestor)
+			if statErr != nil {
+				return "", fmt.Errorf("stat resolved ancestor %s: %w", resolvedAncestor, statErr)
+			}
+			if !info.IsDir() {
+				return "", fmt.Errorf("repository target parent is not a directory: %s", ancestor)
+			}
+			parts := append([]string{filepath.Clean(resolvedAncestor)}, suffix...)
+			return filepath.Clean(filepath.Join(parts...)), nil
+		}
+		if err != nil && !os.IsNotExist(err) {
+			return "", fmt.Errorf("resolve symlinks for existing ancestor %s: %w", ancestor, err)
+		}
+	}
+}
+
 // Discover walks up from cwd to find the repo root (directory containing .jvs/).
 func Discover(cwd string) (*Repo, error) {
 	path := cwd
@@ -242,32 +289,88 @@ func DiscoverWorktree(cwd string) (*Repo, string, error) {
 		return nil, "", err
 	}
 
-	// Get relative path from repo root
-	rel, err := filepath.Rel(r.Root, cwd)
+	name, err := registeredWorktreeFromPath(r.Root, cwd)
 	if err != nil {
-		return nil, "", fmt.Errorf("compute relative path: %w", err)
+		return nil, "", err
 	}
+	return r, name, nil
+}
 
-	// Map to worktree name
-	parts := strings.Split(filepath.ToSlash(rel), "/")
-	if len(parts) == 0 {
-		return r, "", nil
-	}
-
-	switch parts[0] {
-	case "main":
-		return r, "main", nil
-	case "worktrees":
-		if len(parts) >= 2 {
-			return r, parts[1], nil
+func registeredWorktreeFromPath(repoRoot, cwd string) (string, error) {
+	worktreesDir, err := WorktreesDirPath(repoRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
 		}
-		return r, "", nil
-	case JVSDirName:
-		// Inside .jvs/, not a worktree
-		return r, "", nil
-	default:
-		return r, "", nil
+		return "", fmt.Errorf("resolve workspaces directory: %w", err)
 	}
+	entries, err := os.ReadDir(worktreesDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read workspaces directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		payloadPath, err := WorktreePayloadPath(repoRoot, name)
+		if err != nil {
+			continue
+		}
+		if payloadIsSymlink(payloadPath) {
+			continue
+		}
+		inside, err := pathContainsPhysicalPath(payloadPath, cwd)
+		if err != nil {
+			return "", err
+		}
+		if !inside {
+			continue
+		}
+		cfg, err := LoadWorktreeConfig(repoRoot, name)
+		if err != nil || cfg.Name != name {
+			return "", nil
+		}
+		return name, nil
+	}
+	return "", nil
+}
+
+func payloadIsSymlink(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode()&os.ModeSymlink != 0
+}
+
+func pathContainsPhysicalPath(base, path string) (bool, error) {
+	basePhysical, err := existingPhysicalPath(base)
+	if err != nil {
+		return false, nil
+	}
+	pathPhysical, err := existingPhysicalPath(path)
+	if err != nil {
+		return false, fmt.Errorf("resolve workspace path: %w", err)
+	}
+	rel, err := filepath.Rel(basePhysical, pathPhysical)
+	if err != nil {
+		return false, fmt.Errorf("compute workspace relative path: %w", err)
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && !filepath.IsAbs(rel)), nil
+}
+
+func existingPhysicalPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	physical, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(physical), nil
 }
 
 // WorktreeConfigPath returns the path to a worktree's config.json.

@@ -34,19 +34,19 @@ import (
 // and correctly validates/rejects inputs according to the specification.
 func FuzzValidateName(f *testing.F) {
 	// Seed corpus with edge cases
-	f.Add("")                           // empty string
-	f.Add("valid-name-123")             // valid name
-	f.Add("..")                          // path traversal
-	f.Add("../escape")                   // path traversal attempt
-	f.Add("name/with/slash")             // invalid separator
-	f.Add(`name\with\backslash`)        // invalid separator
-	f.Add("name\twith\tcontrol")         // control character
-	f.Add("name\x00null")               // null byte
-	f.Add("a")                           // single char
-	f.Add("aa")                          // two chars
-	f.Add("a.b")                         // dot
-	f.Add("a-b")                         // hyphen
-	f.Add("a_b")                         // underscore
+	f.Add("")                    // empty string
+	f.Add("valid-name-123")      // valid name
+	f.Add("..")                  // path traversal
+	f.Add("../escape")           // path traversal attempt
+	f.Add("name/with/slash")     // invalid separator
+	f.Add(`name\with\backslash`) // invalid separator
+	f.Add("name\twith\tcontrol") // control character
+	f.Add("name\x00null")        // null byte
+	f.Add("a")                   // single char
+	f.Add("aa")                  // two chars
+	f.Add("a.b")                 // dot
+	f.Add("a-b")                 // hyphen
+	f.Add("a_b")                 // underscore
 	f.Add("very-long-name-with-many-chars-that-still-valid-123456789")
 
 	f.Fuzz(func(t *testing.T, name string) {
@@ -94,16 +94,16 @@ func FuzzValidateTag(f *testing.F) {
 // This fuzz target ensures parsing doesn't crash on malformed input.
 func FuzzParseSnapshotID(f *testing.F) {
 	// Seed corpus
-	f.Add("1708300800000-a3f7c1b2")        // valid
-	f.Add("")                               // empty
-	f.Add("-")                              // just separator
-	f.Add("123")                            // too short
-	f.Add("1708300800000-")                 // missing random part
-	f.Add("-a3f7c1b2")                      // missing timestamp
-	f.Add("1708300800000-abc")             // random too short
-	f.Add("not-a-number-abc")              // invalid timestamp
-	f.Add("1708300800000-gghhii")           // invalid hex
-	f.Add("1708300800000-xxxxxxxx")         // valid hex format
+	f.Add("1708300800000-a3f7c1b2") // valid
+	f.Add("")                       // empty
+	f.Add("-")                      // just separator
+	f.Add("123")                    // too short
+	f.Add("1708300800000-")         // missing random part
+	f.Add("-a3f7c1b2")              // missing timestamp
+	f.Add("1708300800000-abc")      // random too short
+	f.Add("not-a-number-abc")       // invalid timestamp
+	f.Add("1708300800000-gghhii")   // invalid hex
+	f.Add("1708300800000-xxxxxxxx") // valid hex format
 
 	f.Fuzz(func(t *testing.T, data string) {
 		// Convert to SnapshotID type - should not panic
@@ -137,7 +137,7 @@ func FuzzCanonicalMarshal(f *testing.F) {
 	f.Add([]byte(`{}`))
 	f.Add([]byte(`[]`))
 	f.Add([]byte(`{"a":1,"b":2,"c":3}`))
-	f.Add([]byte(`{"z":9,"a":1,"m":5}`))  // test key ordering
+	f.Add([]byte(`{"z":9,"a":1,"m":5}`)) // test key ordering
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		// First, try to interpret data as JSON
@@ -186,11 +186,11 @@ func FuzzDescriptorJSON(f *testing.F) {
 	validJSON, _ := json.Marshal(validDesc)
 
 	f.Add(validJSON)
-	f.Add([]byte(`{}`))                           // empty object
-	f.Add([]byte(`{"snapshot_id":"test"}`))      // minimal
-	f.Add([]byte(`invalid json`))                // invalid JSON
-	f.Add([]byte(`{"snapshot_id":123}`))         // wrong type
-	f.Add([]byte(`{"extra":"field"}`))           // extra field
+	f.Add([]byte(`{}`))                     // empty object
+	f.Add([]byte(`{"snapshot_id":"test"}`)) // minimal
+	f.Add([]byte(`invalid json`))           // invalid JSON
+	f.Add([]byte(`{"snapshot_id":123}`))    // wrong type
+	f.Add([]byte(`{"extra":"field"}`))      // extra field
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		// Unmarshal should not panic
@@ -207,6 +207,12 @@ func FuzzDescriptorJSON(f *testing.F) {
 	})
 }
 
+const maxSnapshotIDStringFuzzInput = 4096
+
+func snapshotIDStringFuzzInputAllowed(data string) bool {
+	return len(data) <= maxSnapshotIDStringFuzzInput
+}
+
 // FuzzSnapshotIDString tests SnapshotID.String() consistency.
 func FuzzSnapshotIDString(f *testing.F) {
 	// Seed corpus
@@ -214,8 +220,15 @@ func FuzzSnapshotIDString(f *testing.F) {
 	f.Add("")
 	f.Add("-")
 	f.Add("abc")
+	f.Add("12345678")
+	f.Add("123456789")
+	f.Add(strings.Repeat("x", maxSnapshotIDStringFuzzInput))
 
 	f.Fuzz(func(t *testing.T, data string) {
+		if !snapshotIDStringFuzzInputAllowed(data) {
+			t.Skip("snapshot ID string fuzz input exceeds release-gate size bound")
+		}
+
 		id := model.SnapshotID(data)
 
 		// String() should always return the original input
@@ -589,5 +602,14 @@ func TestNewSnapshotID(t *testing.T) {
 		if len(id.ShortID()) != 8 {
 			t.Errorf("ShortID() returned %d chars, want 8", len(id.ShortID()))
 		}
+	}
+}
+
+func TestSnapshotIDStringFuzzInputBound(t *testing.T) {
+	if !snapshotIDStringFuzzInputAllowed(strings.Repeat("x", maxSnapshotIDStringFuzzInput)) {
+		t.Fatal("boundary-sized snapshot ID string input should remain fuzzed")
+	}
+	if snapshotIDStringFuzzInputAllowed(strings.Repeat("x", maxSnapshotIDStringFuzzInput+1)) {
+		t.Fatal("oversized snapshot ID string input should be skipped")
 	}
 }

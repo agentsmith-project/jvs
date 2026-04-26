@@ -58,6 +58,17 @@ func TestResolveCheckpointRefTagAliasFailsClosedWithUnreadableDescriptor(t *test
 	require.True(t, errors.Is(err, errclass.ErrDescriptorCorrupt), "got %v", err)
 }
 
+func TestResolveCheckpointRefInWorkspaceTagAliasFailsClosedWithUnreadableDescriptor(t *testing.T) {
+	repoRoot := setupRefResolutionRepo(t)
+	createRefResolutionCheckpoint(t, repoRoot, "release target", []string{"release"})
+	broken := createRefResolutionCheckpoint(t, repoRoot, "unreadable descriptor", []string{"other"})
+	corruptRefResolutionDescriptor(t, repoRoot, broken)
+
+	_, err := resolveCheckpointRefInWorkspace(repoRoot, "main", "release")
+	require.Error(t, err)
+	require.True(t, errors.Is(err, errclass.ErrDescriptorCorrupt), "got %v", err)
+}
+
 func TestCheckpointListMalformedReadyJSONUsesPublishStateCode(t *testing.T) {
 	repoRoot := setupRefResolutionRepo(t)
 	id := createRefResolutionCheckpoint(t, repoRoot, "malformed ready", nil)

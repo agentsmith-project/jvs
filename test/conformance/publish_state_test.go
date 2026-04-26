@@ -272,14 +272,10 @@ func createPublishStateVictim(t *testing.T, name string) (string, string) {
 	if stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "checkpoint", "base"); code != 0 {
 		t.Fatalf("base checkpoint failed: stdout=%s stderr=%s", stdout, stderr)
 	}
-	if stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "fork", "victim"); code != 0 {
-		t.Fatalf("fork victim failed: stdout=%s stderr=%s", stdout, stderr)
-	}
-	victimPath := filepath.Join(repoPath, "worktrees", "victim")
-	if err := os.WriteFile(filepath.Join(victimPath, "victim.txt"), []byte(name), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(mainPath, "victim.txt"), []byte(name), 0644); err != nil {
 		t.Fatalf("write victim: %v", err)
 	}
-	checkpointOut, stderr, code := runJVSInWorktree(t, repoPath, "victim", "--json", "checkpoint", "victim "+name)
+	checkpointOut, stderr, code := runJVSInRepo(t, repoPath, "--json", "checkpoint", "victim "+name)
 	if code != 0 {
 		t.Fatalf("victim checkpoint failed: stdout=%s stderr=%s", checkpointOut, stderr)
 	}
@@ -287,8 +283,11 @@ func createPublishStateVictim(t *testing.T, name string) (string, string) {
 	if checkpointID == "" {
 		t.Fatalf("victim checkpoint output missing checkpoint_id: %s", checkpointOut)
 	}
-	if stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "workspace", "remove", "victim"); code != 0 {
-		t.Fatalf("remove victim workspace failed: stdout=%s stderr=%s", stdout, stderr)
+	if err := os.WriteFile(filepath.Join(mainPath, "healthy.txt"), []byte("healthy current"), 0644); err != nil {
+		t.Fatalf("write healthy current: %v", err)
+	}
+	if stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "checkpoint", "healthy current"); code != 0 {
+		t.Fatalf("healthy current checkpoint failed: stdout=%s stderr=%s", stdout, stderr)
 	}
 	return repoPath, checkpointID
 }

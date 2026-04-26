@@ -225,6 +225,202 @@ func TestCLITargetingRepoFlag_StatusAcceptsSymlinkedPathInsideSamePhysicalRepo(t
 	assert.Equal(t, "main", *env.Workspace)
 }
 
+func TestCLITargetingInferredWorkspaceMustBeRegistered(t *testing.T) {
+	repoRoot, _ := setupTargetingContractRepo(t)
+	ghostPath := filepath.Join(repoRoot, "worktrees", "ghost", "nested")
+	require.NoError(t, os.MkdirAll(ghostPath, 0755))
+
+	stdout, stderr, exitCode := runContractSubprocess(t, ghostPath, "--json", "info")
+	require.Equal(t, 0, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	env := decodeContractEnvelope(t, stdout)
+	require.True(t, env.OK, stdout)
+	require.NotNil(t, env.RepoRoot)
+	assert.Equal(t, repoRoot, *env.RepoRoot)
+	assert.Nil(t, env.Workspace)
+
+	stdout, stderr, exitCode = runContractSubprocess(t, ghostPath, "--json", "status")
+	require.Equal(t, 1, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	env = decodeContractEnvelope(t, stdout)
+	assert.False(t, env.OK)
+	assert.Equal(t, "status", env.Command)
+	require.NotNil(t, env.RepoRoot)
+	assert.Equal(t, repoRoot, *env.RepoRoot)
+	assert.Nil(t, env.Workspace)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, "E_NOT_WORKSPACE", env.Error.Code)
+	assert.NotContains(t, stdout, "ghost")
+}
+
+func TestCLITargetingFakePayloadWithRegisteredNameIsNotWorkspace(t *testing.T) {
+	repoRoot, _ := setupTargetingContractRepo(t)
+	fakeMain := filepath.Join(repoRoot, "worktrees", "main", "nested")
+	require.NoError(t, os.MkdirAll(fakeMain, 0755))
+
+	stdout, stderr, exitCode := runContractSubprocess(t, fakeMain, "--json", "info")
+	require.Equal(t, 0, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	env := decodeContractEnvelope(t, stdout)
+	require.True(t, env.OK, stdout)
+	assert.Nil(t, env.Workspace)
+
+	stdout, stderr, exitCode = runContractSubprocess(t, fakeMain, "--json", "status")
+	require.Equal(t, 1, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	env = decodeContractEnvelope(t, stdout)
+	assert.False(t, env.OK)
+	assert.Equal(t, "status", env.Command)
+	assert.Nil(t, env.Workspace)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, "E_NOT_WORKSPACE", env.Error.Code)
+}
+
+func TestCLITargetingMetadataDirRequiresExplicitWorkspace(t *testing.T) {
+	repoRoot, mainPath := setupTargetingContractRepo(t)
+	firstID := createTargetingContractCheckpoint(t, mainPath, "first")
+	secondID := createTargetingContractCheckpoint(t, mainPath, "second")
+
+	metadataCWDs := []string{
+		filepath.Join(repoRoot, ".jvs"),
+		filepath.Join(repoRoot, ".jvs", "worktrees", "main"),
+	}
+	for _, cwd := range metadataCWDs {
+		t.Run(filepath.Base(cwd), func(t *testing.T) {
+			for _, tc := range []struct {
+				name    string
+				command string
+				args    []string
+			}{
+				{name: "status", command: "status", args: []string{"--json", "status"}},
+				{name: "workspace_path", command: "workspace path", args: []string{"--json", "workspace", "path"}},
+				{name: "checkpoint_list", command: "checkpoint list", args: []string{"--json", "checkpoint", "list"}},
+				{name: "diff", command: "diff", args: []string{"--json", "diff", firstID, secondID}},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					stdout, stderr, exitCode := runContractSubprocess(t, cwd, tc.args...)
+					require.Equal(t, 1, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+					assert.Empty(t, strings.TrimSpace(stderr))
+					env := decodeContractEnvelope(t, stdout)
+					assert.False(t, env.OK)
+					assert.Equal(t, tc.command, env.Command)
+					require.NotNil(t, env.RepoRoot)
+					assert.Equal(t, repoRoot, *env.RepoRoot)
+					assert.Nil(t, env.Workspace)
+					require.NotNil(t, env.Error)
+					assert.Equal(t, "E_NOT_WORKSPACE", env.Error.Code)
+				})
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name    string
+		command string
+		args    []string
+	}{
+		{name: "status", command: "status", args: []string{"--json", "--workspace", "main", "status"}},
+		{name: "workspace_path", command: "workspace path", args: []string{"--json", "--workspace", "main", "workspace", "path"}},
+		{name: "checkpoint_list", command: "checkpoint list", args: []string{"--json", "--workspace", "main", "checkpoint", "list"}},
+		{name: "diff", command: "diff", args: []string{"--json", "--workspace", "main", "diff", firstID, secondID}},
+	} {
+		t.Run("explicit_"+tc.name, func(t *testing.T) {
+			stdout, stderr, exitCode := runContractSubprocess(t, filepath.Join(repoRoot, ".jvs"), tc.args...)
+			require.Equal(t, 0, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+			assert.Empty(t, strings.TrimSpace(stderr))
+			env := decodeContractEnvelope(t, stdout)
+			require.True(t, env.OK, stdout)
+			assert.Equal(t, tc.command, env.Command)
+			require.NotNil(t, env.Workspace)
+			assert.Equal(t, "main", *env.Workspace)
+		})
+	}
+}
+
+func TestCLITargetingWorkspaceFlagOverridesCWDWorkspace(t *testing.T) {
+	repoRoot, mainPath := setupTargetingContractRepo(t)
+	createTargetingContractCheckpoint(t, mainPath, "base")
+	stdout, stderr, exitCode := runContractSubprocess(t, mainPath, "--json", "fork", "feature")
+	require.Equal(t, 0, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+
+	stdout, stderr, exitCode = runContractSubprocess(t, mainPath, "--json", "--workspace", "feature", "status")
+	require.Equal(t, 0, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	env := decodeContractEnvelope(t, stdout)
+	require.True(t, env.OK, stdout)
+	require.NotNil(t, env.RepoRoot)
+	assert.Equal(t, repoRoot, *env.RepoRoot)
+	require.NotNil(t, env.Workspace)
+	assert.Equal(t, "feature", *env.Workspace)
+	data := decodeContractDataMap(t, stdout)
+	assert.Equal(t, "feature", data["workspace"])
+}
+
+func TestCLITargetingCheckpointListIsWorkspaceScoped(t *testing.T) {
+	_, mainPath := setupTargetingContractRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte("main base"), 0644))
+	mainID := createTargetingContractCheckpoint(t, mainPath, "main only")
+
+	stdout, stderr, exitCode := runContractSubprocess(t, mainPath, "--json", "fork", "feature")
+	require.Equal(t, 0, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+	featurePath := filepath.Join(filepath.Dir(mainPath), "worktrees", "feature")
+	require.NoError(t, os.WriteFile(filepath.Join(featurePath, "data.txt"), []byte("feature change"), 0644))
+	featureID := createTargetingContractCheckpoint(t, featurePath, "feature only")
+
+	stdout, stderr, exitCode = runContractSubprocess(t, mainPath, "--json", "checkpoint", "list")
+	require.Equal(t, 0, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+	mainRecords := decodeTargetingCheckpointRecords(t, stdout)
+	require.Len(t, mainRecords, 1, stdout)
+	assert.Equal(t, mainID, mainRecords[0].CheckpointID)
+	assert.Equal(t, "main", mainRecords[0].Workspace)
+
+	stdout, stderr, exitCode = runContractSubprocess(t, featurePath, "--json", "checkpoint", "list")
+	require.Equal(t, 0, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+	featureRecords := decodeTargetingCheckpointRecords(t, stdout)
+	require.Len(t, featureRecords, 1, stdout)
+	assert.Equal(t, featureID, featureRecords[0].CheckpointID)
+	assert.Equal(t, "feature", featureRecords[0].Workspace)
+}
+
+func TestCLITargetingDiffRejectsCrossWorkspaceCheckpointRefs(t *testing.T) {
+	_, mainPath := setupTargetingContractRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte("main base"), 0644))
+	mainID := createTargetingContractCheckpoint(t, mainPath, "main base")
+
+	stdout, stderr, exitCode := runContractSubprocess(t, mainPath, "--json", "fork", "feature")
+	require.Equal(t, 0, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+	featurePath := filepath.Join(filepath.Dir(mainPath), "worktrees", "feature")
+	require.NoError(t, os.WriteFile(filepath.Join(featurePath, "data.txt"), []byte("feature change"), 0644))
+	featureID := createTargetingContractCheckpointWithArgs(t, featurePath, "feature tagged", "--tag", "feature-tag")
+
+	for _, tc := range []struct {
+		name string
+		ref  string
+	}{
+		{name: "full_id", ref: featureID},
+		{name: "short_id", ref: featureID[:12]},
+		{name: "tag", ref: "feature-tag"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, exitCode := runContractSubprocess(t, mainPath, "--json", "diff", mainID, tc.ref)
+			require.Equal(t, 1, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+			assert.Empty(t, strings.TrimSpace(stderr))
+			env := decodeContractEnvelope(t, stdout)
+			assert.False(t, env.OK)
+			assert.Equal(t, "diff", env.Command)
+			require.NotNil(t, env.Workspace)
+			assert.Equal(t, "main", *env.Workspace)
+			require.NotNil(t, env.Error)
+			assert.Equal(t, "E_REF_NOT_FOUND", env.Error.Code)
+			assert.NotContains(t, env.Error.Message, ".jvs")
+			assert.NotContains(t, env.Error.Message, "worktrees")
+		})
+	}
+
+	stdout, stderr, exitCode = runContractSubprocess(t, featurePath, "--json", "diff", featureID, "feature-tag")
+	require.Equal(t, 0, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+}
+
 func TestCLITargetingRepoFlag_StatusRejectsWorkspaceFromDifferentRepo(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
@@ -258,6 +454,92 @@ func TestCLITargetingRepoFlag_StatusRejectsWorkspaceFromDifferentRepo(t *testing
 	assert.Contains(t, env.Error.Message, filepath.Join(dir, "repoB"))
 	assertPublicErrorOmitsLegacyVocabulary(t, env.Error)
 	assert.JSONEq(t, `null`, string(env.Data))
+}
+
+func TestCLITargetingMissingWorkspaceUsesPublicNotWorkspaceError(t *testing.T) {
+	_, mainPath := setupTargetingContractRepo(t)
+
+	for _, tc := range []struct {
+		name    string
+		command string
+		args    []string
+	}{
+		{name: "path", command: "workspace path", args: []string{"--json", "workspace", "path", "missing"}},
+		{name: "remove", command: "workspace remove", args: []string{"--json", "workspace", "remove", "missing"}},
+		{name: "rename", command: "workspace rename", args: []string{"--json", "workspace", "rename", "missing", "renamed"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, exitCode := runContractSubprocess(t, mainPath, tc.args...)
+			require.Equal(t, 1, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+			assert.Empty(t, strings.TrimSpace(stderr))
+			env := decodeContractEnvelope(t, stdout)
+			assert.False(t, env.OK)
+			assert.Equal(t, tc.command, env.Command)
+			require.NotNil(t, env.Error)
+			assert.Equal(t, "E_NOT_WORKSPACE", env.Error.Code)
+			assert.Contains(t, env.Error.Message, "workspace")
+			assert.NotContains(t, env.Error.Message, ".jvs")
+			assert.NotContains(t, env.Error.Message, "config")
+			assertPublicErrorOmitsLegacyVocabulary(t, env.Error)
+		})
+	}
+}
+
+func TestCLITargetingCheckpointListRequiresWorkspace(t *testing.T) {
+	repoRoot, mainPath := setupTargetingContractRepo(t)
+	createTargetingContractCheckpoint(t, mainPath, "first")
+
+	stdout, stderr, exitCode := runContractSubprocess(t, repoRoot, "--json", "checkpoint", "list")
+	require.Equal(t, 1, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	env := decodeContractEnvelope(t, stdout)
+	assert.False(t, env.OK)
+	assert.Equal(t, "checkpoint list", env.Command)
+	assert.Nil(t, env.Workspace)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, "E_NOT_WORKSPACE", env.Error.Code)
+
+	stdout, stderr, exitCode = runContractSubprocess(t, repoRoot, "--json", "--workspace", "main", "checkpoint", "list")
+	require.Equal(t, 0, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+	env = decodeContractEnvelope(t, stdout)
+	require.True(t, env.OK, stdout)
+	require.NotNil(t, env.Workspace)
+	assert.Equal(t, "main", *env.Workspace)
+}
+
+func TestCLITargetingDiffRequiresWorkspaceBeforeResolvingFullCheckpointIDs(t *testing.T) {
+	repoRoot, mainPath := setupTargetingContractRepo(t)
+	firstID := createTargetingContractCheckpoint(t, mainPath, "first")
+	secondID := createTargetingContractCheckpoint(t, mainPath, "second")
+
+	stdout, stderr, exitCode := runContractSubprocess(t, repoRoot, "--json", "diff", firstID, secondID)
+	require.Equal(t, 1, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	env := decodeContractEnvelope(t, stdout)
+	assert.False(t, env.OK)
+	assert.Equal(t, "diff", env.Command)
+	assert.Nil(t, env.Workspace)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, "E_NOT_WORKSPACE", env.Error.Code)
+
+	for _, tc := range []struct {
+		name string
+		cwd  string
+		args []string
+	}{
+		{name: "workspace_cwd", cwd: mainPath, args: []string{"--json", "diff", firstID, secondID}},
+		{name: "workspace_flag", cwd: repoRoot, args: []string{"--json", "--workspace", "main", "diff", firstID, secondID}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, exitCode := runContractSubprocess(t, tc.cwd, tc.args...)
+			require.Equal(t, 0, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+			assert.Empty(t, strings.TrimSpace(stderr))
+			env := decodeContractEnvelope(t, stdout)
+			require.True(t, env.OK, stdout)
+			require.NotNil(t, env.Workspace)
+			assert.Equal(t, "main", *env.Workspace)
+		})
+	}
 }
 
 func TestCLITargetingRepoFlag_RejectsDifferentRepoWithDuplicatedRepoID(t *testing.T) {
@@ -696,6 +978,52 @@ func decodeContractDataMap(t *testing.T, stdout string) map[string]any {
 	var data map[string]any
 	require.NoError(t, json.Unmarshal(env.Data, &data), stdout)
 	return data
+}
+
+func setupTargetingContractRepo(t *testing.T) (repoRoot string, mainPath string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	originalWd, _ := os.Getwd()
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() {
+		require.NoError(t, os.Chdir(originalWd))
+	})
+
+	stdout, err := executeCommand(createTestRootCmd(), "init", "testrepo")
+	require.NoError(t, err, stdout)
+
+	repoRoot = filepath.Join(dir, "testrepo")
+	mainPath = filepath.Join(repoRoot, "main")
+	return repoRoot, mainPath
+}
+
+func createTargetingContractCheckpoint(t *testing.T, mainPath, note string) string {
+	t.Helper()
+
+	return createTargetingContractCheckpointWithArgs(t, mainPath, note)
+}
+
+func createTargetingContractCheckpointWithArgs(t *testing.T, workspacePath, note string, args ...string) string {
+	t.Helper()
+
+	allArgs := append([]string{"--json", "checkpoint", note}, args...)
+	stdout, stderr, exitCode := runContractSubprocess(t, workspacePath, allArgs...)
+	require.Equal(t, 0, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	data := decodeContractDataMap(t, stdout)
+	checkpointID, _ := data["checkpoint_id"].(string)
+	require.NotEmpty(t, checkpointID, stdout)
+	return checkpointID
+}
+
+func decodeTargetingCheckpointRecords(t *testing.T, stdout string) []publicCheckpointRecord {
+	t.Helper()
+	env := decodeContractEnvelope(t, stdout)
+	require.True(t, env.OK, stdout)
+	var records []publicCheckpointRecord
+	require.NoError(t, json.Unmarshal(env.Data, &records), stdout)
+	return records
 }
 
 func assertSetupJSONContractForTest(t *testing.T, stdout string) map[string]any {

@@ -27,16 +27,16 @@ Refs can be current, latest, a full checkpoint ID, a unique short ID, or an exac
 		return nil
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
-		r, wtName, err := discoverOptionalWorktree()
+		r, wtName, err := discoverRequiredWorktree()
 		if err != nil {
 			return err
 		}
 
-		fromID, err := resolveCheckpointRef(r.Root, wtName, args[0])
+		fromID, err := resolveCheckpointRefInWorkspace(r.Root, wtName, args[0])
 		if err != nil {
 			return fmt.Errorf("resolve from checkpoint: %w", err)
 		}
-		toID, err := resolveCheckpointRef(r.Root, wtName, args[1])
+		toID, err := resolveCheckpointRefInWorkspace(r.Root, wtName, args[1])
 		if err != nil {
 			return fmt.Errorf("resolve to checkpoint: %w", err)
 		}

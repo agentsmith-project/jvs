@@ -44,16 +44,17 @@ var cloneCmd = &cobra.Command{
 }
 
 func runCloneFull(sourceArg, destArg string) error {
-	sourceRoot, err := discoverRepoRoot(sourceArg)
+	sourceRepo, err := discoverCloneSourceRepo(sourceArg)
 	if err != nil {
 		return fmt.Errorf("discover source repository: %w", err)
+	}
+	sourceRoot := sourceRepo.Root
+	if err := rejectDangerousOverlap("source repository", sourceRoot, "destination repository", destArg); err != nil {
+		return err
 	}
 	destRoot, err := repo.ValidateInitTarget(destArg)
 	if err != nil {
 		return fmt.Errorf("validate destination repository: %w", err)
-	}
-	if err := rejectDangerousOverlap("source repository", sourceRoot, "destination repository", destRoot); err != nil {
-		return err
 	}
 
 	var transferResult *engine.CloneResult
@@ -132,12 +133,12 @@ func runCloneCurrent(sourceArg, destArg string) error {
 	if err := rejectContainsJVS(sourceWorkspace); err != nil {
 		return err
 	}
+	if err := rejectDangerousOverlap("source repository", sourceRepo.Root, "destination repository", destArg); err != nil {
+		return err
+	}
 	destRoot, err := repo.ValidateInitTarget(destArg)
 	if err != nil {
 		return fmt.Errorf("validate destination repository: %w", err)
-	}
-	if err := rejectDangerousOverlap("source repository", sourceRepo.Root, "destination repository", destRoot); err != nil {
-		return err
 	}
 
 	var r *repo.Repo
@@ -209,44 +210,51 @@ func runCloneCurrent(sourceArg, destArg string) error {
 	return nil
 }
 
-func discoverRepoRoot(path string) (string, error) {
+func discoverCloneSourceRepo(path string) (*repo.Repo, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return "", fmt.Errorf("resolve path: %w", err)
+		return nil, fmt.Errorf("resolve path: %w", err)
 	}
-	r, err := repo.Discover(abs)
-	if err != nil {
-		return "", err
+	abs = filepath.Clean(abs)
+
+	info, statErr := os.Stat(abs)
+	if statErr == nil && info.IsDir() {
+		jvsInfo, jvsErr := os.Stat(filepath.Join(abs, repo.JVSDirName))
+		if jvsErr == nil && jvsInfo.IsDir() {
+			return repo.Discover(abs)
+		}
+		if jvsErr != nil && !os.IsNotExist(jvsErr) {
+			return nil, fmt.Errorf("stat source repository metadata: %w", jvsErr)
+		}
 	}
-	return r.Root, nil
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return nil, fmt.Errorf("stat source path: %w", statErr)
+	}
+
+	discovered, discoverErr := repo.Discover(abs)
+	if discoverErr == nil {
+		return nil, cloneSourceMustBeRepoRootError(abs, discovered.Root)
+	}
+	if statErr == nil && !info.IsDir() {
+		return nil, fmt.Errorf("clone source must be the repository root; got non-directory path %s", abs)
+	}
+	return nil, fmt.Errorf("clone source must be the repository root containing %s: %s", repo.JVSDirName, abs)
 }
 
 func discoverCurrentCloneSource(path string) (*repo.Repo, string, error) {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return nil, "", fmt.Errorf("resolve path: %w", err)
-	}
-	abs = filepath.Clean(abs)
-	r, err := repo.Discover(abs)
+	r, err := discoverCloneSourceRepo(path)
 	if err != nil {
 		return nil, "", err
-	}
-	argResolved, err := resolveSetupPath(abs)
-	if err != nil {
-		return nil, "", err
-	}
-	rootResolved, err := resolveSetupPath(r.Root)
-	if err != nil {
-		return nil, "", err
-	}
-	if argResolved.Physical != rootResolved.Physical {
-		return nil, "", fmt.Errorf("clone --scope current source must be the repository root; got %s inside repository %s. Use the repository root path for now; selecting a source workspace will require a future --source-workspace option", argResolved.Lexical, r.Root)
 	}
 	workspace, err := repo.WorktreePayloadPath(r.Root, "main")
 	if err != nil {
 		return nil, "", err
 	}
 	return r, workspace, nil
+}
+
+func cloneSourceMustBeRepoRootError(sourcePath, repoRoot string) error {
+	return fmt.Errorf("clone source must be the repository root; got %s inside repository %s. Use the repository root path for now; selecting a source workspace will require a future --source-workspace option", sourcePath, repoRoot)
 }
 
 func cloneFullRepository(sourceRoot, destRoot string) (*engine.CloneResult, model.EngineType, error) {

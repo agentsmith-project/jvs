@@ -40,6 +40,25 @@ func TestProbeCapabilities_WriteProbeConfirmsCopyAndCleansUp(t *testing.T) {
 	require.Empty(t, leftovers)
 }
 
+func TestProbeCapabilities_MissingNestedTargetUsesExistingParentWithoutCreatingTarget(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "missing", "a", "b")
+
+	report, err := engine.ProbeCapabilities(target, true)
+	require.NoError(t, err)
+
+	require.Equal(t, target, report.TargetPath)
+	require.Equal(t, base, report.ProbePath)
+	require.NotEmpty(t, report.Warnings)
+	require.Contains(t, report.Warnings[0], "probed existing parent")
+	require.NoDirExists(t, filepath.Join(base, "missing"))
+	require.NoDirExists(t, filepath.Join(base, ".jvs"))
+
+	leftovers, err := filepath.Glob(filepath.Join(base, ".jvs-capability-*"))
+	require.NoError(t, err)
+	require.Empty(t, leftovers)
+}
+
 func TestMetadataPreservationContractDoesNotPromiseHardlinkOccurrenceReporting(t *testing.T) {
 	for _, engineType := range []model.EngineType{
 		model.EngineJuiceFSClone,

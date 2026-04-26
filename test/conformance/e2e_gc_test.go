@@ -245,36 +245,93 @@ func TestE2E_GC_ProtectsActiveSnapshots(t *testing.T) {
 	mainPath := filepath.Join(repoPath, "main")
 
 	// Create snapshots in main
+	var mainSnapshotIDs []string
 	for i := 1; i <= 3; i++ {
-		os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte(string(rune('a'+i))), 0644)
-		runJVSInRepo(t, repoPath, "checkpoint", "protected")
+		if err := os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte(string(rune('a'+i))), 0644); err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "checkpoint", "protected")
+		if code != 0 {
+			t.Fatalf("checkpoint failed: stdout=%s stderr=%s", stdout, stderr)
+		}
+		id := extractFirstSnapshotID(stdout)
+		if id == "" {
+			t.Fatalf("checkpoint output missing id: %s", stdout)
+		}
+		mainSnapshotIDs = append(mainSnapshotIDs, id)
 	}
 
 	// Fork worktree and create snapshots
 	runJVSInRepo(t, repoPath, "fork", "active-feature")
 	featurePath := filepath.Join(repoPath, "worktrees", "active-feature")
-	os.WriteFile(filepath.Join(featurePath, "feature.txt"), []byte("active"), 0644)
-	runJVSInWorktree(t, repoPath, "active-feature", "checkpoint", "active feature")
+	if err := os.WriteFile(filepath.Join(featurePath, "feature.txt"), []byte("active"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code := runJVSInWorktree(t, repoPath, "active-feature", "--json", "checkpoint", "active feature")
+	if code != 0 {
+		t.Fatalf("feature checkpoint failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	featureSnapshotID := extractFirstSnapshotID(stdout)
+	if featureSnapshotID == "" {
+		t.Fatalf("feature checkpoint output missing id: %s", stdout)
+	}
 
 	// Run GC plan
+	var planID string
 	t.Run("gc_plan", func(t *testing.T) {
 		stdout, stderr, code := runJVSInRepo(t, repoPath, "gc", "plan", "--json")
 		if code != 0 {
 			t.Fatalf("gc plan failed: %s", stderr)
 		}
 
-		// All snapshots should be protected (no orphans)
-		// The plan should show 0 candidates or protected status
+		planID = extractPlanID(stdout)
+		if planID == "" {
+			t.Fatalf("plan id not found in output: %s", stdout)
+		}
+		if got := extractJSONField(stdout, "candidate_count"); got != "0" {
+			t.Fatalf("active snapshots should not be GC candidates, got candidate_count=%s plan=%s", got, stdout)
+		}
+		for _, id := range append(append([]string{}, mainSnapshotIDs...), featureSnapshotID) {
+			if !strings.Contains(stdout, id) {
+				t.Fatalf("GC plan did not protect active snapshot %s: %s", id, stdout)
+			}
+		}
 		t.Logf("GC plan output: %s", stdout)
+	})
+
+	t.Run("gc_run", func(t *testing.T) {
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "gc", "run", "--plan-id", planID)
+		if code != 0 {
+			t.Fatalf("gc run failed: stdout=%s stderr=%s", stdout, stderr)
+		}
 	})
 
 	// Verify all snapshots still exist
 	t.Run("all_snapshots_exist", func(t *testing.T) {
-		stdout, _, _ := runJVSInRepo(t, repoPath, "--json", "checkpoint", "list")
-		// Should have main + feature snapshots
-		count := getSnapshotCount(stdout)
-		if count < 4 {
-			t.Errorf("expected at least 4 snapshots, got %d", count)
+		mainOut, stderr, code := runJVSInRepo(t, repoPath, "--json", "checkpoint", "list")
+		if code != 0 {
+			t.Fatalf("main checkpoint list failed: stdout=%s stderr=%s", mainOut, stderr)
+		}
+		mainListed := extractAllSnapshotIDs(mainOut)
+		if len(mainListed) != len(mainSnapshotIDs) {
+			t.Fatalf("main checkpoint list should be workspace-scoped: got %d ids %v, want %d in %s", len(mainListed), mainListed, len(mainSnapshotIDs), mainOut)
+		}
+		for _, id := range mainSnapshotIDs {
+			if !strings.Contains(mainOut, id) {
+				t.Fatalf("main checkpoint list missing protected snapshot %s: %s", id, mainOut)
+			}
+		}
+		if strings.Contains(mainOut, featureSnapshotID) {
+			t.Fatalf("main checkpoint list leaked feature snapshot %s: %s", featureSnapshotID, mainOut)
+		}
+
+		featureOut, stderr, code := runJVSInWorktree(t, repoPath, "active-feature", "--json", "checkpoint", "list")
+		if code != 0 {
+			t.Fatalf("feature checkpoint list failed: stdout=%s stderr=%s", featureOut, stderr)
+		}
+		featureListed := extractAllSnapshotIDs(featureOut)
+		if len(featureListed) != 1 || featureListed[0] != featureSnapshotID {
+			t.Fatalf("feature checkpoint list should show only active-feature checkpoint %s, got %v in %s", featureSnapshotID, featureListed, featureOut)
 		}
 	})
 }

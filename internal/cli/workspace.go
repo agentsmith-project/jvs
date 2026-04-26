@@ -64,7 +64,11 @@ var workspacePathCmd = &cobra.Command{
 		}
 		name := ""
 		if len(args) > 0 {
-			name = args[0]
+			var err error
+			name, err = resolveNamedWorkspace(r.Root, args[0])
+			if err != nil {
+				return err
+			}
 		} else {
 			_, current, err := discoverRequiredWorktree()
 			if err != nil {
@@ -74,9 +78,6 @@ var workspacePathCmd = &cobra.Command{
 		}
 
 		mgr := worktree.NewManager(r.Root)
-		if _, err := mgr.Get(name); err != nil {
-			return fmt.Errorf("workspace %q not found", name)
-		}
 		path, err := mgr.Path(name)
 		if err != nil {
 			return err
@@ -99,17 +100,21 @@ var workspaceRenameCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		oldName, err := resolveNamedWorkspace(r.Root, args[0])
+		if err != nil {
+			return err
+		}
 		if err := validatePublicWorkspaceName(args[1]); err != nil {
 			return err
 		}
-		if err := worktree.NewManager(r.Root).Rename(args[0], args[1]); err != nil {
+		if err := worktree.NewManager(r.Root).Rename(oldName, args[1]); err != nil {
 			return err
 		}
 		recordResolvedTarget(r.Root, args[1])
 		if jsonOutput {
-			return outputJSON(map[string]string{"old_workspace": args[0], "workspace": args[1], "status": "renamed"})
+			return outputJSON(map[string]string{"old_workspace": oldName, "workspace": args[1], "status": "renamed"})
 		}
-		fmt.Printf("Renamed workspace '%s' to '%s'\n", args[0], args[1])
+		fmt.Printf("Renamed workspace '%s' to '%s'\n", oldName, args[1])
 		return nil
 	},
 }
@@ -144,7 +149,7 @@ var workspaceRemoveCmd = &cobra.Command{
 func validateWorkspaceRemoval(repoRoot, name string, force bool) (*model.WorktreeConfig, error) {
 	cfg, err := worktree.NewManager(repoRoot).Get(name)
 	if err != nil {
-		return nil, fmt.Errorf("workspace %q not found", name)
+		return nil, missingWorkspaceError(name)
 	}
 	if force {
 		return cfg, nil

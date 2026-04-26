@@ -528,6 +528,223 @@ func TestCloneCommand_CurrentHumanUsesWorkspaceVocabulary(t *testing.T) {
 	require.NotContains(t, stdout, "Source worktree:")
 }
 
+func TestCloneFullRejectsWorkspacePathSource(t *testing.T) {
+	base := t.TempDir()
+	source := filepath.Join(base, "source")
+	dest := filepath.Join(base, "dest")
+	_, err := executeCommand(createTestRootCmd(), "init", source)
+	require.NoError(t, err)
+
+	_, err = executeCommand(createTestRootCmd(), "clone", filepath.Join(source, "main"), dest, "--scope", "full")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "source must be the repository root")
+	require.Contains(t, err.Error(), "source-workspace")
+	require.NoDirExists(t, dest)
+}
+
+func TestSetupDestinationTargetsAllowMissingMultiLevelAndEmptyDirs(t *testing.T) {
+	originalWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(originalWd) })
+
+	for _, op := range []string{"init", "import", "clone-current", "clone-full"} {
+		for _, tc := range []struct {
+			name      string
+			destArg   func(cwd, base string) string
+			wantRoot  func(cwd, base string) string
+			precreate bool
+		}{
+			{
+				name:     "relative_multi_level",
+				destArg:  func(cwd, base string) string { return filepath.Join("relative", "multi", "repo") },
+				wantRoot: func(cwd, base string) string { return filepath.Join(cwd, "relative", "multi", "repo") },
+			},
+			{
+				name:     "absolute_multi_level",
+				destArg:  func(cwd, base string) string { return filepath.Join(base, "absolute", "multi", "repo") },
+				wantRoot: func(cwd, base string) string { return filepath.Join(base, "absolute", "multi", "repo") },
+			},
+			{
+				name:      "existing_empty_dir",
+				destArg:   func(cwd, base string) string { return filepath.Join(base, "empty", "repo") },
+				wantRoot:  func(cwd, base string) string { return filepath.Join(base, "empty", "repo") },
+				precreate: true,
+			},
+		} {
+			t.Run(op+"_"+tc.name, func(t *testing.T) {
+				base := t.TempDir()
+				cwd := filepath.Join(base, "cwd")
+				require.NoError(t, os.MkdirAll(cwd, 0755))
+				require.NoError(t, os.Chdir(cwd))
+
+				destArg := tc.destArg(cwd, base)
+				wantRoot := tc.wantRoot(cwd, base)
+				if tc.precreate {
+					require.NoError(t, os.MkdirAll(wantRoot, 0755))
+				}
+
+				stdout, err := runLifecycleSetupOperation(t, op, base, destArg)
+				require.NoError(t, err, stdout)
+				got := decodeJSONDataForTest(t, stdout)
+				require.Equal(t, wantRoot, got["repo_root"])
+				require.DirExists(t, filepath.Join(wantRoot, ".jvs"))
+				require.DirExists(t, filepath.Join(wantRoot, "main"))
+			})
+		}
+	}
+}
+
+func TestSetupDestinationTargetsRejectInvalidDestinationsWithoutCleaningUserDirs(t *testing.T) {
+	originalWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(originalWd) })
+
+	for _, op := range []string{"init", "import", "clone-current", "clone-full"} {
+		t.Run(op+"_file_dest", func(t *testing.T) {
+			base := t.TempDir()
+			require.NoError(t, os.Chdir(base))
+			dest := filepath.Join(base, "file-dest")
+			require.NoError(t, os.WriteFile(dest, []byte("user data"), 0644))
+
+			_, err := runLifecycleSetupOperation(t, op, base, dest)
+			require.Error(t, err)
+			require.FileExists(t, dest)
+			require.NoDirExists(t, filepath.Join(dest, ".jvs"))
+		})
+
+		t.Run(op+"_non_empty_dest", func(t *testing.T) {
+			base := t.TempDir()
+			require.NoError(t, os.Chdir(base))
+			dest := filepath.Join(base, "non-empty")
+			require.NoError(t, os.MkdirAll(dest, 0755))
+			require.NoError(t, os.WriteFile(filepath.Join(dest, "keep.txt"), []byte("keep"), 0644))
+
+			_, err := runLifecycleSetupOperation(t, op, base, dest)
+			require.Error(t, err)
+			require.FileExists(t, filepath.Join(dest, "keep.txt"))
+			require.NoDirExists(t, filepath.Join(dest, ".jvs"))
+		})
+
+		t.Run(op+"_parent_component_file", func(t *testing.T) {
+			base := t.TempDir()
+			require.NoError(t, os.Chdir(base))
+			parentFile := filepath.Join(base, "not-a-directory")
+			require.NoError(t, os.WriteFile(parentFile, []byte("user data"), 0644))
+			dest := filepath.Join(parentFile, "child", "repo")
+
+			_, err := runLifecycleSetupOperation(t, op, base, dest)
+			require.Error(t, err)
+			require.FileExists(t, parentFile)
+		})
+	}
+}
+
+func TestSetupCommandsRejectSourceDestinationOverlapWithoutCleaningPrecreatedDirs(t *testing.T) {
+	t.Run("import_same_source_and_dest", func(t *testing.T) {
+		base := t.TempDir()
+		source := filepath.Join(base, "source")
+		require.NoError(t, os.MkdirAll(source, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(source, "keep.txt"), []byte("keep"), 0644))
+
+		_, err := executeCommand(createTestRootCmd(), "import", source, source)
+		require.Error(t, err)
+		require.FileExists(t, filepath.Join(source, "keep.txt"))
+		require.NoDirExists(t, filepath.Join(source, ".jvs"))
+	})
+
+	t.Run("import_dest_inside_source", func(t *testing.T) {
+		base := t.TempDir()
+		source := filepath.Join(base, "source")
+		dest := filepath.Join(source, "precreated-empty")
+		require.NoError(t, os.MkdirAll(dest, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(source, "keep.txt"), []byte("keep"), 0644))
+
+		_, err := executeCommand(createTestRootCmd(), "import", source, dest)
+		require.Error(t, err)
+		require.DirExists(t, dest)
+		require.FileExists(t, filepath.Join(source, "keep.txt"))
+		require.NoDirExists(t, filepath.Join(dest, ".jvs"))
+	})
+
+	for _, scope := range []string{"current", "full"} {
+		t.Run("clone_"+scope+"_same_source_and_dest", func(t *testing.T) {
+			base := t.TempDir()
+			source := filepath.Join(base, "source")
+			_, err := executeCommand(createTestRootCmd(), "init", source)
+			require.NoError(t, err)
+
+			_, err = executeCommand(createTestRootCmd(), "clone", source, source, "--scope", scope)
+			require.Error(t, err)
+			require.DirExists(t, filepath.Join(source, ".jvs"))
+		})
+
+		t.Run("clone_"+scope+"_dest_inside_source", func(t *testing.T) {
+			base := t.TempDir()
+			source := filepath.Join(base, "source")
+			_, err := executeCommand(createTestRootCmd(), "init", source)
+			require.NoError(t, err)
+			dest := filepath.Join(source, "main", "precreated-empty")
+			require.NoError(t, os.MkdirAll(dest, 0755))
+
+			_, err = executeCommand(createTestRootCmd(), "clone", source, dest, "--scope", scope)
+			require.Error(t, err)
+			require.DirExists(t, dest)
+			require.NoDirExists(t, filepath.Join(dest, ".jvs"))
+		})
+	}
+}
+
+func TestSetupCommandsIgnoreRepoWorkspaceFlagsAndCWD(t *testing.T) {
+	dir := t.TempDir()
+	originalWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(originalWd) })
+
+	repoA := filepath.Join(dir, "repoA")
+	_, err := executeCommand(createTestRootCmd(), "init", repoA)
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(filepath.Join(repoA, "main")))
+
+	unusedRepoFlag := filepath.Join(dir, "missing-repo")
+	unusedWorkspaceFlag := "missing-workspace"
+
+	initTarget := filepath.Join(dir, "setup", "init-target")
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "--repo", unusedRepoFlag, "--workspace", unusedWorkspaceFlag, "init", initTarget)
+	require.NoError(t, err, stdout)
+	require.Equal(t, initTarget, decodeJSONDataForTest(t, stdout)["repo_root"])
+
+	source := filepath.Join(dir, "import-source")
+	require.NoError(t, os.MkdirAll(source, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(source, "file.txt"), []byte("import"), 0644))
+	importTarget := filepath.Join(dir, "setup", "import-target")
+	stdout, err = executeCommand(createTestRootCmd(), "--json", "--repo", unusedRepoFlag, "--workspace", unusedWorkspaceFlag, "import", source, importTarget)
+	require.NoError(t, err, stdout)
+	require.Equal(t, importTarget, decodeJSONDataForTest(t, stdout)["repo_root"])
+
+	cloneTarget := filepath.Join(dir, "setup", "clone-target")
+	stdout, err = executeCommand(createTestRootCmd(), "--json", "--repo", unusedRepoFlag, "--workspace", unusedWorkspaceFlag, "clone", initTarget, cloneTarget, "--scope", "current")
+	require.NoError(t, err, stdout)
+	require.Equal(t, cloneTarget, decodeJSONDataForTest(t, stdout)["repo_root"])
+
+	capabilityTarget := filepath.Join(dir, "missing", "a", "b")
+	stdout, err = executeCommand(createTestRootCmd(), "--json", "--repo", unusedRepoFlag, "--workspace", unusedWorkspaceFlag, "capability", capabilityTarget, "--write-probe")
+	require.NoError(t, err, stdout)
+	capabilityData := decodeJSONDataForTest(t, stdout)
+	require.Equal(t, capabilityTarget, capabilityData["target_path"])
+	require.Equal(t, dir, capabilityData["probe_path"])
+	require.NoDirExists(t, filepath.Join(dir, "missing"))
+}
+
+func TestSetupCommandsDoNotUseRepoWorkspaceFlagsAsPositionalArgs(t *testing.T) {
+	base := t.TempDir()
+	for _, args := range [][]string{
+		{"--repo", filepath.Join(base, "target"), "init"},
+		{"--repo", filepath.Join(base, "source"), "--workspace", filepath.Join(base, "target"), "import"},
+		{"--repo", filepath.Join(base, "source"), "--workspace", filepath.Join(base, "target"), "clone"},
+		{"--repo", filepath.Join(base, "target"), "capability"},
+	} {
+		_, err := executeCommand(createTestRootCmd(), args...)
+		require.Error(t, err)
+	}
+}
+
 func TestCapabilityCommand_JSONShape(t *testing.T) {
 	target := t.TempDir()
 
@@ -582,6 +799,21 @@ func TestCapabilityCommand_WriteProbeConfirmsCopyAndCleansUp(t *testing.T) {
 	leftovers, err := filepath.Glob(filepath.Join(target, ".jvs-capability-*"))
 	require.NoError(t, err)
 	require.Empty(t, leftovers)
+}
+
+func TestCapabilityCommand_MissingNestedTargetUsesExistingParentAndDoesNotCreateRepo(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "missing", "a", "b")
+
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "capability", target, "--write-probe")
+	require.NoError(t, err)
+
+	got := decodeJSONDataForTest(t, stdout)
+	require.Equal(t, target, got["target_path"])
+	require.Equal(t, base, got["probe_path"])
+	require.NotEmpty(t, got["warnings"])
+	require.NoDirExists(t, filepath.Join(base, "missing"))
+	require.NoDirExists(t, filepath.Join(base, ".jvs"))
 }
 
 func TestPerformanceDocsDoNotUseUnsupportedEngineFlagOrUnconditionalO1Claims(t *testing.T) {
@@ -660,4 +892,36 @@ func bytesTrimSpace(data []byte) []byte {
 		data = data[:len(data)-1]
 	}
 	return data
+}
+
+func runLifecycleSetupOperation(t *testing.T, op, base, destArg string) (string, error) {
+	t.Helper()
+
+	switch op {
+	case "init":
+		return executeCommand(createTestRootCmd(), "--json", "init", destArg)
+	case "import":
+		source := filepath.Join(base, "source-import")
+		require.NoError(t, os.MkdirAll(source, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(source, "file.txt"), []byte("import"), 0644))
+		return executeCommand(createTestRootCmd(), "--json", "import", source, destArg)
+	case "clone-current":
+		source := filepath.Join(base, "source-clone-current")
+		createLifecycleSetupSourceRepo(t, source)
+		return executeCommand(createTestRootCmd(), "--json", "clone", source, destArg, "--scope", "current")
+	case "clone-full":
+		source := filepath.Join(base, "source-clone-full")
+		createLifecycleSetupSourceRepo(t, source)
+		return executeCommand(createTestRootCmd(), "--json", "clone", source, destArg, "--scope", "full")
+	default:
+		t.Fatalf("unknown lifecycle setup operation %q", op)
+		return "", nil
+	}
+}
+
+func createLifecycleSetupSourceRepo(t *testing.T, source string) {
+	t.Helper()
+	_, err := executeCommand(createTestRootCmd(), "init", source)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(source, "main", "file.txt"), []byte("clone"), 0644))
 }
