@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/jvs-project/jvs/pkg/errclass"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

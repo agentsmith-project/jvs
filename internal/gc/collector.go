@@ -11,14 +11,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jvs-project/jvs/internal/audit"
-	"github.com/jvs-project/jvs/internal/repo"
-	"github.com/jvs-project/jvs/internal/snapshot"
-	"github.com/jvs-project/jvs/internal/worktree"
-	"github.com/jvs-project/jvs/pkg/errclass"
-	"github.com/jvs-project/jvs/pkg/fsutil"
-	"github.com/jvs-project/jvs/pkg/model"
-	"github.com/jvs-project/jvs/pkg/uuidutil"
+	"github.com/agentsmith-project/jvs/internal/audit"
+	"github.com/agentsmith-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/internal/snapshot"
+	"github.com/agentsmith-project/jvs/internal/worktree"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
+	"github.com/agentsmith-project/jvs/pkg/fsutil"
+	"github.com/agentsmith-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/pkg/uuidutil"
 )
 
 // Collector handles garbage collection of unused snapshots.

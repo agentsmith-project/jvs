@@ -4,9 +4,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jvs-project/jvs/internal/engine"
-	"github.com/jvs-project/jvs/pkg/config"
-	"github.com/jvs-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/internal/engine"
+	"github.com/agentsmith-project/jvs/pkg/config"
+	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
 // detectEngine returns the best available engine for the repository.

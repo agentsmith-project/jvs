@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jvs-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/internal/repo"
 )
 
 var importCmd = &cobra.Command{

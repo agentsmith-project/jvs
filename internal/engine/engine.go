@@ -1,7 +1,7 @@
 package engine
 
 import (
-	"github.com/jvs-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
 // CloneResult contains the result of a clone operation, including any

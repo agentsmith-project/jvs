@@ -10,6 +10,10 @@
   `current`, `latest`, exact tags, and full or unique checkpoint IDs.
 - Release artifacts include explicit readiness notes for limitations, risk
   labels, and migration impact.
+- Release-facing identity now uses `github.com/agentsmith-project/jvs` for the
+  Go module/import path, install examples, signing guidance, release evidence,
+  and final release URLs such as
+  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.0`.
 
 ### Breaking changes
 

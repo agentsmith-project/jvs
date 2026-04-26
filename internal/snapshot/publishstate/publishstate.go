@@ -7,10 +7,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/jvs-project/jvs/internal/integrity"
-	"github.com/jvs-project/jvs/internal/repo"
-	"github.com/jvs-project/jvs/internal/snapshotpayload"
-	"github.com/jvs-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/internal/integrity"
+	"github.com/agentsmith-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/internal/snapshotpayload"
+	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
 const (

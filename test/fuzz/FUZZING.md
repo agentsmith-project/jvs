@@ -100,7 +100,7 @@ go test -v ./test/fuzz/...
 
 ```
 PASS
-ok      github.com/jvs-project/jvs/test/fuzz     6.025s
+ok      github.com/agentsmith-project/jvs/test/fuzz     6.025s
 ```
 
 The code handled all random inputs correctly (no panics, no assertion failures).

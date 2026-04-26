@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jvs-project/jvs/internal/worktree"
+	"github.com/agentsmith-project/jvs/internal/worktree"
 )
 
 var infoCmd = &cobra.Command{

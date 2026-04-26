@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jvs-project/jvs/internal/repo"
-	"github.com/jvs-project/jvs/internal/snapshot"
-	"github.com/jvs-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/internal/snapshot"
+	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
 const (

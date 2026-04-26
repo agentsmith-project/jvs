@@ -6,9 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/jvs-project/jvs/internal/repo"
-	"github.com/jvs-project/jvs/pkg/color"
-	"github.com/jvs-project/jvs/pkg/errclass"
+	"github.com/agentsmith-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/pkg/color"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
 )
 
 var (

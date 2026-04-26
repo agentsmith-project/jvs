@@ -5,8 +5,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jvs-project/jvs/internal/gc"
-	"github.com/jvs-project/jvs/pkg/progress"
+	"github.com/agentsmith-project/jvs/internal/gc"
+	"github.com/agentsmith-project/jvs/pkg/progress"
 )
 
 var (

@@ -701,7 +701,7 @@ func TestDocs_APIPublicExamplesUseStableFacade(t *testing.T) {
 		t.Run(heading, func(t *testing.T) {
 			section := markdownSectionByHeading(t, "docs/API_DOCUMENTATION.md", body, heading)
 			for _, required := range []string{
-				`"github.com/jvs-project/jvs/pkg/jvs"`,
+				`"github.com/agentsmith-project/jvs/pkg/jvs"`,
 				"jvs.OpenOrInit(",
 				".Snapshot(ctx, jvs.SnapshotOptions{",
 			} {
@@ -723,9 +723,9 @@ func apiStableFacadeBypassFragments() []string {
 		"model.NewSnapshotID",
 		"model.IntentRecord",
 		"model.Descriptor{",
-		`"github.com/jvs-project/jvs/pkg/model"`,
-		`"github.com/jvs-project/jvs/pkg/fsutil"`,
-		`"github.com/jvs-project/jvs/pkg/jsonutil"`,
+		`"github.com/agentsmith-project/jvs/pkg/model"`,
+		`"github.com/agentsmith-project/jvs/pkg/fsutil"`,
+		`"github.com/agentsmith-project/jvs/pkg/jsonutil"`,
 		".jvs/descriptors",
 		"fsutil.AtomicWrite",
 		"jsonutil.CanonicalMarshal",
@@ -737,7 +737,7 @@ func apiStableModelBypassFragments() []string {
 		"model.NewSnapshotID",
 		"model.IntentRecord",
 		"model.Descriptor{",
-		`"github.com/jvs-project/jvs/pkg/model"`,
+		`"github.com/agentsmith-project/jvs/pkg/model"`,
 		".jvs/descriptors",
 	}
 }

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jvs-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
 // JuiceFSEngine performs clone using `juicefs clone` command.

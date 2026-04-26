@@ -6,8 +6,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jvs-project/jvs/internal/doctor"
-	"github.com/jvs-project/jvs/pkg/errclass"
+	"github.com/agentsmith-project/jvs/internal/doctor"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
 )
 
 var (

@@ -5,8 +5,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jvs-project/jvs/internal/repo"
-	"github.com/jvs-project/jvs/pkg/config"
+	"github.com/agentsmith-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/pkg/config"
 	"github.com/spf13/cobra"
 )
 

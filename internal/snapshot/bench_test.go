@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jvs-project/jvs/internal/integrity"
-	"github.com/jvs-project/jvs/internal/repo"
-	"github.com/jvs-project/jvs/internal/snapshot"
-	"github.com/jvs-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/internal/integrity"
+	"github.com/agentsmith-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/internal/snapshot"
+	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
 // setupBenchRepo creates a repository with test content for benchmarking.

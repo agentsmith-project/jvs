@@ -6,8 +6,8 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/jvs-project/jvs/pkg/jsonutil"
-	"github.com/jvs-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/pkg/jsonutil"
+	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
 // ComputeDescriptorChecksum computes SHA-256 checksum of the descriptor.

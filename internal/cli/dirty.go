@@ -5,11 +5,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/jvs-project/jvs/internal/integrity"
-	"github.com/jvs-project/jvs/internal/snapshot"
-	"github.com/jvs-project/jvs/internal/snapshotpayload"
-	"github.com/jvs-project/jvs/internal/worktree"
-	"github.com/jvs-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/internal/integrity"
+	"github.com/agentsmith-project/jvs/internal/snapshot"
+	"github.com/agentsmith-project/jvs/internal/snapshotpayload"
+	"github.com/agentsmith-project/jvs/internal/worktree"
+	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
 func workspaceDirty(repoRoot, workspaceName string) (bool, error) {

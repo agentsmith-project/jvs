@@ -9,17 +9,17 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/jvs-project/jvs/internal/audit"
-	"github.com/jvs-project/jvs/internal/compression"
-	"github.com/jvs-project/jvs/internal/engine"
-	"github.com/jvs-project/jvs/internal/integrity"
-	"github.com/jvs-project/jvs/internal/repo"
-	"github.com/jvs-project/jvs/internal/snapshotpayload"
-	"github.com/jvs-project/jvs/internal/worktree"
-	"github.com/jvs-project/jvs/pkg/errclass"
-	"github.com/jvs-project/jvs/pkg/fsutil"
-	"github.com/jvs-project/jvs/pkg/model"
-	"github.com/jvs-project/jvs/pkg/pathutil"
+	"github.com/agentsmith-project/jvs/internal/audit"
+	"github.com/agentsmith-project/jvs/internal/compression"
+	"github.com/agentsmith-project/jvs/internal/engine"
+	"github.com/agentsmith-project/jvs/internal/integrity"
+	"github.com/agentsmith-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/internal/snapshotpayload"
+	"github.com/agentsmith-project/jvs/internal/worktree"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
+	"github.com/agentsmith-project/jvs/pkg/fsutil"
+	"github.com/agentsmith-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/pkg/pathutil"
 )
 
 // Creator handles snapshot creation using the 12-step protocol.

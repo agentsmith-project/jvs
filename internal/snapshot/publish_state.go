@@ -1,9 +1,9 @@
 package snapshot
 
 import (
-	"github.com/jvs-project/jvs/internal/snapshot/publishstate"
-	"github.com/jvs-project/jvs/pkg/errclass"
-	"github.com/jvs-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/internal/snapshot/publishstate"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
+	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
 const (

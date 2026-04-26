@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jvs-project/jvs/pkg/fsutil"
+	"github.com/agentsmith-project/jvs/pkg/fsutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

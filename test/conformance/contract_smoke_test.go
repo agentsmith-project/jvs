@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jvs-project/jvs/internal/engine"
-	"github.com/jvs-project/jvs/internal/integrity"
-	"github.com/jvs-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/internal/engine"
+	"github.com/agentsmith-project/jvs/internal/integrity"
+	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
 type contractSmokeEnvelope struct {

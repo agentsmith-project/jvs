@@ -16,16 +16,18 @@ supported pre-release and v0 tags for that contract.
 
 Instead, please report vulnerabilities responsibly by:
 
-1. **Email**: Send a report to `security@jvs-project.org` (if configured) or open a [GitHub Security Advisory](https://github.com/jvs-project/jvs/security/advisories) as a draft.
+1. **GitHub Security Advisory**: Open a private draft at [GitHub Security Advisory](https://github.com/agentsmith-project/jvs/security/advisories).
 
-2. **Include**: Please provide as much detail as possible to help us understand and reproduce the issue:
+2. **Configured security contact**: If this repository has a configured security contact in GitHub security settings, use that channel for sensitive coordination.
+
+3. **Include**: Please provide as much detail as possible to help us understand and reproduce the issue:
    - A clear description of the vulnerability
    - Steps to reproduce the issue
    - Affected versions of JVS
    - Potential impact of the vulnerability
    - Any proof-of-concept code or screenshots (if applicable)
 
-3. **Response Timeline**: We will acknowledge your report within 48 hours and provide a detailed response within 7 days, including:
+4. **Response Timeline**: We will acknowledge your report within 48 hours and provide a detailed response within 7 days, including:
    - Confirmation of the vulnerability
    - Severity assessment
    - Planned remediation timeline
@@ -114,8 +116,8 @@ JVS relies on OS-level filesystem permissions for access control:
 
 ## Security Contacts
 
-- **Security Email**: security@jvs-project.org (to be configured)
-- **GitHub Security Advisories**: https://github.com/jvs-project/jvs/security/advisories
+- **Primary private channel**: https://github.com/agentsmith-project/jvs/security/advisories
+- **Configured security contact**: Use the configured security contact in the GitHub repository security settings when available.
 - **Security Policy Docs**: See [docs/09_SECURITY_MODEL.md](docs/09_SECURITY_MODEL.md) and [docs/10_THREAT_MODEL.md](docs/10_THREAT_MODEL.md)
 
 ## Related Documentation
@@ -136,7 +138,7 @@ and its matching `.sig` and `.pem` sidecars before using it:
 cosign verify-blob jvs-linux-amd64 \
   --signature jvs-linux-amd64.sig \
   --certificate jvs-linux-amd64.pem \
-  --certificate-identity=https://github.com/jvs-project/jvs/.github/workflows/ci.yml@<workflow-ref> \
+  --certificate-identity=https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@<workflow-ref> \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com
 ```
 

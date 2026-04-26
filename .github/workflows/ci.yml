@@ -211,6 +211,7 @@ jobs:
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
             RELEASE_TAG="${{ github.event.inputs.tag }}"
           fi
+          CERTIFICATE_IDENTITY="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/ci.yml@${GITHUB_REF}"
           {
             echo "## Build Artifacts"
             echo ""
@@ -228,7 +229,7 @@ jobs:
             echo "    cosign verify-blob jvs-linux-amd64 \\"
             echo "      --signature jvs-linux-amd64.sig \\"
             echo "      --certificate jvs-linux-amd64.pem \\"
-            echo "      --certificate-identity=https://github.com/jvs-project/jvs/.github/workflows/ci.yml@${GITHUB_REF} \\"
+            echo "      --certificate-identity=${CERTIFICATE_IDENTITY} \\"
             echo "      --certificate-oidc-issuer=https://token.actions.githubusercontent.com"
             echo ""
             echo "Verify the checksum file with SHA256SUMS.sig and SHA256SUMS.pem, then run sha256sum -c --ignore-missing SHA256SUMS."

@@ -4,9 +4,9 @@
     <strong>Filesystem-native workspace checkpoints</strong>
   </p>
   <p align="center">
-    <a href="https://github.com/jvs-project/jvs/releases/latest"><img src="https://img.shields.io/github/v/release/jvs-project/jvs?style=flat-square" alt="Release"></a>
-    <a href="https://github.com/jvs-project/jvs/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/jvs-project/jvs/ci.yml?branch=main&style=flat-square&label=CI" alt="CI"></a>
-    <a href="https://goreportcard.com/report/github.com/jvs-project/jvs"><img src="https://goreportcard.com/badge/github.com/jvs-project/jvs?style=flat-square" alt="Go Report Card"></a>
+    <a href="https://github.com/agentsmith-project/jvs/releases/latest"><img src="https://img.shields.io/github/v/release/agentsmith-project/jvs?style=flat-square" alt="Release"></a>
+    <a href="https://github.com/agentsmith-project/jvs/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/agentsmith-project/jvs/ci.yml?branch=main&style=flat-square&label=CI" alt="CI"></a>
+    <a href="https://goreportcard.com/report/github.com/agentsmith-project/jvs"><img src="https://goreportcard.com/badge/github.com/agentsmith-project/jvs?style=flat-square" alt="Go Report Card"></a>
     <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square" alt="License: MIT"></a>
   </p>
 </p>
@@ -46,23 +46,29 @@ jvs verify --all
 
 ## Install
 
-**Download a binary** from the [latest release](https://github.com/jvs-project/jvs/releases/latest)
+**Download a binary** from the [latest release](https://github.com/agentsmith-project/jvs/releases/latest)
 (Linux, macOS, Windows):
 
 ```bash
 # Linux (amd64)
-curl -L https://github.com/jvs-project/jvs/releases/latest/download/jvs-linux-amd64 -o jvs
+curl -L https://github.com/agentsmith-project/jvs/releases/latest/download/jvs-linux-amd64 -o jvs
 chmod +x jvs && sudo mv jvs /usr/local/bin/
 
 # macOS (Apple Silicon)
-curl -L https://github.com/jvs-project/jvs/releases/latest/download/jvs-darwin-arm64 -o jvs
+curl -L https://github.com/agentsmith-project/jvs/releases/latest/download/jvs-darwin-arm64 -o jvs
 chmod +x jvs && sudo mv jvs /usr/local/bin/
+```
+
+**Or install with Go** (requires Go 1.25+):
+
+```bash
+go install github.com/agentsmith-project/jvs/cmd/jvs@latest
 ```
 
 **Or build from source** (requires Go 1.25+):
 
 ```bash
-git clone https://github.com/jvs-project/jvs.git
+git clone https://github.com/agentsmith-project/jvs.git
 cd jvs
 make build
 ```

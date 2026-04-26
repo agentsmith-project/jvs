@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jvs-project/jvs/internal/compression"
-	"github.com/jvs-project/jvs/internal/engine"
-	"github.com/jvs-project/jvs/internal/integrity"
-	"github.com/jvs-project/jvs/internal/repo"
-	"github.com/jvs-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/internal/compression"
+	"github.com/agentsmith-project/jvs/internal/engine"
+	"github.com/agentsmith-project/jvs/internal/integrity"
+	"github.com/agentsmith-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
 // CloneFunc copies a snapshot storage tree to a destination directory.

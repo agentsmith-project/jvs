@@ -6,10 +6,10 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/jvs-project/jvs/internal/repo"
-	"github.com/jvs-project/jvs/internal/restore"
-	"github.com/jvs-project/jvs/internal/snapshot"
-	"github.com/jvs-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/internal/restore"
+	"github.com/agentsmith-project/jvs/internal/snapshot"
+	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
 // setupBenchRepo creates a repository with test content for benchmarking.

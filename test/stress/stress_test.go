@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jvs-project/jvs/internal/gc"
-	"github.com/jvs-project/jvs/internal/repo"
-	"github.com/jvs-project/jvs/internal/snapshot"
+	"github.com/agentsmith-project/jvs/internal/gc"
+	"github.com/agentsmith-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/internal/snapshot"
 )
 
 // TestStress_10kFiles tests snapshot performance with 10,000 files.

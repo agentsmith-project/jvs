@@ -42,15 +42,15 @@ To verify a downloaded binary, download the binary and its matching `.sig` and
 
 ```bash
 # Download the binary, signature, and certificate
-wget https://github.com/jvs-project/jvs/releases/download/vX.Y.Z/jvs-linux-amd64
-wget https://github.com/jvs-project/jvs/releases/download/vX.Y.Z/jvs-linux-amd64.sig
-wget https://github.com/jvs-project/jvs/releases/download/vX.Y.Z/jvs-linux-amd64.pem
+wget https://github.com/agentsmith-project/jvs/releases/download/vX.Y.Z/jvs-linux-amd64
+wget https://github.com/agentsmith-project/jvs/releases/download/vX.Y.Z/jvs-linux-amd64.sig
+wget https://github.com/agentsmith-project/jvs/releases/download/vX.Y.Z/jvs-linux-amd64.pem
 
 # Verify using cosign
 cosign verify-blob jvs-linux-amd64 \
   --signature jvs-linux-amd64.sig \
   --certificate jvs-linux-amd64.pem \
-  --certificate-identity=https://github.com/jvs-project/jvs/.github/workflows/ci.yml@<workflow-ref> \
+  --certificate-identity=https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@<workflow-ref> \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com
 ```
 
@@ -65,15 +65,15 @@ To verify the SHA256SUMS file:
 
 ```bash
 # Download checksums and signature
-wget https://github.com/jvs-project/jvs/releases/download/vX.Y.Z/SHA256SUMS
-wget https://github.com/jvs-project/jvs/releases/download/vX.Y.Z/SHA256SUMS.sig
-wget https://github.com/jvs-project/jvs/releases/download/vX.Y.Z/SHA256SUMS.pem
+wget https://github.com/agentsmith-project/jvs/releases/download/vX.Y.Z/SHA256SUMS
+wget https://github.com/agentsmith-project/jvs/releases/download/vX.Y.Z/SHA256SUMS.sig
+wget https://github.com/agentsmith-project/jvs/releases/download/vX.Y.Z/SHA256SUMS.pem
 
 # Verify the checksums file
 cosign verify-blob SHA256SUMS \
   --signature SHA256SUMS.sig \
   --certificate SHA256SUMS.pem \
-  --certificate-identity=https://github.com/jvs-project/jvs/.github/workflows/ci.yml@<workflow-ref> \
+  --certificate-identity=https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@<workflow-ref> \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com
 ```
 
@@ -88,7 +88,7 @@ sha256sum -c --ignore-missing SHA256SUMS
 The release workflow signs artifacts with the following certificate identity
 shape:
 
-- **Identity**: `https://github.com/jvs-project/jvs/.github/workflows/ci.yml@<workflow-ref>`
+- **Identity**: `https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@<workflow-ref>`
 - **Issuer**: `https://token.actions.githubusercontent.com`
 
 For tag-push releases, `<workflow-ref>` is the tag ref, for example
@@ -129,5 +129,5 @@ not present.
 If you encounter any verification issues or suspect a compromised release:
 
 1. Do not run the binary
-2. Report the issue immediately at [https://github.com/jvs-project/jvs/security/advisories](https://github.com/jvs-project/jvs/security/advisories)
+2. Report the issue immediately at [https://github.com/agentsmith-project/jvs/security/advisories](https://github.com/agentsmith-project/jvs/security/advisories)
 3. Include the version, checksum, and any error messages

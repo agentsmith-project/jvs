@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jvs-project/jvs/internal/doctor"
-	"github.com/jvs-project/jvs/internal/repo"
-	"github.com/jvs-project/jvs/pkg/errclass"
+	"github.com/agentsmith-project/jvs/internal/doctor"
+	"github.com/agentsmith-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

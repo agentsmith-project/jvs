@@ -6,9 +6,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jvs-project/jvs/internal/engine"
-	"github.com/jvs-project/jvs/internal/repo"
-	"github.com/jvs-project/jvs/pkg/color"
+	"github.com/agentsmith-project/jvs/internal/engine"
+	"github.com/agentsmith-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/pkg/color"
 )
 
 var initCmd = &cobra.Command{

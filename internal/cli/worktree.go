@@ -7,12 +7,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jvs-project/jvs/internal/snapshot"
-	"github.com/jvs-project/jvs/internal/verify"
-	"github.com/jvs-project/jvs/internal/worktree"
-	"github.com/jvs-project/jvs/pkg/color"
-	"github.com/jvs-project/jvs/pkg/errclass"
-	"github.com/jvs-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/internal/snapshot"
+	"github.com/agentsmith-project/jvs/internal/verify"
+	"github.com/agentsmith-project/jvs/internal/worktree"
+	"github.com/agentsmith-project/jvs/pkg/color"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
+	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
 var (

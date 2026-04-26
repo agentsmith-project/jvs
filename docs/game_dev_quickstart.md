@@ -426,4 +426,4 @@ jvs checkpoint list | grep "animation"
 - Read [AGENT_SANDBOX_QUICKSTART.md](agent_sandbox_quickstart.md) for AI workflows
 - Read [ETL_PIPELINE_QUICKSTART.md](etl_pipeline_quickstart.md) for data workflows
 - Read [EXAMPLES.md](EXAMPLES.md) for more examples
-- Join the community: [GitHub Discussions](https://github.com/jvs-project/jvs/discussions)
+- Join the community: [GitHub Discussions](https://github.com/agentsmith-project/jvs/discussions)

@@ -337,7 +337,7 @@ jobs:
 
       - name: Setup JVS
         run: |
-          go install github.com/jvs-project/jvs@latest
+          go install github.com/agentsmith-project/jvs/cmd/jvs@latest
 
       - name: Create Test Checkpoint
         run: |

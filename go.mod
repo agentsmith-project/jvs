@@ -1,4 +1,4 @@
-module github.com/jvs-project/jvs
+module github.com/agentsmith-project/jvs
 
 go 1.25.6
 

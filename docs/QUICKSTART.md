@@ -13,7 +13,7 @@ minutes.
 ## Install
 
 ```bash
-git clone https://github.com/jvs-project/jvs.git
+git clone https://github.com/agentsmith-project/jvs.git
 cd jvs
 make build
 sudo cp bin/jvs /usr/local/bin/

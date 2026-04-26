@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/jvs-project/jvs/pkg/fsutil"
-	"github.com/jvs-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/pkg/fsutil"
+	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
 // CopyEngine performs a full recursive copy of directories.

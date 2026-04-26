@@ -21,9 +21,9 @@ Raw logs and `coverage.out` are not stored here.
 - Final release status: not final, not tagged, not published; pending final tag
   and release workflow execution.
 - Final tagged commit: pending final tag.
-- CI run link rule: `https://github.com/jvs-project/jvs/actions/runs/<run_id>`
+- CI run link rule: `https://github.com/agentsmith-project/jvs/actions/runs/<run_id>`
 - Expected final release URL rule:
-  `https://github.com/jvs-project/jvs/releases/tag/v0.4.0`
+  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.0`
 
 ### Release gate summary
 
@@ -90,7 +90,7 @@ must remain pending until the checks run on the final tagged commit.
 - Verification evidence: final release workflow checks all artifact files are
   non-empty and runs `sha256sum --check --strict SHA256SUMS`.
 - Certificate identity rule:
-  `https://github.com/jvs-project/jvs/.github/workflows/ci.yml@<workflow-ref>`
+  `https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@<workflow-ref>`
 - OIDC issuer: `https://token.actions.githubusercontent.com`
 
 ### Runbook references

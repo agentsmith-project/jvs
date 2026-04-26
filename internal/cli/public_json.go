@@ -4,10 +4,10 @@ import (
 	"strings"
 	"time"
 
-	clidiff "github.com/jvs-project/jvs/internal/diff"
-	clidoctor "github.com/jvs-project/jvs/internal/doctor"
-	cliverify "github.com/jvs-project/jvs/internal/verify"
-	"github.com/jvs-project/jvs/pkg/model"
+	clidiff "github.com/agentsmith-project/jvs/internal/diff"
+	clidoctor "github.com/agentsmith-project/jvs/internal/doctor"
+	cliverify "github.com/agentsmith-project/jvs/internal/verify"
+	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
 type publicCheckpointRecord struct {

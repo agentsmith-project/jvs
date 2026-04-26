@@ -23,9 +23,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jvs-project/jvs/pkg/jsonutil"
-	"github.com/jvs-project/jvs/pkg/model"
-	"github.com/jvs-project/jvs/pkg/pathutil"
+	"github.com/agentsmith-project/jvs/pkg/jsonutil"
+	"github.com/agentsmith-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/pkg/pathutil"
 )
 
 // FuzzValidateName tests worktree name validation with random inputs.

@@ -6,8 +6,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jvs-project/jvs/internal/engine"
-	"github.com/jvs-project/jvs/pkg/errclass"
+	"github.com/agentsmith-project/jvs/internal/engine"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
 )
 
 var capabilityWriteProbe bool

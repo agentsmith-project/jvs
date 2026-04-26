@@ -3,7 +3,7 @@ package jsonutil_test
 import (
 	"testing"
 
-	"github.com/jvs-project/jvs/pkg/jsonutil"
+	"github.com/agentsmith-project/jvs/pkg/jsonutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

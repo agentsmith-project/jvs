@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jvs-project/jvs/pkg/errclass"
-	"github.com/jvs-project/jvs/pkg/fsutil"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
+	"github.com/agentsmith-project/jvs/pkg/fsutil"
 )
 
 const (

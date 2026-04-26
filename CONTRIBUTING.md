@@ -117,7 +117,7 @@ JVS uses stable error classes for user-facing errors:
 
 ```go
 // Import the errclass package
-import "github.com/jvs-project/jvs/pkg/errclass"
+import "github.com/agentsmith-project/jvs/pkg/errclass"
 
 // Use predefined error classes
 return errclass.ErrNameInvalid.WithMessage("workspace name cannot be empty")
@@ -336,8 +336,8 @@ Before modifying behavior, review the relevant spec:
 
 ## Questions?
 
-- **GitHub Issues**: Use [Issues](https://github.com/jvs-project/jvs/issues) for bugs and feature requests
-- **Discussions**: Use [Discussions](https://github.com/jvs-project/jvs/discussions) for questions and ideas
+- **GitHub Issues**: Use [Issues](https://github.com/agentsmith-project/jvs/issues) for bugs and feature requests
+- **Discussions**: Use [Discussions](https://github.com/agentsmith-project/jvs/discussions) for questions and ideas
 
 ## License
 

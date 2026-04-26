@@ -3,7 +3,7 @@
 package engine
 
 import (
-	"github.com/jvs-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
 // NewEngine creates an engine based on the specified type.

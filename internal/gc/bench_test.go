@@ -21,12 +21,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jvs-project/jvs/internal/gc"
-	"github.com/jvs-project/jvs/internal/repo"
-	"github.com/jvs-project/jvs/internal/snapshot"
-	"github.com/jvs-project/jvs/internal/worktree"
-	"github.com/jvs-project/jvs/pkg/model"
-	"github.com/jvs-project/jvs/pkg/uuidutil"
+	"github.com/agentsmith-project/jvs/internal/gc"
+	"github.com/agentsmith-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/internal/snapshot"
+	"github.com/agentsmith-project/jvs/internal/worktree"
+	"github.com/agentsmith-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/pkg/uuidutil"
 )
 
 // setupBenchmarkRepo creates a repository with specified number of snapshots.

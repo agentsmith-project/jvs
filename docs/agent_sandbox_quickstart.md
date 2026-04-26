@@ -531,4 +531,4 @@ with DAG('agent_experiments', start_date=datetime(2024, 1, 1)) as dag:
 
 - Read [GAME_DEV_QUICKSTART.md](game_dev_quickstart.md) for game workflows
 - Read [ETL_PIPELINE_QUICKSTART.md](etl_pipeline_quickstart.md) for data workflows
-- Join the community: [GitHub Discussions](https://github.com/jvs-project/jvs/discussions)
+- Join the community: [GitHub Discussions](https://github.com/agentsmith-project/jvs/discussions)

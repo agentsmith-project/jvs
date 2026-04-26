@@ -9,14 +9,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jvs-project/jvs/internal/audit"
-	"github.com/jvs-project/jvs/internal/repo"
-	"github.com/jvs-project/jvs/internal/snapshot/publishstate"
-	"github.com/jvs-project/jvs/internal/snapshotpayload"
-	"github.com/jvs-project/jvs/pkg/errclass"
-	"github.com/jvs-project/jvs/pkg/fsutil"
-	"github.com/jvs-project/jvs/pkg/model"
-	"github.com/jvs-project/jvs/pkg/pathutil"
+	"github.com/agentsmith-project/jvs/internal/audit"
+	"github.com/agentsmith-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/internal/snapshot/publishstate"
+	"github.com/agentsmith-project/jvs/internal/snapshotpayload"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
+	"github.com/agentsmith-project/jvs/pkg/fsutil"
+	"github.com/agentsmith-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/pkg/pathutil"
 )
 
 // Manager handles worktree CRUD operations.

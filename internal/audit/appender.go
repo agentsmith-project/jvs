@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jvs-project/jvs/pkg/jsonutil"
-	"github.com/jvs-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/pkg/jsonutil"
+	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
 // FileAppender appends audit records to a JSONL file with hash chain.

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jvs-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
 func TestNewCompressor(t *testing.T) {

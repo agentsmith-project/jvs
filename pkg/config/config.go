@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jvs-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/pkg/model"
 	"gopkg.in/yaml.v3"
 )
 

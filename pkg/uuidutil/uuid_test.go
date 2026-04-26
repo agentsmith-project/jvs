@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/jvs-project/jvs/pkg/uuidutil"
+	"github.com/agentsmith-project/jvs/pkg/uuidutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -68,7 +68,7 @@ import (
     "fmt"
     "os"
 
-    "github.com/jvs-project/jvs/pkg/jvs"
+    "github.com/agentsmith-project/jvs/pkg/jvs"
 )
 
 func main() {
@@ -393,7 +393,7 @@ type JVSError struct {
 
 **Example:**
 ```go
-import "github.com/jvs-project/jvs/pkg/errclass"
+import "github.com/agentsmith-project/jvs/pkg/errclass"
 
 // Return a name validation error
 return errclass.ErrNameInvalid.WithMessage("worktree name cannot be empty")
@@ -418,7 +418,7 @@ func NewV4() string
 
 **Example:**
 ```go
-import "github.com/jvs-project/jvs/pkg/uuidutil"
+import "github.com/agentsmith-project/jvs/pkg/uuidutil"
 
 eventID := uuidutil.NewV4()
 ```
@@ -443,7 +443,7 @@ func ValidateName(name string) error
 
 **Example:**
 ```go
-import "github.com/jvs-project/jvs/pkg/pathutil"
+import "github.com/agentsmith-project/jvs/pkg/pathutil"
 
 err := pathutil.ValidateName("my-worktree")
 if err != nil {
@@ -471,7 +471,7 @@ Writes data atomically:
 
 **Example:**
 ```go
-import "github.com/jvs-project/jvs/pkg/fsutil"
+import "github.com/agentsmith-project/jvs/pkg/fsutil"
 
 data := []byte(`{"key": "value"}`)
 err := fsutil.AtomicWrite("/path/to/file.json", data)
@@ -497,7 +497,7 @@ func CanonicalMarshal(v any) ([]byte, error)
 
 **Example:**
 ```go
-import "github.com/jvs-project/jvs/pkg/jsonutil"
+import "github.com/agentsmith-project/jvs/pkg/jsonutil"
 
 data := map[string]any{"b": 2, "a": 1}
 jsonBytes, err := jsonutil.CanonicalMarshal(data)
@@ -529,7 +529,7 @@ func New(level string, format string) Logger
 
 **Example:**
 ```go
-import "github.com/jvs-project/jvs/pkg/logging"
+import "github.com/agentsmith-project/jvs/pkg/logging"
 
 logger := logging.New("info", "text")
 logger.Info("Repository initialized", "path", "/path/to/repo")
@@ -558,7 +558,7 @@ func NewBar() Reporter
 
 **Example:**
 ```go
-import "github.com/jvs-project/jvs/pkg/progress"
+import "github.com/agentsmith-project/jvs/pkg/progress"
 
 reporter := progress.NewBar()
 reporter.Start("Computing payload hash", 1000)
@@ -580,7 +580,7 @@ import (
     "context"
     "fmt"
 
-    "github.com/jvs-project/jvs/pkg/jvs"
+    "github.com/agentsmith-project/jvs/pkg/jvs"
 )
 
 func CreateCheckpoint(ctx context.Context, workspacePath, note string, tags []string) (string, error) {

@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/text/unicode/norm"
 
-	"github.com/jvs-project/jvs/pkg/errclass"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
 )
 
 var nameRegex = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)

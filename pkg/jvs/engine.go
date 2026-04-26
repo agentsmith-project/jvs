@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jvs-project/jvs/internal/engine"
-	"github.com/jvs-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/internal/engine"
+	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
 // DetectEngine returns the best available snapshot engine for the given path.

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jvs-project/jvs/pkg/color"
-	"github.com/jvs-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/pkg/color"
+	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
 // MatchScore represents how well a snapshot matches a query.

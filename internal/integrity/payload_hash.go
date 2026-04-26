@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jvs-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
 // ComputePayloadRootHash computes a deterministic hash of the entire payload tree.

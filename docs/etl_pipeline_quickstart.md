@@ -599,4 +599,4 @@ if __name__ == '__main__':
 
 - Read [GAME_DEV_QUICKSTART.md](game_dev_quickstart.md) for game workflows
 - Read [AGENT_SANDBOX_QUICKSTART.md](agent_sandbox_quickstart.md) for agent workflows
-- Join the community: [GitHub Discussions](https://github.com/jvs-project/jvs/discussions)
+- Join the community: [GitHub Discussions](https://github.com/agentsmith-project/jvs/discussions)

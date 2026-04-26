@@ -89,12 +89,12 @@ JVS handles these use cases natively.
 
 ```bash
 # Build from source
-git clone https://github.com/jvs-project/jvs.git
+git clone https://github.com/agentsmith-project/jvs.git
 cd jvs
 make build
 
 # Or using Go
-go install github.com/jvs-project/jvs@latest
+go install github.com/agentsmith-project/jvs/cmd/jvs@latest
 
 # Verify
 jvs --help
@@ -565,8 +565,8 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) or [SECURITY.md](../SECURITY.md) for s
 
 ### Where can I ask questions?
 
-- **GitHub Issues:** [github.com/jvs-project/jvs/issues](https://github.com/jvs-project/jvs/issues)
-- **GitHub Discussions:** [github.com/jvs-project/jvs/discussions](https://github.com/jvs-project/jvs/discussions)
+- **GitHub Issues:** [github.com/agentsmith-project/jvs/issues](https://github.com/agentsmith-project/jvs/issues)
+- **GitHub Discussions:** [github.com/agentsmith-project/jvs/discussions](https://github.com/agentsmith-project/jvs/discussions)
 
 ---
 

@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jvs-project/jvs/pkg/errclass"
-	"github.com/jvs-project/jvs/pkg/fsutil"
-	"github.com/jvs-project/jvs/pkg/model"
-	"github.com/jvs-project/jvs/pkg/pathutil"
-	"github.com/jvs-project/jvs/pkg/uuidutil"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
+	"github.com/agentsmith-project/jvs/pkg/fsutil"
+	"github.com/agentsmith-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/pkg/pathutil"
+	"github.com/agentsmith-project/jvs/pkg/uuidutil"
 )
 
 const (

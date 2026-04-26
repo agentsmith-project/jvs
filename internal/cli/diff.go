@@ -6,8 +6,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jvs-project/jvs/internal/diff"
-	"github.com/jvs-project/jvs/internal/snapshot"
+	"github.com/agentsmith-project/jvs/internal/diff"
+	"github.com/agentsmith-project/jvs/internal/snapshot"
 )
 
 var (

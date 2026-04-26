@@ -543,7 +543,7 @@ jvs doctor --strict --repair-runtime
    ```
 
 2. **Check known issues:**
-   - [GitHub Issues](https://github.com/jvs-project/jvs/issues)
+   - [GitHub Issues](https://github.com/agentsmith-project/jvs/issues)
    - [FAQ](FAQ.md)
 
 3. **Report a bug:**
