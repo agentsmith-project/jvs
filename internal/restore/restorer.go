@@ -16,6 +16,7 @@ import (
 	"github.com/jvs-project/jvs/internal/snapshotpayload"
 	"github.com/jvs-project/jvs/internal/verify"
 	"github.com/jvs-project/jvs/internal/worktree"
+	"github.com/jvs-project/jvs/pkg/errclass"
 	"github.com/jvs-project/jvs/pkg/fsutil"
 	"github.com/jvs-project/jvs/pkg/model"
 	"github.com/jvs-project/jvs/pkg/pathutil"
@@ -87,10 +88,7 @@ func (r *Restorer) restore(worktreeName string, snapshotID model.SnapshotID) err
 		return fmt.Errorf("verify snapshot: %w", err)
 	}
 	if verifyResult.TamperDetected {
-		if verifyResult.Error != "" {
-			return fmt.Errorf("verify snapshot: %s", verifyResult.Error)
-		}
-		return fmt.Errorf("verify snapshot: tamper detected")
+		return verifySnapshotResultError(verifyResult, "tamper detected")
 	}
 
 	// Get worktree info
@@ -174,6 +172,17 @@ func (r *Restorer) restore(worktreeName string, snapshotID model.SnapshotID) err
 	}
 
 	return nil
+}
+
+func verifySnapshotResultError(result *verify.Result, fallback string) error {
+	message := fallback
+	if result != nil && result.Error != "" {
+		message = result.Error
+	}
+	if result != nil && result.ErrorCode != "" {
+		return &errclass.JVSError{Code: result.ErrorCode, Message: fmt.Sprintf("verify snapshot: %s", message)}
+	}
+	return fmt.Errorf("verify snapshot: %s", message)
 }
 
 func replacePayloadContents(payloadPath, tempPath, backupPath string) error {

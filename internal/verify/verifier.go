@@ -16,15 +16,16 @@ import (
 )
 
 const (
-	ErrorCodeSnapshotIDInvalid          = "E_SNAPSHOT_ID_INVALID"
-	ErrorCodeDescriptorMissing          = "E_DESCRIPTOR_MISSING"
-	ErrorCodeDescriptorCorrupt          = "E_DESCRIPTOR_CORRUPT"
-	ErrorCodeDescriptorChecksumMismatch = "E_DESCRIPTOR_CHECKSUM_MISMATCH"
-	ErrorCodePayloadMissing             = "E_PAYLOAD_MISSING"
-	ErrorCodePayloadInvalid             = "E_PAYLOAD_INVALID"
-	ErrorCodePayloadHashMismatch        = "E_PAYLOAD_HASH_MISMATCH"
-	ErrorCodeReadyMissing               = "E_READY_MISSING"
-	ErrorCodeReadyInvalid               = "E_READY_INVALID"
+	ErrorCodeSnapshotIDInvalid          = snapshot.PublishStateCodeSnapshotIDInvalid
+	ErrorCodeDescriptorMissing          = snapshot.PublishStateCodeDescriptorMissing
+	ErrorCodeDescriptorCorrupt          = snapshot.PublishStateCodeDescriptorCorrupt
+	ErrorCodeDescriptorChecksumMismatch = snapshot.PublishStateCodeDescriptorChecksumMismatch
+	ErrorCodePayloadMissing             = snapshot.PublishStateCodePayloadMissing
+	ErrorCodePayloadInvalid             = snapshot.PublishStateCodePayloadInvalid
+	ErrorCodePayloadHashMismatch        = snapshot.PublishStateCodePayloadHashMismatch
+	ErrorCodeReadyMissing               = snapshot.PublishStateCodeReadyMissing
+	ErrorCodeReadyInvalid               = snapshot.PublishStateCodeReadyInvalid
+	ErrorCodeReadyDescriptorMissing     = snapshot.PublishStateCodeReadyDescriptorMissing
 )
 
 // Result contains verification results for a single snapshot.
@@ -57,20 +58,37 @@ func (v *Verifier) VerifySnapshot(snapshotID model.SnapshotID, verifyPayloadHash
 		return markTampered(result, "critical", ErrorCodeSnapshotIDInvalid, fmt.Sprintf("invalid snapshot ID: %v", err)), nil
 	}
 
-	desc, err := snapshot.LoadDescriptor(v.repoRoot, snapshotID)
-	if err != nil {
-		return markTampered(result, "critical", descriptorLoadErrorCode(err), err.Error()), nil
-	}
+	var desc *model.Descriptor
+	var snapshotDir string
+	if verifyPayloadHash {
+		state, issue := snapshot.InspectPublishState(v.repoRoot, snapshotID, snapshot.PublishStateOptions{
+			RequireReady:             true,
+			RequirePayload:           true,
+			VerifyDescriptorChecksum: true,
+		})
+		if issue != nil {
+			return markTampered(result, "critical", issue.Code, issue.Message), nil
+		}
+		desc = state.Descriptor
+		snapshotDir = state.SnapshotDir
+		result.ChecksumValid = true
+	} else {
+		var err error
+		desc, err = snapshot.LoadDescriptor(v.repoRoot, snapshotID)
+		if err != nil {
+			return markTampered(result, "critical", descriptorLoadErrorCode(err), err.Error()), nil
+		}
 
-	// Verify descriptor checksum
-	computedChecksum, err := integrity.ComputeDescriptorChecksum(desc)
-	if err != nil {
-		return markTampered(result, "error", ErrorCodeDescriptorCorrupt, fmt.Sprintf("compute checksum: %v", err)), nil
-	}
+		// Verify descriptor checksum
+		computedChecksum, err := integrity.ComputeDescriptorChecksum(desc)
+		if err != nil {
+			return markTampered(result, "error", ErrorCodeDescriptorCorrupt, fmt.Sprintf("compute checksum: %v", err)), nil
+		}
 
-	result.ChecksumValid = computedChecksum == desc.DescriptorChecksum
-	if !result.ChecksumValid {
-		return markTampered(result, "critical", ErrorCodeDescriptorChecksumMismatch, "descriptor checksum mismatch"), nil
+		result.ChecksumValid = computedChecksum == desc.DescriptorChecksum
+		if !result.ChecksumValid {
+			return markTampered(result, "critical", ErrorCodeDescriptorChecksumMismatch, "descriptor checksum mismatch"), nil
+		}
 	}
 
 	if issue := CheckLineage(v.repoRoot, snapshotID); issue != nil {
@@ -79,17 +97,6 @@ func (v *Verifier) VerifySnapshot(snapshotID model.SnapshotID, verifyPayloadHash
 
 	// Optionally verify payload hash (expensive)
 	if verifyPayloadHash {
-		snapshotDir, err := repo.SnapshotPathForRead(v.repoRoot, snapshotID)
-		if err != nil {
-			return markTampered(result, "critical", payloadPathErrorCode(err), err.Error()), nil
-		}
-		readyExists, err := readyMarkerExists(snapshotDir)
-		if err != nil {
-			return markTampered(result, "critical", ErrorCodeReadyInvalid, fmt.Sprintf("READY marker invalid: %v", err)), nil
-		}
-		if !readyExists {
-			return markTampered(result, "critical", ErrorCodeReadyMissing, "READY marker missing"), nil
-		}
 		computedHash, err := snapshotpayload.ComputeHash(snapshotDir, snapshotpayload.OptionsFromDescriptor(desc))
 		if err != nil {
 			return markTampered(result, "critical", ErrorCodePayloadInvalid, fmt.Sprintf("compute payload hash: %v", err)), nil
@@ -132,39 +139,10 @@ func markTampered(result *Result, severity, code, message string) *Result {
 }
 
 func descriptorLoadErrorCode(err error) string {
-	if errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), "not found") {
+	if snapshot.IsDescriptorNotFound(err) {
 		return ErrorCodeDescriptorMissing
 	}
 	return ErrorCodeDescriptorCorrupt
-}
-
-func payloadPathErrorCode(err error) string {
-	if errors.Is(err, os.ErrNotExist) {
-		return ErrorCodePayloadMissing
-	}
-	return ErrorCodePayloadInvalid
-}
-
-func readyMarkerExists(snapshotDir string) (bool, error) {
-	found := false
-	for _, name := range []string{".READY", ".READY.gz"} {
-		readyPath := snapshotDir + string(os.PathSeparator) + name
-		info, err := os.Lstat(readyPath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return false, err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return false, fmt.Errorf("control leaf is symlink: %s", readyPath)
-		}
-		if !info.Mode().IsRegular() {
-			return false, fmt.Errorf("control leaf is not regular file: %s", readyPath)
-		}
-		found = true
-	}
-	return found, nil
 }
 
 func (v *Verifier) inventorySnapshotIDs() ([]model.SnapshotID, error) {

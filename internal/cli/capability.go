@@ -2,10 +2,12 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/jvs-project/jvs/internal/engine"
+	"github.com/jvs-project/jvs/pkg/errclass"
 )
 
 var capabilityWriteProbe bool
@@ -18,6 +20,13 @@ var capabilityCmd = &cobra.Command{
 		report, err := engine.ProbeCapabilities(args[0], capabilityWriteProbe)
 		if err != nil {
 			return err
+		}
+		if capabilityWriteProbe && !report.Write.Supported {
+			detail := strings.Join(report.Write.Warnings, "; ")
+			if detail == "" {
+				detail = "write probe did not confirm writable target"
+			}
+			return errclass.ErrUsage.WithMessagef("target path is not writable: %s", detail)
 		}
 		if jsonOutput {
 			output := map[string]any{

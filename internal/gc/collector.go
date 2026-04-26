@@ -68,6 +68,10 @@ func (c *Collector) PlanWithPolicy(policy model.RetentionPolicy) (*model.GCPlan,
 }
 
 func (c *Collector) planWithPolicy(policy model.RetentionPolicy) (*model.GCPlan, error) {
+	if err := c.ensurePublishStateConsistent(); err != nil {
+		return nil, err
+	}
+
 	inputs, err := c.computePlanInputs(policy)
 	if err != nil {
 		return nil, err
@@ -128,6 +132,9 @@ func (c *Collector) run(planID string) error {
 	plan, err := c.LoadPlan(planID)
 	if err != nil {
 		return fmt.Errorf("load plan: %w", err)
+	}
+	if err := c.ensurePublishStateConsistent(); err != nil {
+		return err
 	}
 
 	pending, err := c.revalidatePlan(plan)
@@ -207,6 +214,99 @@ func (c *Collector) run(planID string) error {
 	// Cleanup plan after the committed run has been audited.
 	c.deletePlan(planID)
 
+	return nil
+}
+
+func (c *Collector) ensurePublishStateConsistent() error {
+	ids, err := c.publishStateInventoryIDs()
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		_, issue := snapshot.InspectPublishState(c.repoRoot, id, snapshot.PublishStateOptions{
+			RequireReady:             true,
+			RequirePayload:           true,
+			VerifyDescriptorChecksum: true,
+			VerifyPayloadHash:        true,
+		})
+		if issue != nil {
+			return &errclass.JVSError{
+				Code:    issue.Code,
+				Message: fmt.Sprintf("checkpoint %s publish state invalid: %s", id, issue.Message),
+			}
+		}
+	}
+	return nil
+}
+
+func (c *Collector) publishStateInventoryIDs() ([]model.SnapshotID, error) {
+	seen := make(map[model.SnapshotID]bool)
+	if err := c.collectPublishStateDescriptorIDs(seen); err != nil {
+		return nil, err
+	}
+	if err := c.collectPublishStatePayloadIDs(seen); err != nil {
+		return nil, err
+	}
+
+	ids := make([]model.SnapshotID, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	sortSnapshotIDs(ids)
+	return ids, nil
+}
+
+func (c *Collector) collectPublishStateDescriptorIDs(seen map[model.SnapshotID]bool) error {
+	descriptorsDir, err := repo.DescriptorsDirPath(c.repoRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("resolve descriptors directory: %w", err)
+	}
+	entries, err := os.ReadDir(descriptorsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read descriptors directory: %w", err)
+	}
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		id := model.SnapshotID(strings.TrimSuffix(entry.Name(), ".json"))
+		if id.IsValid() {
+			seen[id] = true
+		}
+	}
+	return nil
+}
+
+func (c *Collector) collectPublishStatePayloadIDs(seen map[model.SnapshotID]bool) error {
+	snapshotsDir, err := repo.SnapshotsDirPath(c.repoRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("resolve snapshots directory: %w", err)
+	}
+	entries, err := os.ReadDir(snapshotsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read snapshots directory: %w", err)
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".tmp") {
+			continue
+		}
+		id := model.SnapshotID(entry.Name())
+		if id.IsValid() {
+			seen[id] = true
+		}
+	}
 	return nil
 }
 

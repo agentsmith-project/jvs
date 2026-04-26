@@ -1,8 +1,8 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -279,7 +279,7 @@ func parseForkArgs(repoRoot, workspaceName string, args []string) (targetRef str
 }
 
 func checkpointRefNotFound(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "not found")
+	return errors.Is(err, errRefNotFound)
 }
 
 func init() {

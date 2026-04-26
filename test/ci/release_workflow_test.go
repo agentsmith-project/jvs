@@ -1,8 +1,13 @@
 package ci
 
 import (
+	"bytes"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -380,6 +385,222 @@ func TestMakefileReleaseGateRunsCIContract(t *testing.T) {
 	}
 }
 
+func TestMakefileReleaseGateRunsFuzzOrdinaryTests(t *testing.T) {
+	root := repoRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	makefile := string(data)
+
+	if !targetRunsOrdinaryGoTestsForPackage(makefile, "test", "./test/fuzz/...") {
+		t.Fatalf("test target must include ordinary Go tests for ./test/fuzz/...")
+	}
+	if !targetOrDepsRunOrdinaryGoTestsForPackage(t, makefile, "release-gate", "./test/fuzz/...") {
+		t.Fatalf("release-gate must run ordinary Go tests for ./test/fuzz/... through test or an explicit dependency")
+	}
+
+	fuzzCommands := makeTargetCommands(makefile, "fuzz")
+	if !commandsContain(fuzzCommands, "-run='^$$'") {
+		t.Fatalf("fuzz target must keep skipping ordinary Go tests while running fuzz targets")
+	}
+}
+
+func TestMakefileFuzzTargetCoversReleaseFuzzers(t *testing.T) {
+	root := repoRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	makefile := string(data)
+
+	sourceTargets := fuzzTargetsFromSource(t, root)
+	exclusions := releaseFuzzExclusions(t, makefile)
+	for _, excluded := range exclusions {
+		if !stringSliceContains(sourceTargets, excluded) {
+			t.Fatalf("release fuzz exclusion %s does not match a fuzz target in test/fuzz/...", excluded)
+		}
+		reasonKey := "RELEASE_FUZZ_EXCLUDE_REASON_" + releaseFuzzReasonID(excluded)
+		reason, ok := makeVariableValue(makefile, reasonKey)
+		if !ok || strings.TrimSpace(reason) == "" {
+			t.Fatalf("release fuzz exclusion %s must have an audited %s entry", excluded, reasonKey)
+		}
+	}
+
+	releaseTargets := makeFuzzList(t, root)
+	requireSameStringSet(t, releaseTargets, releaseBlockingFuzzTargets(sourceTargets, exclusions))
+
+	packagePattern, ok := makeVariableValue(makefile, "RELEASE_FUZZ_PACKAGE_PATTERN")
+	if !ok {
+		t.Fatalf("Makefile must define RELEASE_FUZZ_PACKAGE_PATTERN")
+	}
+	if packagePattern != "./test/fuzz/..." {
+		t.Fatalf("RELEASE_FUZZ_PACKAGE_PATTERN must cover test/fuzz recursively, got %q", packagePattern)
+	}
+	packages, ok := makeVariableValue(makefile, "RELEASE_FUZZ_PACKAGES")
+	if !ok {
+		t.Fatalf("Makefile must define RELEASE_FUZZ_PACKAGES")
+	}
+	if !strings.Contains(packages, "go list $(RELEASE_FUZZ_PACKAGE_PATTERN)") {
+		t.Fatalf("RELEASE_FUZZ_PACKAGES must discover fuzz packages with go list, got %q", packages)
+	}
+	allTargets, ok := makeVariableValue(makefile, "RELEASE_FUZZ_ALL_TARGETS")
+	if !ok {
+		t.Fatalf("Makefile must define RELEASE_FUZZ_ALL_TARGETS")
+	}
+	if !strings.Contains(allTargets, "$(RELEASE_FUZZ_PACKAGES)") || !strings.Contains(allTargets, "go test -list '^Fuzz'") || !strings.Contains(allTargets, "$$pkg:") {
+		t.Fatalf("RELEASE_FUZZ_ALL_TARGETS must discover package-qualified fuzz targets recursively, got %q", allTargets)
+	}
+	filteredTargets, ok := makeVariableValue(makefile, "RELEASE_FUZZ_TARGETS")
+	if !ok {
+		t.Fatalf("Makefile must define RELEASE_FUZZ_TARGETS")
+	}
+	if !strings.Contains(filteredTargets, "$(filter-out $(RELEASE_FUZZ_EXCLUDE_TARGETS),$(RELEASE_FUZZ_ALL_TARGETS))") {
+		t.Fatalf("RELEASE_FUZZ_TARGETS must filter RELEASE_FUZZ_ALL_TARGETS through RELEASE_FUZZ_EXCLUDE_TARGETS, got %q", filteredTargets)
+	}
+
+	fuzzCommands := makeTargetCommands(makefile, "fuzz")
+	if commandsContain(fuzzCommands, "for target in Fuzz") {
+		t.Fatalf("fuzz target must not maintain a hand-written Fuzz target list")
+	}
+	if !commandsContain(fuzzCommands, "$(RELEASE_FUZZ_TARGETS)") {
+		t.Fatalf("fuzz target must iterate over RELEASE_FUZZ_TARGETS")
+	}
+	if !commandsContain(fuzzCommands, `pkg="$${entry%:*}"`) || !commandsContain(fuzzCommands, `target="$${entry##*:}"`) {
+		t.Fatalf("fuzz target must split package-qualified fuzz target entries")
+	}
+	if !commandsContain(fuzzCommands, "-fuzz=\"^$${target}$$\"") {
+		t.Fatalf("fuzz target must run each target with an exact -fuzz regexp")
+	}
+	fuzzParallel, ok := makeVariableValue(makefile, "FUZZPARALLEL")
+	if !ok || strings.TrimSpace(fuzzParallel) == "" {
+		t.Fatalf("Makefile must define FUZZPARALLEL for stable release fuzz smoke runs")
+	}
+	if !commandsContain(fuzzCommands, "-parallel=$(FUZZPARALLEL)") {
+		t.Fatalf("fuzz target must run with the configured FUZZPARALLEL worker count")
+	}
+	if !commandsContain(fuzzCommands, `fuzz_cache="$$(mktemp -d)"`) || !commandsContain(fuzzCommands, `-test.fuzzcachedir="$$fuzz_cache"`) {
+		t.Fatalf("fuzz target must use an isolated fuzz cache for stable release smoke runs")
+	}
+	if !commandsContain(fuzzCommands, `"$$pkg"`) {
+		t.Fatalf("fuzz target must run each fuzz target in its owning package")
+	}
+}
+
+func TestMakefileReleaseFuzzExclusionsAreRepositoryOwned(t *testing.T) {
+	root := repoRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	makefile := string(data)
+
+	for _, name := range []string{
+		"RELEASE_FUZZ_PACKAGE_PATTERN",
+		"RELEASE_FUZZ_PACKAGES",
+		"RELEASE_FUZZ_ALL_TARGETS",
+		"RELEASE_FUZZ_TARGETS",
+		"RELEASE_FUZZ_EXCLUDE_TARGETS",
+	} {
+		definition := makeVariableDefinition(t, makefile, name)
+		if !strings.HasPrefix(definition, "override "+name+" :=") && !strings.HasPrefix(definition, "override "+name+" =") {
+			t.Fatalf("%s must be repository-owned with override, got %q", name, definition)
+		}
+		if strings.Contains(definition, "?=") {
+			t.Fatalf("%s must not use ?= because command-line overrides would hide release fuzz targets", name)
+		}
+	}
+
+	baseline := makeFuzzList(t, root)
+	if len(baseline) == 0 {
+		t.Fatalf("expected at least one release fuzz target")
+	}
+	rootPackage := goModulePath(t, root) + "/test/fuzz"
+	for _, tc := range []struct {
+		name string
+		args []string
+		env  []string
+	}{
+		{
+			name: "package pattern command-line override",
+			args: []string{"RELEASE_FUZZ_PACKAGE_PATTERN=./test/fuzz", "MAKEFLAGS="},
+		},
+		{
+			name: "package list command-line override",
+			args: []string{"RELEASE_FUZZ_PACKAGES=" + rootPackage, "MAKEFLAGS="},
+		},
+		{
+			name: "all target list command-line override",
+			args: []string{"RELEASE_FUZZ_ALL_TARGETS=" + baseline[0], "MAKEFLAGS="},
+		},
+		{
+			name: "filtered target list command-line override",
+			args: []string{"RELEASE_FUZZ_TARGETS=" + baseline[0], "MAKEFLAGS="},
+		},
+		{
+			name: "exclusion command-line override",
+			args: []string{"RELEASE_FUZZ_EXCLUDE_TARGETS=" + baseline[0], "MAKEFLAGS="},
+		},
+		{
+			name: "environment override",
+			env:  []string{"MAKEFLAGS=-e", "RELEASE_FUZZ_TARGETS=" + baseline[0]},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withOverride := makeFuzzListWithEnvAndArgs(t, root, tc.env, tc.args...)
+			requireSameStringSet(t, withOverride, baseline)
+		})
+	}
+}
+
+func TestMakefileFuzzListFailsClosedWhenDiscoveryFails(t *testing.T) {
+	root := repoRoot(t)
+	result := runMakeFuzzList(t, root, []string{"GOFLAGS=-tags=release_fuzz_discovery_failure"})
+	if result.err == nil {
+		t.Fatalf("make -s fuzz-list must fail when release fuzz discovery fails; stdout:\n%s\nstderr:\n%s", result.stdout, result.stderr)
+	}
+	if targets := fuzzTargetsFromMakeOutput(result.stdout); len(targets) != 0 {
+		t.Fatalf("fuzz-list must not print partial targets after discovery failure, got %v\nstderr:\n%s", targets, result.stderr)
+	}
+}
+
+func TestMakefileRuntimeSuitesUseBuiltJVSBinary(t *testing.T) {
+	root := repoRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	makefile := string(data)
+
+	for _, target := range []string{"conformance", "regression"} {
+		deps := makeTargetDeps(t, makefile, target)
+		if !stringSliceContains(deps, "build") {
+			t.Fatalf("%s target dependencies %v must include build", target, deps)
+		}
+		commands := makeTargetCommands(makefile, target)
+		if !commandsContain(commands, `PATH="$(CURDIR)/bin:$$PATH"`) {
+			t.Fatalf("%s target must put $(CURDIR)/bin first on PATH when running tests", target)
+		}
+		if !commandsContain(commands, "go test -tags conformance") {
+			t.Fatalf("%s target must run its Go tests with the conformance tag", target)
+		}
+	}
+
+	integrationDeps := makeTargetDeps(t, makefile, "integration")
+	for _, want := range []string{"build", "conformance"} {
+		if !stringSliceContains(integrationDeps, want) {
+			t.Fatalf("integration target dependencies %v must include %s", integrationDeps, want)
+		}
+	}
+
+	releaseGateDeps := makeTargetDeps(t, makefile, "release-gate")
+	for _, want := range []string{"build", "conformance", "regression"} {
+		if !stringSliceContains(releaseGateDeps, want) {
+			t.Fatalf("release-gate target dependencies %v must include %s", releaseGateDeps, want)
+		}
+	}
+}
+
 type testFailureReporter interface {
 	Helper()
 	Fatalf(string, ...any)
@@ -570,6 +791,12 @@ func makeTargetLine(t *testing.T, makefile, target string) string {
 	return ""
 }
 
+func makeTargetDeps(t *testing.T, makefile, target string) []string {
+	t.Helper()
+	line := makeTargetLine(t, makefile, target)
+	return strings.Fields(strings.TrimSpace(strings.TrimPrefix(line, target+":")))
+}
+
 func makeTargetCommands(makefile, target string) []string {
 	prefix := target + ":"
 	lines := strings.Split(makefile, "\n")
@@ -595,6 +822,235 @@ func commandsContain(commands []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func targetOrDepsRunOrdinaryGoTestsForPackage(t *testing.T, makefile, target, pkg string) bool {
+	t.Helper()
+	seen := map[string]bool{}
+	var visit func(string) bool
+	visit = func(name string) bool {
+		if seen[name] {
+			return false
+		}
+		seen[name] = true
+		if targetRunsOrdinaryGoTestsForPackage(makefile, name, pkg) {
+			return true
+		}
+		for _, dep := range makeTargetDeps(t, makefile, name) {
+			if visit(dep) {
+				return true
+			}
+		}
+		return false
+	}
+	return visit(target)
+}
+
+func targetRunsOrdinaryGoTestsForPackage(makefile, target, pkg string) bool {
+	for _, command := range makeTargetCommands(makefile, target) {
+		if !strings.Contains(command, "go test") || !strings.Contains(command, pkg) {
+			continue
+		}
+		if strings.Contains(command, "-fuzz") {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func makeVariableDefinition(t *testing.T, makefile, name string) string {
+	t.Helper()
+	for _, line := range strings.Split(makefile, "\n") {
+		trimmed := strings.TrimSpace(stripShellComment(line))
+		definition := strings.TrimSpace(strings.TrimPrefix(trimmed, "override "))
+		if !strings.HasPrefix(definition, name) {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(definition, name))
+		for _, op := range []string{":=", "?=", "="} {
+			if strings.HasPrefix(rest, op) {
+				return trimmed
+			}
+		}
+	}
+	t.Fatalf("Makefile must define %s", name)
+	return ""
+}
+
+func makeVariableValue(makefile, name string) (string, bool) {
+	for _, line := range strings.Split(makefile, "\n") {
+		trimmed := strings.TrimSpace(stripShellComment(line))
+		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "override "))
+		if !strings.HasPrefix(trimmed, name) {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(trimmed, name))
+		for _, op := range []string{":=", "?=", "="} {
+			if strings.HasPrefix(rest, op) {
+				return strings.TrimSpace(strings.TrimPrefix(rest, op)), true
+			}
+		}
+	}
+	return "", false
+}
+
+func releaseFuzzExclusions(t *testing.T, makefile string) []string {
+	t.Helper()
+	exclusions, ok := makeVariableValue(makefile, "RELEASE_FUZZ_EXCLUDE_TARGETS")
+	if !ok {
+		t.Fatalf("Makefile must define RELEASE_FUZZ_EXCLUDE_TARGETS")
+	}
+	return strings.Fields(exclusions)
+}
+
+func makeFuzzList(t *testing.T, root string) []string {
+	t.Helper()
+	return makeFuzzListWithArgs(t, root)
+}
+
+func makeFuzzListWithArgs(t *testing.T, root string, args ...string) []string {
+	t.Helper()
+	return makeFuzzListWithEnvAndArgs(t, root, nil, args...)
+}
+
+func makeFuzzListWithEnvAndArgs(t *testing.T, root string, env []string, args ...string) []string {
+	t.Helper()
+	result := runMakeFuzzList(t, root, env, args...)
+	if result.err != nil {
+		t.Fatalf("make -s fuzz-list failed: %v\nstdout:\n%s\nstderr:\n%s", result.err, result.stdout, result.stderr)
+	}
+	return fuzzTargetsFromMakeOutput(result.stdout)
+}
+
+type makeRunResult struct {
+	stdout string
+	stderr string
+	err    error
+}
+
+func runMakeFuzzList(t *testing.T, root string, env []string, args ...string) makeRunResult {
+	t.Helper()
+	makeArgs := append([]string{"-s", "fuzz-list"}, args...)
+	cmd := exec.Command("make", makeArgs...)
+	cmd.Dir = root
+	if env != nil {
+		cmd.Env = append(os.Environ(), env...)
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return makeRunResult{
+		stdout: stdout.String(),
+		stderr: stderr.String(),
+		err:    err,
+	}
+}
+
+func fuzzTargetsFromMakeOutput(output string) []string {
+	var targets []string
+	for _, field := range strings.Fields(output) {
+		if strings.HasPrefix(field, "Fuzz") || strings.Contains(field, ":Fuzz") {
+			targets = append(targets, field)
+		}
+	}
+	sort.Strings(targets)
+	return targets
+}
+
+func fuzzTargetsFromSource(t *testing.T, root string) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	modulePath := goModulePath(t, root)
+	fuzzRoot := filepath.Join(root, "test", "fuzz")
+	var targets []string
+	err := filepath.Walk(fuzzRoot, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() {
+			if info.Name() == "testdata" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(info.Name(), "_test.go") {
+			return nil
+		}
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return fmt.Errorf("parse %s: %w", path, err)
+		}
+		relDir, err := filepath.Rel(root, filepath.Dir(path))
+		if err != nil {
+			return fmt.Errorf("rel package path for %s: %w", path, err)
+		}
+		pkgPath := modulePath + "/" + filepath.ToSlash(relDir)
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if ok && strings.HasPrefix(fn.Name.Name, "Fuzz") {
+				targets = append(targets, pkgPath+":"+fn.Name.Name)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk fuzz tests: %v", err)
+	}
+	sort.Strings(targets)
+	if len(targets) == 0 {
+		t.Fatalf("expected at least one fuzz target in test/fuzz/...")
+	}
+	return targets
+}
+
+func goModulePath(t *testing.T, root string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		t.Fatalf("read go.mod: %v", err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == "module" {
+			return fields[1]
+		}
+	}
+	t.Fatalf("go.mod must define a module path")
+	return ""
+}
+
+func releaseFuzzReasonID(target string) string {
+	var b strings.Builder
+	for _, r := range target {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
+func releaseBlockingFuzzTargets(targets, exclusions []string) []string {
+	excluded := make(map[string]bool, len(exclusions))
+	for _, target := range exclusions {
+		excluded[target] = true
+	}
+	var releaseTargets []string
+	for _, target := range targets {
+		if !excluded[target] {
+			releaseTargets = append(releaseTargets, target)
+		}
+	}
+	sort.Strings(releaseTargets)
+	return releaseTargets
 }
 
 func stringSliceContains(values []string, want string) bool {

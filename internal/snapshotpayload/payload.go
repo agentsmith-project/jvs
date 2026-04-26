@@ -204,19 +204,24 @@ func copyTree(src, dst string) error {
 }
 
 func removeControlMarkers(root string) error {
-	readyPath := filepath.Join(root, storageReadyMarkerName)
-	info, err := os.Lstat(readyPath)
+	for _, name := range storageControlMarkerNames {
+		if err := removeControlMarker(filepath.Join(root, name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func removeControlMarker(path string) error {
+	_, err := os.Lstat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("stat control marker %s: %w", readyPath, err)
+		return fmt.Errorf("stat control marker %s: %w", path, err)
 	}
-	if err := os.RemoveAll(readyPath); err != nil {
-		return fmt.Errorf("remove control marker %s: %w", readyPath, err)
-	}
-	if info.IsDir() {
-		return nil
+	if err := os.RemoveAll(path); err != nil {
+		return fmt.Errorf("remove control marker %s: %w", path, err)
 	}
 	return nil
 }

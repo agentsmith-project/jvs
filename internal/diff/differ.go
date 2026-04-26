@@ -4,7 +4,6 @@ package diff
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,7 +13,6 @@ import (
 	"time"
 
 	"github.com/jvs-project/jvs/internal/engine"
-	"github.com/jvs-project/jvs/internal/repo"
 	"github.com/jvs-project/jvs/internal/snapshot"
 	"github.com/jvs-project/jvs/internal/snapshotpayload"
 	"github.com/jvs-project/jvs/pkg/model"
@@ -71,31 +69,20 @@ func (d *Differ) Diff(fromID, toID model.SnapshotID) (*DiffResult, error) {
 	fromPath := ""
 	var fromDesc *model.Descriptor
 	if fromID != "" {
-		var err error
-		fromPath, err = repo.SnapshotPathForRead(d.repoRoot, fromID)
+		fromState, err := d.inspectPublishedSnapshot(fromID)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return nil, fmt.Errorf("from snapshot not found: %w", err)
-			}
-			return nil, fmt.Errorf("from snapshot path: %w", err)
+			return nil, fmt.Errorf("inspect from publish state: %w", err)
 		}
-		fromDesc, err = snapshot.LoadDescriptor(d.repoRoot, fromID)
-		if err != nil {
-			return nil, fmt.Errorf("load from descriptor: %w", err)
-		}
+		fromPath = fromState.SnapshotDir
+		fromDesc = fromState.Descriptor
 	}
 
-	toPath, err := repo.SnapshotPathForRead(d.repoRoot, toID)
+	toState, err := d.inspectPublishedSnapshot(toID)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("to snapshot not found: %w", err)
-		}
-		return nil, fmt.Errorf("to snapshot path: %w", err)
+		return nil, fmt.Errorf("inspect to publish state: %w", err)
 	}
-	toDesc, err := snapshot.LoadDescriptor(d.repoRoot, toID)
-	if err != nil {
-		return nil, fmt.Errorf("load to descriptor: %w", err)
-	}
+	toPath := toState.SnapshotDir
+	toDesc := toState.Descriptor
 
 	tempRoot, err := os.MkdirTemp("", "jvs-diff-*")
 	if err != nil {
@@ -189,6 +176,19 @@ func (d *Differ) Diff(fromID, toID model.SnapshotID) (*DiffResult, error) {
 	result.TotalModified = len(result.Modified)
 
 	return result, nil
+}
+
+func (d *Differ) inspectPublishedSnapshot(snapshotID model.SnapshotID) (*snapshot.PublishState, error) {
+	state, issue := snapshot.InspectPublishState(d.repoRoot, snapshotID, snapshot.PublishStateOptions{
+		RequireReady:             true,
+		RequirePayload:           true,
+		VerifyDescriptorChecksum: true,
+		VerifyPayloadHash:        true,
+	})
+	if issue != nil {
+		return nil, snapshot.PublishStateIssueError(issue)
+	}
+	return state, nil
 }
 
 // fileInfo represents metadata about a file in a snapshot.

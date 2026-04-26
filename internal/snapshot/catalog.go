@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -13,8 +12,41 @@ import (
 	"github.com/jvs-project/jvs/pkg/model"
 )
 
+// CatalogEntry is one published checkpoint payload plus its descriptor load
+// result. Callers that resolve refs can distinguish a missing ref from a
+// published checkpoint whose descriptor is missing or corrupt.
+type CatalogEntry struct {
+	SnapshotID    model.SnapshotID
+	Descriptor    *model.Descriptor
+	DescriptorErr error
+}
+
 // ListAll returns all snapshot descriptors sorted by creation time (newest first).
 func ListAll(repoRoot string) ([]*model.Descriptor, error) {
+	entries, err := ListCatalogEntries(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	var descriptors []*model.Descriptor
+	for _, entry := range entries {
+		if entry.DescriptorErr != nil {
+			continue
+		}
+		descriptors = append(descriptors, entry.Descriptor)
+	}
+
+	// Sort by creation time (newest first)
+	sort.Slice(descriptors, func(i, j int) bool {
+		return descriptors[i].CreatedAt.After(descriptors[j].CreatedAt)
+	})
+
+	return descriptors, nil
+}
+
+// ListCatalogEntries returns ready checkpoint payloads with descriptor load
+// state, preserving corrupt descriptor candidates for ref resolution.
+func ListCatalogEntries(repoRoot string) ([]CatalogEntry, error) {
 	snapshotsDir, err := repo.SnapshotsDirPath(repoRoot)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -30,7 +62,7 @@ func ListAll(repoRoot string) ([]*model.Descriptor, error) {
 		return nil, fmt.Errorf("read snapshots directory: %w", err)
 	}
 
-	var descriptors []*model.Descriptor
+	var catalogEntries []CatalogEntry
 	for _, entry := range entries {
 		if strings.HasSuffix(entry.Name(), ".tmp") {
 			continue
@@ -48,53 +80,44 @@ func ListAll(repoRoot string) ([]*model.Descriptor, error) {
 		if err := snapshotID.Validate(); err != nil {
 			continue
 		}
-		snapshotDir, err := repo.SnapshotPathForRead(repoRoot, snapshotID)
-		if err != nil {
-			return nil, err
+		state, issue := InspectPublishState(repoRoot, snapshotID, PublishStateOptions{RequireReady: true})
+		if issue != nil {
+			switch issue.Code {
+			case PublishStateCodeReadyMissing:
+				continue
+			case PublishStateCodeReadyInvalid:
+				return nil, PublishStateIssueError(issue)
+			case PublishStateCodeDescriptorCorrupt, PublishStateCodeDescriptorMissing, PublishStateCodeReadyDescriptorMissing:
+				catalogEntries = append(catalogEntries, CatalogEntry{
+					SnapshotID:    snapshotID,
+					DescriptorErr: PublishStateIssueError(issue),
+				})
+				continue
+			default:
+				return nil, PublishStateIssueError(issue)
+			}
 		}
-		ready, err := hasPublishReadyMarker(snapshotDir)
-		if err != nil {
-			return nil, err
-		}
-		if !ready {
-			continue
-		}
-		desc, err := LoadDescriptor(repoRoot, snapshotID)
-		if err != nil {
-			// Skip corrupted/missing descriptors
-			continue
-		}
-		descriptors = append(descriptors, desc)
+		catalogEntries = append(catalogEntries, CatalogEntry{
+			SnapshotID:    snapshotID,
+			Descriptor:    state.Descriptor,
+			DescriptorErr: nil,
+		})
 	}
 
-	// Sort by creation time (newest first)
-	sort.Slice(descriptors, func(i, j int) bool {
-		return descriptors[i].CreatedAt.After(descriptors[j].CreatedAt)
-	})
-
-	return descriptors, nil
+	return catalogEntries, nil
 }
 
-func hasPublishReadyMarker(snapshotDir string) (bool, error) {
-	found := false
-	for _, name := range []string{".READY", ".READY.gz"} {
-		path := filepath.Join(snapshotDir, name)
-		info, err := os.Lstat(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return false, fmt.Errorf("stat ready marker %s: %w", path, err)
+// PublishedSnapshotExists reports whether snapshotID has a ready published
+// payload, independent of descriptor readability.
+func PublishedSnapshotExists(repoRoot string, snapshotID model.SnapshotID) (bool, error) {
+	snapshotDir, err := repo.SnapshotPathForRead(repoRoot, snapshotID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return false, fmt.Errorf("ready marker is symlink: %s", path)
-		}
-		if !info.Mode().IsRegular() {
-			return false, fmt.Errorf("ready marker is not regular file: %s", path)
-		}
-		found = true
+		return false, err
 	}
-	return found, nil
+	return PublishReadyMarkerExists(snapshotDir)
 }
 
 // FilterOptions for searching snapshots.
@@ -155,21 +178,42 @@ func hasTag(desc *model.Descriptor, tag string) bool {
 // FindOne finds a single snapshot by fuzzy match (note/tag prefix).
 // Returns error if multiple matches or no matches.
 func FindOne(repoRoot string, query string) (*model.Descriptor, error) {
-	all, err := ListAll(repoRoot)
+	entries, err := ListCatalogEntries(repoRoot)
 	if err != nil {
 		return nil, err
 	}
 
-	var matches []*model.Descriptor
-	for _, desc := range all {
-		if matchesQuery(desc, query) {
-			matches = append(matches, desc)
+	if id := model.SnapshotID(query); id.IsValid() {
+		for _, entry := range entries {
+			if entry.SnapshotID != id {
+				continue
+			}
+			if entry.DescriptorErr != nil {
+				return nil, entry.DescriptorErr
+			}
+			return entry.Descriptor, nil
+		}
+		return nil, fmt.Errorf("no snapshot found matching %q", query)
+	}
+
+	var matches []CatalogEntry
+	var firstDescriptorErr *CatalogEntry
+	for _, entry := range entries {
+		if entry.DescriptorErr != nil {
+			if firstDescriptorErr == nil {
+				current := entry
+				firstDescriptorErr = &current
+			}
+			if strings.HasPrefix(string(entry.SnapshotID), query) {
+				matches = append(matches, entry)
+			}
+			continue
+		}
+		if matchesQuery(entry.Descriptor, query) {
+			matches = append(matches, entry)
 		}
 	}
 
-	if len(matches) == 0 {
-		return nil, fmt.Errorf("no snapshot found matching %q", query)
-	}
 	if len(matches) > 1 {
 		var ids []string
 		for _, m := range matches {
@@ -177,8 +221,17 @@ func FindOne(repoRoot string, query string) (*model.Descriptor, error) {
 		}
 		return nil, fmt.Errorf("ambiguous query %q matches multiple snapshots: %s", query, strings.Join(ids, ", "))
 	}
+	if firstDescriptorErr != nil {
+		return nil, firstDescriptorErr.DescriptorErr
+	}
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("no snapshot found matching %q", query)
+	}
 
-	return matches[0], nil
+	if matches[0].DescriptorErr != nil {
+		return nil, matches[0].DescriptorErr
+	}
+	return matches[0].Descriptor, nil
 }
 
 func matchesQuery(desc *model.Descriptor, query string) bool {

@@ -13,6 +13,7 @@ import (
 	"github.com/jvs-project/jvs/internal/doctor"
 	"github.com/jvs-project/jvs/internal/engine"
 	"github.com/jvs-project/jvs/internal/repo"
+	"github.com/jvs-project/jvs/internal/snapshot"
 	"github.com/jvs-project/jvs/internal/verify"
 	"github.com/jvs-project/jvs/pkg/errclass"
 	"github.com/jvs-project/jvs/pkg/fsutil"
@@ -81,7 +82,7 @@ func runCloneFull(sourceArg, destArg string) error {
 	)
 	degraded := degradedReasons(transferResult)
 	transferMode := model.EngineType(effectiveTransferMode(transferEngine, transferResult))
-	effectiveEngine := detectEngine(destRoot)
+	effectiveEngine := transferMode
 
 	output := map[string]any{
 		"scope":                  "full",
@@ -422,6 +423,16 @@ func verifyFullCloneSource(sourceRoot string) error {
 	if result == nil || result.Healthy {
 		return nil
 	}
+	if err := firstDoctorFindingError(result, isPublishStateErrorCode); err != nil {
+		return err
+	}
+	if err := firstDoctorFindingError(result, func(string) bool { return true }); err != nil {
+		return err
+	}
+	return errclass.ErrDescriptorCorrupt.WithMessage("source repository failed verification")
+}
+
+func firstDoctorFindingError(result *doctor.Result, accept func(string) bool) error {
 	for _, finding := range result.Findings {
 		if finding.Severity != "error" && finding.Severity != "critical" {
 			continue
@@ -434,9 +445,30 @@ func verifyFullCloneSource(sourceRoot string) error {
 		if message == "" {
 			message = "source repository failed verification"
 		}
+		if !accept(code) {
+			continue
+		}
 		return &errclass.JVSError{Code: code, Message: message}
 	}
-	return errclass.ErrDescriptorCorrupt.WithMessage("source repository failed verification")
+	return nil
+}
+
+func isPublishStateErrorCode(code string) bool {
+	switch code {
+	case snapshot.PublishStateCodeSnapshotIDInvalid,
+		snapshot.PublishStateCodeDescriptorMissing,
+		snapshot.PublishStateCodeDescriptorCorrupt,
+		snapshot.PublishStateCodeDescriptorChecksumMismatch,
+		snapshot.PublishStateCodeReadyMissing,
+		snapshot.PublishStateCodeReadyInvalid,
+		snapshot.PublishStateCodeReadyDescriptorMissing,
+		snapshot.PublishStateCodePayloadMissing,
+		snapshot.PublishStateCodePayloadInvalid,
+		snapshot.PublishStateCodePayloadHashMismatch:
+		return true
+	default:
+		return false
+	}
 }
 
 func verifyResultError(result *verify.Result, fallback string) error {

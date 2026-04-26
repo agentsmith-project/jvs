@@ -8,8 +8,10 @@ import (
 	"reflect"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/jvs-project/jvs/internal/engine"
+	"github.com/jvs-project/jvs/internal/integrity"
 	"github.com/jvs-project/jvs/internal/repo"
 	"github.com/jvs-project/jvs/pkg/fsutil"
 	"github.com/jvs-project/jvs/pkg/model"
@@ -33,16 +35,32 @@ func createFailureTestSnapshot(t *testing.T, repoPath string) model.SnapshotID {
 	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID))
 	require.NoError(t, os.MkdirAll(snapshotDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(snapshotDir, "snapshot.txt"), []byte("snapshot"), 0644))
-	require.NoError(t, os.WriteFile(filepath.Join(snapshotDir, ".READY"), []byte("{}"), 0644))
 
+	payloadHash, err := integrity.ComputePayloadRootHash(snapshotDir)
+	require.NoError(t, err)
 	desc := model.Descriptor{
-		SnapshotID:   snapshotID,
-		WorktreeName: "main",
-		Engine:       model.EngineCopy,
+		SnapshotID:      snapshotID,
+		WorktreeName:    "main",
+		CreatedAt:       time.Now().UTC(),
+		Engine:          model.EngineCopy,
+		PayloadRootHash: payloadHash,
+		IntegrityState:  model.IntegrityVerified,
 	}
+	checksum, err := integrity.ComputeDescriptorChecksum(&desc)
+	require.NoError(t, err)
+	desc.DescriptorChecksum = checksum
 	data, err := json.Marshal(desc)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json"), data, 0644))
+	readyData, err := json.Marshal(model.ReadyMarker{
+		SnapshotID:         snapshotID,
+		CompletedAt:        time.Now().UTC(),
+		PayloadHash:        payloadHash,
+		Engine:             model.EngineCopy,
+		DescriptorChecksum: checksum,
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(snapshotDir, ".READY"), readyData, 0644))
 	return snapshotID
 }
 

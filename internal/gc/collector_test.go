@@ -228,7 +228,7 @@ func TestCollector_Plan_ReadyWithoutDescriptorFailsClosed(t *testing.T) {
 	collector := gc.NewCollector(repoPath)
 	_, err := collector.PlanWithPolicy(zeroRetention)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "READY snapshot missing descriptor")
+	assert.ErrorIs(t, err, &errclass.JVSError{Code: "E_READY_DESCRIPTOR_MISSING"})
 	assert.DirExists(t, snapshotDir, "GC must not silently delete corrupt published state")
 }
 
@@ -563,7 +563,7 @@ func TestCollector_RunCompletesMissingSnapshotWithRetryTombstoneEvidence(t *test
 	}
 }
 
-func TestCollector_RunCompletesReadyWithoutDescriptorWithRetryTombstoneEvidence(t *testing.T) {
+func TestCollector_RunReadyWithoutDescriptorWithRetryTombstoneEvidenceFailsClosed(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
 	snapshotID := ids[0]
@@ -586,11 +586,12 @@ func TestCollector_RunCompletesReadyWithoutDescriptorWithRetryTombstoneEvidence(
 
 	collector := gc.NewCollector(repoPath)
 	err := collector.Run(plan.PlanID)
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, &errclass.JVSError{Code: "E_READY_DESCRIPTOR_MISSING"})
 
-	assert.NoDirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID)))
+	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID)))
 	assert.NoFileExists(t, descriptorPath)
-	requireTombstoneState(t, repoPath, snapshotID, model.GCStateCommitted)
+	requireTombstoneState(t, repoPath, snapshotID, model.GCStateFailed)
 }
 
 func TestCollector_RunSkipsMissingCommittedSnapshotIdempotently(t *testing.T) {
@@ -643,7 +644,7 @@ func TestCollector_RunCommittedTombstoneWithExistingSnapshotRetriesDeletion(t *t
 	requireTombstoneState(t, repoPath, snapshotID, model.GCStateCommitted)
 }
 
-func TestCollector_RunCommittedTombstoneWithRemainingDescriptorRetriesDeletion(t *testing.T) {
+func TestCollector_RunCommittedTombstoneWithRemainingDescriptorFailsClosed(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
 	snapshotID := ids[0]
@@ -666,10 +667,11 @@ func TestCollector_RunCommittedTombstoneWithRemainingDescriptorRetriesDeletion(t
 
 	collector := gc.NewCollector(repoPath)
 	err := collector.Run(plan.PlanID)
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, &errclass.JVSError{Code: "E_PAYLOAD_MISSING"})
 
 	assert.NoDirExists(t, snapshotDir)
-	assert.NoFileExists(t, descriptorPath)
+	assert.FileExists(t, descriptorPath)
 	requireTombstoneState(t, repoPath, snapshotID, model.GCStateCommitted)
 }
 
@@ -1344,16 +1346,17 @@ func TestCollector_ListAllSnapshots_WithNonDirectoryEntries(t *testing.T) {
 	assert.NotEmpty(t, plan.ProtectedSet)
 }
 
-func TestCollector_Run_PayloadDeleteFailureKeepsDescriptorAndRetries(t *testing.T) {
+func TestCollector_RunPayloadDeleteFailureKeepsDescriptorAndFailsClosedOnDamagedRetry(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
 	snapshotID := ids[0]
 
 	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID))
+	snapshotsDir := filepath.Dir(snapshotDir)
 	descriptorPath := filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json")
-	require.NoError(t, os.Chmod(snapshotDir, 0555))
+	require.NoError(t, os.Chmod(snapshotsDir, 0555))
 	t.Cleanup(func() {
-		_ = os.Chmod(snapshotDir, 0755)
+		_ = os.Chmod(snapshotsDir, 0755)
 	})
 
 	collector := gc.NewCollector(repoPath)
@@ -1368,13 +1371,14 @@ func TestCollector_Run_PayloadDeleteFailureKeepsDescriptorAndRetries(t *testing.
 	assert.DirExists(t, snapshotDir)
 	requireTombstoneState(t, repoPath, snapshotID, model.GCStateFailed)
 
-	require.NoError(t, os.Chmod(snapshotDir, 0755))
+	require.NoError(t, os.Chmod(snapshotsDir, 0755))
 	err = collector.Run(plan.PlanID)
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, &errclass.JVSError{Code: "E_READY_MISSING"})
 
-	assert.NoDirExists(t, snapshotDir)
-	assert.NoFileExists(t, descriptorPath)
-	requireTombstoneState(t, repoPath, snapshotID, model.GCStateCommitted)
+	assert.DirExists(t, snapshotDir)
+	assert.FileExists(t, descriptorPath)
+	requireTombstoneState(t, repoPath, snapshotID, model.GCStateFailed)
 }
 
 func TestCollector_PlanFailsClosedWhenDescriptorIsDirectory(t *testing.T) {
@@ -1630,7 +1634,7 @@ func TestCollector_walkLineage_WithMissingDescriptor(t *testing.T) {
 	collector := gc.NewCollector(repoPath)
 	_, err = collector.Plan()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "READY snapshot missing descriptor")
+	assert.ErrorIs(t, err, &errclass.JVSError{Code: "E_READY_DESCRIPTOR_MISSING"})
 }
 
 func indexOf(s, substr string) int {

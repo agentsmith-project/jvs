@@ -6,7 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jvs-project/jvs/internal/integrity"
+	"github.com/jvs-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -962,10 +965,34 @@ func makeAllDescriptorsOldForPublicCLI(t *testing.T, repoPath string) {
 		path := filepath.Join(descriptorsDir, entry.Name())
 		data, err := os.ReadFile(path)
 		require.NoError(t, err)
-		var desc map[string]any
+		var desc model.Descriptor
 		require.NoError(t, json.Unmarshal(data, &desc))
-		desc["created_at"] = "2000-01-01T00:00:00Z"
+		desc.CreatedAt = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+		checksum, err := integrity.ComputeDescriptorChecksum(&desc)
+		require.NoError(t, err)
+		desc.DescriptorChecksum = checksum
 		data, err = json.MarshalIndent(desc, "", "  ")
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(path, data, 0644))
+		updateReadyDescriptorChecksumForPublicCLI(t, repoPath, desc.SnapshotID, checksum)
+	}
+}
+
+func updateReadyDescriptorChecksumForPublicCLI(t *testing.T, repoPath string, snapshotID model.SnapshotID, checksum model.HashValue) {
+	t.Helper()
+
+	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID))
+	for _, name := range []string{".READY", ".READY.gz"} {
+		path := filepath.Join(snapshotDir, name)
+		data, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		require.NoError(t, err)
+		var marker map[string]any
+		require.NoError(t, json.Unmarshal(data, &marker))
+		marker["descriptor_checksum"] = string(checksum)
+		data, err = json.MarshalIndent(marker, "", "  ")
 		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(path, data, 0644))
 	}

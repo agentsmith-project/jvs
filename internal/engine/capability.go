@@ -20,7 +20,7 @@ type Capability struct {
 	Available  bool     `json:"available"`
 	Supported  bool     `json:"supported"`
 	Confidence string   `json:"confidence"`
-	Warnings   []string `json:"warnings,omitempty"`
+	Warnings   []string `json:"warnings"`
 }
 
 // CapabilityReport is a non-mutating report by default. Reflink support is
@@ -36,7 +36,7 @@ type CapabilityReport struct {
 	RecommendedEngine    model.EngineType           `json:"recommended_engine"`
 	MetadataPreservation model.MetadataPreservation `json:"metadata_preservation"`
 	PerformanceClass     string                     `json:"performance_class"`
-	Warnings             []string                   `json:"warnings,omitempty"`
+	Warnings             []string                   `json:"warnings"`
 }
 
 // CapabilityProber is the filesystem probing surface used by capability
@@ -147,6 +147,7 @@ func (filesystemCapabilityProber) ProbeCapabilities(targetPath string, writeProb
 	report.Warnings = append(report.Warnings, report.Reflink.Warnings...)
 	report.Warnings = append(report.Warnings, report.Copy.Warnings...)
 	report.Warnings = uniqueStrings(report.Warnings)
+	normalizeCapabilityReport(report)
 
 	return report, nil
 }
@@ -514,6 +515,26 @@ func recommendedEngine(report *CapabilityReport) model.EngineType {
 	default:
 		return ""
 	}
+}
+
+func normalizeCapabilityReport(report *CapabilityReport) {
+	if report == nil {
+		return
+	}
+	report.Write = normalizeCapability(report.Write)
+	report.JuiceFS = normalizeCapability(report.JuiceFS)
+	report.Reflink = normalizeCapability(report.Reflink)
+	report.Copy = normalizeCapability(report.Copy)
+	if report.Warnings == nil {
+		report.Warnings = []string{}
+	}
+}
+
+func normalizeCapability(capability Capability) Capability {
+	if capability.Warnings == nil {
+		capability.Warnings = []string{}
+	}
+	return capability
 }
 
 func firstRegularFile(root string) (string, os.FileInfo, bool, error) {

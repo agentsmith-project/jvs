@@ -11,7 +11,7 @@ const (
 	storageReadyGzipMarkerName = ".READY.gz"
 )
 
-var reservedWorkspacePayloadRootNames = [...]string{
+var storageControlMarkerNames = [...]string{
 	storageReadyMarkerName,
 	storageReadyGzipMarkerName,
 }
@@ -20,8 +20,8 @@ var reservedWorkspacePayloadRootNames = [...]string{
 // files at the workspace payload root because they collide with storage control
 // markers.
 func ReservedWorkspacePayloadRootNames() []string {
-	names := make([]string, 0, len(reservedWorkspacePayloadRootNames))
-	return append(names, reservedWorkspacePayloadRootNames[:]...)
+	names := make([]string, 0, len(storageControlMarkerNames))
+	return append(names, storageControlMarkerNames[:]...)
 }
 
 // ReservedWorkspacePayloadRootPathError reports a user payload root entry that
@@ -41,7 +41,7 @@ func CheckReservedWorkspacePayloadRoot(root string) error {
 	if root == "" {
 		return fmt.Errorf("workspace payload root is required")
 	}
-	for _, name := range reservedWorkspacePayloadRootNames {
+	for _, name := range storageControlMarkerNames {
 		path := filepath.Join(root, name)
 		if _, err := os.Lstat(path); err == nil {
 			return &ReservedWorkspacePayloadRootPathError{Name: name, Path: path}

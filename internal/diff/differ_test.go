@@ -3,10 +3,15 @@ package diff
 import (
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/jvs-project/jvs/internal/integrity"
+	"github.com/jvs-project/jvs/internal/snapshotpayload"
+	"github.com/jvs-project/jvs/pkg/errclass"
 	"github.com/jvs-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -26,6 +31,8 @@ func TestDiffer_Diff_NoChanges(t *testing.T) {
 	content := []byte("hello world")
 	require.NoError(t, os.WriteFile(filepath.Join(snap1, "file.txt"), content, 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(snap2, "file.txt"), content, 0644))
+	publishDiffSnapshot(t, tmpDir, fromID, false)
+	publishDiffSnapshot(t, tmpDir, toID, false)
 
 	result, err := differ.Diff(fromID, toID)
 	require.NoError(t, err)
@@ -46,6 +53,8 @@ func TestDiffer_Diff_AddedFile(t *testing.T) {
 
 	// Add file only to snap2
 	require.NoError(t, os.WriteFile(filepath.Join(snap2, "newfile.txt"), []byte("new"), 0644))
+	publishDiffSnapshot(t, tmpDir, fromID, false)
+	publishDiffSnapshot(t, tmpDir, toID, false)
 
 	result, err := differ.Diff(fromID, toID)
 	require.NoError(t, err)
@@ -67,6 +76,8 @@ func TestDiffer_Diff_RemovedFile(t *testing.T) {
 
 	// Add file only to snap1
 	require.NoError(t, os.WriteFile(filepath.Join(snap1, "removed.txt"), []byte("gone"), 0644))
+	publishDiffSnapshot(t, tmpDir, fromID, false)
+	publishDiffSnapshot(t, tmpDir, toID, false)
 
 	result, err := differ.Diff(fromID, toID)
 	require.NoError(t, err)
@@ -89,6 +100,8 @@ func TestDiffer_Diff_ModifiedFile(t *testing.T) {
 	// Add same path with different content
 	require.NoError(t, os.WriteFile(filepath.Join(snap1, "file.txt"), []byte("old"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(snap2, "file.txt"), []byte("new"), 0644))
+	publishDiffSnapshot(t, tmpDir, fromID, false)
+	publishDiffSnapshot(t, tmpDir, toID, false)
 
 	result, err := differ.Diff(fromID, toID)
 	require.NoError(t, err)
@@ -115,6 +128,8 @@ func TestDiffer_Diff_Symlink(t *testing.T) {
 
 	// Add symlink to snap2 with different target
 	require.NoError(t, os.Symlink("othertarget.txt", filepath.Join(snap2, "link")))
+	publishDiffSnapshot(t, tmpDir, fromID, false)
+	publishDiffSnapshot(t, tmpDir, toID, false)
 
 	result, err := differ.Diff(fromID, toID)
 	require.NoError(t, err)
@@ -140,6 +155,8 @@ func TestDiffer_Diff_NestedDirectories(t *testing.T) {
 
 	require.NoError(t, os.MkdirAll(filepath.Join(snap2, "a", "b"), 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(snap2, "a", "b", "file.txt"), []byte("modified"), 0644))
+	publishDiffSnapshot(t, tmpDir, fromID, false)
+	publishDiffSnapshot(t, tmpDir, toID, false)
 
 	result, err := differ.Diff(fromID, toID)
 	require.NoError(t, err)
@@ -157,6 +174,7 @@ func TestDiffer_Diff_EmptyFrom(t *testing.T) {
 
 	// Add file to snap2
 	require.NoError(t, os.WriteFile(filepath.Join(snap2, "file.txt"), []byte("content"), 0644))
+	publishDiffSnapshot(t, tmpDir, toID, false)
 
 	// Diff from empty (no fromID)
 	result, err := differ.Diff("", toID)
@@ -179,6 +197,8 @@ func TestDiffer_Diff_SkipsReadyMarker(t *testing.T) {
 
 	// Add .READY marker to snap2 (should be ignored)
 	require.NoError(t, os.WriteFile(filepath.Join(snap2, ".READY"), []byte("{}"), 0644))
+	publishDiffSnapshot(t, tmpDir, fromID, false)
+	publishDiffSnapshot(t, tmpDir, toID, false)
 
 	result, err := differ.Diff("", toID)
 	require.NoError(t, err)
@@ -198,6 +218,8 @@ func TestDiffer_Diff_CompressedAndUncompressedSameLogicalContentNoChanges(t *tes
 	require.NoError(t, os.WriteFile(filepath.Join(fromSnap, "file.txt"), []byte("logical content"), 0644))
 	entry := writeCompressedLogicalFile(t, toSnap, "file.txt", []byte("logical content"), 0644)
 	writeReadyWithCompressionManifest(t, toSnap, []compressionManifestEntry{entry})
+	publishDiffSnapshot(t, tmpDir, fromID, false)
+	publishDiffSnapshot(t, tmpDir, toID, true)
 
 	result, err := differ.Diff(fromID, toID)
 	require.NoError(t, err)
@@ -220,6 +242,8 @@ func TestDiffer_Diff_CompressedChangedLogicalFileUsesUserPath(t *testing.T) {
 	toEntry := writeCompressedLogicalFile(t, toSnap, "file.txt", []byte("new content"), 0600)
 	writeReadyWithCompressionManifest(t, fromSnap, []compressionManifestEntry{fromEntry})
 	writeReadyWithCompressionManifest(t, toSnap, []compressionManifestEntry{toEntry})
+	publishDiffSnapshot(t, tmpDir, fromID, true)
+	publishDiffSnapshot(t, tmpDir, toID, true)
 
 	result, err := differ.Diff(fromID, toID)
 	require.NoError(t, err)
@@ -253,6 +277,8 @@ func TestDiffer_Diff_CompressedSnapshotKeepsUserOwnedGzipPath(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(toSnap, "archive.gz"), []byte("new user gzip bytes"), 0644))
 	writeReadyWithCompressionManifest(t, fromSnap, []compressionManifestEntry{fromEntry})
 	writeReadyWithCompressionManifest(t, toSnap, []compressionManifestEntry{toEntry})
+	publishDiffSnapshot(t, tmpDir, fromID, true)
+	publishDiffSnapshot(t, tmpDir, toID, true)
 
 	result, err := differ.Diff(fromID, toID)
 	require.NoError(t, err)
@@ -298,22 +324,87 @@ func TestDiff_NonExistentSnapshot(t *testing.T) {
 	differ := NewDiffer(tmpDir)
 	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, ".jvs", "snapshots"), 0755))
 
-	// Both snapshots don't exist — toID checked first
+	// Both snapshots don't exist.
 	_, err := differ.Diff("1708300800004-feedface", "1708300800003-deadbeef")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "snapshot not found")
+	assert.True(t, errors.Is(err, &errclass.JVSError{Code: "E_DESCRIPTOR_MISSING"}), "got %v", err)
 
 	// Only fromID exists, toID missing
 	createDiffSnapshot(t, tmpDir, "1708300800002-cafebabe", false)
+	publishDiffSnapshot(t, tmpDir, "1708300800002-cafebabe", false)
 
 	_, err = differ.Diff("1708300800002-cafebabe", "1708300800003-deadbeef")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "to snapshot not found")
+	assert.Contains(t, err.Error(), "inspect to publish state")
+	assert.True(t, errors.Is(err, &errclass.JVSError{Code: "E_DESCRIPTOR_MISSING"}), "got %v", err)
 
 	// Only toID exists, fromID missing
 	_, err = differ.Diff("1708300800004-feedface", "1708300800002-cafebabe")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "from snapshot not found")
+	assert.Contains(t, err.Error(), "inspect from publish state")
+	assert.True(t, errors.Is(err, &errclass.JVSError{Code: "E_DESCRIPTOR_MISSING"}), "got %v", err)
+}
+
+func TestDifferRejectsDamagedPublishState(t *testing.T) {
+	tests := []struct {
+		name     string
+		wantCode string
+		mutate   func(t *testing.T, repoRoot string, id model.SnapshotID)
+	}{
+		{
+			name:     "missing READY",
+			wantCode: "E_READY_MISSING",
+			mutate: func(t *testing.T, repoRoot string, id model.SnapshotID) {
+				t.Helper()
+				require.NoError(t, os.Remove(filepath.Join(repoRoot, ".jvs", "snapshots", string(id), ".READY")))
+			},
+		},
+		{
+			name:     "malformed READY",
+			wantCode: "E_READY_INVALID",
+			mutate: func(t *testing.T, repoRoot string, id model.SnapshotID) {
+				t.Helper()
+				require.NoError(t, os.WriteFile(filepath.Join(repoRoot, ".jvs", "snapshots", string(id), ".READY"), []byte("{not json"), 0644))
+			},
+		},
+		{
+			name:     "descriptor checksum mismatch with matching READY checksum",
+			wantCode: "E_DESCRIPTOR_CHECKSUM_MISMATCH",
+			mutate: func(t *testing.T, repoRoot string, id model.SnapshotID) {
+				t.Helper()
+				const badChecksum = "bad-descriptor-checksum"
+				mutateDiffDescriptor(t, repoRoot, id, func(doc map[string]any) {
+					doc["descriptor_checksum"] = badChecksum
+				})
+				mutateDiffReady(t, repoRoot, id, func(doc map[string]any) {
+					doc["descriptor_checksum"] = badChecksum
+				})
+			},
+		},
+		{
+			name:     "payload hash mismatch",
+			wantCode: "E_PAYLOAD_HASH_MISMATCH",
+			mutate: func(t *testing.T, repoRoot string, id model.SnapshotID) {
+				t.Helper()
+				require.NoError(t, os.WriteFile(filepath.Join(repoRoot, ".jvs", "snapshots", string(id), "tampered.txt"), []byte("tampered"), 0644))
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			id := model.SnapshotID("1708300800000-deadbeef")
+			snap := createDiffSnapshot(t, tmpDir, id, false)
+			require.NoError(t, os.WriteFile(filepath.Join(snap, "file.txt"), []byte("content"), 0644))
+			publishDiffSnapshot(t, tmpDir, id, false)
+			tt.mutate(t, tmpDir, id)
+
+			_, err := NewDiffer(tmpDir).Diff(id, id)
+			require.Error(t, err)
+			require.True(t, errors.Is(err, &errclass.JVSError{Code: tt.wantCode}), "got %v", err)
+		})
+	}
 }
 
 func TestDifferRejectsPathLikeAndNonCanonicalIDs(t *testing.T) {
@@ -370,6 +461,8 @@ func TestDiff_EmptySnapshots(t *testing.T) {
 	toID := model.SnapshotID("1708300800006-bbbbbbbb")
 	createDiffSnapshot(t, tmpDir, fromID, false)
 	createDiffSnapshot(t, tmpDir, toID, false)
+	publishDiffSnapshot(t, tmpDir, fromID, false)
+	publishDiffSnapshot(t, tmpDir, toID, false)
 
 	result, err := differ.Diff(fromID, toID)
 	require.NoError(t, err)
@@ -405,20 +498,23 @@ func createDiffSnapshot(t *testing.T, repoRoot string, snapshotID model.Snapshot
 
 	snapshotPath := filepath.Join(repoRoot, ".jvs", "snapshots", string(snapshotID))
 	require.NoError(t, os.MkdirAll(snapshotPath, 0755))
-	writeDiffDescriptor(t, repoRoot, snapshotID, compressed)
 	return snapshotPath
 }
 
-func writeDiffDescriptor(t *testing.T, repoRoot string, snapshotID model.SnapshotID, compressed bool) {
+func publishDiffSnapshot(t *testing.T, repoRoot string, snapshotID model.SnapshotID, compressed bool) {
 	t.Helper()
 
+	snapshotPath := filepath.Join(repoRoot, ".jvs", "snapshots", string(snapshotID))
+	payloadHash, err := snapshotpayload.ComputeHash(snapshotPath, snapshotpayload.Options{Compressed: compressed})
+	require.NoError(t, err)
+
 	desc := model.Descriptor{
-		SnapshotID:         snapshotID,
-		WorktreeName:       "main",
-		Engine:             model.EngineCopy,
-		PayloadRootHash:    "payload-hash",
-		DescriptorChecksum: "descriptor-hash",
-		IntegrityState:     model.IntegrityVerified,
+		SnapshotID:      snapshotID,
+		WorktreeName:    "main",
+		CreatedAt:       time.Unix(1708300800, 0).UTC(),
+		Engine:          model.EngineCopy,
+		PayloadRootHash: payloadHash,
+		IntegrityState:  model.IntegrityVerified,
 	}
 	if compressed {
 		desc.Compression = &model.CompressionInfo{
@@ -426,12 +522,17 @@ func writeDiffDescriptor(t *testing.T, repoRoot string, snapshotID model.Snapsho
 			Level: 6,
 		}
 	}
+	checksum, err := integrity.ComputeDescriptorChecksum(&desc)
+	require.NoError(t, err)
+	desc.DescriptorChecksum = checksum
 
 	descriptorDir := filepath.Join(repoRoot, ".jvs", "descriptors")
 	require.NoError(t, os.MkdirAll(descriptorDir, 0755))
 	data, err := json.Marshal(desc)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(descriptorDir, string(snapshotID)+".json"), data, 0644))
+
+	writeDiffReadyMarker(t, snapshotPath, snapshotID, payloadHash, checksum)
 }
 
 func writeCompressedLogicalFile(t *testing.T, root, rel string, data []byte, mode os.FileMode) compressionManifestEntry {
@@ -472,7 +573,6 @@ func writeReadyWithCompressionManifest(t *testing.T, root string, entries []comp
 	}
 
 	marker := map[string]any{
-		"snapshot_id": "test",
 		"compression_manifest": map[string]any{
 			"version": 1,
 			"type":    "gzip",
@@ -482,6 +582,49 @@ func writeReadyWithCompressionManifest(t *testing.T, root string, entries []comp
 	data, err := json.Marshal(marker)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(root, ".READY"), data, 0644))
+}
+
+func writeDiffReadyMarker(t *testing.T, root string, snapshotID model.SnapshotID, payloadHash, checksum model.HashValue) {
+	t.Helper()
+
+	marker := map[string]any{}
+	readyPath := filepath.Join(root, ".READY")
+	if data, err := os.ReadFile(readyPath); err == nil && len(data) > 0 {
+		require.NoError(t, json.Unmarshal(data, &marker))
+	} else if err != nil && !os.IsNotExist(err) {
+		require.NoError(t, err)
+	}
+	marker["snapshot_id"] = string(snapshotID)
+	marker["completed_at"] = time.Unix(1708300800, 0).UTC()
+	marker["payload_root_hash"] = string(payloadHash)
+	marker["engine"] = string(model.EngineCopy)
+	marker["descriptor_checksum"] = string(checksum)
+
+	data, err := json.Marshal(marker)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(readyPath, data, 0644))
+}
+
+func mutateDiffDescriptor(t *testing.T, repoRoot string, snapshotID model.SnapshotID, mutate func(map[string]any)) {
+	t.Helper()
+	mutateDiffJSONFile(t, filepath.Join(repoRoot, ".jvs", "descriptors", string(snapshotID)+".json"), mutate)
+}
+
+func mutateDiffReady(t *testing.T, repoRoot string, snapshotID model.SnapshotID, mutate func(map[string]any)) {
+	t.Helper()
+	mutateDiffJSONFile(t, filepath.Join(repoRoot, ".jvs", "snapshots", string(snapshotID), ".READY"), mutate)
+}
+
+func mutateDiffJSONFile(t *testing.T, path string, mutate func(map[string]any)) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(data, &doc))
+	mutate(doc)
+	data, err = json.Marshal(doc)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, data, 0644))
 }
 
 func assertNoGzipChangePaths(t *testing.T, result *DiffResult) {

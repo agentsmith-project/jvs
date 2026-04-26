@@ -60,7 +60,14 @@ func setupSnapshotTestRepo(t *testing.T) string {
 		// Create snapshot directory
 		snapDir := filepath.Join(snapshotsDir, string(snap.SnapshotID))
 		require.NoError(t, os.MkdirAll(snapDir, 0755))
-		require.NoError(t, os.WriteFile(filepath.Join(snapDir, ".READY"), []byte("{}"), 0644))
+		readyData := fmt.Sprintf(`{
+			"snapshot_id": "%s",
+			"completed_at": "%s",
+			"payload_root_hash": "%s",
+			"engine": "%s",
+			"descriptor_checksum": "checksum"
+		}`, snap.SnapshotID, snap.CreatedAt.Format(time.RFC3339), snap.PayloadRootHash, snap.Engine)
+		require.NoError(t, os.WriteFile(filepath.Join(snapDir, ".READY"), []byte(readyData), 0644))
 
 		// Write descriptor
 		descPath := filepath.Join(descriptorsDir, string(snap.SnapshotID)+".json")

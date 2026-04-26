@@ -14,6 +14,7 @@ import (
 	"github.com/jvs-project/jvs/internal/audit"
 	"github.com/jvs-project/jvs/internal/integrity"
 	"github.com/jvs-project/jvs/internal/repo"
+	"github.com/jvs-project/jvs/internal/snapshot"
 	"github.com/jvs-project/jvs/internal/verify"
 	"github.com/jvs-project/jvs/internal/worktree"
 	"github.com/jvs-project/jvs/pkg/model"
@@ -106,10 +107,11 @@ const (
 	ErrorCodeIntentControlInvalid        = "E_INTENT_CONTROL_INVALID"
 	ErrorCodeIntentOrphan                = "E_INTENT_ORPHAN"
 	ErrorCodeReadyControlInvalid         = "E_READY_CONTROL_INVALID"
+	ErrorCodeReadyInvalid                = snapshot.PublishStateCodeReadyInvalid
 	ErrorCodeReadyInvalidSnapshotID      = "E_READY_INVALID_SNAPSHOT_ID"
 	ErrorCodeReadyDescriptorInvalid      = "E_READY_DESCRIPTOR_INVALID"
-	ErrorCodeReadyDescriptorMissing      = "E_READY_DESCRIPTOR_MISSING"
-	ErrorCodeReadyMissing                = "E_READY_MISSING"
+	ErrorCodeReadyDescriptorMissing      = snapshot.PublishStateCodeReadyDescriptorMissing
+	ErrorCodeReadyMissing                = snapshot.PublishStateCodeReadyMissing
 	ErrorCodeStrictVerifyFailed          = "E_STRICT_VERIFY_FAILED"
 	ErrorCodeTmpControlInvalid           = "E_TMP_CONTROL_INVALID"
 	ErrorCodeTmpOrphan                   = "E_TMP_ORPHAN"
@@ -1102,6 +1104,7 @@ func (d *Doctor) checkReadyMarkers(result *Result, strict bool) {
 		return
 	}
 
+	seen := make(map[model.SnapshotID]bool)
 	for _, entry := range entries {
 		if strings.HasSuffix(entry.Name(), ".tmp") {
 			continue
@@ -1132,6 +1135,7 @@ func (d *Doctor) checkReadyMarkers(result *Result, strict bool) {
 			})
 			continue
 		}
+		seen[snapshotID] = true
 
 		snapshotDir, err := repo.SnapshotPathForRead(d.repoRoot, snapshotID)
 		if err != nil {
@@ -1151,7 +1155,7 @@ func (d *Doctor) checkReadyMarkers(result *Result, strict bool) {
 				Category:    "snapshot",
 				Description: fmt.Sprintf("snapshot %s READY marker invalid: %v", snapshotID, err),
 				Severity:    "error",
-				ErrorCode:   ErrorCodeReadyControlInvalid,
+				ErrorCode:   ErrorCodeReadyInvalid,
 				Path:        snapshotDir,
 			})
 			continue
@@ -1160,6 +1164,15 @@ func (d *Doctor) checkReadyMarkers(result *Result, strict bool) {
 		if readyExists {
 			_, err := repo.SnapshotDescriptorPathForRead(d.repoRoot, snapshotID)
 			if err == nil {
+				if _, issue := snapshot.InspectPublishState(d.repoRoot, snapshotID, snapshot.PublishStateOptions{RequireReady: true}); issue != nil && issue.Code == ErrorCodeReadyInvalid {
+					result.Findings = append(result.Findings, Finding{
+						Category:    "snapshot",
+						Description: fmt.Sprintf("snapshot %s READY marker invalid: %s", snapshotID, issue.Message),
+						Severity:    "error",
+						ErrorCode:   issue.Code,
+						Path:        issue.Path,
+					})
+				}
 				continue
 			}
 			descriptorPath, pathErr := repo.SnapshotDescriptorPath(d.repoRoot, snapshotID)
@@ -1198,32 +1211,40 @@ func (d *Doctor) checkReadyMarkers(result *Result, strict bool) {
 			Path:        filepath.Join(snapshotDir, ".READY"),
 		})
 	}
+
+	descriptorIDs, err := d.listDescriptorSnapshotIDs(result)
+	if err != nil {
+		result.Findings = append(result.Findings, Finding{
+			Category:    "snapshot",
+			Description: fmt.Sprintf("cannot inspect descriptor publish state: %v", err),
+			Severity:    "error",
+			ErrorCode:   ErrorCodeReadyDescriptorInvalid,
+		})
+		return
+	}
+	for _, snapshotID := range descriptorIDs {
+		if seen[snapshotID] {
+			continue
+		}
+		_, issue := snapshot.InspectPublishState(d.repoRoot, snapshotID, snapshot.PublishStateOptions{
+			RequireReady:   true,
+			RequirePayload: true,
+		})
+		if issue == nil {
+			continue
+		}
+		result.Findings = append(result.Findings, Finding{
+			Category:    "snapshot",
+			Description: fmt.Sprintf("snapshot %s publish state invalid: %s", snapshotID, issue.Message),
+			Severity:    "error",
+			ErrorCode:   issue.Code,
+			Path:        issue.Path,
+		})
+	}
 }
 
 func readyMarkerExists(snapshotDir string) (bool, error) {
-	found := false
-	for _, name := range []string{".READY", ".READY.gz"} {
-		exists, err := readyMarkerLeafExists(snapshotDir, name)
-		if err != nil {
-			return false, err
-		}
-		found = found || exists
-	}
-	return found, nil
-}
-
-func readyMarkerLeafExists(snapshotDir, name string) (bool, error) {
-	readyPath, info, err := safeControlChildInfo(snapshotDir, name)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		return false, err
-	}
-	if !info.Mode().IsRegular() {
-		return false, fmt.Errorf("READY marker is not regular file: %s", readyPath)
-	}
-	return true, nil
+	return snapshot.PublishReadyMarkerExists(snapshotDir)
 }
 
 func (d *Doctor) checkSnapshotIntegrity(result *Result) {

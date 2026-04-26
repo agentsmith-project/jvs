@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/jvs-project/jvs/internal/verify"
 	"github.com/jvs-project/jvs/internal/worktree"
 	"github.com/jvs-project/jvs/pkg/color"
+	"github.com/jvs-project/jvs/pkg/errclass"
 	"github.com/jvs-project/jvs/pkg/model"
 )
 
@@ -105,14 +107,22 @@ Examples:
 func resolveSnapshotID(repoRoot, ref string) (model.SnapshotID, error) {
 	// Try exact match first
 	testID := model.SnapshotID(ref)
-	_, err := snapshot.LoadDescriptor(repoRoot, testID)
-	if err == nil {
-		return testID, nil
+	if testID.IsValid() {
+		_, err := snapshot.LoadDescriptor(repoRoot, testID)
+		if err == nil {
+			return testID, nil
+		}
+		if !snapshot.IsDescriptorNotFound(err) {
+			return "", err
+		}
 	}
 
 	// Try fuzzy match
 	desc, err := snapshot.FindOne(repoRoot, ref)
 	if err != nil {
+		if snapshot.IsDescriptorNotFound(err) || errors.Is(err, errclass.ErrDescriptorCorrupt) {
+			return "", err
+		}
 		return "", fmt.Errorf("snapshot not found: %s", ref)
 	}
 	return desc.SnapshotID, nil
@@ -431,10 +441,7 @@ func verifySnapshotStrong(repoRoot string, snapshotID model.SnapshotID) error {
 		return err
 	}
 	if result.TamperDetected {
-		if result.Error != "" {
-			return fmt.Errorf("%s", result.Error)
-		}
-		return fmt.Errorf("tamper detected")
+		return verifyResultError(result, "checkpoint failed verification")
 	}
 	return nil
 }

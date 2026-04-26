@@ -1,6 +1,8 @@
 package snapshot_test
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +11,7 @@ import (
 	"github.com/jvs-project/jvs/internal/repo"
 	"github.com/jvs-project/jvs/internal/snapshot"
 	"github.com/jvs-project/jvs/internal/worktree"
+	"github.com/jvs-project/jvs/pkg/errclass"
 	"github.com/jvs-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -78,7 +81,7 @@ func TestListAllRequiresReadyMarker(t *testing.T) {
 	regularMarker := func(name string) markerSetup {
 		return func(t *testing.T, snapshotDir string) {
 			t.Helper()
-			require.NoError(t, os.WriteFile(filepath.Join(snapshotDir, name), []byte("ready"), 0644))
+			writeCatalogReadyMarker(t, snapshotDir, name)
 		}
 	}
 	symlinkMarker := func(name string) markerSetup {
@@ -165,6 +168,23 @@ func TestListAllRequiresReadyMarker(t *testing.T) {
 			}
 		})
 	}
+}
+
+func writeCatalogReadyMarker(t *testing.T, snapshotDir, name string) {
+	t.Helper()
+	repoPath := filepath.Dir(filepath.Dir(filepath.Dir(snapshotDir)))
+	snapshotID := model.SnapshotID(filepath.Base(snapshotDir))
+	desc, err := snapshot.LoadDescriptor(repoPath, snapshotID)
+	require.NoError(t, err)
+	data, err := json.Marshal(model.ReadyMarker{
+		SnapshotID:         desc.SnapshotID,
+		CompletedAt:        time.Now().UTC(),
+		PayloadHash:        desc.PayloadRootHash,
+		Engine:             desc.Engine,
+		DescriptorChecksum: desc.DescriptorChecksum,
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(snapshotDir, name), data, 0644))
 }
 
 func TestListAll_SortedByTime(t *testing.T) {
@@ -308,6 +328,30 @@ func TestFindOne_ByTag(t *testing.T) {
 	desc, err := snapshot.FindOne(repoPath, "v1.0")
 	require.NoError(t, err)
 	assert.Equal(t, "first", desc.Note)
+}
+
+func TestFindOneFailsClosedWhenUnreadableDescriptorCouldHideAlias(t *testing.T) {
+	repoPath := setupCatalogTestRepo(t)
+
+	createCatalogSnapshot(t, repoPath, "release target", []string{"release"})
+	broken := createCatalogSnapshot(t, repoPath, "unreadable descriptor", []string{"other"})
+	require.NoError(t, os.WriteFile(filepath.Join(repoPath, ".jvs", "descriptors", string(broken.SnapshotID)+".json"), []byte("{not json"), 0644))
+
+	_, err := snapshot.FindOne(repoPath, "release")
+	require.Error(t, err)
+	require.True(t, errors.Is(err, errclass.ErrDescriptorCorrupt), "got %v", err)
+}
+
+func TestFindOneExactIDIgnoresUnrelatedUnreadableDescriptor(t *testing.T) {
+	repoPath := setupCatalogTestRepo(t)
+
+	target := createCatalogSnapshot(t, repoPath, "exact target", []string{"release"})
+	broken := createCatalogSnapshot(t, repoPath, "unreadable descriptor", []string{"other"})
+	require.NoError(t, os.WriteFile(filepath.Join(repoPath, ".jvs", "descriptors", string(broken.SnapshotID)+".json"), []byte("{not json"), 0644))
+
+	found, err := snapshot.FindOne(repoPath, string(target.SnapshotID))
+	require.NoError(t, err)
+	require.Equal(t, target.SnapshotID, found.SnapshotID)
 }
 
 func TestFindOne_ByTagPrefix(t *testing.T) {

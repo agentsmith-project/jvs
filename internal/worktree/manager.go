@@ -11,7 +11,9 @@ import (
 
 	"github.com/jvs-project/jvs/internal/audit"
 	"github.com/jvs-project/jvs/internal/repo"
+	"github.com/jvs-project/jvs/internal/snapshot/publishstate"
 	"github.com/jvs-project/jvs/internal/snapshotpayload"
+	"github.com/jvs-project/jvs/pkg/errclass"
 	"github.com/jvs-project/jvs/pkg/fsutil"
 	"github.com/jvs-project/jvs/pkg/model"
 	"github.com/jvs-project/jvs/pkg/pathutil"
@@ -127,10 +129,11 @@ func (m *Manager) createMaterializedSnapshotWorktreeLocked(name string, snapshot
 		return nil, err
 	}
 
-	opts, err := snapshotpayload.OptionsForSnapshot(m.repoRoot, snapshotID)
+	desc, snapshotDir, err := m.loadPublishedSnapshotForMaterialization(snapshotID)
 	if err != nil {
 		return nil, fmt.Errorf("load snapshot descriptor: %w", err)
 	}
+	opts := snapshotpayload.OptionsFromDescriptor(desc)
 
 	payloadPath, stagingPath, err := m.preparePayloadStaging(name)
 	if err != nil {
@@ -144,10 +147,6 @@ func (m *Manager) createMaterializedSnapshotWorktreeLocked(name string, snapshot
 	}()
 
 	// Materialize snapshot content to worktree
-	snapshotDir, err := repo.SnapshotPath(m.repoRoot, snapshotID)
-	if err != nil {
-		return nil, fmt.Errorf("load snapshot descriptor: %w", err)
-	}
 	if err := snapshotpayload.Materialize(snapshotDir, stagingPath, opts, cloneFunc); err != nil {
 		return nil, fmt.Errorf("clone snapshot content: %w", err)
 	}
@@ -187,6 +186,23 @@ func (m *Manager) createMaterializedSnapshotWorktreeLocked(name string, snapshot
 	}
 
 	return cfg, nil
+}
+
+func (m *Manager) loadPublishedSnapshotForMaterialization(snapshotID model.SnapshotID) (*model.Descriptor, string, error) {
+	state, issue := publishstate.Inspect(m.repoRoot, snapshotID, publishstate.Options{
+		RequireReady:             true,
+		RequirePayload:           true,
+		VerifyDescriptorChecksum: true,
+		VerifyPayloadHash:        true,
+	})
+	if issue != nil {
+		return nil, "", publishStateIssueError(issue)
+	}
+	return state.Descriptor, state.SnapshotDir, nil
+}
+
+func publishStateIssueError(issue *publishstate.Issue) error {
+	return &errclass.JVSError{Code: issue.Code, Message: issue.Message}
 }
 
 // List returns all worktrees.

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jvs-project/jvs/internal/compression"
+	"github.com/jvs-project/jvs/internal/integrity"
 	"github.com/jvs-project/jvs/internal/snapshot"
 	"github.com/jvs-project/jvs/pkg/jvs"
 	"github.com/jvs-project/jvs/pkg/model"
@@ -59,10 +60,35 @@ func setSnapshotCreatedAt(t *testing.T, client *jvs.Client, snapshotID model.Sna
 	var desc model.Descriptor
 	require.NoError(t, json.Unmarshal(data, &desc))
 	desc.CreatedAt = createdAt.UTC()
+	checksum, err := integrity.ComputeDescriptorChecksum(&desc)
+	require.NoError(t, err)
+	desc.DescriptorChecksum = checksum
 
 	data, err = json.MarshalIndent(&desc, "", "  ")
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(descriptorPath, data, 0644))
+	syncLibraryReadyMarkerWithDescriptor(t, client.RepoRoot(), desc)
+}
+
+func syncLibraryReadyMarkerWithDescriptor(t *testing.T, repoRoot string, desc model.Descriptor) {
+	t.Helper()
+	snapshotDir := filepath.Join(repoRoot, ".jvs", "snapshots", string(desc.SnapshotID))
+	for _, name := range []string{".READY", ".READY.gz"} {
+		path := filepath.Join(snapshotDir, name)
+		data, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		require.NoError(t, err)
+		var marker map[string]any
+		require.NoError(t, json.Unmarshal(data, &marker))
+		marker["snapshot_id"] = string(desc.SnapshotID)
+		marker["payload_root_hash"] = string(desc.PayloadRootHash)
+		marker["descriptor_checksum"] = string(desc.DescriptorChecksum)
+		data, err = json.MarshalIndent(marker, "", "  ")
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(path, data, 0644))
+	}
 }
 
 func createOldOrphanSnapshot(t *testing.T, client *jvs.Client, age time.Duration) model.SnapshotID {

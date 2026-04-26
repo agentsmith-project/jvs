@@ -95,6 +95,17 @@ func TestRestorer_Restore(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(mainPath, ".READY.gz"))
 }
 
+func TestRestorer_RestorePreservesPublishStateErrorCode(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	desc := createSnapshot(t, repoPath)
+	require.NoError(t, os.WriteFile(filepath.Join(repoPath, ".jvs", "snapshots", string(desc.SnapshotID), ".READY"), []byte("{not json"), 0644))
+
+	err := restore.NewRestorer(repoPath, model.EngineCopy).Restore("main", desc.SnapshotID)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, &errclass.JVSError{Code: "E_READY_INVALID"})
+}
+
 func TestRestorerRestoreRejectsReservedWorkspaceRootPayloadNames(t *testing.T) {
 	for _, name := range []string{".READY", ".READY.gz"} {
 		t.Run(name, func(t *testing.T) {

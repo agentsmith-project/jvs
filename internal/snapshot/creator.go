@@ -40,6 +40,12 @@ type snapshotPublishPaths struct {
 	descriptorPath string
 }
 
+var ErrDescriptorNotFound = errors.New("descriptor not found")
+
+func IsDescriptorNotFound(err error) bool {
+	return errors.Is(err, ErrDescriptorNotFound) || errors.Is(err, os.ErrNotExist)
+}
+
 // NewCreator creates a new snapshot creator.
 func NewCreator(repoRoot string, engineType model.EngineType) *Creator {
 	return NewCreatorWithCompression(repoRoot, engineType, nil)
@@ -774,19 +780,22 @@ func withCleanupError(err, cleanupErr error) error {
 
 // LoadDescriptor loads a descriptor from disk.
 func LoadDescriptor(repoRoot string, snapshotID model.SnapshotID) (*model.Descriptor, error) {
+	if err := snapshotID.Validate(); err != nil {
+		return nil, err
+	}
 	path, err := repo.SnapshotDescriptorPathForRead(repoRoot, snapshotID)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, errclass.ErrDescriptorCorrupt.WithMessagef("descriptor not found: %s", snapshotID)
+			return nil, descriptorNotFoundError(snapshotID)
 		}
-		return nil, err
+		return nil, errclass.ErrDescriptorCorrupt.WithMessagef("descriptor path invalid: %v", err)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, errclass.ErrDescriptorCorrupt.WithMessagef("descriptor not found: %s", snapshotID)
+			return nil, descriptorNotFoundError(snapshotID)
 		}
-		return nil, fmt.Errorf("read descriptor: %w", err)
+		return nil, errclass.ErrDescriptorCorrupt.WithMessagef("read descriptor: %v", err)
 	}
 	var desc model.Descriptor
 	if err := json.Unmarshal(data, &desc); err != nil {
@@ -798,8 +807,25 @@ func LoadDescriptor(repoRoot string, snapshotID model.SnapshotID) (*model.Descri
 	return &desc, nil
 }
 
+func descriptorNotFoundError(snapshotID model.SnapshotID) error {
+	return fmt.Errorf("%w: %s: %w", ErrDescriptorNotFound, snapshotID, os.ErrNotExist)
+}
+
 // VerifySnapshot verifies a snapshot's integrity.
 func VerifySnapshot(repoRoot string, snapshotID model.SnapshotID, verifyPayloadHash bool) error {
+	if verifyPayloadHash {
+		_, issue := InspectPublishState(repoRoot, snapshotID, PublishStateOptions{
+			RequireReady:             true,
+			RequirePayload:           true,
+			VerifyDescriptorChecksum: true,
+			VerifyPayloadHash:        true,
+		})
+		if issue != nil {
+			return &errclass.JVSError{Code: issue.Code, Message: issue.Message}
+		}
+		return nil
+	}
+
 	desc, err := LoadDescriptor(repoRoot, snapshotID)
 	if err != nil {
 		return err
@@ -812,20 +838,6 @@ func VerifySnapshot(repoRoot string, snapshotID model.SnapshotID, verifyPayloadH
 	}
 	if computedChecksum != desc.DescriptorChecksum {
 		return errclass.ErrDescriptorCorrupt.WithMessage("checksum mismatch")
-	}
-
-	if verifyPayloadHash {
-		snapshotDir, err := repo.SnapshotPathForRead(repoRoot, snapshotID)
-		if err != nil {
-			return err
-		}
-		computedHash, err := snapshotpayload.ComputeHash(snapshotDir, snapshotpayload.OptionsFromDescriptor(desc))
-		if err != nil {
-			return fmt.Errorf("compute payload hash: %w", err)
-		}
-		if computedHash != desc.PayloadRootHash {
-			return errclass.ErrPayloadHashMismatch.WithMessage("payload hash mismatch")
-		}
 	}
 
 	return nil

@@ -1,6 +1,7 @@
 package worktree_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -32,6 +33,19 @@ func createManagerSnapshot(t *testing.T, repoPath string) model.SnapshotID {
 	desc, err := creator.Create("main", "manager test snapshot", nil)
 	require.NoError(t, err)
 	return desc.SnapshotID
+}
+
+func mutateManagerReadyMarker(t *testing.T, repoPath string, snapshotID model.SnapshotID, mutate func(map[string]any)) {
+	t.Helper()
+	readyPath := filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID), ".READY")
+	data, err := os.ReadFile(readyPath)
+	require.NoError(t, err)
+	var marker map[string]any
+	require.NoError(t, json.Unmarshal(data, &marker))
+	mutate(marker)
+	data, err = json.Marshal(marker)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(readyPath, data, 0644))
 }
 
 func assertWorktreeNotCreated(t *testing.T, repoPath, name string) {
@@ -475,6 +489,7 @@ func TestManager_CreateFromSnapshot_MaterializesCompressedPayload(t *testing.T) 
 	creator.SetCompression(compression.LevelDefault)
 	desc, err := creator.Create("main", "compressed", nil)
 	require.NoError(t, err)
+	duplicateReadyMarkerAsGzipAlias(t, repoPath, desc.SnapshotID)
 
 	mgr := worktree.NewManager(repoPath)
 	cfg, err := mgr.CreateFromSnapshot("from-compressed", desc.SnapshotID, copySnapshotTree)
@@ -523,6 +538,45 @@ func TestManager_CreateFromSnapshot_FailsWhenDescriptorCorrupt(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "load snapshot descriptor")
 	assertWorktreeNotCreated(t, repoPath, "from-corrupt")
+}
+
+func TestManager_MaterializeSnapshotRejectsMalformedReadyWithPublishStateCode(t *testing.T) {
+	for _, op := range []string{"create-from", "fork"} {
+		t.Run(op, func(t *testing.T) {
+			repoPath := setupTestRepo(t)
+			mgr := worktree.NewManager(repoPath)
+			snapshotID := createManagerSnapshot(t, repoPath)
+			require.NoError(t, os.WriteFile(filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID), ".READY"), []byte("{not json"), 0644))
+
+			cloneCalled := false
+			_, err := runCreateLikeOperation(t, mgr, op, snapshotID, "bad-ready", func(src, dst string) error {
+				cloneCalled = true
+				return nil
+			})
+
+			require.Error(t, err)
+			assert.ErrorIs(t, err, &errclass.JVSError{Code: "E_READY_INVALID"})
+			assert.False(t, cloneCalled)
+			assertWorktreeNotCreated(t, repoPath, "bad-ready")
+		})
+	}
+}
+
+func TestManager_MaterializeSnapshotRejectsReadyDescriptorChecksumMismatch(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mgr := worktree.NewManager(repoPath)
+	snapshotID := createManagerSnapshot(t, repoPath)
+	mutateManagerReadyMarker(t, repoPath, snapshotID, func(marker map[string]any) {
+		marker["descriptor_checksum"] = "wrong-ready-descriptor-checksum"
+	})
+
+	_, err := mgr.Fork(snapshotID, "bad-ready-checksum", func(src, dst string) error {
+		return nil
+	})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, &errclass.JVSError{Code: "E_READY_INVALID"})
+	assertWorktreeNotCreated(t, repoPath, "bad-ready-checksum")
 }
 
 func TestManager_CreateFromSnapshot_InvalidName(t *testing.T) {
@@ -660,6 +714,7 @@ func TestManager_Fork_MaterializesCleanPayload(t *testing.T) {
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	desc, err := creator.Create("main", "fork source", nil)
 	require.NoError(t, err)
+	duplicateReadyMarkerAsGzipAlias(t, repoPath, desc.SnapshotID)
 
 	mgr := worktree.NewManager(repoPath)
 	_, err = mgr.Fork(desc.SnapshotID, "forked-clean", copySnapshotTree)
@@ -671,6 +726,14 @@ func TestManager_Fork_MaterializesCleanPayload(t *testing.T) {
 	assert.Equal(t, "fork source", string(content))
 	assert.NoFileExists(t, filepath.Join(payloadPath, ".READY"))
 	assert.NoFileExists(t, filepath.Join(payloadPath, ".READY.gz"))
+}
+
+func duplicateReadyMarkerAsGzipAlias(t *testing.T, repoPath string, snapshotID model.SnapshotID) {
+	t.Helper()
+	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID))
+	data, err := os.ReadFile(filepath.Join(snapshotDir, ".READY"))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(snapshotDir, ".READY.gz"), data, 0644))
 }
 
 func TestManager_Fork_MaterializesCompressedPayload(t *testing.T) {

@@ -48,7 +48,7 @@ func TestMaterialize_UncompressedSnapshotKeepsUserGzipFile(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(dst, ".READY"))
 }
 
-func TestMaterialize_CompressedSnapshotPreservesRootReadyGzipAsUserPayload(t *testing.T) {
+func TestMaterialize_CompressedSnapshotRemovesRootReadyGzipControlMarker(t *testing.T) {
 	src := t.TempDir()
 	dst := filepath.Join(t.TempDir(), "materialized")
 
@@ -62,10 +62,8 @@ func TestMaterialize_CompressedSnapshotPreservesRootReadyGzipAsUserPayload(t *te
 	data, err := os.ReadFile(filepath.Join(dst, "data.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, "logical data", string(data))
-	content, err := os.ReadFile(filepath.Join(dst, ".READY.gz"))
-	require.NoError(t, err)
-	assert.Equal(t, "user gzip data", string(content))
 	assert.NoFileExists(t, filepath.Join(dst, ".READY"))
+	assert.NoFileExists(t, filepath.Join(dst, ".READY.gz"))
 }
 
 func TestMaterialize_CompressedSnapshotUsesManifestForGzipFiles(t *testing.T) {
@@ -216,6 +214,21 @@ func TestClean_CompressedSnapshotDecompressFailureLeavesStorageTree(t *testing.T
 	require.NoError(t, readErr)
 	assert.Equal(t, secondGzipContent, content)
 	assert.FileExists(t, filepath.Join(root, ".READY"))
+}
+
+func TestComputeHash_IgnoresRootReadyGzipControlMarker(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "payload.txt"), []byte("payload"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".READY"), []byte("ready"), 0644))
+
+	hashWithoutReadyGzip, err := snapshotpayload.ComputeHash(root, snapshotpayload.Options{})
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".READY.gz"), []byte("ready alias"), 0644))
+	hashWithReadyGzip, err := snapshotpayload.ComputeHash(root, snapshotpayload.Options{})
+	require.NoError(t, err)
+
+	assert.Equal(t, hashWithoutReadyGzip, hashWithReadyGzip)
 }
 
 func copyTree(src, dst string) error {

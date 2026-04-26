@@ -1,7 +1,16 @@
 GOLANGCI_LINT_VERSION ?= v1.64.8
 GOLANGCI_LINT_PACKAGE := github.com/golangci/golangci-lint/cmd/golangci-lint
+FUZZTIME ?= 10s
+FUZZPARALLEL ?= 1
+override release_fuzz_checked_shell = $(strip $(shell $1)$(if $(filter-out 0,$(.SHELLSTATUS)),$(error $2),))
+override RELEASE_FUZZ_PACKAGE_PATTERN := ./test/fuzz/...
+override RELEASE_FUZZ_PACKAGES = $(call release_fuzz_checked_shell,go list $(RELEASE_FUZZ_PACKAGE_PATTERN),release fuzz package discovery failed)
+# Release fuzz exclusions must be edited here so skipped targets are reviewable.
+override RELEASE_FUZZ_EXCLUDE_TARGETS :=
+override RELEASE_FUZZ_ALL_TARGETS = $(call release_fuzz_checked_shell,set -eu; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT HUP INT TERM; for pkg in $(RELEASE_FUZZ_PACKAGES); do go test -list '^Fuzz' "$$pkg" >"$$tmp"; sed -n "s|^\(Fuzz[A-Za-z0-9_]*\)$$|$$pkg:\1|p" "$$tmp"; done,release fuzz target discovery failed)
+override RELEASE_FUZZ_TARGETS = $(filter-out $(RELEASE_FUZZ_EXCLUDE_TARGETS),$(RELEASE_FUZZ_ALL_TARGETS))
 
-.PHONY: build test library tools lint conformance regression contract-check docs-contract ci-contract verify security sec fuzz test-race test-cover test-all integration release-gate clean
+.PHONY: build test library fuzz-tests tools lint conformance regression contract-check docs-contract ci-contract verify security sec fuzz fuzz-list test-race test-cover test-all integration release-gate clean
 
 build:
 	go build -o bin/jvs ./cmd/jvs
@@ -20,16 +29,19 @@ tools:
 	go install $(GOLANGCI_LINT_PACKAGE)@$(GOLANGCI_LINT_VERSION)
 
 test:
-	go test ./internal/... ./pkg/... ./test/library/...
+	go test ./internal/... ./pkg/... ./test/library/... ./test/fuzz/...
 
 library:
 	go test -count=1 ./test/library/...
 
-conformance:
-	go test -tags conformance -count=1 -v ./test/conformance/...
+fuzz-tests:
+	go test -count=1 ./test/fuzz/...
 
-regression:
-	go test -tags conformance -count=1 -v ./test/regression/...
+conformance: build
+	PATH="$(CURDIR)/bin:$$PATH" go test -tags conformance -count=1 -v ./test/conformance/...
+
+regression: build
+	PATH="$(CURDIR)/bin:$$PATH" go test -tags conformance -count=1 -v ./test/regression/...
 
 contract-check: build
 	go test -count=1 ./internal/repo ./internal/snapshot ./internal/restore ./internal/worktree ./internal/gc ./internal/doctor ./internal/verify
@@ -75,11 +87,34 @@ sec:
 	staticcheck ./... || true
 	@echo "Security scan complete. See gosec-report.json for details."
 
+fuzz-list:
+	@set -eu; \
+	targets="$(RELEASE_FUZZ_TARGETS)"; \
+	if [ -z "$$targets" ]; then \
+		echo "No release-blocking fuzz targets found." >&2; \
+		exit 1; \
+	fi; \
+	printf '%s\n' $$targets
+
 fuzz:
-	@echo "Running fuzzing tests (10 seconds each)..."
-	@for target in FuzzValidateName FuzzValidateTag FuzzParseSnapshotID FuzzCanonicalMarshal FuzzDescriptorJSON FuzzSnapshotIDString FuzzPartialPaths; do \
-		echo "Fuzzing $$target..."; \
-		go test -fuzz="$$target" -fuzztime=10s ./test/fuzz/... || exit 1; \
+	@set -eu; \
+	targets="$(RELEASE_FUZZ_TARGETS)"; \
+	if [ -z "$$targets" ]; then \
+		echo "No release-blocking fuzz targets found." >&2; \
+		exit 1; \
+	fi; \
+	fuzz_cache="$$(mktemp -d)"; \
+	trap 'rm -rf "$$fuzz_cache"' EXIT HUP INT TERM; \
+	echo "Running fuzzing tests ($(FUZZTIME) each)..."; \
+	for entry in $$targets; do \
+		pkg="$${entry%:*}"; \
+		target="$${entry##*:}"; \
+		if [ "$$pkg" = "$$entry" ] || [ -z "$$target" ]; then \
+			echo "Invalid release fuzz target entry: $$entry" >&2; \
+			exit 1; \
+		fi; \
+		echo "Fuzzing $$pkg $$target..."; \
+		go test "$$pkg" -run='^$$' -fuzz="^$${target}$$" -fuzztime=$(FUZZTIME) -parallel=$(FUZZPARALLEL) -test.fuzzcachedir="$$fuzz_cache" || exit 1; \
 	done
 	@echo "All fuzzing tests passed."
 
@@ -94,7 +129,7 @@ test-all: test conformance regression fuzz
 
 integration: build conformance
 
-release-gate: tools docs-contract ci-contract test-race test-cover lint build conformance library regression fuzz
+release-gate: tools docs-contract ci-contract test-race test-cover lint build conformance library regression fuzz-tests fuzz
 	@echo "RELEASE GATE PASSED"
 
 clean:

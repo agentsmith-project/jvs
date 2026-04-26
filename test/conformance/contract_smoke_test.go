@@ -10,8 +10,11 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jvs-project/jvs/internal/engine"
+	"github.com/jvs-project/jvs/internal/integrity"
+	"github.com/jvs-project/jvs/pkg/model"
 )
 
 type contractSmokeEnvelope struct {
@@ -460,8 +463,27 @@ func TestContract_CloneCurrentJSONSeparatesTransferFromMaterializationEngine(t *
 	if data["transfer_mode"] != "copy" {
 		t.Fatalf("transfer_mode must describe transfer fallback: %#v\n%s", data["transfer_mode"], stdout)
 	}
-	if _, ok := data["degraded_reasons"].([]any); !ok {
+	degraded, ok := data["degraded_reasons"].([]any)
+	if !ok || len(degraded) == 0 {
 		t.Fatalf("clone current degraded_reasons must be an array: %s", stdout)
+	}
+	if !contractStringArrayContains(degraded, "juicefs-clone unavailable") {
+		t.Fatalf("clone current degraded_reasons must explain JuiceFS fallback: %#v\n%s", degraded, stdout)
+	}
+	warnings, ok := data["warnings"].([]any)
+	if !ok || len(warnings) == 0 {
+		t.Fatalf("clone current fallback warnings must be a non-empty array: %s", stdout)
+	}
+	if !contractStringArrayContains(warnings, "juicefs") {
+		t.Fatalf("clone current fallback warnings must mention JuiceFS capability: %#v\n%s", warnings, stdout)
+	}
+	capabilities, ok := data["capabilities"].(map[string]any)
+	if !ok {
+		t.Fatalf("clone current fallback capabilities must be an object: %s", stdout)
+	}
+	juicefs, ok := capabilities["juicefs"].(map[string]any)
+	if !ok || juicefs["supported"] != false {
+		t.Fatalf("clone current fallback must expose unsupported JuiceFS capability: %#v\n%s", capabilities["juicefs"], stdout)
 	}
 }
 
@@ -633,6 +655,181 @@ func TestContract_SetupJSONContract_InitAndCapability(t *testing.T) {
 	}
 	if _, ok := capabilityData["write_probe"].(bool); !ok {
 		t.Fatalf("capability write_probe must be a bool: %s", stdout)
+	}
+}
+
+func TestContract_SetupJSONExactFilesystemMessagingSchema(t *testing.T) {
+	dir := t.TempDir()
+
+	initTarget := filepath.Join(dir, "initrepo")
+	initOut, stderr, code := runJVS(t, dir, "--json", "init", initTarget)
+	if code != 0 {
+		t.Fatalf("init failed: stdout=%s stderr=%s", initOut, stderr)
+	}
+	initData := assertContractSetupJSONData(t, initOut)
+	assertContractSetupJSONMaterialization(t, initData, initOut)
+	if _, ok := initData["repo_root"].(string); !ok {
+		t.Fatalf("init repo_root must be a string: %s", initOut)
+	}
+
+	capabilityTarget := filepath.Join(dir, "capability-target")
+	if err := os.Mkdir(capabilityTarget, 0755); err != nil {
+		t.Fatal(err)
+	}
+	capabilityOut, stderr, code := runJVS(t, dir, "--json", "capability", capabilityTarget, "--write-probe")
+	if code != 0 {
+		t.Fatalf("capability --write-probe failed: stdout=%s stderr=%s", capabilityOut, stderr)
+	}
+	capabilityData := assertContractSetupJSONData(t, capabilityOut)
+	assertContractSetupJSONMaterialization(t, capabilityData, capabilityOut)
+	if writeProbe, ok := capabilityData["write_probe"].(bool); !ok || !writeProbe {
+		t.Fatalf("capability write_probe must be true: %#v\n%s", capabilityData["write_probe"], capabilityOut)
+	}
+
+	importSource := filepath.Join(dir, "import-source")
+	if err := os.Mkdir(importSource, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(importSource, "file.txt"), []byte("import"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	importOut, stderr, code := runJVS(t, dir, "--json", "import", importSource, filepath.Join(dir, "imported"))
+	if code != 0 {
+		t.Fatalf("import failed: stdout=%s stderr=%s", importOut, stderr)
+	}
+	importData := assertContractSetupJSONData(t, importOut)
+	assertContractSetupJSONMaterialization(t, importData, importOut)
+	assertContractTransferSetupJSONData(t, importData, importOut)
+
+	sourceRepo := filepath.Join(dir, "clone-source")
+	if stdout, stderr, code := runJVS(t, dir, "init", sourceRepo); code != 0 {
+		t.Fatalf("init clone source failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	if err := os.WriteFile(filepath.Join(sourceRepo, "main", "file.txt"), []byte("clone"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	currentOut, stderr, code := runJVS(t, dir, "--json", "clone", sourceRepo, filepath.Join(dir, "current-clone"), "--scope", "current")
+	if code != 0 {
+		t.Fatalf("clone current failed: stdout=%s stderr=%s", currentOut, stderr)
+	}
+	currentData := assertContractSetupJSONData(t, currentOut)
+	assertContractSetupJSONMaterialization(t, currentData, currentOut)
+	assertContractTransferSetupJSONData(t, currentData, currentOut)
+
+	fullOut, stderr, code := runJVS(t, dir, "--json", "clone", sourceRepo, filepath.Join(dir, "full-clone"), "--scope", "full")
+	if code != 0 {
+		t.Fatalf("clone full failed: stdout=%s stderr=%s", fullOut, stderr)
+	}
+	fullData := assertContractSetupJSONData(t, fullOut)
+	assertContractSetupJSONMaterialization(t, fullData, fullOut)
+	assertContractTransferSetupJSONData(t, fullData, fullOut)
+	if _, ok := fullData["optimized_transfer"].(bool); !ok {
+		t.Fatalf("clone full optimized_transfer must be a bool: %s", fullOut)
+	}
+}
+
+func TestContract_CloneFullDoesNotReportCopyTransferAsOptimizedMaterialization(t *testing.T) {
+	dir := t.TempDir()
+	sourceRepo := filepath.Join(dir, "source")
+	if stdout, stderr, code := runJVS(t, dir, "init", sourceRepo); code != 0 {
+		t.Fatalf("init source failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	if err := os.WriteFile(filepath.Join(sourceRepo, "main", "file.txt"), []byte("v1"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("JVS_SNAPSHOT_ENGINE", "juicefs-clone")
+	t.Setenv("JVS_ENGINE", "")
+
+	stdout, stderr, code := runJVS(t, dir, "--json", "clone", sourceRepo, filepath.Join(dir, "full-copy"), "--scope", "full")
+	if code != 0 {
+		t.Fatalf("clone full failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	data := assertContractSetupJSONData(t, stdout)
+	assertContractTransferSetupJSONData(t, data, stdout)
+
+	if data["transfer_engine"] != "copy" || data["transfer_mode"] != "copy" {
+		t.Fatalf("full clone transfer must remain copy: %#v\n%s", data, stdout)
+	}
+	if data["effective_engine"] != "copy" {
+		t.Fatalf("full clone effective_engine must describe byte-copy materialization, not requested future engine: %#v\n%s", data["effective_engine"], stdout)
+	}
+	if data["performance_class"] != "linear-data-copy" {
+		t.Fatalf("full clone performance_class must match copy effective_engine: %#v\n%s", data["performance_class"], stdout)
+	}
+	if data["optimized_transfer"] != false {
+		t.Fatalf("full clone optimized_transfer must be false for portable copy: %#v\n%s", data["optimized_transfer"], stdout)
+	}
+	degraded, ok := data["degraded_reasons"].([]any)
+	if !ok || len(degraded) == 0 {
+		t.Fatalf("full clone copy fallback must report degraded_reasons: %s", stdout)
+	}
+}
+
+func TestContract_CapabilityWriteProbeInvalidTargetFailsWithoutCreatingRepository(t *testing.T) {
+	dir := t.TempDir()
+	parentFile := filepath.Join(dir, "not-a-directory")
+	if err := os.WriteFile(parentFile, []byte("file"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(parentFile, "child")
+
+	stdout, stderr, code := runJVS(t, dir, "--json", "capability", target, "--write-probe")
+	if code == 0 {
+		t.Fatalf("capability --write-probe invalid target unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("capability invalid target JSON error wrote stderr: %q", stderr)
+	}
+	env := decodeContractSmokeEnvelope(t, stdout)
+	if env.OK || env.Command != "capability" {
+		t.Fatalf("unexpected capability error envelope: %s", stdout)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".jvs")); !os.IsNotExist(err) {
+		t.Fatalf("capability invalid target created repo metadata: %v", err)
+	}
+}
+
+func TestContract_CapabilityWriteProbeUnwritableTargetFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod writability probe differs on Windows")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "readonly-target")
+	if err := os.Mkdir(target, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0555); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(target, 0755)
+
+	stdout, stderr, code := runJVS(t, dir, "--json", "capability", target, "--write-probe")
+	if code == 0 {
+		data := decodeContractSmokeDataMap(t, stdout)
+		write, _ := data["write"].(map[string]any)
+		if write["supported"] == true {
+			t.Skip("chmod did not make target unwritable in this environment")
+		}
+		t.Fatalf("capability --write-probe returned ok for unwritable target: %s", stdout)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("capability unwritable target JSON error wrote stderr: %q", stderr)
+	}
+	env := decodeContractSmokeEnvelope(t, stdout)
+	if env.OK || env.Command != "capability" {
+		t.Fatalf("unexpected capability unwritable error envelope: %s", stdout)
+	}
+	errData, ok := env.Error.(map[string]any)
+	if !ok {
+		t.Fatalf("capability unwritable error was not an object: %#v\n%s", env.Error, stdout)
+	}
+	if !strings.Contains(strings.ToLower(errData["message"].(string)), "not writable") {
+		t.Fatalf("capability unwritable error did not explain writability: %#v\n%s", errData, stdout)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".jvs")); !os.IsNotExist(err) {
+		t.Fatalf("capability unwritable target created repo metadata: %v", err)
 	}
 }
 
@@ -838,6 +1035,14 @@ func assertContractSetupJSONData(t *testing.T, stdout string) map[string]any {
 	if !ok {
 		t.Fatalf("setup JSON data.capabilities must be an object: %s", stdout)
 	}
+	assertContractCapabilitiesObject(t, capabilities, stdout)
+
+	if metadata, ok := data["metadata_preservation"].(map[string]any); !ok {
+		t.Fatalf("setup JSON data.metadata_preservation must be an object: %s", stdout)
+	} else {
+		assertContractMetadataPreservationObject(t, metadata, stdout)
+	}
+
 	for _, field := range []string{"write", "juicefs", "reflink", "copy"} {
 		if _, ok := capabilities[field].(map[string]any); !ok {
 			t.Fatalf("setup JSON data.capabilities.%s must be an object: %s", field, stdout)
@@ -851,8 +1056,127 @@ func assertContractSetupJSONData(t *testing.T, stdout string) map[string]any {
 	if _, ok := data["warnings"].([]any); !ok {
 		t.Fatalf("setup JSON data.warnings must be an array: %s", stdout)
 	}
+	if class, ok := data["performance_class"].(string); !ok || class == "" {
+		t.Fatalf("setup JSON data.performance_class must be a non-empty string: %s", stdout)
+	}
 
 	return data
+}
+
+func assertContractCapabilitiesObject(t *testing.T, capabilities map[string]any, stdout string) {
+	t.Helper()
+
+	for _, field := range []string{"target_path", "probe_path", "recommended_engine", "performance_class"} {
+		if value, ok := capabilities[field].(string); !ok || value == "" {
+			t.Fatalf("setup JSON data.capabilities.%s must be a non-empty string: %s", field, stdout)
+		}
+	}
+	if _, ok := capabilities["write_probe"].(bool); !ok {
+		t.Fatalf("setup JSON data.capabilities.write_probe must be a bool: %s", stdout)
+	}
+	if _, ok := capabilities["warnings"].([]any); !ok {
+		t.Fatalf("setup JSON data.capabilities.warnings must be an array: %s", stdout)
+	}
+	metadata, ok := capabilities["metadata_preservation"].(map[string]any)
+	if !ok {
+		t.Fatalf("setup JSON data.capabilities.metadata_preservation must be an object: %s", stdout)
+	}
+	assertContractMetadataPreservationObject(t, metadata, stdout)
+
+	for _, field := range []string{"write", "juicefs", "reflink", "copy"} {
+		capability, ok := capabilities[field].(map[string]any)
+		if !ok {
+			t.Fatalf("setup JSON data.capabilities.%s must be an object: %s", field, stdout)
+		}
+		assertContractCapabilityObject(t, "data.capabilities."+field, capability, stdout)
+	}
+}
+
+func assertContractCapabilityObject(t *testing.T, path string, capability map[string]any, stdout string) {
+	t.Helper()
+
+	for _, field := range []string{"available", "supported"} {
+		if _, ok := capability[field].(bool); !ok {
+			t.Fatalf("setup JSON %s.%s must be a bool: %s", path, field, stdout)
+		}
+	}
+	if confidence, ok := capability["confidence"].(string); !ok || confidence == "" {
+		t.Fatalf("setup JSON %s.confidence must be a non-empty string: %s", path, stdout)
+	}
+	if _, ok := capability["warnings"].([]any); !ok {
+		t.Fatalf("setup JSON %s.warnings must be an array even when empty: %s", path, stdout)
+	}
+}
+
+func assertContractMetadataPreservationObject(t *testing.T, metadata map[string]any, stdout string) {
+	t.Helper()
+
+	for _, field := range []string{"symlinks", "hardlinks", "mode", "timestamps", "ownership", "xattrs", "acls"} {
+		if value, ok := metadata[field].(string); !ok || value == "" {
+			t.Fatalf("setup JSON metadata_preservation.%s must be a non-empty string: %s", field, stdout)
+		}
+	}
+}
+
+func assertContractSetupJSONMaterialization(t *testing.T, data map[string]any, stdout string) {
+	t.Helper()
+
+	effectiveEngine, _ := data["effective_engine"].(string)
+	performanceClass, _ := data["performance_class"].(string)
+	metadata, _ := data["metadata_preservation"].(map[string]any)
+
+	switch effectiveEngine {
+	case "juicefs-clone":
+		if performanceClass != "constant-time-metadata-clone" {
+			t.Fatalf("juicefs effective_engine must report constant-time metadata class: %s", stdout)
+		}
+		if metadata["ownership"] != "filesystem-dependent" || metadata["xattrs"] != "filesystem-dependent" || metadata["acls"] != "filesystem-dependent" {
+			t.Fatalf("juicefs metadata preservation must be filesystem-dependent for ownership/xattrs/acls: %s", stdout)
+		}
+	case "reflink-copy":
+		if performanceClass != "linear-tree-walk-cow-data" {
+			t.Fatalf("reflink effective_engine must report COW tree-walk class: %s", stdout)
+		}
+		if metadata["ownership"] != "not preserved" || metadata["xattrs"] != "not preserved" || metadata["acls"] != "not preserved" {
+			t.Fatalf("reflink metadata preservation must not promise ownership/xattrs/acls: %s", stdout)
+		}
+	case "copy":
+		if performanceClass != "linear-data-copy" {
+			t.Fatalf("copy effective_engine must report linear-data-copy class: %s", stdout)
+		}
+		if metadata["ownership"] != "not preserved" || metadata["xattrs"] != "not preserved" || metadata["acls"] != "not preserved" {
+			t.Fatalf("copy metadata preservation must not promise ownership/xattrs/acls: %s", stdout)
+		}
+	default:
+		t.Fatalf("setup JSON data.effective_engine has unknown value %q: %s", effectiveEngine, stdout)
+	}
+}
+
+func assertContractTransferSetupJSONData(t *testing.T, data map[string]any, stdout string) {
+	t.Helper()
+
+	for _, field := range []string{"requested_engine", "transfer_engine", "transfer_mode"} {
+		if value, ok := data[field].(string); !ok || value == "" {
+			t.Fatalf("transfer setup JSON data.%s must be a non-empty string: %s", field, stdout)
+		}
+	}
+	if _, ok := data["optimized_transfer"].(bool); !ok {
+		t.Fatalf("transfer setup JSON data.optimized_transfer must be a bool: %s", stdout)
+	}
+	if _, ok := data["degraded_reasons"].([]any); !ok {
+		t.Fatalf("transfer setup JSON data.degraded_reasons must be an array even when empty: %s", stdout)
+	}
+}
+
+func contractStringArrayContains(values []any, needle string) bool {
+	needle = strings.ToLower(needle)
+	for _, value := range values {
+		text, ok := value.(string)
+		if ok && strings.Contains(strings.ToLower(text), needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func requireContractSymlink(t *testing.T, oldname, newname string) {
@@ -919,12 +1243,47 @@ func makeDescriptorsOldForContract(t *testing.T, repoPath string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var desc map[string]any
+		var desc model.Descriptor
 		if err := json.Unmarshal(data, &desc); err != nil {
 			t.Fatal(err)
 		}
-		desc["created_at"] = "2000-01-01T00:00:00Z"
+		desc.CreatedAt = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+		checksum, err := integrity.ComputeDescriptorChecksum(&desc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		desc.DescriptorChecksum = checksum
 		data, err = json.MarshalIndent(desc, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0644); err != nil {
+			t.Fatal(err)
+		}
+		syncContractReadyMarkerWithDescriptor(t, repoPath, desc)
+	}
+}
+
+func syncContractReadyMarkerWithDescriptor(t *testing.T, repoPath string, desc model.Descriptor) {
+	t.Helper()
+	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(desc.SnapshotID))
+	for _, name := range []string{".READY", ".READY.gz"} {
+		path := filepath.Join(snapshotDir, name)
+		data, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		var marker map[string]any
+		if err := json.Unmarshal(data, &marker); err != nil {
+			t.Fatal(err)
+		}
+		marker["snapshot_id"] = string(desc.SnapshotID)
+		marker["payload_root_hash"] = string(desc.PayloadRootHash)
+		marker["descriptor_checksum"] = string(desc.DescriptorChecksum)
+		data, err = json.MarshalIndent(marker, "", "  ")
 		if err != nil {
 			t.Fatal(err)
 		}
