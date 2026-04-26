@@ -54,9 +54,9 @@
 ### Release evidence
 
 - See the [release evidence ledger](RELEASE_EVIDENCE.md#v040---2026-04-25)
-  for the `v0.4.0` GA candidate readiness record. It lists the required gate,
-  coverage, representative repo, GA docs, artifact, signing, and runbook
-  evidence without claiming a final tag or published artifacts.
+  for the `v0.4.0` final tagged release record. It records the tag, final
+  tagged commit, release gate, coverage, representative repo, GA docs,
+  artifact, signing, and runbook evidence for the published GitHub release.
 
 ### Release artifacts
 
