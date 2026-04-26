@@ -11,6 +11,88 @@ This ledger records compact release evidence. It has two evidence classes:
 
 Raw logs and `coverage.out` are not stored here.
 
+## v0.4.1 - 2026-04-26
+
+### Release identity
+
+- Evidence class: GA candidate readiness
+- Candidate target tag: `v0.4.1`
+- Candidate status: not final, not tagged, not published, and pending final tag.
+- Pending final facts: exact release-gate result, published artifacts, and
+  signing evidence.
+- Changelog heading date: `2026-04-26`
+- Baseline: compatible fixes after the published `v0.4.0` release.
+- CI run link rule: `https://github.com/agentsmith-project/jvs/actions/runs/<run_id>`
+- Release URL rule after tagging:
+  `https://github.com/agentsmith-project/jvs/releases/tag/<tag>`
+- Scope: final release evidence documentation, CI/release validation metadata,
+  and deterministic fuzz smoke hardening.
+
+### Release gate readiness
+
+Command: `make release-gate`
+
+The table lists required candidate checks. This entry records readiness
+requirements only and does not claim final release results.
+
+| Check | Command or target | Candidate readiness |
+| --- | --- | --- |
+| Release gate | `make release-gate` | Required before tag |
+| Docs contract | `make docs-contract` | Required before tag |
+| CI contract | `make ci-contract` | Required before tag |
+| Race tests | `make test-race` | Required before tag |
+| Coverage | `make test-cover` | Required before tag |
+| Lint | `make lint` | Required before tag |
+| Build | `make build` | Required before tag |
+| Conformance | `make conformance` | Required before tag |
+| Library facade | `make library` | Required before tag |
+| Regression | `make regression` | Required before tag |
+| Fuzz ordinary tests | `make fuzz-tests` | Required before tag |
+| Fuzz smoke | `make fuzz` | Required before tag |
+
+### Coverage
+
+- Coverage total: pending final release-gate result.
+- Coverage threshold: `60.0%`, enforced by `make test-cover`.
+- Evidence command: `make test-cover`
+
+### Representative repo evidence
+
+- Representative repo class: existing v0 repo with checkpoint history,
+  workspace state, audit chain validation, and runtime repair path exercised.
+- Doctor command: `jvs doctor --strict` required before tagging.
+- Verify command: `jvs verify --all` required before tagging.
+- Migration repair command for copied repos:
+  `jvs doctor --strict --repair-runtime` required before tagging.
+
+### GA docs evidence
+
+- GA docs readiness: `docs/99_CHANGELOG.md`, `docs/12_RELEASE_POLICY.md`,
+  `docs/14_TRACEABILITY_MATRIX.md`, and this ledger must describe candidate
+  readiness without claiming final release facts for `v0.4.1`.
+- Changelog scope: final release evidence documentation, CI/release validation
+  metadata, and deterministic fuzz smoke hardening after `v0.4.0`.
+- Runtime-state migration boundary: active `.jvs/locks/`, `.jvs/intents/`,
+  and `.jvs/gc/*.json` runtime state remains non-portable and must be rebuilt
+  at the destination.
+
+### Artifact and signing readiness
+
+- Artifact workflow: `.github/workflows/ci.yml` release job.
+- Published artifacts: not published; pending final release workflow.
+- Expected artifact set after tagging: platform binaries, `SHA256SUMS`, `.sig`
+  sidecars, and `.pem` sidecars.
+- Signing command family: `cosign sign-blob --yes`
+- Certificate identity rule:
+  `https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@<workflow-ref>`
+- OIDC issuer: `https://token.actions.githubusercontent.com`
+
+### Runbook references
+
+- Verification and recovery: `docs/13_OPERATION_RUNBOOK.md`
+- Migration and backup: `docs/18_MIGRATION_AND_BACKUP.md`
+- Artifact signing and verification: `docs/SIGNING.md`
+
 ## v0.4.0 - 2026-04-25
 
 ### Release identity

@@ -1,5 +1,78 @@
 # Changelog
 
+## v0.4.1 - 2026-04-26
+
+### Highlights
+
+- Candidate patch release notes for changes after `v0.4.0`; no public CLI,
+  library API, or on-disk repository format changes are introduced.
+- Final release evidence documentation now separates candidate readiness from
+  final tagged release evidence and records the `v0.4.0` final release facts
+  without pending/candidate language.
+- CI and release validation metadata now require tag-aware checkout metadata
+  so final release evidence can validate tagged commits against local tag
+  refs.
+- Deterministic fuzz smoke hardening makes release-blocking fuzz target
+  discovery explicit and keeps ordinary fuzz tests stable.
+- The release-facing identity remains
+  `github.com/agentsmith-project/jvs`; the previous final release is still
+  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.0` until this
+  candidate is tagged and published.
+
+### Breaking changes
+
+- None for the stable v0 public CLI contract.
+
+### Known limitations
+
+- v0 does not include remote push/pull.
+- v0 does not include signing commands.
+- v0 does not include partial checkpoint contracts.
+- v0 does not include compression contracts.
+- v0 does not include merge/rebase.
+- v0 does not include complex retention policy flags.
+- Full verification reads checkpoint payloads and can be I/O intensive on large
+  workspaces.
+- Descriptor signing and in-JVS trust policy remain outside the stable v0
+  repository format.
+
+### Risk labels
+
+- `integrity`: descriptor checksum and payload hash detect independent
+  corruption; coordinated descriptor-plus-checksum rewrite remains a v0
+  residual risk.
+- `migration`: active `.jvs/locks/`, `.jvs/intents/`, and `.jvs/gc/*.json`
+  runtime state is non-portable and must be rebuilt at the destination with
+  `jvs doctor --strict --repair-runtime`.
+
+### Migration notes
+
+- Existing repositories do not need an on-disk migration for this candidate;
+  `.jvs/format_version` remains a repository layout version, not the
+  application release version.
+- After upgrading, run `jvs doctor --strict` and `jvs verify --all` on a
+  representative repo before publishing release artifacts.
+- After a physical backup or storage migration, run
+  `jvs doctor --strict --repair-runtime` at the destination before
+  verification.
+- Exclude active `.jvs/locks/`, `.jvs/intents/`, and `.jvs/gc/*.json` runtime
+  state during physical sync; copied mutation locks may block destination
+  writes until repaired.
+
+### Release evidence
+
+- See the [release evidence ledger](RELEASE_EVIDENCE.md#v041---2026-04-26)
+  for the `v0.4.1` candidate readiness entry. This release is not final, not
+  tagged, and not published; the final tag, release-gate result, artifacts,
+  and signing evidence remain pending.
+
+### Release artifacts
+
+- No `v0.4.1` artifacts are published yet.
+- The pending final release workflow is expected to publish platform binaries,
+  `SHA256SUMS`, `.sig` and `.pem` sidecars, plus release notes with breaking
+  changes, known limitations, risk labels, and migration notes.
+
 ## v0.4.0 - 2026-04-25
 
 ### Highlights
