@@ -146,8 +146,9 @@ Rules:
   checkpoint tagged `clone`. It does not copy source history or other
   workspaces.
 - `clone --scope full` creates a new repo identity while preserving
-  user-visible checkpoints, workspaces, and refs. It excludes runtime
-  locks and intents and rebuilds clean runtime state at the destination.
+  user-visible checkpoints, workspaces, and refs. It excludes active
+  `.jvs/locks/`, `.jvs/intents/`, and `.jvs/gc/*.json` runtime state, and
+  rebuilds clean runtime state at the destination.
 - `clone` is a local filesystem operation, not a remote protocol.
 - `capability` reports available materialization support for JuiceFS clone,
   reflink, and copy for the explicit target path.

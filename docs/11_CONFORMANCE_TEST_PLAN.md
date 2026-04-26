@@ -73,7 +73,8 @@ The `release` profile is mandatory before any pre-release or v0 tag.
   one initial checkpoint tagged `clone`.
 - `jvs clone <source-repo> <dest-repo>` with `--scope full` creates a new repo
   identity, preserves user-visible checkpoints and workspaces, and excludes
-  runtime locks and intents.
+  active runtime operation state, including mutation lock directories,
+  operation records, and active GC plans.
 - `jvs clone` is validated as a local filesystem operation and does not expose
   remote push or pull semantics.
 - `jvs capability <target-path>` reports engine support in both probe modes,

@@ -1,6 +1,7 @@
 GOLANGCI_LINT_VERSION ?= v1.64.8
 GOLANGCI_LINT_PACKAGE := github.com/golangci/golangci-lint/cmd/golangci-lint
 FUZZTIME ?= 10s
+FUZZMINIMIZETIME ?= 0
 FUZZPARALLEL ?= 1
 override release_fuzz_checked_shell = $(strip $(shell $1)$(if $(filter-out 0,$(.SHELLSTATUS)),$(error $2),))
 override RELEASE_FUZZ_PACKAGE_PATTERN := ./test/fuzz/...
@@ -114,7 +115,7 @@ fuzz:
 			exit 1; \
 		fi; \
 		echo "Fuzzing $$pkg $$target..."; \
-		go test "$$pkg" -run='^$$' -fuzz="^$${target}$$" -fuzztime=$(FUZZTIME) -parallel=$(FUZZPARALLEL) -test.fuzzcachedir="$$fuzz_cache" || exit 1; \
+		go test "$$pkg" -run='^$$' -fuzz="^$${target}$$" -fuzztime=$(FUZZTIME) -fuzzminimizetime=$(FUZZMINIMIZETIME) -parallel=$(FUZZPARALLEL) -test.fuzzcachedir="$$fuzz_cache" || exit 1; \
 	done
 	@echo "All fuzzing tests passed."
 

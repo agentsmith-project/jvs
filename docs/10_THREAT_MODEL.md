@@ -21,7 +21,8 @@
 4. Crash during checkpoint publish
    Control: tmp+READY protocol + fsync durability sequence.
 5. Runtime-state poisoning after migration
-   Control: runtime-state exclusion and rebuild at destination.
+   Control: exclude active `.jvs/locks/`, `.jvs/intents/`, and
+   `.jvs/gc/*.json`; rebuild runtime state at destination.
 
 ## Residual risks
 - filesystem or kernel bugs bypassing expected durability semantics
@@ -32,5 +33,6 @@ Release notes and release-readiness docs MUST use these v0 risk labels:
 - `integrity`: descriptor checksum and payload hash detect independent
   corruption; coordinated descriptor-plus-checksum rewrite is a v0 residual
   risk.
-- `migration`: runtime operation state is non-portable and must be rebuilt at
-  the destination with `jvs doctor --strict --repair-runtime`.
+- `migration`: active `.jvs/locks/`, `.jvs/intents/`, and `.jvs/gc/*.json`
+  runtime state is non-portable and must be rebuilt at the destination with
+  `jvs doctor --strict --repair-runtime`.

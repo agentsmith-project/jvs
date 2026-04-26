@@ -28,7 +28,8 @@
 ## Migration runbook
 1. freeze writers
 2. doctor + verify pass on source
-3. sync repository data while excluding transient operation records
+3. sync repository data while excluding active `.jvs/locks/`, `.jvs/intents/`,
+   and `.jvs/gc/*.json` runtime state
 4. run `jvs doctor --strict --repair-runtime` on destination, which:
    - `clean_locks`: removes stale repository mutation locks
    - `clean_runtime_tmp`: removes stale JVS runtime temporary files

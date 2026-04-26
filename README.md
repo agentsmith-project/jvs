@@ -131,6 +131,9 @@ JVS publishes checkpoints atomically: incomplete checkpoint attempts remain
 invisible, and `jvs doctor` can report or repair safe runtime leftovers. The
 active engine is selected per filesystem and reported through `jvs info`,
 `jvs capability`, and checkpoint metadata.
+Physical backup and migration must leave active runtime state behind:
+`.jvs/locks/`, `.jvs/intents/`, and active `.jvs/gc/*.json` are rebuilt with
+`jvs doctor --strict --repair-runtime` at the destination.
 
 ## Integrity
 

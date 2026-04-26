@@ -8,6 +8,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -20,16 +21,40 @@ var traceabilityDocRefPattern = regexp.MustCompile("`((?:README\\.md|docs/[^`]+\
 var markdownDocLinkPattern = regexp.MustCompile(`\]\(([^)#]+\.md)(?:#[^)]+)?\)`)
 var stalePublicReleaseVocabularyPattern = regexp.MustCompile(`\bv7\.(?:[0-9]+|x)\b`)
 var releaseReadinessHeadingPattern = regexp.MustCompile(`(?m)^## v0\.[0-9]+\.[0-9]+ - [0-9]{4}-[0-9]{2}-[0-9]{2}$`)
+var releaseEvidenceHeadingPattern = regexp.MustCompile(`(?m)^## (v0\.[0-9]+\.[0-9]+) - ([0-9]{4}-[0-9]{2}-[0-9]{2})$`)
+var releaseEvidenceCommitPattern = regexp.MustCompile("(?m)^- Final tagged commit: `([0-9a-f]{40})`$")
+var releaseEvidenceTagPattern = regexp.MustCompile("(?m)^- Tag: `(v0\\.[0-9]+\\.[0-9]+)`$")
+var releaseEvidenceStatusPassPattern = regexp.MustCompile(`(?mi)^- Status:\s*PASS\b`)
+var releaseEvidenceGatePassPattern = regexp.MustCompile(`(?mi)\|\s*Release gate\s*\|[^|]*\|\s*PASS\s*\|`)
+var releaseEvidencePublishedArtifactCountPattern = regexp.MustCompile(`(?mi)^- Published artifact count:\s*` + "`?" + `[1-9][0-9]*` + "`?")
 var releaseFacingPerformanceClaimPattern = regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_])(?:o\(1\)|instant(?:ly)?|constant-time|constant overhead)([^A-Za-z0-9_]|$)`)
 var releaseFacingStorageScopePattern = regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_-])juicefs-clone([^A-Za-z0-9_-]|$)|\bsupported\s+[^A-Za-z0-9_]*juicefs\b`)
 var negatedReleaseFacingPerformanceClaimPattern = regexp.MustCompile(`(?i)\bnot\s+(?:an?\s+)?(?:o\(1\)|instant(?:ly)?|constant-time|constant overhead)(?:[^A-Za-z0-9_]|$)`)
 var portableLatencyPromisePattern = regexp.MustCompile(`(?i)^\s*\|\s*\d+(?:\.\d+)?\s*(?:kb|mb|gb|tb|kib|mib|gib|tib)\b[^|]*\|.*\b\d+(?:\.\d+)?\s*(?:ms|s|sec|secs|second|seconds)\b`)
 var documentedEngineConstantPattern = regexp.MustCompile(`(?m)^\s*(Engine[A-Za-z0-9_]+)\s+EngineType\s*=\s*"([^"]+)"`)
 var checkpointReferenceClaimPattern = regexp.MustCompile(`(?i)\bcheckpoints?\b.*(?:\bsmall reference files\b|\breferences?,\s*not\s+(?:data\s+)?cop(?:y|ies)\b|\b(?:is|are)\s+(?:a\s+)?(?:metadata\s+)?references?\b)`)
+var staleCurrentRuntimeLockTerminologyPattern = regexp.MustCompile(`(?i)\b(runtime locks?|locks and intents)\b`)
 var numberedConformanceTestRef = regexp.MustCompile(`\b[Tt]ests?\s+\d`)
 var markdownBulletFieldPattern = regexp.MustCompile("^\\s*-\\s+`([A-Za-z0-9_]+)`")
 var backtickedFieldPattern = regexp.MustCompile("`([A-Za-z0-9_]+)`")
 var jsonTagFieldPattern = regexp.MustCompile("json:\"([A-Za-z0-9_]+)(?:,[^\"]*)?\"")
+var wholeJVSMetadataPathPattern = regexp.MustCompile("`?\\.jvs/`?(?:\\s|$|[),.;:])")
+
+type unsupportedPublicCLIExampleRule struct {
+	name        string
+	pattern     *regexp.Regexp
+	replacement string
+}
+
+type runtimeStateSyncExcludeRule struct {
+	name     string
+	patterns []string
+}
+
+type markdownCodeBlock struct {
+	startLine int
+	text      string
+}
 
 func TestDocs_PublicTerminologyContract(t *testing.T) {
 	for _, doc := range activePublicContractDocs() {
@@ -137,6 +162,7 @@ func TestDocs_ReleaseBlockingManifestIncludesPublicDocs(t *testing.T) {
 		"docs/18_MIGRATION_AND_BACKUP.md",
 		"docs/14_TRACEABILITY_MATRIX.md",
 		"docs/13_OPERATION_RUNBOOK.md",
+		"docs/RELEASE_EVIDENCE.md",
 		"CONTRIBUTING.md",
 		"SECURITY.md",
 		"docs/SIGNING.md",
@@ -263,12 +289,127 @@ func TestDocs_TraceabilityConformanceLinksUseContractAreas(t *testing.T) {
 	}
 }
 
+func TestDocs_TraceabilityPhase4ArtifactsListReleaseEvidenceLedger(t *testing.T) {
+	matrix := readRepoFile(t, "docs/14_TRACEABILITY_MATRIX.md")
+	section := markdownSectionByHeading(t, "docs/14_TRACEABILITY_MATRIX.md", matrix, "## Release gating trace")
+	if !strings.Contains(section, "`docs/RELEASE_EVIDENCE.md`") {
+		t.Fatalf("Phase 4 GA artifacts must list docs/RELEASE_EVIDENCE.md")
+	}
+}
+
 func TestDocs_PublicDocsUseV0ReleaseVocabulary(t *testing.T) {
 	for _, doc := range publicDocsWithoutHistoricalReleaseMentions() {
 		t.Run(doc, func(t *testing.T) {
 			scanPublicDocLines(t, doc, func(lineNo int, line string) {
 				if stalePublicReleaseVocabularyPattern.MatchString(line) {
 					t.Fatalf("%s:%d advertises stale v7 release vocabulary:\n%s", doc, lineNo, line)
+				}
+			})
+		})
+	}
+}
+
+func TestDocs_RuntimeTerminologyDoesNotDescribeRuntimeLocksAsCurrentBehavior(t *testing.T) {
+	for _, doc := range runtimeOperationTerminologyDocs() {
+		t.Run(doc, func(t *testing.T) {
+			scanPublicDocLines(t, doc, func(lineNo int, line string) {
+				if staleCurrentRuntimeLockTerminologyPattern.MatchString(line) {
+					t.Fatalf("%s:%d describes runtime locks as current release-facing behavior:\n%s", doc, lineNo, line)
+				}
+			})
+		})
+	}
+}
+
+func TestDocs_TerminologyMigrationStorageNamesAreCompatibilityOnly(t *testing.T) {
+	doc := readRepoFile(t, "docs/18_MIGRATION_AND_BACKUP.md")
+	section := markdownSectionByHeading(t, "docs/18_MIGRATION_AND_BACKUP.md", doc, "## Historical/internal terminology")
+	for _, required := range []string{
+		"checkpoint",
+		"workspace",
+		".jvs/snapshots",
+		".jvs/worktrees",
+		"compatibility storage",
+		"GA does not require an on-disk rename",
+	} {
+		requireReleaseReadinessText(t, "migration historical/internal terminology", section, required)
+	}
+}
+
+func TestDocs_MigrationRuntimeStateIncludesLocksIntentsAndGCPlans(t *testing.T) {
+	migration := readRepoFile(t, "docs/18_MIGRATION_AND_BACKUP.md")
+	runtimePolicy := markdownSectionByHeading(t, "docs/18_MIGRATION_AND_BACKUP.md", migration, "## Runtime-state policy (MUST)")
+	for _, required := range []string{
+		".jvs/locks/",
+		".jvs/intents/",
+		".jvs/gc/*.json",
+		"non-portable",
+		"jvs doctor --strict --repair-runtime",
+	} {
+		requireReleaseReadinessText(t, "migration runtime-state policy", runtimePolicy, required)
+	}
+
+	migrationFlow := markdownSectionByHeading(t, "docs/18_MIGRATION_AND_BACKUP.md", migration, "## Migration flow")
+	for _, required := range []string{
+		"--exclude '.jvs/locks/**'",
+		"--exclude '.jvs/intents/**'",
+		"--exclude '.jvs/gc/*.json'",
+	} {
+		requireReleaseReadinessText(t, "migration sync example", migrationFlow, required)
+	}
+
+	layout := readRepoFile(t, "docs/01_REPO_LAYOUT_SPEC.md")
+	portability := markdownSectionByHeading(t, "docs/01_REPO_LAYOUT_SPEC.md", layout, "## Portability classes")
+	for _, required := range []string{
+		".jvs/locks/",
+		".jvs/intents/",
+		".jvs/gc/*.json",
+	} {
+		requireReleaseReadinessText(t, "repo layout runtime-state portability class", portability, required)
+	}
+}
+
+func TestDocs_ReleaseFacingRuntimeStateBoundaryDocs(t *testing.T) {
+	for _, doc := range releaseFacingRuntimeStateBoundaryDocs() {
+		t.Run(doc, func(t *testing.T) {
+			body := readRepoFile(t, doc)
+			for _, required := range runtimeStateBoundaryTerms() {
+				requireReleaseReadinessText(t, "release-facing runtime-state boundary "+doc, body, required)
+			}
+		})
+	}
+}
+
+func TestDocs_ReleaseFacingSyncExamplesExcludeRuntimeState(t *testing.T) {
+	for _, doc := range activePublicContractDocs() {
+		t.Run(doc, func(t *testing.T) {
+			body := releaseFacingClaimBody(t, doc)
+			for _, block := range releaseFacingSyncGuidanceBlocks(body) {
+				if !syncExampleCopiesJVSMetadata(block.text) {
+					continue
+				}
+				for _, rule := range runtimeStateSyncExcludeRules() {
+					if codeBlockContainsAny(block.text, rule.patterns) {
+						continue
+					}
+					t.Fatalf("%s:%d sync example copies JVS metadata without excluding %s runtime state; include one of %v:\n%s",
+						doc, block.startLine, rule.name, rule.patterns, block.text)
+				}
+			}
+		})
+	}
+}
+
+func TestDocs_ReleaseFacingDocsAvoidUnsupportedPublicCLIExamples(t *testing.T) {
+	for _, doc := range activePublicContractDocs() {
+		t.Run(doc, func(t *testing.T) {
+			scanPublicDocLines(t, doc, func(lineNo int, line string) {
+				for _, rule := range unsupportedPublicCLIExampleRules() {
+					if !rule.pattern.MatchString(line) {
+						continue
+					}
+					t.Fatalf("%s:%d documents unsupported public CLI example %s; %s:\n%s",
+						doc, lineNo, rule.name, rule.replacement, line)
 				}
 			})
 		})
@@ -811,10 +952,107 @@ func TestDocs_ChangelogLatestReleaseNotesHaveReadinessSections(t *testing.T) {
 		"### Known limitations",
 		"### Risk labels",
 		"### Migration notes",
+		"### Release evidence",
 	} {
 		if !strings.Contains(entry, heading) {
 			t.Fatalf("latest changelog entry must include %q", heading)
 		}
+	}
+}
+
+func TestDocs_ReleaseEvidenceLedgerCoversLatestChangelogTagDate(t *testing.T) {
+	latestHeading := latestChangelogHeading(t)
+	ledger := readRepoFile(t, "docs/RELEASE_EVIDENCE.md")
+	if !strings.Contains(ledger, latestHeading) {
+		t.Fatalf("release evidence ledger must include latest changelog heading %q", latestHeading)
+	}
+	entry := releaseEvidenceEntry(t, ledger, latestHeading)
+	if releaseEvidenceClaimsFinalTaggedRelease(entry) {
+		requireFinalTaggedReleaseEvidence(t, latestHeading, entry)
+		return
+	}
+	requireCandidateReleaseEvidence(t, latestHeading, entry)
+}
+
+func TestDocs_ReleaseEvidenceDoesNotMixCandidateAndFinalSemantics(t *testing.T) {
+	latestHeading := latestChangelogHeading(t)
+	entry := releaseEvidenceEntry(t, readRepoFile(t, "docs/RELEASE_EVIDENCE.md"), latestHeading)
+	if releaseEvidenceClaimsFinalTaggedRelease(entry) {
+		if strings.Contains(strings.ToLower(entry), "candidate") ||
+			strings.Contains(strings.ToLower(entry), "pending final") ||
+			strings.Contains(strings.ToLower(entry), "not published") {
+			t.Fatalf("final tagged release evidence %q must not include candidate/pending language", latestHeading)
+		}
+		return
+	}
+
+	for _, forbidden := range []struct {
+		name    string
+		pattern *regexp.Regexp
+	}{
+		{name: "PASS status", pattern: releaseEvidenceStatusPassPattern},
+		{name: "release-gate PASS row", pattern: releaseEvidenceGatePassPattern},
+		{name: "published artifact count", pattern: releaseEvidencePublishedArtifactCountPattern},
+		{name: "final tag line", pattern: releaseEvidenceTagPattern},
+		{name: "final tagged commit", pattern: releaseEvidenceCommitPattern},
+	} {
+		if forbidden.pattern.MatchString(entry) {
+			t.Fatalf("candidate release evidence %q must not claim %s before the final tagged release", latestHeading, forbidden.name)
+		}
+	}
+}
+
+func TestDocs_ReleaseEvidenceLedgerContainsPolicyRequiredArtifacts(t *testing.T) {
+	policy := readRepoFile(t, "docs/12_RELEASE_POLICY.md")
+	policySection := markdownSectionByHeading(t, "docs/12_RELEASE_POLICY.md", policy, "## Required Release Artifacts")
+	for _, required := range []string{
+		"release evidence ledger",
+		"make release-gate",
+		"coverage",
+		"representative repo",
+		"artifact",
+		"signing",
+		"runbook",
+	} {
+		requireReleaseReadinessText(t, "release policy required artifacts", policySection, required)
+	}
+
+	latestHeading := latestChangelogHeading(t)
+	entry := releaseEvidenceEntry(t, readRepoFile(t, "docs/RELEASE_EVIDENCE.md"), latestHeading)
+	for _, required := range []string{
+		"Release identity",
+		"make release-gate",
+		"docs-contract",
+		"ci-contract",
+		"test-race",
+		"test-cover",
+		"lint",
+		"build",
+		"conformance",
+		"library",
+		"regression",
+		"fuzz-tests",
+		"fuzz",
+		"Coverage total",
+		"Coverage threshold",
+		"jvs doctor --strict",
+		"jvs verify --all",
+		"GA docs",
+		"artifact",
+		"signing",
+		"runbook",
+	} {
+		requireReleaseReadinessText(t, "release evidence entry", entry, required)
+	}
+}
+
+func TestDocs_ReleaseEvidenceLatestChangelogLinksLedger(t *testing.T) {
+	entry := firstChangelogEntry(readRepoFile(t, "docs/99_CHANGELOG.md"))
+	if !strings.Contains(entry, "### Release evidence") {
+		t.Fatalf("latest changelog entry must include release evidence section")
+	}
+	if !strings.Contains(entry, "RELEASE_EVIDENCE.md") {
+		t.Fatalf("latest changelog release evidence section must link docs/RELEASE_EVIDENCE.md")
 	}
 }
 
@@ -830,6 +1068,7 @@ func TestDocs_ReleaseReadinessSectionsConsistentWithPolicy(t *testing.T) {
 		"### Known limitations",
 		"### Risk labels",
 		"### Migration notes",
+		"### Release evidence",
 		"### Release artifacts",
 	} {
 		if !strings.Contains(changelogEntry, heading) {
@@ -870,6 +1109,11 @@ func TestDocs_ReleaseReadinessSectionsConsistentWithPolicy(t *testing.T) {
 	} {
 		requireReleaseReadinessText(t, "latest changelog entry", changelogEntry, required)
 		requireReleaseReadinessText(t, "generated release notes", workflowNotes, required)
+	}
+
+	for _, required := range runtimeStateBoundaryTerms() {
+		requireReleaseReadinessText(t, "latest changelog entry runtime-state boundary", changelogEntry, required)
+		requireReleaseReadinessText(t, "generated release notes runtime-state boundary", workflowNotes, required)
 	}
 }
 
@@ -1312,6 +1556,7 @@ func stablePublicDocs() []string {
 		"docs/13_OPERATION_RUNBOOK.md",
 		"docs/14_TRACEABILITY_MATRIX.md",
 		"docs/18_MIGRATION_AND_BACKUP.md",
+		"docs/RELEASE_EVIDENCE.md",
 		"docs/API_DOCUMENTATION.md",
 		"docs/EXAMPLES.md",
 		"docs/FAQ.md",
@@ -1326,6 +1571,55 @@ func stablePublicDocs() []string {
 		"docs/agent_sandbox_quickstart.md",
 		"docs/etl_pipeline_quickstart.md",
 		"docs/game_dev_quickstart.md",
+	}
+}
+
+func runtimeOperationTerminologyDocs() []string {
+	return []string{
+		"docs/02_CLI_SPEC.md",
+		"docs/11_CONFORMANCE_TEST_PLAN.md",
+		"docs/PRODUCT_PLAN.md",
+	}
+}
+
+func runtimeStateBoundaryTerms() []string {
+	return []string{
+		".jvs/locks/",
+		".jvs/intents/",
+		".jvs/gc/*.json",
+	}
+}
+
+func runtimeStateSyncExcludeRules() []runtimeStateSyncExcludeRule {
+	return []runtimeStateSyncExcludeRule{
+		{
+			name:     "mutation locks",
+			patterns: []string{"--exclude '.jvs/locks/**'", `--exclude ".jvs/locks/**"`},
+		},
+		{
+			name:     "operation records",
+			patterns: []string{"--exclude '.jvs/intents/**'", `--exclude ".jvs/intents/**"`},
+		},
+		{
+			name:     "active GC plans",
+			patterns: []string{"--exclude '.jvs/gc/*.json'", `--exclude ".jvs/gc/*.json"`},
+		},
+	}
+}
+
+func releaseFacingRuntimeStateBoundaryDocs() []string {
+	return []string{
+		"README.md",
+		"SECURITY.md",
+		"docs/00_OVERVIEW.md",
+		"docs/01_REPO_LAYOUT_SPEC.md",
+		"docs/10_THREAT_MODEL.md",
+		"docs/13_OPERATION_RUNBOOK.md",
+		"docs/14_TRACEABILITY_MATRIX.md",
+		"docs/18_MIGRATION_AND_BACKUP.md",
+		"docs/EXAMPLES.md",
+		"docs/FAQ.md",
+		"docs/PRODUCT_PLAN.md",
 	}
 }
 
@@ -1378,6 +1672,37 @@ func activePublicContractDocs() []string {
 
 func publicCommandDocs() []string {
 	return releaseBlockingContractDocs()
+}
+
+func unsupportedPublicCLIExampleRules() []unsupportedPublicCLIExampleRule {
+	return []unsupportedPublicCLIExampleRule{
+		{
+			name:        "`jvs checkpoint --quiet`",
+			pattern:     unsupportedPublicCommandFlagPattern("checkpoint", "--quiet"),
+			replacement: "use the global flag form `jvs --no-progress checkpoint <note>` for scripts",
+		},
+		{
+			name:        "`jvs verify --recompute`",
+			pattern:     unsupportedPublicCommandFlagPattern("verify", "--recompute"),
+			replacement: "`jvs verify <ref>` and `jvs verify --all` already perform strong verification",
+		},
+		{
+			name:        "`jvs verify --no-payload`",
+			pattern:     unsupportedPublicCommandFlagPattern("verify", "--no-payload"),
+			replacement: "document `jvs verify <ref>` or `jvs verify --all`; payload verification is part of the v0 contract",
+		},
+		{
+			name:        "`jvs --version`",
+			pattern:     regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_-])jvs\s+--version([^A-Za-z0-9_-]|$)`),
+			replacement: "use `jvs --help` for install smoke checks or `jvs info` inside a repository",
+		},
+	}
+}
+
+func unsupportedPublicCommandFlagPattern(command, flag string) *regexp.Regexp {
+	return regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_-])jvs\s+` +
+		regexp.QuoteMeta(command) + `\b[^` + "`" + `|#\n]*` +
+		regexp.QuoteMeta(flag) + `([^A-Za-z0-9_-]|$)`)
 }
 
 func unsupportedPublicDocCommandFragments() []string {
@@ -1637,6 +1962,124 @@ func markdownDocLinkTarget(t *testing.T, sourceDoc, rawTarget string) string {
 	return resolved
 }
 
+func markdownFencedCodeBlocks(body string) []markdownCodeBlock {
+	var blocks []markdownCodeBlock
+	var block strings.Builder
+	inBlock := false
+	startLine := 0
+	for i, line := range strings.Split(body, "\n") {
+		lineNo := i + 1
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			if inBlock {
+				blocks = append(blocks, markdownCodeBlock{
+					startLine: startLine,
+					text:      block.String(),
+				})
+				inBlock = false
+				block.Reset()
+			} else {
+				inBlock = true
+				startLine = lineNo + 1
+			}
+			continue
+		}
+		if inBlock {
+			block.WriteString(line)
+			block.WriteByte('\n')
+		}
+	}
+	return blocks
+}
+
+func releaseFacingSyncGuidanceBlocks(body string) []markdownCodeBlock {
+	blocks := markdownFencedCodeBlocks(body)
+	for _, block := range markdownNonFencedTextBlocks(body) {
+		if !nonFencedSyncGuidanceCopiesWholeJVSMetadata(block.text) {
+			continue
+		}
+		blocks = append(blocks, block)
+	}
+	return blocks
+}
+
+func markdownNonFencedTextBlocks(body string) []markdownCodeBlock {
+	var blocks []markdownCodeBlock
+	var block strings.Builder
+	inFence := false
+	startLine := 0
+	flush := func() {
+		if startLine == 0 {
+			return
+		}
+		blocks = append(blocks, markdownCodeBlock{
+			startLine: startLine,
+			text:      block.String(),
+		})
+		startLine = 0
+		block.Reset()
+	}
+	for i, line := range strings.Split(body, "\n") {
+		lineNo := i + 1
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			flush()
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		if strings.TrimSpace(line) == "" {
+			flush()
+			continue
+		}
+		if startLine == 0 {
+			startLine = lineNo
+		}
+		block.WriteString(line)
+		block.WriteByte('\n')
+	}
+	flush()
+	return blocks
+}
+
+func nonFencedSyncGuidanceCopiesWholeJVSMetadata(line string) bool {
+	if !wholeJVSMetadataPathPattern.MatchString(line) {
+		return false
+	}
+	lower := strings.ToLower(line)
+	for _, marker := range []string{"juicefs sync", "rsync ", "backup", "copy", "sync"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func syncExampleCopiesJVSMetadata(block string) bool {
+	lower := strings.ToLower(block)
+	if !strings.Contains(lower, "juicefs sync") && !strings.Contains(lower, "rsync ") {
+		return nonFencedSyncGuidanceCopiesWholeJVSMetadata(block)
+	}
+	if strings.Contains(block, ".jvs/") {
+		return true
+	}
+	for _, marker := range []string{"jvs", "repo", "repository", "checkpoint", "workspace"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func codeBlockContainsAny(block string, patterns []string) bool {
+	for _, pattern := range patterns {
+		if strings.Contains(block, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
 func conformanceContractAreaNames(t *testing.T) []string {
 	t.Helper()
 	plan := readRepoFile(t, "docs/11_CONFORMANCE_TEST_PLAN.md")
@@ -1848,6 +2291,88 @@ func readRepoFile(t *testing.T, parts ...string) string {
 		t.Fatalf("read %s: %v", filepath.Join(parts...), err)
 	}
 	return string(data)
+}
+
+func latestChangelogHeading(t *testing.T) string {
+	t.Helper()
+	entry := firstChangelogEntry(readRepoFile(t, "docs/99_CHANGELOG.md"))
+	match := releaseEvidenceHeadingPattern.FindStringSubmatch(entry)
+	if match == nil {
+		t.Fatalf("latest changelog entry must start with a v0 release heading")
+	}
+	return "## " + match[1] + " - " + match[2]
+}
+
+func releaseEvidenceClaimsFinalTaggedRelease(entry string) bool {
+	return releaseEvidenceStatusPassPattern.MatchString(entry) ||
+		releaseEvidenceGatePassPattern.MatchString(entry) ||
+		releaseEvidencePublishedArtifactCountPattern.MatchString(entry) ||
+		releaseEvidenceTagPattern.MatchString(entry) ||
+		strings.Contains(strings.ToLower(entry), "evidence class: final tagged release")
+}
+
+func requireCandidateReleaseEvidence(t *testing.T, heading, entry string) {
+	t.Helper()
+	for _, required := range []string{
+		"Evidence class: GA candidate readiness",
+		"not final",
+		"not tagged",
+		"not published",
+		"pending final tag",
+		"Candidate target tag",
+	} {
+		requireReleaseReadinessText(t, "candidate release evidence "+heading, entry, required)
+	}
+}
+
+func requireFinalTaggedReleaseEvidence(t *testing.T, heading, entry string) {
+	t.Helper()
+	tagMatch := releaseEvidenceTagPattern.FindStringSubmatch(entry)
+	if tagMatch == nil {
+		t.Fatalf("final tagged release evidence %q must record a final Tag line", heading)
+	}
+	commitMatch := releaseEvidenceCommitPattern.FindStringSubmatch(entry)
+	if commitMatch == nil {
+		t.Fatalf("final tagged release evidence %q must record Final tagged commit with a 40-character SHA", heading)
+	}
+	if !releaseEvidenceStatusPassPattern.MatchString(entry) {
+		t.Fatalf("final tagged release evidence %q must record Status: PASS", heading)
+	}
+	if !releaseEvidenceGatePassPattern.MatchString(entry) {
+		t.Fatalf("final tagged release evidence %q must record release-gate PASS", heading)
+	}
+	if !strings.Contains(strings.ToLower(entry), "published artifacts") {
+		t.Fatalf("final tagged release evidence %q must record published artifact evidence", heading)
+	}
+
+	tag := tagMatch[1]
+	tagCommit, ok := gitTagCommit(t, tag)
+	if !ok {
+		t.Fatalf("final tagged release evidence %q claims tag %s, but refs/tags/%s does not exist in this checkout", heading, tag, tag)
+	}
+	if tagCommit != commitMatch[1] {
+		t.Fatalf("final tagged release evidence %q commit %s does not match tag %s commit %s", heading, commitMatch[1], tag, tagCommit)
+	}
+}
+
+func gitTagCommit(t *testing.T, tag string) (string, bool) {
+	t.Helper()
+	cmd := exec.Command("git", "rev-list", "-n", "1", tag)
+	cmd.Dir = repoFile(t)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", false
+	}
+	commit := strings.TrimSpace(string(out))
+	if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(commit) {
+		t.Fatalf("git rev-list returned non-commit output for tag %s: %q", tag, commit)
+	}
+	return commit, true
+}
+
+func releaseEvidenceEntry(t *testing.T, ledger, heading string) string {
+	t.Helper()
+	return markdownSectionByHeading(t, "docs/RELEASE_EVIDENCE.md", ledger, heading)
 }
 
 func firstChangelogEntry(changelog string) string {

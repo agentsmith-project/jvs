@@ -249,17 +249,23 @@ repository that created them.
 ### Cross-Machine Backup
 
 ```bash
-# Backup .jvs/ directory (metadata only, payload handled by JuiceFS)
-juicefs sync /production/workspace/critical-app/.jvs/ \
-    /backup/location/critical-app/.jvs/ \
+# Backup repository data while leaving destination-local runtime state behind
+juicefs sync /production/workspace/critical-app/ \
+    /backup/location/critical-app/ \
+    --exclude '.jvs/locks/**' \
     --exclude '.jvs/intents/**' \
+    --exclude '.jvs/gc/*.json' \
     --exclude '.jvs/index.sqlite'
 
 # Restore on different machine
 # 1. Mount JuiceFS at new location
-# 2. Copy .jvs/ metadata
-juicefs sync /backup/location/critical-app/.jvs/ \
-    /new/location/critical-app/.jvs/
+# 2. Copy repository data without copied runtime state
+juicefs sync /backup/location/critical-app/ \
+    /new/location/critical-app/ \
+    --exclude '.jvs/locks/**' \
+    --exclude '.jvs/intents/**' \
+    --exclude '.jvs/gc/*.json' \
+    --exclude '.jvs/index.sqlite'
 
 # 3. Rebuild index and repair
 cd /new/location/critical-app
@@ -288,8 +294,12 @@ jvs verify abc123
 
 # Scenario: Entire .jvs/ directory lost (but backup exists)
 
-# 1. Restore metadata from backup
-juicefs sync /backup/.jvs/ /workspace/.jvs/
+# 1. Restore repository data from backup
+juicefs sync /backup/ /workspace/ \
+    --exclude '.jvs/locks/**' \
+    --exclude '.jvs/intents/**' \
+    --exclude '.jvs/gc/*.json' \
+    --exclude '.jvs/index.sqlite'
 
 # 2. Rebuild runtime state
 cd /workspace

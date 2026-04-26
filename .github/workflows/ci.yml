@@ -245,12 +245,12 @@ jobs:
             echo ""
             echo "## Risk labels"
             echo "- integrity: descriptor checksum and payload hash detect independent corruption; coordinated descriptor-plus-checksum rewrite remains a v0 residual risk."
-            echo "- migration: runtime operation state must be rebuilt at the destination with jvs doctor --strict --repair-runtime."
+            echo "- migration: runtime operation state must be rebuilt at the destination with jvs doctor --strict --repair-runtime; exclude active .jvs/locks/**, .jvs/intents/**, and .jvs/gc/*.json during physical backup or storage sync."
             echo ""
             echo "## Migration notes"
             echo "- Existing repositories do not need an on-disk migration for this release."
             echo "- After upgrading, run jvs doctor --strict and jvs verify --all on a representative repo."
-            echo "- After physical backup or storage migration, run jvs doctor --strict --repair-runtime at the destination before verification."
+            echo "- After physical backup or storage migration, exclude active .jvs/locks/**, .jvs/intents/**, and .jvs/gc/*.json, then run jvs doctor --strict --repair-runtime at the destination before verification."
           } > release-notes.md
 
       - name: Sign binaries with cosign

@@ -94,7 +94,12 @@ JVS relies on OS-level filesystem permissions for access control:
 
 1. **Run `jvs verify --all`** after any suspicious system activity
 2. **Run `jvs doctor --strict`** periodically to check repository health
-3. **Backup `.jvs/` directory** using `juicefs sync` (excludes runtime state automatically)
+3. **Backup/sync repository metadata safely** with `juicefs sync` only when
+   active runtime state is explicitly excluded: `.jvs/locks/` via
+   `--exclude '.jvs/locks/**'`, `.jvs/intents/` via
+   `--exclude '.jvs/intents/**'`, and `.jvs/gc/*.json` via
+   `--exclude '.jvs/gc/*.json'`; then run
+   `jvs doctor --strict --repair-runtime` on the restored destination
 4. **Use JuiceFS authentication** to control access to underlying storage
 5. **Never commit `.jvs/` directory** to Git (contains metadata, not payload)
 

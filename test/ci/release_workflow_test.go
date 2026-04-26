@@ -158,6 +158,24 @@ func TestReleaseWorkflowNotesIncludeReadinessSections(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowNotesIncludeRuntimeStateBoundary(t *testing.T) {
+	root := repoRoot(t)
+	workflow := readWorkflow(t, root)
+	jobs := requireMappingValue(t, workflow, "jobs")
+	release := requireMappingValue(t, jobs, "release")
+	notes := requireStepNamed(t, release, "Generate release notes")
+	run := scalarValue(t, requireMappingValue(t, notes, "run"))
+
+	for _, required := range []string{
+		".jvs/locks/**",
+		".jvs/intents/**",
+		".jvs/gc/*.json",
+		"jvs doctor --strict --repair-runtime",
+	} {
+		requireContains(t, run, required)
+	}
+}
+
 func TestReleaseWorkflowNotesUseSigningGuideAndGASections(t *testing.T) {
 	root := repoRoot(t)
 	workflow := readWorkflow(t, root)
@@ -403,6 +421,40 @@ func TestMakefileReleaseGateRunsFuzzOrdinaryTests(t *testing.T) {
 	fuzzCommands := makeTargetCommands(makefile, "fuzz")
 	if !commandsContain(fuzzCommands, "-run='^$$'") {
 		t.Fatalf("fuzz target must keep skipping ordinary Go tests while running fuzz targets")
+	}
+}
+
+func TestMakefileFuzzTargetPinsMinimizationPolicy(t *testing.T) {
+	root := repoRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	makefile := string(data)
+
+	minimizeDefinition := makeVariableDefinition(t, makefile, "FUZZMINIMIZETIME")
+	if !strings.HasPrefix(minimizeDefinition, "FUZZMINIMIZETIME ?=") {
+		t.Fatalf("FUZZMINIMIZETIME must be configurable with ?=, got %q", minimizeDefinition)
+	}
+	minimizeDefault, ok := makeVariableValue(makefile, "FUZZMINIMIZETIME")
+	if !ok {
+		t.Fatalf("Makefile must define FUZZMINIMIZETIME")
+	}
+	if minimizeDefault != "0" {
+		t.Fatalf("FUZZMINIMIZETIME must default to 0 for stable release fuzz smoke runs, got %q", minimizeDefault)
+	}
+
+	fuzzTimeDefinition := makeVariableDefinition(t, makefile, "FUZZTIME")
+	if !strings.HasPrefix(fuzzTimeDefinition, "FUZZTIME ?=") {
+		t.Fatalf("FUZZTIME must remain configurable with ?=, got %q", fuzzTimeDefinition)
+	}
+
+	fuzzCommands := makeTargetCommands(makefile, "fuzz")
+	if !commandsContain(fuzzCommands, "-fuzztime=$(FUZZTIME)") {
+		t.Fatalf("fuzz target must run with the configured FUZZTIME duration")
+	}
+	if !commandsContain(fuzzCommands, "-fuzzminimizetime=$(FUZZMINIMIZETIME)") {
+		t.Fatalf("fuzz target must pass the configured FUZZMINIMIZETIME to avoid default minimization extending release smoke runs")
 	}
 }
 

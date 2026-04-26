@@ -85,8 +85,10 @@ tagged `clone`, and makes that checkpoint both `current` and `latest`. It does
 not preserve source history or other workspaces.
 
 `--scope full` creates a new repo identity while preserving user-visible
-checkpoints, workspaces, and refs from the source repo. It must exclude runtime
-locks and intents and rebuild clean runtime directories in the destination.
+checkpoints, workspaces, and refs from the source repo. It must exclude active
+runtime operation state, including mutation lock directories, operation
+records, and active GC plans, and rebuild clean runtime directories in the
+destination.
 
 ### `jvs capability <target-path> [--write-probe] [--json]`
 

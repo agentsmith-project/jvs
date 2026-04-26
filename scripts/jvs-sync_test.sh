@@ -38,7 +38,9 @@ setup_test_repo() {
     mkdir -p "$test_dir/.jvs/descriptors"
     mkdir -p "$test_dir/.jvs/audit"
     mkdir -p "$test_dir/.jvs/gc"
+    mkdir -p "$test_dir/.jvs/gc/tombstones"
     mkdir -p "$test_dir/.jvs/intents"
+    mkdir -p "$test_dir/.jvs/locks/repo.lock"
 
     # Create format_version
     echo "1" > "$test_dir/.jvs/format_version"
@@ -60,8 +62,13 @@ EOF
     # Create test intent file (should be excluded)
     echo "in-flight" > "$test_dir/.jvs/intents/test-intent.json"
 
-    # Create test lock file (should be excluded)
-    touch "$test_dir/.jvs/test.lock"
+    # Create runtime state (should be excluded)
+    echo "locked" > "$test_dir/.jvs/locks/repo.lock/holder.json"
+    echo "nested-lock" > "$test_dir/.jvs/locks/repo.lock/session.json"
+    echo "active gc plan" > "$test_dir/.jvs/gc/active-plan.json"
+
+    # Create committed GC metadata (should be synced)
+    echo "committed tombstone" > "$test_dir/.jvs/gc/tombstones/retained.json"
 }
 
 test_help_output() {
@@ -72,6 +79,35 @@ test_help_output() {
         log_pass "Help command works"
     else
         log_fail "Help command output missing expected text"
+    fi
+}
+
+test_help_runtime_state_boundary() {
+    log_info "Testing help runtime-state boundary..."
+
+    local help
+    help=$(./scripts/jvs-sync.sh --help 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
+
+    local missing=0
+    for expected in ".jvs/locks/**" ".jvs/intents/**" ".jvs/gc/*.json"; do
+        if ! grep -Fq "$expected" <<< "$help"; then
+            log_fail "Help output missing runtime-state boundary: $expected"
+            missing=1
+        fi
+    done
+
+    if grep -Fq ".jvs/*.lock" <<< "$help"; then
+        log_fail "Help output still documents old .jvs/*.lock lock pattern"
+        missing=1
+    fi
+
+    if grep -Fq ".jvs/gc/ (portable metadata)" <<< "$help"; then
+        log_fail "Help output treats all .jvs/gc/ as portable metadata"
+        missing=1
+    fi
+
+    if [[ $missing -eq 0 ]]; then
+        log_pass "Help output documents the GA runtime-state boundary"
     fi
 }
 
@@ -156,11 +192,33 @@ test_excludes_locks() {
     setup_test_repo "$src_dir"
     ./scripts/jvs-sync.sh backup "$src_dir" "$dst_dir" &>/dev/null
 
-    # Lock files should be excluded
-    if [[ ! -f "$dst_dir/.jvs/test.lock" ]]; then
-        log_pass "Lock files are excluded"
+    # Lock directories should be excluded
+    if [[ ! -e "$dst_dir/.jvs/locks/repo.lock/holder.json" && ! -e "$dst_dir/.jvs/locks/repo.lock/session.json" ]]; then
+        log_pass "Lock directories are excluded"
     else
-        log_fail "Lock files were synced (should be excluded)"
+        log_fail "Lock directories were synced (should be excluded)"
+    fi
+
+    rm -rf "$src_dir" "$dst_dir"
+}
+
+test_excludes_active_gc_plans_only() {
+    log_info "Testing active GC plan exclusion..."
+
+    local src_dir
+    local dst_dir
+    src_dir=$(mktemp -d)
+    dst_dir=$(mktemp -d)
+
+    setup_test_repo "$src_dir"
+    ./scripts/jvs-sync.sh backup "$src_dir" "$dst_dir" &>/dev/null
+
+    if [[ -f "$dst_dir/.jvs/gc/active-plan.json" ]]; then
+        log_fail "Active GC plan files were synced (should be excluded)"
+    elif [[ ! -f "$dst_dir/.jvs/gc/tombstones/retained.json" ]]; then
+        log_fail "Committed GC tombstones were not synced"
+    else
+        log_pass "Active GC plans are excluded while committed GC metadata is synced"
     fi
 
     rm -rf "$src_dir" "$dst_dir"
@@ -238,10 +296,12 @@ main() {
     cd "$(dirname "$0")/.."
 
     test_help_output
+    test_help_runtime_state_boundary
     test_dry_run
     test_backup_creates_destination
     test_excludes_intents
     test_excludes_locks
+    test_excludes_active_gc_plans_only
     test_syncs_payload
     test_verify_command
     test_invalid_repo_detection

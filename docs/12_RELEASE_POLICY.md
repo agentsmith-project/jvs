@@ -90,3 +90,15 @@ release artifacts.
 - Changelog entry with date, tag, highlights, breaking changes, known
   limitations, risk labels, and migration notes.
 - Runbook references for verification, diagnosis, and recovery.
+- Release evidence ledger (`docs/RELEASE_EVIDENCE.md`) that persistently
+  records the evidence class for each entry. Candidate entries may record the
+  target release identity, required `make release-gate` status checks,
+  docs-contract, ci-contract, test-race, test-cover, lint, build,
+  conformance, library, regression, fuzz-tests, fuzz, coverage threshold,
+  representative repo `jvs doctor --strict` / `jvs verify --all` evidence
+  requirements, GA docs evidence, artifact and signing workflow rules, CI run
+  link rule, and runbook references while marking final-only facts pending.
+  Final tagged release entries must replace pending fields with the exact
+  coverage result and threshold, final tag and tagged commit, release-gate
+  result, representative repo results, and published artifact/signing
+  evidence.

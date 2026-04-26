@@ -458,8 +458,12 @@ cd /mnt/juicefs-primary/data/main
 jvs checkpoint "Daily data sync: $(date +%Y-%m-%d)" --tag sync --tag $(date +%Y-%m-%d)
 CHECKPOINT_ID=$(jvs checkpoint list --json | jq -r '.data[0].checkpoint_id')
 
-# Sync JVS metadata to secondary region
-rsync -avz .jvs/ /mnt/juicefs-secondary/data/.jvs/
+# Sync JVS repository data to secondary region without runtime state
+rsync -avz \
+  --exclude '.jvs/locks/**' \
+  --exclude '.jvs/intents/**' \
+  --exclude '.jvs/gc/*.json' \
+  /mnt/juicefs-primary/data/ /mnt/juicefs-secondary/data/
 
 # In secondary region, verify and use checkpoint
 cd /mnt/juicefs-secondary/data/main

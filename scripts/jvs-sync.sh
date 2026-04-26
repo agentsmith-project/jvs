@@ -28,7 +28,8 @@ VERBOSE=false
 THREADS=10
 EXCLUDE_PATTERNS=()
 RSYNC_ONLY=false
-JVS_EXCLUDE=(".jvs/intents/*" ".jvs/index.sqlite" ".jvs/*.lock")
+DEFAULT_JVS_EXCLUDE=(".jvs/locks/**" ".jvs/intents/**" ".jvs/gc/*.json" ".jvs/index.sqlite")
+JVS_EXCLUDE=("${DEFAULT_JVS_EXCLUDE[@]}")
 
 # Logging functions
 log_info() {
@@ -74,7 +75,6 @@ ${YELLOW}OPTIONS:${NC}
     -j, --threads N     Number of concurrent threads (default: 10)
     -e, --exclude PATTERN  Exclude pattern (can be repeated)
     --rsync-only        Force use of rsync even if juicefs available
-    --no-intents        Don't sync intent files (in-flight operations)
 
 ${YELLOW}EXAMPLES:${NC}
     # Backup to remote server via SSH
@@ -97,13 +97,14 @@ ${YELLOW}EXAMPLES:${NC}
 
 ${YELLOW}WHAT GETS SYNCED:${NC}
     - .jvs/ format_version, worktrees/, snapshots/, descriptors/
-    - .jvs/ audit/, gc/ (portable metadata)
+    - .jvs/ audit/ and committed gc/tombstones/ metadata
     - main/ and worktrees/*/ payload directories
 
 ${YELLOW}WHAT GETS EXCLUDED:${NC}
-    - .jvs/intents/* (in-flight operations, not portable)
+    - .jvs/locks/** (host-local mutation locks, not portable)
+    - .jvs/intents/** (in-flight operations, not portable)
+    - .jvs/gc/*.json (active GC plans, not portable)
     - .jvs/index.sqlite (rebuildable cache)
-    - .jvs/*.lock (runtime lock files)
 
 EOF
 }
@@ -205,9 +206,10 @@ rsync_sync() {
     fi
 
     # Add excludes
-    local excludes
-    excludes=$(build_rsync_excludes)
-    eval "rsync_opts+=($excludes)"
+    local pattern
+    for pattern in "${JVS_EXCLUDE[@]}" "${EXCLUDE_PATTERNS[@]}"; do
+        rsync_opts+=(--exclude="$pattern")
+    done
 
     # Run rsync
     log_info "Running rsync from $source to $dest"
@@ -249,9 +251,10 @@ juicefs_sync() {
     fi
 
     # Add excludes
-    local excludes
-    excludes=$(build_juicefs_excludes)
-    eval "juicefs_opts+=($excludes)"
+    local pattern
+    for pattern in "${JVS_EXCLUDE[@]}" "${EXCLUDE_PATTERNS[@]}"; do
+        juicefs_opts+=(--exclude="$pattern")
+    done
 
     # Run juicefs sync
     log_info "Running juicefs sync from $source to $dest"
@@ -533,7 +536,7 @@ main() {
                 shift
                 ;;
             --no-intents)
-                JVS_EXCLUDE=(".jvs/intents/*" ".jvs/index.sqlite" ".jvs/*.lock")
+                JVS_EXCLUDE=("${DEFAULT_JVS_EXCLUDE[@]}")
                 shift
                 ;;
             -*)

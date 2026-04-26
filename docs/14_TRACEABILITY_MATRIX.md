@@ -31,8 +31,10 @@ areas.
 - Product statement:
   - `README.md` (exclude runtime state)
   - `docs/00_OVERVIEW.md` (runtime-state non-portable)
+  - Runtime-state boundary: active `.jvs/locks/`, `.jvs/intents/`, and
+    `.jvs/gc/*.json` are non-portable.
 - Normative specs:
-  - `docs/18_MIGRATION_AND_BACKUP.md` (exclude `intents`, rebuild runtime)
+  - `docs/18_MIGRATION_AND_BACKUP.md` (exclude mutation locks, operation records, and active GC plans; rebuild runtime)
   - `docs/01_REPO_LAYOUT_SPEC.md` (portability classes)
 - Conformance contract areas:
   - `docs/11_CONFORMANCE_TEST_PLAN.md` §Setup, Clone, and Capability
@@ -88,6 +90,7 @@ areas.
   - `docs/11_CONFORMANCE_TEST_PLAN.md`
 - Phase 4 GA artifacts:
   - `docs/99_CHANGELOG.md` (changelog and generated release-note source)
+  - `docs/RELEASE_EVIDENCE.md` (persistent release evidence ledger)
   - `.github/workflows/ci.yml` (CI release workflow and release notes gate)
   - `docs/PERFORMANCE_RESULTS.md` (GA performance result boundaries)
   - `docs/18_MIGRATION_AND_BACKUP.md` (migration notes)

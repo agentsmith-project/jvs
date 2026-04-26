@@ -478,7 +478,7 @@ jvs restore baseline
 
 **Solution:** Verify juicefs-clone engine
 ```bash
-jvs doctor --json | jq '.engine'
+jvs info --json | jq '.data.engine'
 # Should be: "juicefs-clone"
 ```
 

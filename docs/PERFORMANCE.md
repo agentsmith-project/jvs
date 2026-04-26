@@ -1,7 +1,7 @@
 # JVS Performance Tuning Guide
 
 **Version:** v0 public contract
-**Last Updated:** 2026-02-23
+**Last Updated:** 2026-04-25
 
 ---
 
@@ -184,7 +184,7 @@ logging:
 
 **Disable for scripts:**
 ```bash
-jvs checkpoint "Automated checkpoint" --quiet
+jvs --no-progress checkpoint "Automated checkpoint"
 ```
 
 ---
@@ -270,7 +270,8 @@ echo cfq | sudo tee /sys/block/sdX/queue/scheduler
 
 **Solutions:**
 - Verify specific checkpoints instead of `--all`
-- Use `--no-payload` to skip hash computation (not recommended for production)
+- Use `jvs verify <checkpoint-id>` for focused diagnosis when you do not need a
+  full repository sweep
 - Run during off-peak hours
 
 ### Issue: Slow GC plan
@@ -305,8 +306,9 @@ time jvs verify --all
 
 **Identify bottlenecks:**
 ```bash
-# Check what operations are slow
-jvs doctor --json | jq '.timing'
+# Record command wall time and health signal
+time jvs verify --all
+jvs doctor --json | jq '.data.healthy'
 ```
 
 ### Regression Baseline Matrix
@@ -357,12 +359,16 @@ the same environment.
 
 ### Checkpoint Count
 
-**Recommended:** < 10,000 checkpoints per repository for best performance
+**Operational starting point:** Keep active checkpoint count below 10,000 per
+repository until local validation shows comfortable planning, listing, and GC
+margins for your storage stack.
 
 **More checkpoints?**
 - Use tags to mark important checkpoints
 - Run two-phase GC cleanup more frequently
 - Consider splitting into multiple repositories
+- Record local `jvs gc plan`, list, and restore baselines before treating a
+  larger count as routine.
 
 ### Concurrent Operations
 
@@ -375,7 +381,10 @@ the same environment.
 
 ### Workspace Size
 
-**Recommended:** Up to 10 TB per workspace (practical limit)
+**Operational starting point:** Validate workspaces up to 10 TB with your
+actual filesystem, engine, network, and verification cadence before relying on
+that size in production. This is a starting point for local validation, not a
+portable product limit or latency commitment.
 
 **Larger workspaces:**
 - Ensure sufficient IOPS
@@ -392,7 +401,7 @@ the same environment.
 **Diagnostics:**
 ```bash
 # Check which engine is being used
-jvs doctor --json | grep engine
+jvs info --json | jq '.data.engine'
 
 # Check I/O
 iostat -x 1 5
@@ -411,7 +420,7 @@ juicefs stats /mnt/jfs
 **Diagnostics:**
 ```bash
 # Check if restore is using copy engine
-jvs doctor --json | grep engine
+jvs info --json | jq '.data.engine'
 ```
 
 **Solutions:**

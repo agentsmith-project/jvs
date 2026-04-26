@@ -13,9 +13,9 @@ The `jvs-sync.sh` helper script enables convenient backup, restore, and migratio
 
 JVS repositories store metadata in `.jvs/` and payload in worktree directories. The sync helper properly handles:
 
-- **Portable metadata**: `format_version`, `worktrees/`, `snapshots/`, `descriptors/`, `audit/`, `gc/`
+- **Portable metadata**: `format_version`, `worktrees/`, `snapshots/`, `descriptors/`, `audit/`, committed `gc/tombstones/`
 - **Payload directories**: `main/` and `worktrees/*/`
-- **Excluded items**: `intents/` (in-flight operations), `index.sqlite` (rebuildable cache), lock files
+- **Excluded items**: active `locks/`, `intents/`, and root `gc/*.json` runtime state, plus `index.sqlite` (rebuildable cache)
 
 ## Installation
 
@@ -115,7 +115,6 @@ jvs-sync verify /path/to/repo user@server:/backup/jvs
 | `-j, --threads N` | Number of concurrent threads (default: 10) |
 | `-e, --exclude PATTERN` | Exclude pattern (can be repeated) |
 | `--rsync-only` | Force use of rsync even if juicefs available |
-| `--no-intents` | Also exclude intent files from sync |
 
 ## What Gets Synced
 
@@ -126,15 +125,16 @@ jvs-sync verify /path/to/repo user@server:/backup/jvs
 - `.jvs/snapshots/` - Snapshot data
 - `.jvs/descriptors/` - Snapshot descriptors
 - `.jvs/audit/` - Audit log events
-- `.jvs/gc/` - GC policies and results
+- `.jvs/gc/tombstones/` - Committed GC tombstones
 - `main/` - Main worktree payload
 - `worktrees/*/` - Other worktree payloads
 
 ### Excluded (Runtime/Rebuildable)
 
+- `.jvs/locks/` - Host-local mutation locks
 - `.jvs/intents/` - In-flight snapshot operations
+- `.jvs/gc/*.json` - Active GC plans
 - `.jvs/index.sqlite` - Search index (can be rebuilt)
-- `.jvs/*.lock` - Runtime lock files
 
 ## Sync Methods
 

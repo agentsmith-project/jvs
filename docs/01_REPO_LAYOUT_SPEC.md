@@ -19,6 +19,7 @@ repo/
 │   ├── descriptors/
 │   ├── intents/        # in-flight operation records; not migrated as-is
 │   ├── audit/          # append-only audit events
+│   ├── locks/          # host-local mutation locks; rebuilt after migration
 │   ├── gc/             # gc plans, tombstones, and runtime cleanup state
 │   └── index.sqlite    # optional, rebuildable
 │
@@ -61,7 +62,8 @@ Tags are embedded directly in checkpoint descriptors as a `tags` array field.
 ## Portability classes
 - Portable history state: `format_version`, `.jvs/worktrees/`, `.jvs/snapshots/`, `.jvs/descriptors/`, `.jvs/audit/`, and committed tombstones under `.jvs/gc/tombstones/`.
 - Rebuildable cache state: `index.sqlite`.
-- Runtime state (non-portable): active `.jvs/intents/` operation records and active `.jvs/gc/*.json` plans.
+- Runtime state (non-portable): active `.jvs/locks/` mutation locks,
+  active `.jvs/intents/` operation records, and active `.jvs/gc/*.json` plans.
 
 ## Why `repo/main/` exists
 JuiceFS clone performs 1:1 directory clone without excludes.

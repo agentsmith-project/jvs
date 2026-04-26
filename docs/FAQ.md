@@ -97,7 +97,7 @@ make build
 go install github.com/jvs-project/jvs@latest
 
 # Verify
-jvs --version
+jvs --help
 ```
 
 ---
@@ -359,7 +359,8 @@ jvs doctor --strict --repair-runtime
 1. **Use supported JuiceFS** - Enables the O(1) `juicefs-clone` metadata-clone engine
 2. **Use fast storage** - NVMe SSD, optimized storage
 3. **Reduce metadata** - Fewer files = faster hashing
-4. **Skip payload hash** - Use `--no-payload` for testing (not recommended for production)
+4. **Scope verification** - Use `jvs verify <checkpoint-id>` for focused
+   diagnosis, and reserve `jvs verify --all` for full integrity sweeps
 
 ---
 
@@ -484,7 +485,8 @@ JVS provides several safeguards:
 - **Audit trail:** Tamper-evident operation history
 - **Garbage collection:** With plan-preview, review before deletion
 
-**Backup strategy:** Use JuiceFS sync (excluding `.jvs/intents`) for backup.
+**Backup strategy:** Use JuiceFS sync while excluding active `.jvs/locks/`,
+`.jvs/intents/`, and `.jvs/gc/*.json` runtime state.
 
 ---
 

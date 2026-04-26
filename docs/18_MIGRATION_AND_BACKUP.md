@@ -17,26 +17,37 @@ jvs verify --all
 
 ## Runtime-state policy (MUST)
 Runtime state is non-portable and must not be migrated as authoritative state:
-- active `.jvs/intents/`
-- active `.jvs/gc/<plan_id>.json` plans
+- active `.jvs/locks/` repository mutation locks
+- active `.jvs/intents/` operation records
+- active `.jvs/gc/*.json` plans
 
 Destination MUST rebuild runtime state:
 ```bash
 jvs doctor --strict --repair-runtime
 ```
 
+`jvs clone --scope full` excludes this runtime state and recreates clean
+runtime directories at the destination. A physical copy or storage sync must do
+the same. Mutation locks are host/process-specific; a lock copied from another
+host is treated as held and can block destination writes until repaired.
+
 ## Release-facing migration notes
 Existing v0 repositories do not need an on-disk migration for the Phase 4 GA
 readiness update. After upgrading, run `jvs doctor --strict` and
 `jvs verify --all` on a representative repo. After a physical backup or storage
 migration, also run `jvs doctor --strict --repair-runtime` at the destination
-before verification.
+before verification so copied or missing runtime state is rebuilt.
+
+## Historical/internal terminology
+Public terminology is checkpoint and workspace. `.jvs/snapshots` and
+`.jvs/worktrees` are compatibility storage names; GA does not require an on-disk rename.
 
 ## Migration flow
 1. mount source and destination volumes
 2. sync repository excluding runtime state
 ```bash
 juicefs sync /mnt/src/myrepo/ /mnt/dst/myrepo/ \
+  --exclude '.jvs/locks/**' \
   --exclude '.jvs/intents/**' \
   --exclude '.jvs/gc/*.json' \
   --update --threads 16
@@ -59,9 +70,10 @@ Portable checkpoint state:
 - `.jvs/gc/tombstones/`
 
 Active GC plans are repository-bound runtime state. Full repository clone and
-the recommended sync exclusions leave them behind. If a plan is copied
-out-of-band, it will fail safe with `E_GC_PLAN_MISMATCH`; create a new plan
-after migration.
+the recommended sync exclusions leave them behind. Repository mutation locks
+and active operation records are also non-portable and must be rebuilt rather
+than copied. If a GC plan is copied out-of-band, it will fail safe with
+`E_GC_PLAN_MISMATCH`; create a new plan after migration.
 
 Optional payload state:
 - `main/`

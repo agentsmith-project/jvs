@@ -34,7 +34,7 @@ This guide helps game developers use JVS for versioning large game assets that G
 
 2. **JVS installed**
    ```bash
-   jvs --version
+   jvs --help
    ```
 
 3. **Game project** (Unity or Unreal)
@@ -396,8 +396,8 @@ jvs checkpoint "Character: armored variant" --tag character --tag armored
 
 **Solution:** Make sure you're using juicefs-clone engine
 ```bash
-jvs doctor --json | grep engine
-# Should show: "engine": "juicefs-clone"
+jvs info --json | jq '.data.engine'
+# Should be: "juicefs-clone"
 ```
 
 ### Problem: "File too large" errors

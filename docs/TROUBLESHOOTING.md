@@ -56,7 +56,7 @@ Error: no suitable checkpoint engine available
 
 3. **Check engine availability:**
    ```bash
-   jvs doctor --json | grep -A5 "engines"
+   jvs capability . --write-probe --json | jq '.data.recommended_engine'
    ```
 
 4. **Force copy engine:**
@@ -213,9 +213,9 @@ Error: payload root hash mismatch for checkpoint abc123
    find . -newer .jvs/snapshots/abc123 -ls
    ```
 
-2. **Recompute hash to verify:**
+2. **Run strong verification again:**
    ```bash
-   jvs verify abc123 --recompute
+   jvs verify abc123
    ```
 
 ---
@@ -454,7 +454,7 @@ Error: juicefs-clone failed: operation not permitted
 1. **Wrong engine:**
    ```bash
    # Check which engine is being used
-   jvs doctor --json | grep engine
+   jvs info --json | jq '.data.engine'
    ```
 
 2. **Large number of small files:**
