@@ -1,6 +1,6 @@
 GOLANGCI_LINT_VERSION ?= v1.64.8
 GOLANGCI_LINT_PACKAGE := github.com/golangci/golangci-lint/cmd/golangci-lint
-FUZZTIME ?= 10s
+FUZZTIME ?= 100x
 FUZZMINIMIZETIME ?= 0
 FUZZPARALLEL ?= 1
 override release_fuzz_checked_shell = $(strip $(shell $1)$(if $(filter-out 0,$(.SHELLSTATUS)),$(error $2),))

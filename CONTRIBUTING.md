@@ -72,11 +72,12 @@ go test -tags conformance -v ./test/regression/...
 Fuzzing tests use randomized inputs to find edge cases and security vulnerabilities. See `test/fuzz/FUZZING.md` for details.
 
 ```bash
-# Run all fuzz tests briefly (smoke test)
-go test -fuzz=. -fuzztime=10s ./test/fuzz/...
+# List and run release-blocking fuzz smoke targets
+make fuzz-list
+make fuzz
 
-# Run a specific fuzz target
-go test -fuzz=FuzzValidateName -fuzztime=1m ./test/fuzz/...
+# Run a specific root-package fuzz target
+go test ./test/fuzz -run='^$' -fuzz=FuzzValidateName -fuzztime=1m
 ```
 
 **Regression test format:**

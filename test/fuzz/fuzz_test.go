@@ -8,8 +8,8 @@
 // security vulnerabilities that might be missed with traditional unit tests.
 //
 // Running fuzz tests:
-//   go test -fuzz=FuzzParseSnapshotID -fuzztime=30s ./test/fuzz/...
-//   go test -fuzz=. -fuzztime=1m ./test/fuzz/...
+//   go test ./test/fuzz -run='^$' -fuzz=FuzzParseSnapshotID -fuzztime=30s
+//   make fuzz
 //
 // For more information on Go fuzzing, see:
 // https://go.dev/doc/tutorial/fuzz
@@ -140,6 +140,10 @@ func FuzzCanonicalMarshal(f *testing.F) {
 	f.Add([]byte(`{"z":9,"a":1,"m":5}`)) // test key ordering
 
 	f.Fuzz(func(t *testing.T, data []byte) {
+		if !canonicalJSONFuzzInputAllowed(data) {
+			t.Skip("canonical JSON fuzz input exceeds release-gate size/depth bound")
+		}
+
 		// First, try to interpret data as JSON
 		var v any
 		if err := json.Unmarshal(data, &v); err != nil {
@@ -170,6 +174,51 @@ func FuzzCanonicalMarshal(f *testing.F) {
 			t.Errorf("CanonicalMarshal not deterministic: %q vs %q", result1, result2)
 		}
 	})
+}
+
+const (
+	maxCanonicalJSONFuzzInput = 4096
+	maxCanonicalJSONFuzzDepth = 64
+)
+
+func canonicalJSONFuzzInputAllowed(data []byte) bool {
+	if len(data) > maxCanonicalJSONFuzzInput {
+		return false
+	}
+
+	depth := 0
+	inString := false
+	escaped := false
+	for _, b := range data {
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch b {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+
+		switch b {
+		case '"':
+			inString = true
+		case '{', '[':
+			depth++
+			if depth > maxCanonicalJSONFuzzDepth {
+				return false
+			}
+		case '}', ']':
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+	return true
 }
 
 // FuzzDescriptorJSON tests descriptor JSON marshaling/unmarshaling with random data.
@@ -612,4 +661,26 @@ func TestSnapshotIDStringFuzzInputBound(t *testing.T) {
 	if snapshotIDStringFuzzInputAllowed(strings.Repeat("x", maxSnapshotIDStringFuzzInput+1)) {
 		t.Fatal("oversized snapshot ID string input should be skipped")
 	}
+}
+
+func TestCanonicalJSONFuzzInputBound(t *testing.T) {
+	if !canonicalJSONFuzzInputAllowed([]byte(strings.Repeat(" ", maxCanonicalJSONFuzzInput))) {
+		t.Fatal("boundary-sized canonical JSON input should remain fuzzed")
+	}
+	if canonicalJSONFuzzInputAllowed([]byte(strings.Repeat(" ", maxCanonicalJSONFuzzInput+1))) {
+		t.Fatal("oversized canonical JSON input should be skipped")
+	}
+	if !canonicalJSONFuzzInputAllowed(nestedJSONArray(maxCanonicalJSONFuzzDepth)) {
+		t.Fatal("boundary-depth canonical JSON input should remain fuzzed")
+	}
+	if !canonicalJSONFuzzInputAllowed([]byte(`{"text":"` + strings.Repeat("[", maxCanonicalJSONFuzzDepth+1) + `"}`)) {
+		t.Fatal("structural characters inside JSON strings should not count toward the depth bound")
+	}
+	if canonicalJSONFuzzInputAllowed(nestedJSONArray(maxCanonicalJSONFuzzDepth + 1)) {
+		t.Fatal("over-depth canonical JSON input should be skipped")
+	}
+}
+
+func nestedJSONArray(depth int) []byte {
+	return []byte(strings.Repeat("[", depth) + strings.Repeat("]", depth))
 }

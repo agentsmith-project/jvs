@@ -839,6 +839,18 @@ func TestDocs_PublicCommandExamplesUseStableCommands(t *testing.T) {
 	}
 }
 
+func TestDocs_FuzzCommandsDoNotUseRecursivePackagePattern(t *testing.T) {
+	for _, doc := range fuzzCommandDocs() {
+		t.Run(doc, func(t *testing.T) {
+			for i, line := range strings.Split(readRepoFile(t, doc), "\n") {
+				if strings.Contains(line, "go test") && strings.Contains(line, "-fuzz") && strings.Contains(line, "./test/fuzz/...") {
+					t.Fatalf("%s:%d documents a multi-package Go fuzz command; use make fuzz/make fuzz-list for recursive release fuzzing or a single owning package for one target:\n%s", doc, i+1, line)
+				}
+			}
+		})
+	}
+}
+
 func TestDocs_PublicLibraryGCHidesV0RetentionSurface(t *testing.T) {
 	fset := token.NewFileSet()
 	path := repoFile(t, "pkg/jvs/client.go")
@@ -1737,6 +1749,13 @@ func publicCommandDocs() []string {
 	return releaseBlockingContractDocs()
 }
 
+func fuzzCommandDocs() []string {
+	return []string{
+		"CONTRIBUTING.md",
+		"test/fuzz/FUZZING.md",
+	}
+}
+
 func unsupportedPublicCLIExampleRules() []unsupportedPublicCLIExampleRule {
 	return []unsupportedPublicCLIExampleRule{
 		{
@@ -2411,7 +2430,7 @@ func requireFinalTaggedReleaseEvidence(t *testing.T, heading, entry string) {
 	tag := tagMatch[1]
 	tagCommit, ok := gitTagCommit(t, tag)
 	if !ok {
-		t.Fatalf("final tagged release evidence %q claims tag %s, but refs/tags/%s does not exist in this checkout", heading, tag, tag)
+		t.Fatalf("final tagged release evidence %q claims tag %s, but refs/tags/%s is not available in this checkout; CI jobs that run tag-aware release validation must fetch full history and tags (for example actions/checkout fetch-depth: 0), otherwise this failure can be missing local tag metadata rather than incorrect release evidence", heading, tag, tag)
 	}
 	if tagCommit != commitMatch[1] {
 		t.Fatalf("final tagged release evidence %q commit %s does not match tag %s commit %s", heading, commitMatch[1], tag, tagCommit)
@@ -2420,7 +2439,7 @@ func requireFinalTaggedReleaseEvidence(t *testing.T, heading, entry string) {
 
 func gitTagCommit(t *testing.T, tag string) (string, bool) {
 	t.Helper()
-	cmd := exec.Command("git", "rev-list", "-n", "1", tag)
+	cmd := exec.Command("git", "rev-list", "-n", "1", "refs/tags/"+tag)
 	cmd.Dir = repoFile(t)
 	out, err := cmd.Output()
 	if err != nil {

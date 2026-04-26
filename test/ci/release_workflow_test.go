@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -87,6 +88,32 @@ func TestManualReleaseBindsToTagRef(t *testing.T) {
 	requireContains(t, tagName, "github.event.inputs.tag")
 	if strings.Contains(tagName, "refs/tags/") {
 		t.Fatalf("release action tag_name must publish the exact tag name, not a full ref: %q", tagName)
+	}
+}
+
+func TestTagAwareValidationJobsCheckoutFullGitMetadata(t *testing.T) {
+	root := repoRoot(t)
+	workflow := readWorkflow(t, root)
+	jobs := requireMappingValue(t, workflow, "jobs")
+
+	tagAwareCommands := []string{"make conformance", "make release-gate"}
+	coveredCommands := map[string]bool{}
+	for i := 0; i+1 < len(jobs.Content); i += 2 {
+		jobName := jobs.Content[i].Value
+		job := jobs.Content[i+1]
+		for _, command := range tagAwareCommands {
+			if !jobRuns(job, command) {
+				continue
+			}
+			coveredCommands[command] = true
+			checkout := requireStepUsing(t, job, "actions/checkout@")
+			requireCheckoutFetchesFullGitMetadata(t, checkout, jobName, command)
+		}
+	}
+	for _, command := range tagAwareCommands {
+		if !coveredCommands[command] {
+			t.Fatalf("CI workflow must include a job that runs %q", command)
+		}
 	}
 }
 
@@ -449,10 +476,17 @@ func TestMakefileFuzzTargetPinsMinimizationPolicy(t *testing.T) {
 	if !strings.HasPrefix(fuzzTimeDefinition, "FUZZTIME ?=") {
 		t.Fatalf("FUZZTIME must remain configurable with ?=, got %q", fuzzTimeDefinition)
 	}
+	fuzzTimeDefault, ok := makeVariableValue(makefile, "FUZZTIME")
+	if !ok {
+		t.Fatalf("Makefile must define FUZZTIME")
+	}
+	if _, ok := releaseFuzzCountBudget(fuzzTimeDefault); !ok {
+		t.Fatalf("FUZZTIME must default to a deterministic count budget like 100x for release fuzz smoke runs, not a wall-clock duration; got %q", fuzzTimeDefault)
+	}
 
 	fuzzCommands := makeTargetCommands(makefile, "fuzz")
 	if !commandsContain(fuzzCommands, "-fuzztime=$(FUZZTIME)") {
-		t.Fatalf("fuzz target must run with the configured FUZZTIME duration")
+		t.Fatalf("fuzz target must run with the configured FUZZTIME budget")
 	}
 	if !commandsContain(fuzzCommands, "-fuzzminimizetime=$(FUZZMINIMIZETIME)") {
 		t.Fatalf("fuzz target must pass the configured FUZZMINIMIZETIME to avoid default minimization extending release smoke runs")
@@ -832,6 +866,21 @@ func requireStepUsing(t *testing.T, job *yaml.Node, usesPrefix string) *yaml.Nod
 	return nil
 }
 
+func requireCheckoutFetchesFullGitMetadata(t *testing.T, checkout *yaml.Node, jobName, command string) {
+	t.Helper()
+	with := requireMappingValue(t, checkout, "with")
+	fetchDepth := mappingValue(with, "fetch-depth")
+	if fetchDepth == nil {
+		t.Fatalf("%s job runs %q, so its checkout must set fetch-depth: 0 to fetch full history and release tags", jobName, command)
+	}
+	if got := scalarValue(t, fetchDepth); got != "0" {
+		t.Fatalf("%s job runs %q, so its checkout must use fetch-depth: 0 to fetch full history and release tags; got %q", jobName, command, got)
+	}
+	if fetchTags := mappingValue(with, "fetch-tags"); fetchTags != nil && scalarValue(t, fetchTags) == "false" {
+		t.Fatalf("%s job runs %q, so its checkout must not disable tag fetching", jobName, command)
+	}
+}
+
 func makeTargetLine(t *testing.T, makefile, target string) string {
 	t.Helper()
 	prefix := target + ":"
@@ -875,6 +924,15 @@ func commandsContain(commands []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func releaseFuzzCountBudget(value string) (int, bool) {
+	value = strings.TrimSpace(value)
+	if !strings.HasSuffix(value, "x") {
+		return 0, false
+	}
+	count, err := strconv.Atoi(strings.TrimSuffix(value, "x"))
+	return count, err == nil && count > 0
 }
 
 func targetOrDepsRunOrdinaryGoTestsForPackage(t *testing.T, makefile, target, pkg string) bool {

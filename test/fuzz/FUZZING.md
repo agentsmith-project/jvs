@@ -12,38 +12,43 @@ Fuzzing tests use Go's built-in fuzzer (introduced in Go 1.18) to generate thous
 
 ## Running Fuzz Tests
 
-### Quick smoke test (5 seconds per fuzzer)
+Go fuzzing runs one package per invocation. Use `make fuzz-list` and `make fuzz` for recursive release smoke coverage; use the owning package when running a single target directly.
+
+### Quick Release Smoke
 
 ```bash
-# Run a specific fuzz target for 5 seconds
-go test -fuzz=FuzzValidateName -fuzztime=5s ./test/fuzz/...
+# List release-blocking fuzz targets
+make fuzz-list
 
-# Run all fuzz tests briefly
-go test -fuzz=. -fuzztime=5s ./test/fuzz/...
+# Run release fuzz smoke with the default count budget
+make fuzz
+
+# Run a specific root-package fuzz target for 5 seconds
+go test ./test/fuzz -run='^$' -fuzz=FuzzValidateName -fuzztime=5s
 ```
 
 ### Standard fuzzing run (1 minute per fuzzer)
 
 ```bash
 # Run for 1 minute (recommended for CI)
-go test -fuzz=FuzzValidateName -fuzztime=1m ./test/fuzz/...
+go test ./test/fuzz -run='^$' -fuzz=FuzzValidateName -fuzztime=1m
 
-# Run all fuzzers for 1 minute each
-go test -fuzz=. -fuzztime=1m ./test/fuzz/...
+# Run release-blocking fuzz targets for 1 minute each
+FUZZTIME=1m make fuzz
 ```
 
 ### Extended fuzzing (for deep analysis)
 
 ```bash
 # Run overnight or for extended periods
-go test -fuzz=FuzzValidateName -fuzztime=24h ./test/fuzz/...
+go test ./test/fuzz -run='^$' -fuzz=FuzzValidateName -fuzztime=24h
 ```
 
 ### With coverage guidance
 
 ```bash
 # Use corpus from previous runs for better coverage
-go test -fuzz=FuzzValidateName -fuzztime=1m ./test/fuzz/... -test.fuzzcachedir=/tmp/jvs-fuzz-cache
+go test ./test/fuzz -run='^$' -fuzz=FuzzValidateName -fuzztime=1m -test.fuzzcachedir=/tmp/jvs-fuzz-cache
 ```
 
 ## Fuzz Targets
@@ -135,10 +140,10 @@ The fuzzer uses these as a starting point and mutates them to find new interesti
 
 ### Before Committing
 
-Run each fuzz target for at least 10 seconds:
+Run the release fuzz smoke:
 
 ```bash
-go test -fuzz=. -fuzztime=10s ./test/fuzz/...
+make fuzz
 ```
 
 ### In CI/CD
@@ -146,8 +151,8 @@ go test -fuzz=. -fuzztime=10s ./test/fuzz/...
 For continuous integration, use shorter runs:
 
 ```bash
-# Quick check (30 seconds per fuzzer)
-go test -fuzz=. -fuzztime=30s ./test/fuzz/...
+# Quick deterministic check
+make fuzz
 ```
 
 ### After Security Changes
@@ -156,7 +161,7 @@ When modifying validation, parsing, or serialization code:
 
 ```bash
 # Extended run to find edge cases
-go test -fuzz=. -fuzztime=5m ./test/fuzz/...
+FUZZTIME=5m make fuzz
 ```
 
 ### Saving Interesting Inputs
@@ -165,7 +170,7 @@ To preserve fuzz corpus for future runs:
 
 ```bash
 # Save corpus to testdata/fuzz
-go test -fuzz=FuzzValidateName -fuzztime=1m ./test/fuzz/... -test.fuzzcachedir=testdata/fuzz/FuzzValidateName
+go test ./test/fuzz -run='^$' -fuzz=FuzzValidateName -fuzztime=1m -test.fuzzcachedir=testdata/fuzz/FuzzValidateName
 ```
 
 ## Adding New Fuzz Targets
@@ -202,7 +207,7 @@ To see which code paths the fuzzer is exploring:
 
 ```bash
 # Run with coverage
-go test -coverprofile=fuzz_coverage.out -fuzz=FuzzValidateName -fuzztime=10s ./test/fuzz/...
+go test ./test/fuzz -coverprofile=fuzz_coverage.out -run='^$' -fuzz=FuzzValidateName -fuzztime=10s
 
 # View coverage
 go tool cover -html=fuzz_coverage.out
