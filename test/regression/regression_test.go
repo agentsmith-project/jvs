@@ -19,6 +19,7 @@ package regression
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +27,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var jvsBinary string
@@ -90,6 +92,89 @@ func runJVSInRepo(t *testing.T, repoPath string, args ...string) (stdout, stderr
 	t.Helper()
 	cwd := filepath.Join(repoPath, "main")
 	return runJVS(t, cwd, args...)
+}
+
+type regressionJSONEnvelope struct {
+	OK    bool            `json:"ok"`
+	Data  json.RawMessage `json:"data"`
+	Error *struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+		Hint    string `json:"hint"`
+	} `json:"error"`
+}
+
+type regressionCheckpointData struct {
+	CheckpointID string `json:"checkpoint_id"`
+}
+
+type regressionRestoreData struct {
+	CheckpointID string `json:"checkpoint_id"`
+	Current      string `json:"current"`
+	Latest       string `json:"latest"`
+	Dirty        bool   `json:"dirty"`
+	AtLatest     bool   `json:"at_latest"`
+	Status       string `json:"status"`
+}
+
+type regressionStatusData struct {
+	Current  string `json:"current"`
+	Latest   string `json:"latest"`
+	Dirty    bool   `json:"dirty"`
+	AtLatest bool   `json:"at_latest"`
+}
+
+type regressionForkData struct {
+	Workspace      string `json:"workspace"`
+	BaseCheckpoint string `json:"base_checkpoint"`
+	Current        string `json:"current"`
+	Latest         string `json:"latest"`
+}
+
+func runJVSJSONInRepo(t *testing.T, repoPath string, args ...string) (stdout, stderr string) {
+	t.Helper()
+	allArgs := append([]string{"--json"}, args...)
+	stdout, stderr, code := runJVSInRepo(t, repoPath, allArgs...)
+	require.Equal(t, 0, code, "jvs --json %s failed\nstdout=%s\nstderr=%s", strings.Join(args, " "), stdout, stderr)
+	return stdout, stderr
+}
+
+func requireRegressionJSONData(t *testing.T, stdout string, target any) {
+	t.Helper()
+
+	var envelope regressionJSONEnvelope
+	require.NoError(t, json.Unmarshal([]byte(stdout), &envelope), "stdout should be a JSON envelope:\n%s", stdout)
+	require.True(t, envelope.OK, "JSON envelope should be ok:\n%s", stdout)
+	require.NoError(t, json.Unmarshal(envelope.Data, target), "JSON envelope data should match target:\n%s", stdout)
+}
+
+func createRegressionCheckpoint(t *testing.T, repoPath, note string) string {
+	t.Helper()
+
+	stdout, _ := runJVSJSONInRepo(t, repoPath, "checkpoint", note)
+	var data regressionCheckpointData
+	requireRegressionJSONData(t, stdout, &data)
+	require.NotEmpty(t, data.CheckpointID, "checkpoint JSON should include full checkpoint_id:\n%s", stdout)
+	return data.CheckpointID
+}
+
+func restoreRegressionCheckpoint(t *testing.T, repoPath, ref string) regressionRestoreData {
+	t.Helper()
+
+	stdout, _ := runJVSJSONInRepo(t, repoPath, "restore", ref)
+	var data regressionRestoreData
+	requireRegressionJSONData(t, stdout, &data)
+	require.NotEmpty(t, data.CheckpointID, "restore JSON should include checkpoint_id:\n%s", stdout)
+	return data
+}
+
+func readRegressionStatus(t *testing.T, repoPath string) regressionStatusData {
+	t.Helper()
+
+	stdout, _ := runJVSJSONInRepo(t, repoPath, "status")
+	var data regressionStatusData
+	requireRegressionJSONData(t, stdout, &data)
+	return data
 }
 
 // createFiles creates multiple files in a worktree.
@@ -265,33 +350,44 @@ func TestRegression_RestoreLatest(t *testing.T) {
 
 	// Create initial snapshot
 	createFiles(t, mainPath, map[string]string{"file1.txt": "content1"})
-	runJVSInRepo(t, repoPath, "checkpoint", "first snapshot")
+	firstCheckpointID := createRegressionCheckpoint(t, repoPath, "first snapshot")
 
 	// Create second snapshot
 	createFiles(t, mainPath, map[string]string{"file2.txt": "content2"})
-	runJVSInRepo(t, repoPath, "checkpoint", "second snapshot")
+	secondCheckpointID := createRegressionCheckpoint(t, repoPath, "second snapshot")
 
-	// Restore to first snapshot
-	history1, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "list")
-	lines := strings.Split(strings.TrimSpace(history1), "\n")
-	if len(lines) > 0 {
-		// Extract first snapshot ID (skip header lines if any)
-		firstSnapshotID := extractSnapshotIDFromHistory(history1)
-		if firstSnapshotID != "" {
-			stdout, _, code := runJVSInRepo(t, repoPath, "restore", firstSnapshotID)
-			assert.Equal(t, 0, code, "restore to first snapshot should succeed")
-			assert.NotEmpty(t, stdout, "restore should have output")
-		}
-	}
+	// Restore to the first checkpoint by full JSON checkpoint ID.
+	restoredFirst := restoreRegressionCheckpoint(t, repoPath, firstCheckpointID)
+	assert.Equal(t, firstCheckpointID, restoredFirst.CheckpointID, "restore should target first checkpoint")
+	assert.Equal(t, firstCheckpointID, restoredFirst.Current, "current should move to first checkpoint")
+	assert.Equal(t, secondCheckpointID, restoredFirst.Latest, "latest should remain second checkpoint")
+	assert.False(t, restoredFirst.AtLatest, "restoring first should detach from latest")
+	assert.False(t, restoredFirst.Dirty, "restore should leave workspace clean")
+	assert.FileExists(t, filepath.Join(mainPath, "file1.txt"), "first content should be restored")
+	assert.NoFileExists(t, filepath.Join(mainPath, "file2.txt"), "latest-only content should be absent after restoring first")
 
-	// Restore back to latest
-	stdout, _, code := runJVSInRepo(t, repoPath, "restore", "latest")
+	statusAfterFirst := readRegressionStatus(t, repoPath)
+	assert.Equal(t, firstCheckpointID, statusAfterFirst.Current, "status current should be first checkpoint")
+	assert.Equal(t, secondCheckpointID, statusAfterFirst.Latest, "status latest should remain second checkpoint")
+	assert.False(t, statusAfterFirst.AtLatest, "status should report detached after first restore")
+	assert.False(t, statusAfterFirst.Dirty, "status should report clean after first restore")
 
-	assert.Equal(t, 0, code, "restore latest should succeed")
-	assert.Contains(t, stdout, "Workspace is at latest", "restore latest should report latest status")
+	// Restore back to latest and verify the full latest checkpoint is active.
+	restoredLatest := restoreRegressionCheckpoint(t, repoPath, "latest")
+	assert.Equal(t, secondCheckpointID, restoredLatest.CheckpointID, "restore latest should target second checkpoint")
+	assert.Equal(t, secondCheckpointID, restoredLatest.Current, "current should move to latest checkpoint")
+	assert.Equal(t, secondCheckpointID, restoredLatest.Latest, "latest should be second checkpoint")
+	assert.True(t, restoredLatest.AtLatest, "restore latest should report at_latest")
+	assert.False(t, restoredLatest.Dirty, "restore latest should leave workspace clean")
 
 	// Verify we're back at the latest state
 	assert.FileExists(t, filepath.Join(mainPath, "file2.txt"), "latest content should be restored")
+
+	statusAfterLatest := readRegressionStatus(t, repoPath)
+	assert.Equal(t, secondCheckpointID, statusAfterLatest.Current, "status current should be latest checkpoint")
+	assert.Equal(t, secondCheckpointID, statusAfterLatest.Latest, "status latest should be second checkpoint")
+	assert.True(t, statusAfterLatest.AtLatest, "status should report at_latest after latest restore")
+	assert.False(t, statusAfterLatest.Dirty, "status should report clean after latest restore")
 }
 
 // TestRegression_WorktreeFork tests forking a worktree from a snapshot.
@@ -307,24 +403,28 @@ func TestRegression_WorktreeFork(t *testing.T) {
 
 	// Create a snapshot
 	createFiles(t, mainPath, map[string]string{"original.txt": "content"})
-	stdout, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "original snapshot")
-	snapshotID := extractSnapshotID(stdout)
+	checkpointID := createRegressionCheckpoint(t, repoPath, "original snapshot")
 
 	// Fork a new worktree from the snapshot
-	stdout, _, code := runJVSInRepo(t, repoPath, "fork", snapshotID, "feature-branch")
+	stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "fork", checkpointID, "feature-branch")
 
-	assert.Equal(t, 0, code, "worktree fork should succeed")
-	assert.NotContains(t, stdout, "error", "should not show errors")
+	require.Equal(t, 0, code, "worktree fork should succeed\nstdout=%s\nstderr=%s", stdout, stderr)
+	var forked regressionForkData
+	requireRegressionJSONData(t, stdout, &forked)
+	assert.Equal(t, "feature-branch", forked.Workspace, "fork JSON should name the new workspace")
+	assert.Equal(t, checkpointID, forked.BaseCheckpoint, "fork should use the full checkpoint ID as base")
+	assert.Equal(t, checkpointID, forked.Current, "forked workspace should start at the checkpoint")
+	assert.Equal(t, checkpointID, forked.Latest, "forked workspace should be at latest")
 
 	// Verify the new worktree exists
 	worktreePath := filepath.Join(repoPath, "worktrees", "feature-branch")
 	fi, err := os.Stat(worktreePath)
-	assert.NoError(t, err, "new worktree directory should exist")
-	assert.True(t, fi.IsDir(), "new worktree should be a directory")
+	require.NoError(t, err, "new worktree directory should exist")
+	require.True(t, fi.IsDir(), "new worktree should be a directory")
 
 	// Verify the file exists in the new worktree
 	content, err := os.ReadFile(filepath.Join(worktreePath, "original.txt"))
-	assert.NoError(t, err, "file should exist in forked worktree")
+	require.NoError(t, err, "file should exist in forked worktree")
 	assert.Equal(t, "content", string(content), "file content should match snapshot")
 }
 
@@ -390,52 +490,6 @@ func TestRegression_InfoCommand(t *testing.T) {
 	assert.Contains(t, stdout, "Engine:", "should show engine")
 	assert.Contains(t, stdout, "Workspaces:", "should show workspace count")
 	assert.Contains(t, stdout, "Checkpoints:", "should show checkpoint count")
-}
-
-// Helper functions
-
-// extractSnapshotID extracts a snapshot ID from command output.
-// Looks for pattern: timestamp-hash
-func extractSnapshotID(output string) string {
-	// Look for snapshot ID pattern in output
-	lines := strings.Split(output, "\n")
-	for _, line := range lines {
-		// Look for "Created snapshot" message or similar
-		if strings.Contains(line, "Created snapshot") ||
-			strings.Contains(line, "checkpoint") {
-			// Extract ID after "checkpoint" keyword
-			parts := strings.Fields(line)
-			for i, part := range parts {
-				if strings.Contains(part, "checkpoint") && i+1 < len(parts) {
-					candidate := strings.TrimSpace(parts[i+1])
-					if strings.Contains(candidate, "-") && len(candidate) > 10 {
-						return candidate
-					}
-				}
-			}
-		}
-	}
-	return ""
-}
-
-// extractSnapshotIDFromHistory extracts the first (oldest) snapshot ID from history output.
-func extractSnapshotIDFromHistory(historyOutput string) string {
-	lines := strings.Split(historyOutput, "\n")
-	for _, line := range lines {
-		// Look for lines with snapshot IDs (pattern: digits-digits)
-		parts := strings.Fields(line)
-		for _, part := range parts {
-			// Snapshot IDs look like: 1234567890-abc123def
-			if strings.Contains(part, "-") && len(part) > 10 {
-				// Verify it's mostly alphanumeric with hyphen
-				cleaned := strings.Trim(part, "[]()")
-				if strings.Contains(cleaned, "-") {
-					return cleaned
-				}
-			}
-		}
-	}
-	return ""
 }
 
 // TestRegression_CanSnapshotNewWorktree verifies that the first snapshot in a
