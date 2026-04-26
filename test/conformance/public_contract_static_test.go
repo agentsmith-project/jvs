@@ -39,6 +39,7 @@ var markdownBulletFieldPattern = regexp.MustCompile("^\\s*-\\s+`([A-Za-z0-9_]+)`
 var backtickedFieldPattern = regexp.MustCompile("`([A-Za-z0-9_]+)`")
 var jsonTagFieldPattern = regexp.MustCompile("json:\"([A-Za-z0-9_]+)(?:,[^\"]*)?\"")
 var wholeJVSMetadataPathPattern = regexp.MustCompile("`?\\.jvs/`?(?:\\s|$|[),.;:])")
+var doctorEngineSurfacePattern = regexp.MustCompile("(?i)(?:`?jvs\\s+doctor`?|`?doctor`?)[^.]*\\b(?:engine\\s+(?:visibility|probes?|summary)|capabilit(?:y|ies))\\b|\\b(?:engine\\s+(?:visibility|probes?|summary)|capabilit(?:y|ies))\\b[^.]*`?(?:jvs\\s+doctor|doctor)`?")
 
 type unsupportedPublicCLIExampleRule struct {
 	name        string
@@ -440,6 +441,42 @@ func TestDocs_PublicDocsDoNotAdvertiseRetentionPolicySurface(t *testing.T) {
 	}
 }
 
+func TestDocs_EngineTransparencySurfacesExcludeDoctor(t *testing.T) {
+	productPlan := readRepoFile(t, "docs/PRODUCT_PLAN.md")
+	engineSection := markdownSectionByHeading(t, "docs/PRODUCT_PLAN.md", productPlan, "## Engine Transparency")
+	for _, docCase := range []struct {
+		doc  string
+		body string
+	}{
+		{doc: "docs/PRODUCT_PLAN.md", body: engineSection},
+		{doc: "docs/FAQ.md", body: readRepoFile(t, "docs/FAQ.md")},
+	} {
+		t.Run(docCase.doc, func(t *testing.T) {
+			for _, block := range markdownTextBlocks(docCase.body) {
+				normalized := strings.Join(strings.Fields(block), " ")
+				if doctorEngineSurfacePattern.MatchString(normalized) {
+					t.Fatalf("%s treats doctor as an engine transparency surface; use info/status/capability/setup JSON or checkpoint metadata instead:\n%s", docCase.doc, block)
+				}
+			}
+		})
+	}
+
+	t.Run("docs/PRODUCT_PLAN.md_surfaces", func(t *testing.T) {
+		for _, required := range []string{
+			"`info`",
+			"`status`",
+			"path-scoped setup JSON",
+			"`capability`",
+			"checkpoint metadata",
+			"command output",
+		} {
+			if !strings.Contains(engineSection, required) {
+				t.Fatalf("docs/PRODUCT_PLAN.md Engine Transparency must name %q as an engine transparency surface", required)
+			}
+		}
+	})
+}
+
 func TestDocs_GCPlanJSONFieldsMatchPublicFacade(t *testing.T) {
 	fields := jsonFieldsForStruct(t, "internal/cli/public_json.go", "publicGCPlan")
 	want := publicGCPlanJSONFields()
@@ -554,6 +591,32 @@ func markdownSectionByHeading(t *testing.T, doc, body, heading string) string {
 		}
 	}
 	return strings.Join(lines[start:end], "\n")
+}
+
+func markdownTextBlocks(body string) []string {
+	var blocks []string
+	var current []string
+	flush := func() {
+		if len(current) == 0 {
+			return
+		}
+		blocks = append(blocks, strings.Join(current, "\n"))
+		current = nil
+	}
+
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			flush()
+			continue
+		}
+		if strings.HasPrefix(trimmed, "- ") && len(current) > 0 {
+			flush()
+		}
+		current = append(current, trimmed)
+	}
+	flush()
+	return blocks
 }
 
 func markdownBulletFieldsAfterLabel(t *testing.T, doc, section, label string) []string {

@@ -222,7 +222,9 @@ when you do not want them in checkpoints.
 
 No. Compression is not a v0 stable public CLI contract. Use the filesystem or
 storage layer for compression decisions, and rely on `jvs capability`,
-`jvs info`, and `jvs doctor` for engine visibility.
+`jvs info`, or `jvs status --json` for engine visibility.
+
+Use `jvs doctor` for repository health, integrity, and runtime repair checks.
 
 ---
 

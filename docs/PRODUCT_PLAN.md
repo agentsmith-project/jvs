@@ -279,14 +279,18 @@ Supported engines:
 
 Requirements:
 
+- Engine transparency is carried by `info`, `status`, path-scoped setup JSON
+  including `capability`, checkpoint metadata, and relevant command output.
 - Auto selection must record the selected engine and fallback reason in command
   output or checkpoint metadata.
 - If a future explicit engine selection is added, unavailability must be an
   error. Silent fallback is forbidden for explicit choices.
 - Metadata preservation behavior must be declared as it matures: symlinks,
   hardlinks, modes, ownership, timestamps, xattrs, and ACLs.
-- `info`, `capability`, and `doctor` must expose engine probes or engine
-  summary.
+- `info` and `status` must expose engine summary. Path-scoped setup JSON must
+  expose engine probes and filesystem support.
+- `doctor` remains scoped to repository health, layout, publish state, runtime
+  hygiene, integrity validation, and safe runtime repair.
 - Public docs must not make unconditional performance promises independent of
   engine and filesystem support.
 

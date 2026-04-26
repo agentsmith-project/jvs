@@ -113,6 +113,28 @@ func TestContract_GCPlanJSONUsesPublicSpecFields(t *testing.T) {
 	}
 }
 
+func TestContract_DoctorJSONDataKeysStayHealthScoped(t *testing.T) {
+	repoPath, cleanup := initTestRepo(t)
+	defer cleanup()
+
+	stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "doctor")
+	if code != 0 {
+		t.Fatalf("doctor failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	data := decodeContractSmokeDataMap(t, stdout)
+	assertContractDoctorJSONDataKeys(t, data, []string{"healthy", "findings"}, stdout)
+
+	if err := os.WriteFile(filepath.Join(repoPath, ".jvs-tmp-contract"), []byte("tmp"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code = runJVSInRepo(t, repoPath, "--json", "doctor", "--repair-runtime")
+	if code != 0 {
+		t.Fatalf("doctor --repair-runtime failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	data = decodeContractSmokeDataMap(t, stdout)
+	assertContractDoctorJSONDataKeys(t, data, []string{"healthy", "findings", "repairs"}, stdout)
+}
+
 func TestContract_TargetingRepoFlagStatusUsesRealCWDWorkspace(t *testing.T) {
 	dir := t.TempDir()
 	if stdout, stderr, code := runJVS(t, dir, "init", "repoA"); code != 0 {
@@ -1217,6 +1239,23 @@ func assertContractGCPlanJSONDataKeys(t *testing.T, data map[string]any, stdout 
 		}
 	}
 	assertSameStringSet(t, "gc plan JSON data keys", stringMapKeys(data), publicGCPlanJSONFields())
+}
+
+func assertContractDoctorJSONDataKeys(t *testing.T, data map[string]any, want []string, stdout string) {
+	t.Helper()
+	assertSameStringSet(t, "doctor JSON data keys", stringMapKeys(data), want)
+	for _, field := range []string{
+		"engine",
+		"effective_engine",
+		"requested_engine",
+		"capabilities",
+		"performance_class",
+		"metadata_preservation",
+	} {
+		if _, ok := data[field]; ok {
+			t.Fatalf("doctor JSON must stay health-scoped and not expose engine field %q: %s", field, stdout)
+		}
+	}
 }
 
 func stringMapKeys(data map[string]any) []string {
