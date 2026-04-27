@@ -1726,6 +1726,7 @@ func activeReleaseFacingContractDocs() []string {
 
 func archivedNonReleaseFacingDocs() []string {
 	return []string{
+		"docs/21_SAVE_POINT_WORKSPACE_SEMANTICS.md",
 		"docs/JVS_SYNC.md",
 		"docs/SOURCES.md",
 		"docs/TEMPLATES.md",

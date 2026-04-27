@@ -1,5 +1,12 @@
 # Save Point / Workspace Semantics
 
+**Status:** Archived, non-release-facing
+
+> Archived note: this clean redesign semantics draft is not part of the v0 public contract.
+> Current release-facing guarantees are defined by the active v0 specs and
+> conformance gates; this document is retained as non-current product design
+> context.
+
 ## Status / Scope / Supersedes
 
 **状态**: 本文是 JVS clean product redesign / 干净重构后的产品语义总纲。
