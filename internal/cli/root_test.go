@@ -14,6 +14,7 @@ import (
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/pkg/model"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -42,10 +43,12 @@ func resetCommandHelpFlags(cmd *cobra.Command) {
 	if cmd == nil {
 		return
 	}
-	if flag := cmd.Flags().Lookup("help"); flag != nil {
-		_ = flag.Value.Set("false")
+	cmd.Flags().VisitAll(func(flag *pflag.Flag) {
+		if flag.Name == "help" {
+			_ = flag.Value.Set("false")
+		}
 		flag.Changed = false
-	}
+	})
 	for _, child := range cmd.Commands() {
 		resetCommandHelpFlags(child)
 	}
@@ -568,6 +571,7 @@ func createTestRootCmd() *cobra.Command {
 	historyNoteFilter = ""
 	historyTagFilter = ""
 	historyAll = false
+	historyPath = ""
 	saveMessage = ""
 	checkpointTags = nil
 	checkpointPaths = nil
