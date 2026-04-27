@@ -422,19 +422,23 @@ func TestRestoreWholeRunRejectsRuntimeBehaviorFlagsWithoutMutation(t *testing.T)
 	})
 }
 
-func TestRestorePathStillRunsWithoutPreview(t *testing.T) {
+func TestRestorePathUsesPreviewBeforeRun(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
 	firstID := savePointIDFromCLI(t, "first")
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v2"), 0644))
-	_ = savePointIDFromCLI(t, "second")
+	secondID := savePointIDFromCLI(t, "second")
 
 	stdout, err := executeCommand(createTestRootCmd(), "restore", firstID, "--path", "app.txt")
 	require.NoError(t, err)
 
-	assert.NotContains(t, stdout, "Preview only")
-	assert.NotContains(t, stdout, "Plan: ")
-	assert.Contains(t, stdout, "Restored path: app.txt")
+	planID := assertPathRestorePreviewHuman(t, stdout, repoRoot, firstID, secondID, "app.txt")
+	assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "v2")
+
+	runOut, err := executeCommand(createTestRootCmd(), "restore", "--run", planID)
+	require.NoError(t, err)
+	assert.Contains(t, runOut, "Plan: "+planID)
+	assert.Contains(t, runOut, "Restored path: app.txt")
 	assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "v1")
 }
 
