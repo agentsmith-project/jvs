@@ -131,8 +131,8 @@ func TestInitCommand_StatusDiscoversAdoptedMainFromChild(t *testing.T) {
 
 	got := decodeJSONDataForTest(t, stdout)
 	require.Equal(t, "main", got["workspace"])
-	require.Equal(t, target, got["repo"])
-	require.Equal(t, true, got["dirty"])
+	require.Equal(t, target, got["folder"])
+	require.Equal(t, true, got["unsaved_changes"])
 }
 
 func TestInitCommand_StatusIgnoresControlDataAfterCheckpoint(t *testing.T) {
@@ -154,8 +154,8 @@ func TestInitCommand_StatusIgnoresControlDataAfterCheckpoint(t *testing.T) {
 	require.NoError(t, err)
 
 	got := decodeJSONDataForTest(t, stdout)
-	require.Equal(t, false, got["dirty"])
-	require.Equal(t, true, got["at_latest"])
+	require.Equal(t, false, got["unsaved_changes"])
+	require.Equal(t, "matches_save_point", got["files_state"])
 }
 
 func TestInitCommand_RejectsNestedRepository(t *testing.T) {

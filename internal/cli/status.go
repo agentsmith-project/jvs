@@ -11,19 +11,31 @@ import (
 )
 
 type workspaceStatus struct {
-	Current       string   `json:"current"`
-	Latest        string   `json:"latest"`
-	Dirty         bool     `json:"dirty"`
-	AtLatest      bool     `json:"at_latest"`
-	Workspace     string   `json:"workspace"`
-	Repo          string   `json:"repo"`
-	Engine        string   `json:"engine"`
-	RecoveryHints []string `json:"recovery_hints"`
+	Folder          string  `json:"folder"`
+	Workspace       string  `json:"workspace"`
+	NewestSavePoint *string `json:"newest_save_point"`
+	HistoryHead     *string `json:"history_head"`
+	ContentSource   *string `json:"content_source"`
+	UnsavedChanges  bool    `json:"unsaved_changes"`
+	FilesState      string  `json:"files_state"`
+}
+
+type legacyWorkspaceStatus struct {
+	Current       string
+	Latest        string
+	Dirty         bool
+	AtLatest      bool
+	Workspace     string
+	Repo          string
+	Engine        string
+	RecoveryHints []string
 }
 
 var statusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show workspace status",
+	Short: "Show folder save point status",
+	Long: `Show the active folder, workspace, newest save point, file source, and
+whether the folder has unsaved changes.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		r, workspaceName, err := discoverRequiredWorktree()
 		if err != nil {
@@ -37,35 +49,92 @@ var statusCmd = &cobra.Command{
 			return outputJSON(status)
 		}
 
-		fmt.Printf("Workspace: %s\n", status.Workspace)
-		fmt.Printf("Repo: %s\n", color.Dim(status.Repo))
-		fmt.Printf("Current: %s\n", formatStatusRef(status.Current))
-		fmt.Printf("Latest: %s\n", formatStatusRef(status.Latest))
-		fmt.Printf("Dirty: %t\n", status.Dirty)
-		fmt.Printf("At latest: %t\n", status.AtLatest)
-		fmt.Printf("Engine: %s\n", status.Engine)
-		if len(status.RecoveryHints) > 0 {
-			fmt.Println()
-			for _, hint := range status.RecoveryHints {
-				fmt.Printf("- %s\n", hint)
-			}
-		}
+		printWorkspaceStatus(status)
 		return nil
 	},
 }
 
+func printWorkspaceStatus(status workspaceStatus) {
+	fmt.Printf("Folder: %s\n", status.Folder)
+	fmt.Printf("Workspace: %s\n", status.Workspace)
+	fmt.Printf("Newest save point: %s\n", formatStatusSavePoint(status.NewestSavePoint))
+	switch status.FilesState {
+	case "not_saved":
+		fmt.Println("Not saved yet.")
+	case "matches_save_point":
+		fmt.Printf("Files match save point: %s\n", formatStatusSavePoint(status.ContentSource))
+	case "changed_since_save_point":
+		fmt.Printf("Files changed since save point: %s\n", formatStatusSavePoint(status.ContentSource))
+	case "restored_then_changed":
+		fmt.Printf("Files were last restored from: %s\n", formatStatusSavePoint(status.ContentSource))
+	}
+	if status.UnsavedChanges {
+		fmt.Println("Unsaved changes: yes")
+	} else {
+		fmt.Println("Unsaved changes: no")
+	}
+}
+
 func buildWorkspaceStatus(repoRoot, workspaceName string) (workspaceStatus, error) {
-	cfg, err := worktree.NewManager(repoRoot).Get(workspaceName)
+	mgr := worktree.NewManager(repoRoot)
+	cfg, err := mgr.Get(workspaceName)
 	if err != nil {
 		return workspaceStatus{}, fmt.Errorf("load workspace: %w", err)
 	}
-	dirty, err := workspaceDirty(repoRoot, workspaceName)
+	folder, err := mgr.Path(workspaceName)
+	if err != nil {
+		return workspaceStatus{}, fmt.Errorf("workspace folder: %w", err)
+	}
+	unsavedChanges, err := workspaceDirty(repoRoot, workspaceName)
 	if err != nil {
 		return workspaceStatus{}, err
 	}
 
-	atLatest := cfg.HeadSnapshotID != "" && cfg.HeadSnapshotID == cfg.LatestSnapshotID && !dirty
+	historyHead := statusStringPointer(cfg.LatestSnapshotID)
+	contentSource := statusStringPointer(cfg.HeadSnapshotID)
 	return workspaceStatus{
+		Folder:          folder,
+		Workspace:       workspaceName,
+		NewestSavePoint: historyHead,
+		HistoryHead:     historyHead,
+		ContentSource:   contentSource,
+		UnsavedChanges:  unsavedChanges,
+		FilesState:      filesState(historyHead, contentSource, unsavedChanges),
+	}, nil
+}
+
+func filesState(historyHead, contentSource *string, unsavedChanges bool) string {
+	if contentSource == nil {
+		return "not_saved"
+	}
+	if unsavedChanges && !sameStatusSavePoint(historyHead, contentSource) {
+		return "restored_then_changed"
+	}
+	if unsavedChanges {
+		return "changed_since_save_point"
+	}
+	return "matches_save_point"
+}
+
+func sameStatusSavePoint(left, right *string) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
+}
+
+func buildLegacyWorkspaceStatus(repoRoot, workspaceName string) (legacyWorkspaceStatus, error) {
+	cfg, err := worktree.NewManager(repoRoot).Get(workspaceName)
+	if err != nil {
+		return legacyWorkspaceStatus{}, fmt.Errorf("load workspace: %w", err)
+	}
+	dirty, err := workspaceDirty(repoRoot, workspaceName)
+	if err != nil {
+		return legacyWorkspaceStatus{}, err
+	}
+
+	atLatest := cfg.HeadSnapshotID != "" && cfg.HeadSnapshotID == cfg.LatestSnapshotID && !dirty
+	return legacyWorkspaceStatus{
 		Current:       string(cfg.HeadSnapshotID),
 		Latest:        string(cfg.LatestSnapshotID),
 		Dirty:         dirty,
@@ -77,8 +146,16 @@ func buildWorkspaceStatus(repoRoot, workspaceName string) (workspaceStatus, erro
 	}, nil
 }
 
+func statusStringPointer(id model.SnapshotID) *string {
+	if id == "" {
+		return nil
+	}
+	value := string(id)
+	return &value
+}
+
 func statusForRestore(repoRoot, workspaceName string) (map[string]any, error) {
-	status, err := buildWorkspaceStatus(repoRoot, workspaceName)
+	status, err := buildLegacyWorkspaceStatus(repoRoot, workspaceName)
 	if err != nil {
 		return nil, err
 	}
@@ -92,11 +169,11 @@ func statusForRestore(repoRoot, workspaceName string) (map[string]any, error) {
 	}, nil
 }
 
-func formatStatusRef(ref string) string {
-	if ref == "" {
-		return color.Dim("(none)")
+func formatStatusSavePoint(ref *string) string {
+	if ref == nil || *ref == "" {
+		return "none"
 	}
-	return color.SnapshotID(model.SnapshotID(ref).String())
+	return color.SnapshotID(model.SnapshotID(*ref).String())
 }
 
 func init() {

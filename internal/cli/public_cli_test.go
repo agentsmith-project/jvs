@@ -19,14 +19,13 @@ type checkpointCommandOutput struct {
 }
 
 type statusCommandOutput struct {
-	Current       string   `json:"current"`
-	Latest        string   `json:"latest"`
-	Dirty         bool     `json:"dirty"`
-	AtLatest      bool     `json:"at_latest"`
-	Workspace     string   `json:"workspace"`
-	Repo          string   `json:"repo"`
-	Engine        string   `json:"engine"`
-	RecoveryHints []string `json:"recovery_hints"`
+	Folder          string  `json:"folder"`
+	Workspace       string  `json:"workspace"`
+	NewestSavePoint *string `json:"newest_save_point"`
+	HistoryHead     *string `json:"history_head"`
+	ContentSource   *string `json:"content_source"`
+	UnsavedChanges  bool    `json:"unsaved_changes"`
+	FilesState      string  `json:"files_state"`
 }
 
 func setupPublicCLIRepo(t *testing.T, name string) (repoPath string, mainPath string) {
@@ -87,26 +86,29 @@ func decodePublicData(t *testing.T, stdout string, target any) contractEnvelope 
 }
 
 func TestPublicCLIStatusAndCheckpointCleanliness(t *testing.T) {
-	repoPath, _ := setupPublicCLIRepo(t, "statusrepo")
+	_, mainPath := setupPublicCLIRepo(t, "statusrepo")
 
 	require.NoError(t, os.WriteFile("file.txt", []byte("before checkpoint"), 0644))
 	dirty := readStatusForPublicCLI(t)
-	assert.True(t, dirty.Dirty)
-	assert.False(t, dirty.AtLatest)
+	assert.True(t, dirty.UnsavedChanges)
 	assert.Equal(t, "main", dirty.Workspace)
-	assert.Equal(t, repoPath, dirty.Repo)
-	assert.NotEmpty(t, dirty.Engine)
-	assert.NotEmpty(t, dirty.RecoveryHints)
+	assert.Equal(t, mainPath, dirty.Folder)
+	assert.Nil(t, dirty.ContentSource)
+	assert.Nil(t, dirty.NewestSavePoint)
+	assert.Equal(t, "not_saved", dirty.FilesState)
 
 	id := createCheckpointForPublicCLI(t, "first checkpoint")
 	clean := readStatusForPublicCLI(t)
-	assert.False(t, clean.Dirty)
-	assert.True(t, clean.AtLatest)
-	assert.Equal(t, id, clean.Current)
-	assert.Equal(t, id, clean.Latest)
+	assert.False(t, clean.UnsavedChanges)
+	require.NotNil(t, clean.ContentSource)
+	require.NotNil(t, clean.NewestSavePoint)
+	require.NotNil(t, clean.HistoryHead)
+	assert.Equal(t, id, *clean.ContentSource)
+	assert.Equal(t, id, *clean.NewestSavePoint)
+	assert.Equal(t, id, *clean.HistoryHead)
 	assert.Equal(t, "main", clean.Workspace)
-	assert.Equal(t, repoPath, clean.Repo)
-	assert.NotEmpty(t, clean.Engine)
+	assert.Equal(t, mainPath, clean.Folder)
+	assert.Equal(t, "matches_save_point", clean.FilesState)
 }
 
 func TestPublicCLIPartialCheckpointFilePathWithReflinkEngine(t *testing.T) {
@@ -140,7 +142,7 @@ func TestPublicCLIStatusTreatsRootReadyAsDirtyOrReserved(t *testing.T) {
 
 	var status statusCommandOutput
 	decodePublicData(t, stdout, &status)
-	assert.True(t, status.Dirty, "root .READY must not be reported clean")
+	assert.True(t, status.UnsavedChanges, "root .READY must not be reported clean")
 }
 
 func TestPublicCLIDirtyRestoreRequiresExplicitChoice(t *testing.T) {
@@ -192,10 +194,12 @@ func TestPublicCLIDirtyRestoreIncludeWorkingCheckpointsFirst(t *testing.T) {
 	assert.Contains(t, stdout, `"checkpoint_id": "`+first+`"`)
 
 	status := readStatusForPublicCLI(t)
-	assert.False(t, status.Dirty)
-	assert.False(t, status.AtLatest)
-	assert.Equal(t, first, status.Current)
-	assert.NotEqual(t, second, status.Latest)
+	assert.False(t, status.UnsavedChanges)
+	require.NotNil(t, status.ContentSource)
+	require.NotNil(t, status.NewestSavePoint)
+	assert.Equal(t, first, *status.ContentSource)
+	assert.NotEqual(t, second, *status.NewestSavePoint)
+	assert.Equal(t, "matches_save_point", status.FilesState)
 
 	stdout, err = runPublicCLI(t, "--json", "checkpoint", "list")
 	require.NoError(t, err, stdout)
@@ -269,9 +273,10 @@ func TestLegacyWorktreeForkIncludeWorkingNoCheckpoint(t *testing.T) {
 	require.NoError(t, readErr)
 	assert.Equal(t, "working", string(content))
 	status := readStatusForPublicCLI(t)
-	assert.False(t, status.Dirty)
-	assert.NotEmpty(t, status.Current)
-	assert.Equal(t, status.Current, status.Latest)
+	assert.False(t, status.UnsavedChanges)
+	require.NotNil(t, status.ContentSource)
+	require.NotNil(t, status.NewestSavePoint)
+	assert.Equal(t, *status.ContentSource, *status.NewestSavePoint)
 }
 
 func TestLegacyWorktreeForkRejectsDirtyWorkspaceByDefault(t *testing.T) {
@@ -356,7 +361,7 @@ func TestLegacyWorktreeForkIncludeWorking(t *testing.T) {
 	require.NoError(t, readErr)
 	assert.Equal(t, "working", string(content))
 	status := readStatusForPublicCLI(t)
-	assert.False(t, status.Dirty)
+	assert.False(t, status.UnsavedChanges)
 }
 
 func TestPublicCLIRefResolverConflictsAndNoFuzzyNotes(t *testing.T) {
@@ -491,8 +496,7 @@ func TestPublicCLIRestoreLatestAndJSONBoolConsistency(t *testing.T) {
 	assert.Equal(t, false, restored["dirty"])
 
 	status := readStatusForPublicCLI(t)
-	assert.IsType(t, true, status.Dirty)
-	assert.IsType(t, true, status.AtLatest)
+	assert.IsType(t, true, status.UnsavedChanges)
 }
 
 func TestPublicCLIDiffJSONIsPureAndRequiresTwoRefs(t *testing.T) {

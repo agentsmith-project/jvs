@@ -126,7 +126,7 @@ func TestCLITargetingWorkspaceFlag_StatusFromRepoRoot(t *testing.T) {
 	var data map[string]any
 	require.NoError(t, json.Unmarshal(env.Data, &data))
 	assert.Equal(t, "main", data["workspace"])
-	assert.Equal(t, repoRoot, data["repo"])
+	assert.Equal(t, filepath.Join(repoRoot, "main"), data["folder"])
 }
 
 func TestCLITargetingRepoFlag_StatusInfersWorkspaceFromRealCWD(t *testing.T) {
@@ -153,7 +153,7 @@ func TestCLITargetingRepoFlag_StatusInfersWorkspaceFromRealCWD(t *testing.T) {
 	var data map[string]any
 	require.NoError(t, json.Unmarshal(env.Data, &data))
 	assert.Equal(t, "main", data["workspace"])
-	assert.Equal(t, repoRoot, data["repo"])
+	assert.Equal(t, filepath.Join(repoRoot, "main"), data["folder"])
 }
 
 func TestCLITargetingRepoFlag_StatusAcceptsPathInsideSameRepoFromSubdir(t *testing.T) {

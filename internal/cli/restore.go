@@ -62,7 +62,7 @@ Examples:
 			return outputJSON(result)
 		}
 
-		status, err := buildWorkspaceStatus(r.Root, workspaceName)
+		status, err := buildLegacyWorkspaceStatus(r.Root, workspaceName)
 		if err != nil {
 			return err
 		}
