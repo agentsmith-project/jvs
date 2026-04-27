@@ -556,6 +556,7 @@ func createTestRootCmd() *cobra.Command {
 	cmd.AddCommand(initCmd)
 	cmd.AddCommand(saveCmd)
 	cmd.AddCommand(statusCmd)
+	cmd.AddCommand(viewCmd)
 	cmd.AddCommand(checkpointCmd)
 	cmd.AddCommand(workspaceCmd)
 	cmd.AddCommand(forkCmd)

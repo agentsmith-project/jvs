@@ -60,6 +60,19 @@ func (b WorktreePayloadBoundary) ExcludesRelativePath(rel string) bool {
 	return false
 }
 
+// ValidateManagedPayloadOnly verifies that a materialized payload source does
+// not contain root-level control data excluded from the managed workspace.
+func ValidateManagedPayloadOnly(boundary WorktreePayloadBoundary, payloadRoot string) error {
+	for _, name := range boundary.ExcludedRootNames {
+		if _, err := os.Lstat(filepath.Join(payloadRoot, name)); err == nil {
+			return fmt.Errorf("source payload contains repo control data and is not managed: %s", name)
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("stat source control path %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
 // ValidateInitTarget returns the absolute target path after enforcing the
 // repository creation rules: the target must be missing or empty, must not
 // already contain .jvs metadata, and must not be lexically or physically nested

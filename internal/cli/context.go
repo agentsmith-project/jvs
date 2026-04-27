@@ -301,8 +301,8 @@ func printCLIError(err error) {
 }
 
 func printHumanError(message, hint string) {
-	message = publicCLIErrorVocabulary(message)
-	hint = publicCLIErrorVocabulary(hint)
+	message = publicCLIErrorMessageVocabulary(message)
+	hint = publicCLIErrorMessageVocabulary(hint)
 
 	// Colorize the error prefix
 	prefix := "jvs: "

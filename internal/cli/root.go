@@ -144,9 +144,16 @@ func jsonErrorFromError(err error) *cliJSONError {
 
 	return &cliJSONError{
 		Code:    code,
-		Message: publicCLIErrorVocabulary(message),
-		Hint:    publicCLIErrorVocabulary(hint),
+		Message: publicCLIErrorMessageVocabulary(message),
+		Hint:    publicCLIErrorMessageVocabulary(hint),
 	}
+}
+
+func publicCLIErrorMessageVocabulary(value string) string {
+	if activeCommandName == "view" {
+		return viewPointVocabulary(value)
+	}
+	return publicCLIErrorVocabulary(value)
 }
 
 func publicCLIErrorVocabulary(value string) string {

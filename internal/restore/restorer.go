@@ -129,7 +129,7 @@ func (r *Restorer) restore(worktreeName string, snapshotID model.SnapshotID) err
 	if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(tempPath); err != nil {
 		return fmt.Errorf("materialized snapshot payload: %w", err)
 	}
-	if err := validateRestoreSourceManagedOnly(boundary, tempPath); err != nil {
+	if err := repo.ValidateManagedPayloadOnly(boundary, tempPath); err != nil {
 		return err
 	}
 
@@ -455,17 +455,6 @@ func clearManagedDirectory(boundary repo.WorktreePayloadBoundary) error {
 		}
 		if err := removeContained(root, rel); err != nil {
 			return fmt.Errorf("remove %s: %w", rel, err)
-		}
-	}
-	return nil
-}
-
-func validateRestoreSourceManagedOnly(boundary repo.WorktreePayloadBoundary, tempPath string) error {
-	for _, name := range boundary.ExcludedRootNames {
-		if _, err := os.Lstat(filepath.Join(tempPath, name)); err == nil {
-			return fmt.Errorf("snapshot payload contains repo control data and is not managed: %s", name)
-		} else if !os.IsNotExist(err) {
-			return fmt.Errorf("stat restored control path %s: %w", name, err)
 		}
 	}
 	return nil
