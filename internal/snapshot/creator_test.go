@@ -152,6 +152,38 @@ func TestCreator_CreateRejectsReservedWorkspaceRootPayloadNames(t *testing.T) {
 	}
 }
 
+func TestCreator_CreateAdoptedWorkspaceExcludesControlDir(t *testing.T) {
+	folder := filepath.Join(t.TempDir(), "project")
+	require.NoError(t, os.MkdirAll(filepath.Join(folder, "src"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(folder, "src", "app.txt"), []byte("user payload"), 0644))
+
+	r, err := repo.InitAdoptedWorkspace(folder)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(r.Root, ".jvs", "control-only.txt"), []byte("control"), 0644))
+
+	creator := snapshot.NewCreator(r.Root, model.EngineCopy)
+	desc, err := creator.Create("main", "adopted", nil)
+	require.NoError(t, err)
+
+	snapshotPath := filepath.Join(r.Root, ".jvs", "snapshots", string(desc.SnapshotID))
+	assert.FileExists(t, filepath.Join(snapshotPath, "src", "app.txt"))
+	assert.NoDirExists(t, filepath.Join(snapshotPath, ".jvs"))
+	assert.NoFileExists(t, filepath.Join(snapshotPath, ".jvs", "control-only.txt"))
+}
+
+func TestCreator_CreatePartialAdoptedWorkspaceRejectsControlDir(t *testing.T) {
+	folder := filepath.Join(t.TempDir(), "project")
+	require.NoError(t, os.MkdirAll(folder, 0755))
+	r, err := repo.InitAdoptedWorkspace(folder)
+	require.NoError(t, err)
+
+	creator := snapshot.NewCreator(r.Root, model.EngineCopy)
+	desc, err := creator.CreatePartial("main", "control", nil, []string{".jvs/format_version"})
+	require.Error(t, err)
+	assert.Nil(t, desc)
+	assert.Contains(t, err.Error(), "control")
+}
+
 func TestCreator_UpdatesHead(t *testing.T) {
 	repoPath := setupTestRepo(t)
 

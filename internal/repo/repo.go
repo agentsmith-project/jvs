@@ -3,6 +3,7 @@ package repo
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -32,6 +33,31 @@ type Repo struct {
 	Root          string
 	FormatVersion int
 	RepoID        string
+}
+
+var errWorktreeRegistryMissing = errors.New("worktree registry missing")
+
+// WorktreePayloadBoundary describes the managed portion of a worktree payload.
+type WorktreePayloadBoundary struct {
+	Root              string
+	ExcludedRootNames []string
+}
+
+// ExcludesRelativePath reports whether rel is outside the managed payload
+// because it is reserved for repository control data.
+func (b WorktreePayloadBoundary) ExcludesRelativePath(rel string) bool {
+	clean := filepath.Clean(rel)
+	if clean == "." {
+		return false
+	}
+	slashClean := filepath.ToSlash(clean)
+	for _, name := range b.ExcludedRootNames {
+		slashName := filepath.ToSlash(filepath.Clean(name))
+		if slashClean == slashName || strings.HasPrefix(slashClean, slashName+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // ValidateInitTarget returns the absolute target path after enforcing the
@@ -88,37 +114,20 @@ func Init(path string, name string) (*Repo, error) {
 	return initAt(target)
 }
 
+// InitAdoptedWorkspace initializes JVS control data inside an existing folder
+// and registers that folder itself as the main workspace payload.
+func InitAdoptedWorkspace(folder string) (*Repo, error) {
+	target, err := validateAdoptedWorkspaceTarget(folder)
+	if err != nil {
+		return nil, err
+	}
+	return initAdoptedAt(target)
+}
+
 func initAt(path string) (*Repo, error) {
-	// Create directory structure
-	jvsDir := filepath.Join(path, JVSDirName)
-	dirs := []string{
-		jvsDir,
-		filepath.Join(jvsDir, "worktrees", "main"),
-		filepath.Join(jvsDir, "snapshots"),
-		filepath.Join(jvsDir, "descriptors"),
-		filepath.Join(jvsDir, "intents"),
-		filepath.Join(jvsDir, "audit"),
-		filepath.Join(jvsDir, "locks"),
-		filepath.Join(jvsDir, "gc"),
-		filepath.Join(jvsDir, "gc", "pins"),
-		filepath.Join(jvsDir, "gc", "tombstones"),
-	}
-
-	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return nil, fmt.Errorf("create directory %s: %w", dir, err)
-		}
-	}
-
-	// Write format_version
-	if err := os.WriteFile(filepath.Join(jvsDir, FormatVersionFile), []byte("1\n"), 0600); err != nil {
-		return nil, fmt.Errorf("write format_version: %w", err)
-	}
-
-	// Write repo_id
-	repoID := uuidutil.NewV4()
-	if err := os.WriteFile(filepath.Join(jvsDir, RepoIDFile), []byte(repoID+"\n"), 0600); err != nil {
-		return nil, fmt.Errorf("write repo_id: %w", err)
+	repoID, err := createControlPlane(path)
+	if err != nil {
+		return nil, err
 	}
 
 	// Create main/ payload directory
@@ -152,6 +161,103 @@ func initAt(path string) (*Repo, error) {
 		FormatVersion: FormatVersion,
 		RepoID:        repoID,
 	}, nil
+}
+
+func initAdoptedAt(path string) (*Repo, error) {
+	repoID, err := createControlPlane(path)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg := &model.WorktreeConfig{
+		Name:      "main",
+		RealPath:  path,
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := WriteWorktreeConfig(path, "main", cfg); err != nil {
+		return nil, fmt.Errorf("write main config: %w", err)
+	}
+
+	if err := fsutil.FsyncDir(path); err != nil {
+		return nil, fmt.Errorf("fsync repo root: %w", err)
+	}
+
+	return &Repo{
+		Root:          path,
+		FormatVersion: FormatVersion,
+		RepoID:        repoID,
+	}, nil
+}
+
+func createControlPlane(path string) (string, error) {
+	jvsDir := filepath.Join(path, JVSDirName)
+	dirs := []string{
+		jvsDir,
+		filepath.Join(jvsDir, "worktrees", "main"),
+		filepath.Join(jvsDir, "snapshots"),
+		filepath.Join(jvsDir, "descriptors"),
+		filepath.Join(jvsDir, "intents"),
+		filepath.Join(jvsDir, "audit"),
+		filepath.Join(jvsDir, "locks"),
+		filepath.Join(jvsDir, "gc"),
+		filepath.Join(jvsDir, "gc", "pins"),
+		filepath.Join(jvsDir, "gc", "tombstones"),
+	}
+
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return "", fmt.Errorf("create directory %s: %w", dir, err)
+		}
+	}
+
+	if err := os.WriteFile(filepath.Join(jvsDir, FormatVersionFile), []byte("1\n"), 0600); err != nil {
+		return "", fmt.Errorf("write format_version: %w", err)
+	}
+
+	repoID := uuidutil.NewV4()
+	if err := os.WriteFile(filepath.Join(jvsDir, RepoIDFile), []byte(repoID+"\n"), 0600); err != nil {
+		return "", fmt.Errorf("write repo_id: %w", err)
+	}
+	return repoID, nil
+}
+
+func validateAdoptedWorkspaceTarget(folder string) (string, error) {
+	if strings.TrimSpace(folder) == "" {
+		return "", fmt.Errorf("workspace folder must not be empty")
+	}
+
+	input, err := filepath.Abs(folder)
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace folder: %w", err)
+	}
+	input = filepath.Clean(input)
+	if err := rejectExistingMetadataAt(input); err != nil {
+		return "", err
+	}
+	if err := rejectNestedInitTarget(input); err != nil {
+		return "", err
+	}
+
+	target, err := existingPhysicalPath(input)
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace folder: %w", err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		return "", fmt.Errorf("stat workspace folder: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("workspace folder exists and is not a directory: %s", target)
+	}
+	if target != input {
+		if err := rejectExistingMetadataAt(target); err != nil {
+			return "", fmt.Errorf("%w (physical target: %s)", err, target)
+		}
+		if err := rejectNestedInitTarget(target); err != nil {
+			return "", fmt.Errorf("%w (physical target: %s)", err, target)
+		}
+	}
+	return target, nil
 }
 
 func ensureTargetEmptyOrMissing(target string) error {
@@ -297,6 +403,14 @@ func DiscoverWorktree(cwd string) (*Repo, string, error) {
 }
 
 func registeredWorktreeFromPath(repoRoot, cwd string) (string, error) {
+	insideControl, err := pathInsideControlDir(repoRoot, cwd)
+	if err != nil {
+		return "", err
+	}
+	if insideControl {
+		return "", nil
+	}
+
 	worktreesDir, err := WorktreesDirPath(repoRoot)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -345,6 +459,30 @@ func payloadIsSymlink(path string) bool {
 	return err == nil && info.Mode()&os.ModeSymlink != 0
 }
 
+func pathInsideControlDir(repoRoot, path string) (bool, error) {
+	controlDir := filepath.Join(repoRoot, JVSDirName)
+	insideLexical, err := pathContainsLexicalPath(controlDir, path)
+	if err != nil {
+		return false, err
+	}
+	if insideLexical {
+		return true, nil
+	}
+	return pathContainsPhysicalPath(controlDir, path)
+}
+
+func pathContainsLexicalPath(base, path string) (bool, error) {
+	baseAbs, err := cleanAbsPath(base)
+	if err != nil {
+		return false, err
+	}
+	pathAbs, err := cleanAbsPath(path)
+	if err != nil {
+		return false, err
+	}
+	return cleanAbsPathContains(baseAbs, pathAbs)
+}
+
 func pathContainsPhysicalPath(base, path string) (bool, error) {
 	basePhysical, err := existingPhysicalPath(base)
 	if err != nil {
@@ -358,7 +496,7 @@ func pathContainsPhysicalPath(base, path string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("compute workspace relative path: %w", err)
 	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && !filepath.IsAbs(rel)), nil
+	return relPathContained(rel), nil
 }
 
 func existingPhysicalPath(path string) (string, error) {
@@ -371,6 +509,26 @@ func existingPhysicalPath(path string) (string, error) {
 		return "", err
 	}
 	return filepath.Clean(physical), nil
+}
+
+func cleanAbsPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(abs), nil
+}
+
+func cleanAbsPathContains(baseAbs, pathAbs string) (bool, error) {
+	rel, err := filepath.Rel(baseAbs, pathAbs)
+	if err != nil {
+		return false, err
+	}
+	return relPathContained(rel), nil
+}
+
+func relPathContained(rel string) bool {
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && !filepath.IsAbs(rel))
 }
 
 // WorktreeConfigPath returns the path to a worktree's config.json.
@@ -435,10 +593,352 @@ func WorktreePayloadPath(repoRoot, name string) (string, error) {
 	if err := pathutil.ValidateName(name); err != nil {
 		return "", err
 	}
-	if name == "main" {
-		return filepath.Join(repoRoot, "main"), nil
+	candidate, err := worktreePathCandidateForName(repoRoot, name)
+	if err != nil {
+		return "", err
 	}
-	return filepath.Join(repoRoot, "worktrees", name), nil
+	if err := validateWorktreeRegistryWithCandidate(repoRoot, candidate); err != nil {
+		return "", err
+	}
+	return candidate.path, nil
+}
+
+// WorktreeManagedPayloadBoundary returns the managed payload root and any
+// root-level control paths that must be excluded from captures.
+func WorktreeManagedPayloadBoundary(repoRoot, name string) (WorktreePayloadBoundary, error) {
+	root, err := WorktreePayloadPath(repoRoot, name)
+	if err != nil {
+		return WorktreePayloadBoundary{}, err
+	}
+	if err := validatePayloadBoundaryRoot(repoRoot, root); err != nil {
+		return WorktreePayloadBoundary{}, err
+	}
+	excluded, err := worktreeControlExclusions(repoRoot, root)
+	if err != nil {
+		return WorktreePayloadBoundary{}, err
+	}
+	return WorktreePayloadBoundary{Root: root, ExcludedRootNames: excluded}, nil
+}
+
+// ValidateWorktreeRealPathRegistry verifies that registered workspace payload
+// roots do not overlap each other or point into repository control data.
+func ValidateWorktreeRealPathRegistry(repoRoot string) error {
+	candidates, err := registeredWorktreePathCandidates(repoRoot)
+	if err != nil {
+		if errors.Is(err, errWorktreeRegistryMissing) {
+			return nil
+		}
+		return err
+	}
+	return validateWorktreePathCandidates(repoRoot, candidates)
+}
+
+type worktreePathCandidate struct {
+	name         string
+	path         string
+	lexicalPath  string
+	physicalPath string
+}
+
+func worktreePathCandidateForName(repoRoot, name string) (worktreePathCandidate, error) {
+	cfg, present, err := loadWorktreeConfigIfPresent(repoRoot, name)
+	if err != nil {
+		return worktreePathCandidate{}, err
+	}
+	return worktreePathCandidateFromConfig(repoRoot, name, cfg, present)
+}
+
+func loadWorktreeConfigIfPresent(repoRoot, name string) (*model.WorktreeConfig, bool, error) {
+	cfg, err := LoadWorktreeConfig(repoRoot, name)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return cfg, true, nil
+}
+
+func worktreePathCandidateFromConfig(repoRoot, name string, cfg *model.WorktreeConfig, present bool) (worktreePathCandidate, error) {
+	if present {
+		if cfg == nil {
+			return worktreePathCandidate{}, fmt.Errorf("worktree %s config missing", name)
+		}
+		if cfg.Name != name {
+			return worktreePathCandidate{}, fmt.Errorf("worktree %s config name mismatch %q", name, cfg.Name)
+		}
+		if cfg.RealPath != "" {
+			return configuredWorktreePathCandidate(repoRoot, name, cfg.RealPath)
+		}
+	}
+
+	return fallbackWorktreePathCandidate(repoRoot, name)
+}
+
+func configuredWorktreePathCandidate(repoRoot, name, realPath string) (worktreePathCandidate, error) {
+	if !filepath.IsAbs(realPath) {
+		return worktreePathCandidate{}, fmt.Errorf("worktree %s real path must be absolute: %s", name, realPath)
+	}
+	lexicalPath, err := cleanAbsPath(realPath)
+	if err != nil {
+		return worktreePathCandidate{}, fmt.Errorf("resolve worktree real path: %w", err)
+	}
+	physicalPath, err := existingPhysicalPath(realPath)
+	if err != nil {
+		return worktreePathCandidate{}, fmt.Errorf("resolve worktree real path: %w", err)
+	}
+	info, err := os.Stat(physicalPath)
+	if err != nil {
+		return worktreePathCandidate{}, fmt.Errorf("stat worktree real path: %w", err)
+	}
+	if !info.IsDir() {
+		return worktreePathCandidate{}, fmt.Errorf("worktree real path is not a directory: %s", physicalPath)
+	}
+	return worktreePathCandidate{
+		name:         name,
+		path:         physicalPath,
+		lexicalPath:  lexicalPath,
+		physicalPath: physicalPath,
+	}, nil
+}
+
+func fallbackWorktreePathCandidate(repoRoot, name string) (worktreePathCandidate, error) {
+	path := legacyWorktreePayloadPath(repoRoot, name)
+	lexicalPath, err := cleanAbsPath(path)
+	if err != nil {
+		return worktreePathCandidate{}, err
+	}
+	physicalPath, err := resolvePhysicalInitTarget(lexicalPath)
+	if err != nil {
+		return worktreePathCandidate{}, fmt.Errorf("resolve worktree payload path: %w", err)
+	}
+	return worktreePathCandidate{
+		name:         name,
+		path:         path,
+		lexicalPath:  lexicalPath,
+		physicalPath: physicalPath,
+	}, nil
+}
+
+func legacyWorktreePayloadPath(repoRoot, name string) string {
+	if name == "main" {
+		return filepath.Join(repoRoot, "main")
+	}
+	return filepath.Join(repoRoot, "worktrees", name)
+}
+
+func validateWorktreeRegistryWithCandidate(repoRoot string, candidate worktreePathCandidate) error {
+	candidates, err := registeredWorktreePathCandidates(repoRoot)
+	if err != nil {
+		if errors.Is(err, errWorktreeRegistryMissing) {
+			return nil
+		}
+		return err
+	}
+
+	replaced := false
+	for i := range candidates {
+		if candidates[i].name == candidate.name {
+			candidates[i] = candidate
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		candidates = append(candidates, candidate)
+	}
+	return validateWorktreePathCandidates(repoRoot, candidates)
+}
+
+func registeredWorktreePathCandidates(repoRoot string) ([]worktreePathCandidate, error) {
+	worktreesDir, err := WorktreesDirPath(repoRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%w: %v", errWorktreeRegistryMissing, err)
+		}
+		return nil, fmt.Errorf("resolve workspaces directory: %w", err)
+	}
+	entries, err := os.ReadDir(worktreesDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%w: %v", errWorktreeRegistryMissing, err)
+		}
+		return nil, fmt.Errorf("read workspaces directory: %w", err)
+	}
+
+	candidates := make([]worktreePathCandidate, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("worktree metadata entry is symlink: %s", entry.Name())
+		}
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if err := pathutil.ValidateName(name); err != nil {
+			return nil, fmt.Errorf("worktree metadata entry %s: %w", name, err)
+		}
+		cfg, err := LoadWorktreeConfig(repoRoot, name)
+		if err != nil {
+			return nil, fmt.Errorf("load worktree %s: %w", name, err)
+		}
+		candidate, err := worktreePathCandidateFromConfig(repoRoot, name, cfg, true)
+		if err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, candidate)
+	}
+	return candidates, nil
+}
+
+func validateWorktreePathCandidates(repoRoot string, candidates []worktreePathCandidate) error {
+	for _, candidate := range candidates {
+		if err := validateWorktreePathControlBoundary(repoRoot, candidate); err != nil {
+			return err
+		}
+	}
+
+	for i := 0; i < len(candidates); i++ {
+		for j := i + 1; j < len(candidates); j++ {
+			if candidatesOverlap(candidates[i], candidates[j]) {
+				return fmt.Errorf("worktree real path overlap: %s at %s and %s at %s",
+					candidates[i].name, candidates[i].path, candidates[j].name, candidates[j].path)
+			}
+		}
+	}
+	return nil
+}
+
+func validateWorktreePathControlBoundary(repoRoot string, candidate worktreePathCandidate) error {
+	controlLexical, err := cleanAbsPath(filepath.Join(repoRoot, JVSDirName))
+	if err != nil {
+		return err
+	}
+	repoLexical, err := cleanAbsPath(repoRoot)
+	if err != nil {
+		return err
+	}
+	controlPhysical, err := existingPhysicalPath(controlLexical)
+	if err != nil {
+		return fmt.Errorf("resolve repo control directory: %w", err)
+	}
+	repoPhysical, err := existingPhysicalPath(repoRoot)
+	if err != nil {
+		return fmt.Errorf("resolve repo root: %w", err)
+	}
+
+	insideControlLexical, err := cleanAbsPathContains(controlLexical, candidate.lexicalPath)
+	if err != nil {
+		return err
+	}
+	insideControlPhysical, err := cleanAbsPathContains(controlPhysical, candidate.physicalPath)
+	if err != nil {
+		return err
+	}
+	if insideControlLexical || insideControlPhysical {
+		return fmt.Errorf("worktree %s real path points into repo control directory: %s", candidate.name, candidate.path)
+	}
+
+	containsControlLexical, err := cleanAbsPathContains(candidate.lexicalPath, controlLexical)
+	if err != nil {
+		return err
+	}
+	containsControlPhysical, err := cleanAbsPathContains(candidate.physicalPath, controlPhysical)
+	if err != nil {
+		return err
+	}
+	isRepoRoot := candidate.lexicalPath == repoLexical || candidate.physicalPath == repoPhysical
+	if (containsControlLexical || containsControlPhysical) && !isRepoRoot {
+		return fmt.Errorf("worktree %s real path contains repo control directory: %s", candidate.name, candidate.path)
+	}
+	return nil
+}
+
+func candidatesOverlap(a, b worktreePathCandidate) bool {
+	return absPathsOverlap(a.lexicalPath, b.lexicalPath) || absPathsOverlap(a.physicalPath, b.physicalPath)
+}
+
+func absPathsOverlap(a, b string) bool {
+	aContainsB, err := cleanAbsPathContains(a, b)
+	if err != nil {
+		return false
+	}
+	bContainsA, err := cleanAbsPathContains(b, a)
+	if err != nil {
+		return false
+	}
+	return aContainsB || bContainsA
+}
+
+func validatePayloadBoundaryRoot(repoRoot, root string) error {
+	repoAbs, err := cleanAbsPath(repoRoot)
+	if err != nil {
+		return err
+	}
+	rootAbs, err := cleanAbsPath(root)
+	if err != nil {
+		return err
+	}
+	insideRepo, err := cleanAbsPathContains(repoAbs, rootAbs)
+	if err != nil {
+		return err
+	}
+	if insideRepo {
+		rel, err := filepath.Rel(repoAbs, rootAbs)
+		if err != nil {
+			return err
+		}
+		if rel != "." {
+			if err := pathutil.ValidateNoSymlinkParents(repoRoot, rel); err != nil {
+				return fmt.Errorf("validate worktree payload path: %w", err)
+			}
+		}
+	}
+	info, err := os.Lstat(root)
+	if err != nil {
+		return fmt.Errorf("stat worktree payload root: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("worktree payload root is symlink: %s", root)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("worktree payload root is not directory: %s", root)
+	}
+	return nil
+}
+
+func worktreeControlExclusions(repoRoot, payloadRoot string) ([]string, error) {
+	controlDir := filepath.Join(repoRoot, JVSDirName)
+	containsControl, err := pathContainsLexicalPath(payloadRoot, controlDir)
+	if err != nil {
+		return nil, err
+	}
+	if !containsControl {
+		containsControl, err = pathContainsPhysicalPath(payloadRoot, controlDir)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if !containsControl {
+		return nil, nil
+	}
+
+	rootAbs, err := cleanAbsPath(payloadRoot)
+	if err != nil {
+		return nil, err
+	}
+	controlAbs, err := cleanAbsPath(controlDir)
+	if err != nil {
+		return nil, err
+	}
+	rel, err := filepath.Rel(rootAbs, controlAbs)
+	if err != nil {
+		return nil, err
+	}
+	if rel == JVSDirName {
+		return []string{JVSDirName}, nil
+	}
+	return nil, fmt.Errorf("repo control directory is nested inside worktree payload at unsupported path: %s", rel)
 }
 
 func safeWorktreeConfigPath(repoRoot, name string) (string, error) {

@@ -5,6 +5,7 @@ import "time"
 // WorktreeConfig is stored at .jvs/worktrees/<name>/config.json
 type WorktreeConfig struct {
 	Name             string     `json:"name"`
+	RealPath         string     `json:"real_path,omitempty"`          // Canonical real folder path for adopted workspaces
 	BaseSnapshotID   SnapshotID `json:"base_snapshot_id,omitempty"`   // Immutable snapshot worktree was created from
 	HeadSnapshotID   SnapshotID `json:"head_snapshot_id,omitempty"`   // Current position (may differ from latest if detached)
 	LatestSnapshotID SnapshotID `json:"latest_snapshot_id,omitempty"` // The most recent snapshot in this worktree's lineage

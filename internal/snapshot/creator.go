@@ -116,11 +116,11 @@ func (c *Creator) createPartial(worktreeName, note string, tags []string, paths 
 		return nil, err
 	}
 
-	payloadPath, err := wtMgr.Path(worktreeName)
+	boundary, err := repo.WorktreeManagedPayloadBoundary(c.repoRoot, worktreeName)
 	if err != nil {
 		return nil, fmt.Errorf("worktree payload path: %w", err)
 	}
-	if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(payloadPath); err != nil {
+	if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(boundary.Root); err != nil {
 		return nil, err
 	}
 	if err := c.auditLogger.EnsureAppendable(); err != nil {
@@ -133,7 +133,7 @@ func (c *Creator) createPartial(worktreeName, note string, tags []string, paths 
 		return nil, err
 	}
 
-	desc, err := c.stageSnapshot(cfg, payloadPath, publishPaths, snapshotID, worktreeName, note, tags, partialPaths)
+	desc, err := c.stageSnapshot(cfg, boundary, publishPaths, snapshotID, worktreeName, note, tags, partialPaths)
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +205,7 @@ func (c *Creator) writeCreateIntent(snapshotID model.SnapshotID, worktreeName st
 
 func (c *Creator) stageSnapshot(
 	cfg *model.WorktreeConfig,
-	payloadPath string,
+	boundary repo.WorktreePayloadBoundary,
 	publishPaths snapshotPublishPaths,
 	snapshotID model.SnapshotID,
 	worktreeName string,
@@ -217,7 +217,7 @@ func (c *Creator) stageSnapshot(
 		os.RemoveAll(publishPaths.tmpDir)
 	}
 
-	cloneResult, err := c.cloneSnapshotPayload(payloadPath, publishPaths.tmpDir, partialPaths)
+	cloneResult, err := c.cloneSnapshotPayload(boundary, publishPaths.tmpDir, partialPaths)
 	if err != nil {
 		cleanupTmp()
 		return nil, err
@@ -262,23 +262,57 @@ func (c *Creator) stageSnapshot(
 	return desc, nil
 }
 
-func (c *Creator) cloneSnapshotPayload(payloadPath, snapshotTmpDir string, partialPaths []string) (*engine.CloneResult, error) {
+func (c *Creator) cloneSnapshotPayload(boundary repo.WorktreePayloadBoundary, snapshotTmpDir string, partialPaths []string) (*engine.CloneResult, error) {
 	// For partial snapshots, only copy specified paths
 	if len(partialPaths) > 0 {
 		if err := os.MkdirAll(snapshotTmpDir, 0755); err != nil {
 			return nil, fmt.Errorf("create snapshot tmp dir: %w", err)
 		}
-		result, err := c.clonePaths(payloadPath, snapshotTmpDir, partialPaths)
+		result, err := c.clonePaths(boundary.Root, snapshotTmpDir, partialPaths)
 		if err != nil {
 			return nil, fmt.Errorf("clone partial paths: %w", err)
 		}
 		return result, nil
 	}
-	result, err := engine.CloneToNew(c.engine, payloadPath, snapshotTmpDir)
+	if len(boundary.ExcludedRootNames) > 0 {
+		return c.clonePayloadRootEntries(boundary, snapshotTmpDir)
+	}
+	result, err := engine.CloneToNew(c.engine, boundary.Root, snapshotTmpDir)
 	if err != nil {
 		return nil, fmt.Errorf("clone payload: %w", err)
 	}
 	return result, nil
+}
+
+func (c *Creator) clonePayloadRootEntries(boundary repo.WorktreePayloadBoundary, snapshotTmpDir string) (*engine.CloneResult, error) {
+	if err := engine.PrepareCloneToNewDestination(snapshotTmpDir); err != nil {
+		return nil, err
+	}
+	if err := os.Mkdir(snapshotTmpDir, 0755); err != nil {
+		return nil, fmt.Errorf("create snapshot tmp dir: %w", err)
+	}
+
+	entries, err := os.ReadDir(boundary.Root)
+	if err != nil {
+		return nil, fmt.Errorf("read payload root: %w", err)
+	}
+
+	combined := engine.NewCloneResult(c.engineType)
+	for _, entry := range entries {
+		name := entry.Name()
+		if boundary.ExcludesRelativePath(name) {
+			continue
+		}
+		result, err := engine.CloneToNew(c.engine, filepath.Join(boundary.Root, name), filepath.Join(snapshotTmpDir, name))
+		if err != nil {
+			return nil, fmt.Errorf("clone payload root entry %s: %w", name, err)
+		}
+		mergeCloneResult(combined, result)
+	}
+	if err := fsutil.FsyncDir(snapshotTmpDir); err != nil {
+		return nil, fmt.Errorf("fsync snapshot tmp dir: %w", err)
+	}
+	return combined, nil
 }
 
 func (c *Creator) newSnapshotDescriptor(
@@ -452,11 +486,11 @@ func (c *Creator) appendCreateAudit(worktreeName string, snapshotID model.Snapsh
 
 // validateAndNormalizePaths validates and normalizes the partial snapshot paths.
 func (c *Creator) validateAndNormalizePaths(paths []string, worktreeName string) ([]string, error) {
-	wtMgr := worktree.NewManager(c.repoRoot)
-	wtPath, err := wtMgr.Path(worktreeName)
+	boundary, err := repo.WorktreeManagedPayloadBoundary(c.repoRoot, worktreeName)
 	if err != nil {
 		return nil, fmt.Errorf("worktree payload path: %w", err)
 	}
+	wtPath := boundary.Root
 
 	var normalized []string
 	for _, p := range paths {
@@ -465,6 +499,9 @@ func (c *Creator) validateAndNormalizePaths(paths []string, worktreeName string)
 			return nil, err
 		}
 		p = clean
+		if boundary.ExcludesRelativePath(p) {
+			return nil, fmt.Errorf("path is repo control data and is not managed: %s", p)
+		}
 
 		if err := pathutil.ValidateNoSymlinkParents(wtPath, p); err != nil {
 			return nil, fmt.Errorf("path escapes worktree through parent: %s: %w", p, err)
