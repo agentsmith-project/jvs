@@ -1377,7 +1377,8 @@ func TestRestoreToHead(t *testing.T) {
 	cmd4 := createTestRootCmd()
 	stdout, err := executeCommand(cmd4, "restore", "latest")
 	require.NoError(t, err)
-	assert.Contains(t, stdout, "Restored to checkpoint")
+	assert.Contains(t, stdout, "Restored save point:")
+	assert.NotContains(t, stdout, "checkpoint")
 
 	os.Chdir(originalWd)
 }
@@ -1405,7 +1406,8 @@ func TestRestoreToTag(t *testing.T) {
 	cmd3 := createTestRootCmd()
 	stdout, err := executeCommand(cmd3, "restore", uniqueTag)
 	require.NoError(t, err)
-	assert.Contains(t, stdout, "checkpoint")
+	assert.Contains(t, stdout, "Restored save point:")
+	assert.NotContains(t, stdout, "checkpoint")
 
 	os.Chdir(originalWd)
 }
