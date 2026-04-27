@@ -4,20 +4,20 @@
 
 ### Highlights
 
-- Candidate patch release notes for changes after `v0.4.0`; no public CLI,
+- Published patch release for changes after `v0.4.0`; no public CLI,
   library API, or on-disk repository format changes are introduced.
-- Final release evidence documentation now separates candidate readiness from
-  final tagged release evidence and records the `v0.4.0` final release facts
-  without pending/candidate language.
+- Final release evidence documentation records the `v0.4.1` final tagged
+  release facts with published-release language.
 - CI and release validation metadata now require tag-aware checkout metadata
   so final release evidence can validate tagged commits against local tag
   refs.
 - Deterministic fuzz smoke hardening makes release-blocking fuzz target
   discovery explicit and keeps ordinary fuzz tests stable.
 - The release-facing identity remains
-  `github.com/agentsmith-project/jvs`; the previous final release is still
-  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.0` until this
-  candidate is tagged and published.
+  `github.com/agentsmith-project/jvs`; this final release is published at
+  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.1`, and the
+  previous final release was
+  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.0`.
 
 ### Breaking changes
 
@@ -47,11 +47,11 @@
 
 ### Migration notes
 
-- Existing repositories do not need an on-disk migration for this candidate;
-  `.jvs/format_version` remains a repository layout version, not the
+- Existing repositories do not need an on-disk migration for this patch
+  release; `.jvs/format_version` remains a repository layout version, not the
   application release version.
 - After upgrading, run `jvs doctor --strict` and `jvs verify --all` on a
-  representative repo before publishing release artifacts.
+  representative repo before relying on it for release workflows.
 - After a physical backup or storage migration, run
   `jvs doctor --strict --repair-runtime` at the destination before
   verification.
@@ -62,16 +62,18 @@
 ### Release evidence
 
 - See the [release evidence ledger](RELEASE_EVIDENCE.md#v041---2026-04-26)
-  for the `v0.4.1` candidate readiness entry. This release is not final, not
-  tagged, and not published; the final tag, release-gate result, artifacts,
-  and signing evidence remain pending.
+  for the `v0.4.1` final tagged release record. It records the annotated tag,
+  final tagged commit, release gate, coverage, representative repo, GA docs,
+  artifact, signing, and runbook evidence for the published GitHub release.
 
 ### Release artifacts
 
-- No `v0.4.1` artifacts are published yet.
-- The pending final release workflow is expected to publish platform binaries,
-  `SHA256SUMS`, `.sig` and `.pem` sidecars, plus release notes with breaking
-  changes, known limitations, risk labels, and migration notes.
+- Published artifacts include five platform binaries, five `.sig` sidecars,
+  five `.pem` sidecars, `SHA256SUMS`, `SHA256SUMS.sig`, and `SHA256SUMS.pem`.
+- The release workflow verified all artifacts are non-empty and ran
+  `sha256sum --check --strict SHA256SUMS`; independent download verification
+  also ran `sha256sum -c --strict SHA256SUMS` successfully for all five
+  binaries.
 
 ## v0.4.0 - 2026-04-25
 

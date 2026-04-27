@@ -15,77 +15,120 @@ Raw logs and `coverage.out` are not stored here.
 
 ### Release identity
 
-- Evidence class: GA candidate readiness
-- Candidate target tag: `v0.4.1`
-- Candidate status: not final, not tagged, not published, and pending final tag.
-- Pending final facts: exact release-gate result, published artifacts, and
-  signing evidence.
+- Evidence class: Final tagged release
+- Tag: `v0.4.1`
+- Tag type: annotated tag
+- Status: PASS
+- Workflow conclusion: success
 - Changelog heading date: `2026-04-26`
+- Published at: `2026-04-27T05:12:36Z`
+- CI run:
+  `https://github.com/agentsmith-project/jvs/actions/runs/24977618650`
 - Baseline: compatible fixes after the published `v0.4.0` release.
 - CI run link rule: `https://github.com/agentsmith-project/jvs/actions/runs/<run_id>`
-- Release URL rule after tagging:
-  `https://github.com/agentsmith-project/jvs/releases/tag/<tag>`
+- Release URL:
+  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.1`
+- Tag object: `2497e7d859291cc46408b5e77c6273ff8472a867`
+- Final tagged commit: `01295c1ae26ff1554c892f7f74ee7c0e5e57e6d9`
+- Tagger date: `2026-04-26 22:08:46 -0700`
+- GitHub release state: non-draft, non-prerelease.
+- Release workflow jobs: build and test job `73132546034` success; security
+  scan job `73132546041` success; lint job `73132546053` success;
+  release-gate job `73132546057` success; release job `73132775828` success.
 - Scope: final release evidence documentation, CI/release validation metadata,
   and deterministic fuzz smoke hardening.
 
-### Release gate readiness
+### Release gate summary
 
 Command: `make release-gate`
 
-The table lists required candidate checks. This entry records readiness
-requirements only and does not claim final release results.
+Final line: `RELEASE GATE PASSED`
 
-| Check | Command or target | Candidate readiness |
+The table lists the final tagged release evidence from the published workflow
+run.
+
+| Check | Command or target | Status |
 | --- | --- | --- |
-| Release gate | `make release-gate` | Required before tag |
-| Docs contract | `make docs-contract` | Required before tag |
-| CI contract | `make ci-contract` | Required before tag |
-| Race tests | `make test-race` | Required before tag |
-| Coverage | `make test-cover` | Required before tag |
-| Lint | `make lint` | Required before tag |
-| Build | `make build` | Required before tag |
-| Conformance | `make conformance` | Required before tag |
-| Library facade | `make library` | Required before tag |
-| Regression | `make regression` | Required before tag |
-| Fuzz ordinary tests | `make fuzz-tests` | Required before tag |
-| Fuzz smoke | `make fuzz` | Required before tag |
+| Release gate | `make release-gate` in job `73132546057` | PASS |
+| Docs contract | `make docs-contract` | PASS |
+| CI contract | `make ci-contract` | PASS |
+| Race tests | `make test-race` | PASS |
+| Coverage | `make test-cover` | PASS |
+| Lint | `make lint` | PASS |
+| Build | `make build` | PASS |
+| Conformance | `make conformance` | PASS |
+| Library facade | `make library` | PASS |
+| Regression | `make regression` | PASS |
+| Fuzz ordinary tests | `make fuzz-tests` | PASS |
+| Fuzz smoke | `make fuzz` | PASS |
 
 ### Coverage
 
-- Coverage total: pending final release-gate result.
-- Coverage threshold: `60.0%`, enforced by `make test-cover`.
+- Coverage total: `73.3%`
+- Coverage threshold: `60.0%`
 - Evidence command: `make test-cover`
+- Evidence summary: CI release-gate log reported
+  `OK: coverage 73.3% >= 60% threshold`.
 
 ### Representative repo evidence
 
 - Representative repo class: existing v0 repo with checkpoint history,
-  workspace state, audit chain validation, and runtime repair path exercised.
-- Doctor command: `jvs doctor --strict` required before tagging.
-- Verify command: `jvs verify --all` required before tagging.
+  workspace state, audit chain validation, and runtime repair path exercised
+  on an ordinary `/tmp` copy engine.
+- Doctor command: `jvs doctor --strict`
+- Doctor result: healthy after runtime repair validation.
+- Verify command: `jvs verify --all`
+- Verify result: all checkpoint checksums and payload hashes valid.
 - Migration repair command for copied repos:
-  `jvs doctor --strict --repair-runtime` required before tagging.
+  `jvs doctor --strict --repair-runtime`
+- Independent verification: a temporary repo with 2 workspaces (`main` and
+  `active-review`) and 4 checkpoint descriptors was created. Initial
+  `jvs doctor --strict` returned exit 0, healthy true, and 0 findings; initial
+  `jvs verify --all` returned exit 0 with checkpoint count 4 and 0 bad or
+  tampered checkpoints. After injecting stale `.jvs/locks/repo.lock`,
+  `.jvs-tmp-release-evidence`, `.jvs/snapshots/runtime-release-evidence.tmp`,
+  and `.jvs/intents/stale-release-evidence.json`, strict doctor found
+  `E_REPO_LOCK_STALE`, `E_INTENT_ORPHAN`, and `E_TMP_ORPHAN`.
+  `jvs doctor --strict --repair-runtime` returned exit 0, healthy true, and 0
+  findings after cleaning locks=1, runtime_tmp=2, and runtime_operations=1.
+  Final `jvs doctor --strict` returned exit 0, and final `jvs verify --all`
+  returned exit 0 with checkpoint count 4 and 0 bad or tampered checkpoints.
 
 ### GA docs evidence
 
-- GA docs readiness: `docs/99_CHANGELOG.md`, `docs/12_RELEASE_POLICY.md`,
-  `docs/14_TRACEABILITY_MATRIX.md`, and this ledger must describe candidate
-  readiness without claiming final release facts for `v0.4.1`.
+- Release docs: `docs/99_CHANGELOG.md`, `docs/12_RELEASE_POLICY.md`,
+  `docs/14_TRACEABILITY_MATRIX.md`, and this ledger describe final release
+  facts for `v0.4.1`.
 - Changelog scope: final release evidence documentation, CI/release validation
   metadata, and deterministic fuzz smoke hardening after `v0.4.0`.
 - Runtime-state migration boundary: active `.jvs/locks/`, `.jvs/intents/`,
   and `.jvs/gc/*.json` runtime state remains non-portable and must be rebuilt
   at the destination.
 
-### Artifact and signing readiness
+### Artifact and signing evidence
 
 - Artifact workflow: `.github/workflows/ci.yml` release job.
-- Published artifacts: not published; pending final release workflow.
-- Expected artifact set after tagging: platform binaries, `SHA256SUMS`, `.sig`
-  sidecars, and `.pem` sidecars.
+- Published artifact count: `18`
+- Published artifacts: five platform binaries, five `.sig` sidecars, five
+  `.pem` sidecars, `SHA256SUMS`, `SHA256SUMS.sig`, and `SHA256SUMS.pem`.
 - Signing command family: `cosign sign-blob --yes`
+- Verification evidence: final release workflow checked all artifact files are
+  non-empty and ran `sha256sum --check --strict SHA256SUMS`.
+- Certificate identity for all six `.pem` files:
+  `https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@refs/tags/v0.4.1`
 - Certificate identity rule:
   `https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@<workflow-ref>`
 - OIDC issuer: `https://token.actions.githubusercontent.com`
+- Independent post-publish verification: `sha256sum -c --strict SHA256SUMS`
+  passed for all five binaries.
+
+| Asset | SHA-256 |
+| --- | --- |
+| `jvs-linux-amd64` | `f442290b57e8595f21791249d672022a1957d5ce7b62b063dec5051a77c2011e` |
+| `jvs-linux-arm64` | `d12c7eeed19678bd562471f2d07a5dfc98fd91354dddcb8db0c26b46339b6346` |
+| `jvs-darwin-amd64` | `a3ec237f1028ba886918b553c56dc23c59bac7b5e3f36699b69ca42f8562be50` |
+| `jvs-darwin-arm64` | `d1aa70ac0abbfc80c5045c8565dc3332e391fa09aa601eb0f9bdf067c4d685be` |
+| `jvs-windows-amd64.exe` | `7b97d8ab96e8a184b92b4d139ac0d6ce2e26beaf6115001cb7a534cfd7ab22e2` |
 
 ### Runbook references
 
