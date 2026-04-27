@@ -72,7 +72,7 @@ func TestMainHelpFlag(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err)
 	assert.Contains(t, string(out), "JVS")
-	assert.Contains(t, string(out), "workspace versioning")
+	assert.Contains(t, string(out), "save points")
 }
 
 // TestMainVersion tests that version/help output works.

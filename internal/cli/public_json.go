@@ -28,6 +28,28 @@ type publicCheckpointRecord struct {
 	IntegrityState       model.IntegrityState        `json:"integrity_state"`
 }
 
+type publicSavePointRecord struct {
+	SavePointID string    `json:"save_point_id"`
+	Workspace   string    `json:"workspace"`
+	Message     string    `json:"message,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+type publicSavePointCreatedRecord struct {
+	SavePointID     string    `json:"save_point_id"`
+	Workspace       string    `json:"workspace"`
+	Message         string    `json:"message"`
+	CreatedAt       time.Time `json:"created_at"`
+	NewestSavePoint string    `json:"newest_save_point"`
+	UnsavedChanges  bool      `json:"unsaved_changes"`
+}
+
+type publicSavePointHistoryRecord struct {
+	Workspace       string                  `json:"workspace"`
+	SavePoints      []publicSavePointRecord `json:"save_points"`
+	NewestSavePoint string                  `json:"newest_save_point,omitempty"`
+}
+
 type publicWorkspaceRecord struct {
 	Workspace      string    `json:"workspace"`
 	BaseCheckpoint string    `json:"base_checkpoint,omitempty"`
@@ -118,6 +140,42 @@ func publicCheckpoints(descs []*model.Descriptor) []publicCheckpointRecord {
 		records = append(records, publicCheckpoint(desc))
 	}
 	return records
+}
+
+func publicSavePoint(desc *model.Descriptor) publicSavePointRecord {
+	return publicSavePointRecord{
+		SavePointID: string(desc.SnapshotID),
+		Workspace:   desc.WorktreeName,
+		Message:     desc.Note,
+		CreatedAt:   desc.CreatedAt,
+	}
+}
+
+func publicSavePoints(descs []*model.Descriptor) []publicSavePointRecord {
+	records := make([]publicSavePointRecord, 0, len(descs))
+	for _, desc := range descs {
+		records = append(records, publicSavePoint(desc))
+	}
+	return records
+}
+
+func publicSavePointCreated(desc *model.Descriptor, unsavedChanges bool) publicSavePointCreatedRecord {
+	return publicSavePointCreatedRecord{
+		SavePointID:     string(desc.SnapshotID),
+		Workspace:       desc.WorktreeName,
+		Message:         desc.Note,
+		CreatedAt:       desc.CreatedAt,
+		NewestSavePoint: string(desc.SnapshotID),
+		UnsavedChanges:  unsavedChanges,
+	}
+}
+
+func publicSavePointHistory(workspace string, descs []*model.Descriptor, newest model.SnapshotID) publicSavePointHistoryRecord {
+	return publicSavePointHistoryRecord{
+		Workspace:       workspace,
+		SavePoints:      publicSavePoints(descs),
+		NewestSavePoint: string(newest),
+	}
 }
 
 func publicWorkspace(cfg *model.WorktreeConfig) publicWorkspaceRecord {

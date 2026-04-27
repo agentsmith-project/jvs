@@ -72,9 +72,11 @@ func TestRootCommand_Help(t *testing.T) {
 	cmd := createTestRootCmd()
 	stdout, err := executeCommand(cmd, "--help")
 	require.NoError(t, err)
-	assert.Contains(t, stdout, "checkpoint-first")
-	assert.Contains(t, stdout, "checkpoint")
+	assert.Contains(t, stdout, "save point")
+	assert.Contains(t, stdout, "save")
+	assert.Contains(t, stdout, "history")
 	assert.Contains(t, stdout, "workspace")
+	assert.NotContains(t, stdout, "checkpoint")
 	assert.NotContains(t, stdout, "snapshot")
 	assert.NotContains(t, stdout, "worktree")
 	assert.NotContains(t, stdout, "detached")
@@ -513,6 +515,7 @@ func createTestRootCmd() *cobra.Command {
 	historyNoteFilter = ""
 	historyTagFilter = ""
 	historyAll = false
+	saveMessage = ""
 	checkpointTags = nil
 	checkpointPaths = nil
 	checkpointCompression = ""
@@ -537,7 +540,7 @@ func createTestRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:              "jvs",
 		Short:            "JVS - Juicy Versioned Workspaces",
-		Long:             `JVS is a checkpoint-first, filesystem-native workspace versioning system built on JuiceFS.`,
+		Long:             `JVS keeps save points for a folder.`,
 		SilenceUsage:     true,
 		SilenceErrors:    true,
 		PersistentPreRun: cliPersistentPreRun,
@@ -551,6 +554,7 @@ func createTestRootCmd() *cobra.Command {
 
 	// Add all subcommands
 	cmd.AddCommand(initCmd)
+	cmd.AddCommand(saveCmd)
 	cmd.AddCommand(statusCmd)
 	cmd.AddCommand(checkpointCmd)
 	cmd.AddCommand(workspaceCmd)

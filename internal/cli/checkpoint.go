@@ -31,8 +31,9 @@ type checkpointCreateOptions struct {
 }
 
 var checkpointCmd = &cobra.Command{
-	Use:   "checkpoint [note]",
-	Short: "Create or list checkpoints",
+	Use:    "checkpoint [note]",
+	Short:  "Create or list checkpoints",
+	Hidden: true,
 	Long: `Create a checkpoint of the current workspace.
 
 Examples:

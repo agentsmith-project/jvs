@@ -212,6 +212,59 @@ func TestCreator_UpdatesHead(t *testing.T) {
 	assert.Equal(t, desc2.SnapshotID, cfg.HeadSnapshotID)
 }
 
+func TestCreator_CreateWithParentRejectsStaleLatestParent(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("v1"), 0644))
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	first, err := creator.Create("main", "first", nil)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("v2"), 0644))
+	second, err := creator.Create("main", "second", nil)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("v3"), 0644))
+
+	stale, err := creator.CreateWithParent("main", "stale", nil, first.SnapshotID)
+	require.Error(t, err)
+	assert.Nil(t, stale)
+	assert.Contains(t, err.Error(), "parent")
+	assert.Contains(t, err.Error(), "latest")
+
+	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	assert.Equal(t, second.SnapshotID, cfg.HeadSnapshotID)
+	assert.Equal(t, second.SnapshotID, cfg.LatestSnapshotID)
+	all, err := snapshot.ListAll(repoPath)
+	require.NoError(t, err)
+	assert.Len(t, all, 2)
+}
+
+func TestCreator_CreateSavePointUsesLatestParentWhenHeadIsRestored(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("v1"), 0644))
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	first, err := creator.CreateSavePoint("main", "first", nil)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("v2"), 0644))
+	second, err := creator.CreateSavePoint("main", "second", nil)
+	require.NoError(t, err)
+	require.NoError(t, worktree.NewManager(repoPath).UpdateHead("main", first.SnapshotID))
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("v3"), 0644))
+
+	third, err := creator.CreateSavePoint("main", "third", nil)
+	require.NoError(t, err)
+	require.NotNil(t, third.ParentID)
+	assert.Equal(t, second.SnapshotID, *third.ParentID)
+
+	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	assert.Equal(t, third.SnapshotID, cfg.HeadSnapshotID)
+	assert.Equal(t, third.SnapshotID, cfg.LatestSnapshotID)
+}
+
 func TestCreator_PayloadContentPreserved(t *testing.T) {
 	repoPath := setupTestRepo(t)
 

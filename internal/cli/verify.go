@@ -17,7 +17,7 @@ var (
 
 var verifyCmd = &cobra.Command{
 	Use:   "verify [<checkpoint-id>]",
-	Short: "Verify checkpoint integrity",
+	Short: "Verify save point integrity",
 	Long: `Verify checkpoint integrity.
 
 Checks descriptor checksum and logical payload hash.

@@ -82,6 +82,31 @@ func (c *Creator) Create(worktreeName, note string, tags []string) (*model.Descr
 	return c.CreatePartial(worktreeName, note, tags, nil)
 }
 
+// CreateWithParent performs a full snapshot while using parentID as the
+// descriptor lineage parent, independent of the worktree's current head.
+func (c *Creator) CreateWithParent(worktreeName, note string, tags []string, parentID model.SnapshotID) (*model.Descriptor, error) {
+	var desc *model.Descriptor
+	err := repo.WithMutationLock(c.repoRoot, "snapshot", func() error {
+		var err error
+		desc, err = c.createWithParent(worktreeName, note, tags, parentID)
+		return err
+	})
+	return desc, err
+}
+
+// CreateSavePoint performs a full snapshot for the public save path. The
+// descriptor parent is selected from the worktree's latest snapshot while the
+// mutation lock is held, so concurrent saves cannot publish a stale lineage.
+func (c *Creator) CreateSavePoint(worktreeName, note string, tags []string) (*model.Descriptor, error) {
+	var desc *model.Descriptor
+	err := repo.WithMutationLock(c.repoRoot, "snapshot", func() error {
+		var err error
+		desc, err = c.createSavePoint(worktreeName, note, tags)
+		return err
+	})
+	return desc, err
+}
+
 // CreatePartial performs a snapshot of specific paths within the worktree.
 // If paths is nil or empty, performs a full snapshot.
 func (c *Creator) CreatePartial(worktreeName, note string, tags []string, paths []string) (*model.Descriptor, error) {
@@ -94,12 +119,43 @@ func (c *Creator) CreatePartial(worktreeName, note string, tags []string, paths 
 	return desc, err
 }
 
+func (c *Creator) createSavePoint(worktreeName, note string, tags []string) (*model.Descriptor, error) {
+	cfg, err := worktree.NewManager(c.repoRoot).Get(worktreeName)
+	if err != nil {
+		return nil, fmt.Errorf("get worktree: %w", err)
+	}
+	return c.createPartialWithDescriptorParent(worktreeName, note, tags, nil, cfg.LatestSnapshotID, true)
+}
+
+func (c *Creator) createWithParent(worktreeName, note string, tags []string, parentID model.SnapshotID) (*model.Descriptor, error) {
+	if parentID != "" {
+		if err := parentID.Validate(); err != nil {
+			return nil, fmt.Errorf("validate parent save point: %w", err)
+		}
+		if _, err := LoadDescriptor(c.repoRoot, parentID); err != nil {
+			return nil, fmt.Errorf("load parent save point: %w", err)
+		}
+	}
+	return c.createPartialWithDescriptorParent(worktreeName, note, tags, nil, parentID, true)
+}
+
 func (c *Creator) createPartial(worktreeName, note string, tags []string, paths []string) (*model.Descriptor, error) {
+	return c.createPartialWithDescriptorParent(worktreeName, note, tags, paths, "", false)
+}
+
+func (c *Creator) createPartialWithDescriptorParent(worktreeName, note string, tags []string, paths []string, parentOverride model.SnapshotID, overrideParent bool) (*model.Descriptor, error) {
 	// Step 1: Validate worktree exists
 	wtMgr := worktree.NewManager(c.repoRoot)
 	cfg, err := wtMgr.Get(worktreeName)
 	if err != nil {
 		return nil, fmt.Errorf("get worktree: %w", err)
+	}
+	descriptorCfg := *cfg
+	if overrideParent {
+		if parentOverride != cfg.LatestSnapshotID {
+			return nil, fmt.Errorf("snapshot parent %s is stale; latest is %s", parentOverride, cfg.LatestSnapshotID)
+		}
+		descriptorCfg.HeadSnapshotID = parentOverride
 	}
 
 	// Normalize and validate paths if provided
@@ -133,7 +189,7 @@ func (c *Creator) createPartial(worktreeName, note string, tags []string, paths 
 		return nil, err
 	}
 
-	desc, err := c.stageSnapshot(cfg, boundary, publishPaths, snapshotID, worktreeName, note, tags, partialPaths)
+	desc, err := c.stageSnapshot(&descriptorCfg, boundary, publishPaths, snapshotID, worktreeName, note, tags, partialPaths)
 	if err != nil {
 		return nil, err
 	}

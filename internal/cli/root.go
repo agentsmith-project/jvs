@@ -25,9 +25,12 @@ var (
 	rootCmd           = &cobra.Command{
 		Use:   "jvs",
 		Short: "JVS - Juicy Versioned Workspaces",
-		Long: `JVS is a checkpoint-first, filesystem-native workspace versioning system
-built on JuiceFS. It provides atomic checkpoints, workspace navigation,
-and explicit dirty-workspace protection.`,
+		Long: `JVS keeps save points for a folder.
+
+Start with:
+  jvs init
+  jvs save -m "baseline"
+  jvs history`,
 		SilenceUsage:     true,
 		SilenceErrors:    true,
 		PersistentPreRun: cliPersistentPreRun,

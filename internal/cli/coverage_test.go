@@ -828,12 +828,13 @@ func TestHistoryCommand(t *testing.T) {
 		assert.NotEmpty(t, stdout)
 	})
 
-	t.Run("History rejects JSON output", func(t *testing.T) {
+	t.Run("History JSON uses save point schema", func(t *testing.T) {
 		cmd5 := createTestRootCmd()
 		stdout, err := executeCommand(cmd5, "history", "--json")
-		assert.Error(t, err)
-		assert.Empty(t, stdout)
-		assert.Contains(t, err.Error(), "legacy command")
+		assert.NoError(t, err)
+		assert.Contains(t, stdout, "save_points")
+		assert.NotContains(t, stdout, "snapshot_id")
+		assert.NotContains(t, stdout, "worktree")
 	})
 
 	t.Run("History with limit", func(t *testing.T) {

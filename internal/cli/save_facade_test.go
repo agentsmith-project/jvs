@@ -1,0 +1,283 @@
+package cli
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/agentsmith-project/jvs/internal/snapshot"
+	"github.com/agentsmith-project/jvs/internal/worktree"
+	"github.com/agentsmith-project/jvs/pkg/model"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestInitSaveHistoryGoldenFacade(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "README.md"), []byte("hello"), 0644))
+
+	saveOut, err := executeCommand(createTestRootCmd(), "save", "-m", "baseline")
+	require.NoError(t, err)
+	assert.Contains(t, saveOut, "Saved save point")
+	assert.Contains(t, saveOut, "Workspace: main")
+	assertNoOldSavePointVocabulary(t, saveOut)
+
+	historyOut, err := executeCommand(createTestRootCmd(), "history")
+	require.NoError(t, err)
+	assert.Contains(t, historyOut, "Save points")
+	assert.Contains(t, historyOut, "baseline")
+	assertNoOldSavePointVocabulary(t, historyOut)
+}
+
+func TestSaveCommandHumanOutputUsesSavePointVocabulary(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
+
+	stdout, err := executeCommand(createTestRootCmd(), "save", "--message", "baseline")
+	require.NoError(t, err)
+
+	assert.Contains(t, stdout, "Saved save point")
+	assert.Contains(t, stdout, "Workspace: main")
+	assert.Contains(t, stdout, "Newest save point:")
+	assert.Contains(t, stdout, "Unsaved changes: no")
+	assertNoOldSavePointVocabulary(t, stdout)
+}
+
+func TestSaveCommandJSONUsesSavePointSchema(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
+
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "save", "-m", "baseline")
+	require.NoError(t, err)
+
+	env, data := decodeFacadeDataMap(t, stdout)
+	require.True(t, env.OK, stdout)
+	require.Equal(t, "save", env.Command)
+	require.Equal(t, "main", data["workspace"])
+	require.Equal(t, "baseline", data["message"])
+	require.NotEmpty(t, data["save_point_id"])
+	require.Equal(t, data["save_point_id"], data["newest_save_point"])
+	require.Equal(t, false, data["unsaved_changes"])
+	require.NotEmpty(t, data["created_at"])
+	assertNoLegacyJSONFields(t, data)
+	assertNoOldSavePointVocabulary(t, string(env.Data))
+}
+
+func TestHistoryCommandHumanOutputUsesSavePointVocabulary(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+
+	stdout, err := executeCommand(createTestRootCmd(), "history")
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "No save points yet.")
+	assertNoOldSavePointVocabulary(t, stdout)
+
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
+	_, err = executeCommand(createTestRootCmd(), "save", "-m", "baseline")
+	require.NoError(t, err)
+
+	stdout, err = executeCommand(createTestRootCmd(), "history")
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "Save points")
+	assert.Contains(t, stdout, "baseline")
+	assertNoOldSavePointVocabulary(t, stdout)
+}
+
+func TestHistoryCommandJSONUsesSavePointSchema(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
+	_, err := executeCommand(createTestRootCmd(), "save", "-m", "baseline")
+	require.NoError(t, err)
+
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "history")
+	require.NoError(t, err)
+
+	env, data := decodeFacadeDataMap(t, stdout)
+	require.True(t, env.OK, stdout)
+	require.Equal(t, "history", env.Command)
+	require.Equal(t, "main", data["workspace"])
+	require.NotEmpty(t, data["newest_save_point"])
+	savePoints, ok := data["save_points"].([]any)
+	require.True(t, ok, "save_points should be an array: %#v", data["save_points"])
+	require.Len(t, savePoints, 1)
+	first, ok := savePoints[0].(map[string]any)
+	require.True(t, ok, "save point should be an object: %#v", savePoints[0])
+	require.NotEmpty(t, first["save_point_id"])
+	require.Equal(t, "baseline", first["message"])
+	assertNoLegacyJSONFields(t, first)
+	assertNoOldSavePointVocabulary(t, string(env.Data))
+}
+
+func TestHistoryCommandUsesNewestSavePointAfterRestoreState(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
+	firstOut, err := executeCommand(createTestRootCmd(), "--json", "save", "-m", "first")
+	require.NoError(t, err)
+	_, firstData := decodeFacadeDataMap(t, firstOut)
+	firstID := model.SnapshotID(firstData["save_point_id"].(string))
+
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v2"), 0644))
+	secondOut, err := executeCommand(createTestRootCmd(), "--json", "save", "-m", "second")
+	require.NoError(t, err)
+	_, secondData := decodeFacadeDataMap(t, secondOut)
+	secondID := model.SnapshotID(secondData["save_point_id"].(string))
+	require.NoError(t, worktree.NewManager(repoRoot).UpdateHead("main", firstID))
+
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "history")
+	require.NoError(t, err)
+	_, data := decodeFacadeDataMap(t, stdout)
+	require.Equal(t, string(secondID), data["newest_save_point"])
+	savePoints, ok := data["save_points"].([]any)
+	require.True(t, ok, "save_points should be an array: %#v", data["save_points"])
+	require.Len(t, savePoints, 2)
+	firstListed := savePoints[0].(map[string]any)
+	secondListed := savePoints[1].(map[string]any)
+	require.Equal(t, string(secondID), firstListed["save_point_id"])
+	require.Equal(t, "second", firstListed["message"])
+	require.Equal(t, string(firstID), secondListed["save_point_id"])
+	require.Equal(t, "first", secondListed["message"])
+	assertNoOldSavePointVocabulary(t, string(decodeContractEnvelope(t, stdout).Data))
+
+	human, err := executeCommand(createTestRootCmd(), "history")
+	require.NoError(t, err)
+	assert.Contains(t, human, "second")
+	assert.Contains(t, human, "first")
+	assertNoOldSavePointVocabulary(t, human)
+}
+
+func TestSaveCommandAfterRestoreCreatesNewSavePointFromNewestParent(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
+	firstOut, err := executeCommand(createTestRootCmd(), "--json", "save", "-m", "first")
+	require.NoError(t, err)
+	_, firstData := decodeFacadeDataMap(t, firstOut)
+	firstID := model.SnapshotID(firstData["save_point_id"].(string))
+
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v2"), 0644))
+	secondOut, err := executeCommand(createTestRootCmd(), "--json", "save", "-m", "second")
+	require.NoError(t, err)
+	_, secondData := decodeFacadeDataMap(t, secondOut)
+	secondID := model.SnapshotID(secondData["save_point_id"].(string))
+	require.NoError(t, worktree.NewManager(repoRoot).UpdateHead("main", firstID))
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v3"), 0644))
+
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "save", "-m", "third")
+	require.NoError(t, err)
+	env, data := decodeFacadeDataMap(t, stdout)
+	require.True(t, env.OK, stdout)
+	assertNoOldSavePointVocabulary(t, string(env.Data))
+
+	thirdID := model.SnapshotID(data["save_point_id"].(string))
+	thirdDesc, err := snapshot.LoadDescriptor(repoRoot, thirdID)
+	require.NoError(t, err)
+	require.NotNil(t, thirdDesc.ParentID)
+	require.Equal(t, secondID, *thirdDesc.ParentID)
+
+	cfg, err := worktree.NewManager(repoRoot).Get("main")
+	require.NoError(t, err)
+	require.Equal(t, thirdID, cfg.HeadSnapshotID)
+	require.Equal(t, thirdID, cfg.LatestSnapshotID)
+
+	humanRepoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(humanRepoRoot, "app.txt"), []byte("v1"), 0644))
+	humanFirstOut, err := executeCommand(createTestRootCmd(), "--json", "save", "-m", "first")
+	require.NoError(t, err)
+	_, humanFirstData := decodeFacadeDataMap(t, humanFirstOut)
+	humanFirstID := model.SnapshotID(humanFirstData["save_point_id"].(string))
+	require.NoError(t, os.WriteFile(filepath.Join(humanRepoRoot, "app.txt"), []byte("v2"), 0644))
+	_, err = executeCommand(createTestRootCmd(), "--json", "save", "-m", "second")
+	require.NoError(t, err)
+	require.NoError(t, worktree.NewManager(humanRepoRoot).UpdateHead("main", humanFirstID))
+	require.NoError(t, os.WriteFile(filepath.Join(humanRepoRoot, "app.txt"), []byte("v3"), 0644))
+
+	human, err := executeCommand(createTestRootCmd(), "save", "-m", "third")
+	require.NoError(t, err)
+	assert.Contains(t, human, "Saved save point")
+	assertNoOldSavePointVocabulary(t, human)
+}
+
+func TestRootHelpShowsSaveAndHistoryNotCheckpoint(t *testing.T) {
+	stdout, err := executeCommand(createTestRootCmd(), "--help")
+	require.NoError(t, err)
+
+	assert.Contains(t, stdout, "save")
+	assert.Contains(t, stdout, "history")
+	assert.Contains(t, stdout, "save point")
+	assertNoCheckpointSnapshotWorktreeVocabulary(t, stdout)
+}
+
+func TestSaveAndHistoryHelpUseSavePointVocabulary(t *testing.T) {
+	for _, args := range [][]string{{"save", "--help"}, {"history", "--help"}} {
+		stdout, err := executeCommand(createTestRootCmd(), args...)
+		require.NoError(t, err)
+		assert.Contains(t, stdout, "save point")
+		assertNoOldSavePointVocabulary(t, stdout)
+	}
+}
+
+func TestSaveCommandDoesNotCaptureControlData(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
+	require.FileExists(t, filepath.Join(repoRoot, ".jvs", "format_version"))
+
+	_, err := executeCommand(createTestRootCmd(), "save", "-m", "baseline")
+	require.NoError(t, err)
+
+	savePoints, err := snapshot.ListAll(repoRoot)
+	require.NoError(t, err)
+	require.Len(t, savePoints, 1)
+	assert.NoDirExists(t, filepath.Join(repoRoot, ".jvs", "snapshots", string(savePoints[0].SnapshotID), ".jvs"))
+}
+
+func setupAdoptedSaveFacadeRepo(t *testing.T) string {
+	t.Helper()
+	repoRoot := t.TempDir()
+	originalWd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, os.Chdir(originalWd)) })
+	require.NoError(t, os.Chdir(repoRoot))
+	_, err = executeCommand(createTestRootCmd(), "init")
+	require.NoError(t, err)
+	return repoRoot
+}
+
+func decodeFacadeDataMap(t *testing.T, stdout string) (contractEnvelope, map[string]any) {
+	t.Helper()
+	env := decodeContractEnvelope(t, stdout)
+	require.NotNil(t, env.Data, stdout)
+	var data map[string]any
+	require.NoError(t, json.Unmarshal(env.Data, &data), stdout)
+	return env, data
+}
+
+func assertNoLegacyJSONFields(t *testing.T, data map[string]any) {
+	t.Helper()
+	for _, key := range []string{
+		"checkpoint_id",
+		"snapshot_id",
+		"parent_checkpoint_id",
+		"head_snapshot",
+		"latest_snapshot",
+		"current",
+		"latest",
+	} {
+		assert.NotContains(t, data, key)
+	}
+}
+
+func assertNoOldSavePointVocabulary(t *testing.T, value string) {
+	t.Helper()
+	lower := strings.ToLower(value)
+	for _, word := range []string{"checkpoint", "snapshot", "worktree", "head", "current", "latest", "detached", "fork", "commit"} {
+		assert.NotContains(t, lower, word)
+	}
+}
+
+func assertNoCheckpointSnapshotWorktreeVocabulary(t *testing.T, value string) {
+	t.Helper()
+	lower := strings.ToLower(value)
+	for _, word := range []string{"checkpoint", "snapshot", "worktree"} {
+		assert.NotContains(t, lower, word)
+	}
+}

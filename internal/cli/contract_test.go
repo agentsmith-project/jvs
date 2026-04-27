@@ -678,23 +678,26 @@ func TestCLIJSONErrorEnvelope_CompletionRejectsScriptOutput(t *testing.T) {
 	assert.JSONEq(t, `null`, string(env.Data))
 }
 
-func TestCLIJSONErrorEnvelope_HiddenHistoryRejectedUnderJSON(t *testing.T) {
-	stdout, stderr, exitCode := runContractSubprocess(t, t.TempDir(), "--json", "history")
+func TestCLIJSONEnvelope_HistoryUsesSavePointSchema(t *testing.T) {
+	repoPath := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, os.MkdirAll(repoPath, 0755))
+	_, err := repo.InitAdoptedWorkspace(repoPath)
+	require.NoError(t, err)
 
-	require.Equal(t, 1, exitCode)
+	stdout, stderr, exitCode := runContractSubprocess(t, repoPath, "--json", "history")
+
+	require.Equal(t, 0, exitCode)
 	assert.Empty(t, strings.TrimSpace(stderr))
 	assert.NotContains(t, stdout, "snapshot_id")
 	assert.NotContains(t, stdout, "worktree")
 	assert.NotContains(t, stdout, "HEAD")
 
 	env := decodeContractEnvelope(t, stdout)
-	assert.False(t, env.OK)
+	assert.True(t, env.OK)
 	assert.Equal(t, "history", env.Command)
-	require.NotNil(t, env.Error)
-	assert.Equal(t, "E_USAGE", env.Error.Code)
-	assert.Contains(t, env.Error.Hint, "jvs checkpoint list --json")
-	assertPublicErrorOmitsLegacyVocabulary(t, env.Error)
-	assert.JSONEq(t, `null`, string(env.Data))
+	assert.Nil(t, env.Error)
+	assert.Contains(t, string(env.Data), "save_points")
+	assert.NotContains(t, string(env.Data), "checkpoint_id")
 }
 
 func TestDoctorRepairRuntimeRejectsPositionalArgs(t *testing.T) {

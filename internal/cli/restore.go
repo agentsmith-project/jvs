@@ -17,7 +17,7 @@ var (
 
 var restoreCmd = &cobra.Command{
 	Use:   "restore <ref|latest>",
-	Short: "Restore the current workspace to a checkpoint",
+	Short: "Restore a workspace to a save point",
 	Long: `Restore the current workspace to a checkpoint.
 
 Refs can be current, latest, a full checkpoint ID, a unique short ID, or an exact tag.

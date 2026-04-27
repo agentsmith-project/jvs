@@ -16,7 +16,7 @@ var (
 
 var diffCmd = &cobra.Command{
 	Use:   "diff <from> <to>",
-	Short: "Show differences between checkpoints",
+	Short: "Show differences between save points",
 	Long: `Show differences between two checkpoints.
 
 Refs can be current, latest, a full checkpoint ID, a unique short ID, or an exact tag.`,

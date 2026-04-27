@@ -174,7 +174,7 @@ func workspaceRemoveCurrentDiffersError(name string) error {
 
 var forkCmd = &cobra.Command{
 	Use:   "fork [<ref> <name>|<name>]",
-	Short: "Create a workspace from a checkpoint",
+	Short: "Create a workspace from a save point",
 	Args:  cobra.MaximumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		r, workspaceName, err := discoverRequiredWorktree()
