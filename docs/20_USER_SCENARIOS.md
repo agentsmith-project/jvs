@@ -351,3 +351,219 @@ Use 'jvs workspace list' to see existing workspaces.
 4. **Clear State Indication**: `history` always shows current position.
 
 5. **No Surprise Data Loss**: All checkpoints are preserved until explicit GC.
+
+---
+
+## Product-Level E2E Test Requirements (v0)
+
+This section defines the formal product requirements for user-story-driven
+end-to-end testing. The suite should validate what users and automation can
+observe from the public CLI, real workspace files, and stable JSON output. It
+should not depend on private implementation layout except where a test
+intentionally creates corruption or validates documented portability
+boundaries.
+
+### Background
+
+JVS promises local-first, filesystem-native, checkpoint-first workspace
+versioning. Users work in ordinary directories, create full-workspace
+checkpoints, restore known states, fork workspaces when they need a separate
+line of work, and verify that history remains trustworthy.
+
+Existing conformance tests protect the public CLI contract. The user-story E2E
+suite should complement those checks by exercising complete workflows from the
+user's point of view, including the JuiceFS-backed behavior that makes JVS
+valuable for large filesystem payloads.
+
+### Goals
+
+- Validate that the primary v0 user stories work as complete CLI workflows on
+  real filesystem paths.
+- Prove that users can understand and trust `current`, `latest`, and `dirty`
+  states while moving through checkpoint, restore, and fork workflows.
+- Validate JuiceFS-backed workflows on a local JuiceFS mount using sqlite
+  metadata and a local bucket, without external services or credentials.
+- Confirm that engine behavior is user-visible: supported JuiceFS mounts
+  report `juicefs-clone` where applicable, and degraded or fallback behavior is
+  explicit.
+- Exercise both human-readable CLI behavior and stable JSON output for the
+  same product stories.
+- Classify defects by user impact so release decisions reflect product risk,
+  not only command coverage.
+
+### Non-Goals
+
+- Remote push, pull, hosting, or replication protocols in JVS.
+- Merge, rebase, conflict resolution, staging, or Git-compatible commit graph
+  behavior.
+- Server-side permissions, authn/authz, credential management, or multi-user
+  locking services.
+- Performance benchmarking beyond confirming the user-visible engine and
+  degradation class.
+- Private storage-layout tests except for documented corruption, migration, or
+  portability scenarios.
+- New CLI features, flags, or JSON fields outside the v0 public contract.
+
+### Test Environment
+
+The E2E suite should run against the built `jvs` CLI exactly as a user or
+automation would invoke it. Every test should create isolated temporary
+directories and should leave no mounted filesystem or background process
+behind.
+
+Required profiles:
+
+| Profile | Purpose | Release expectation |
+|---------|---------|---------------------|
+| `story-local` | Validate all core user stories on a normal local POSIX filesystem. | Required on every release gate. |
+| `story-juicefs-local` | Validate the same user stories on a locally mounted JuiceFS filesystem backed by sqlite metadata and a local bucket. | Required when JuiceFS is available in CI or release qualification. |
+| `story-json` | Validate automation-facing JSON for the same stories. | Required for all stories that document `--json`. |
+
+The local profile should be the portable baseline. It proves that JVS remains
+useful without JuiceFS, even when operations use a copy or reflink-capable
+engine.
+
+The JuiceFS profile should be treated as product-critical integration evidence,
+not a mock. It should use a real JuiceFS mount so the user-visible engine,
+capability, and degradation messages reflect behavior users can reproduce.
+
+### User Story Coverage
+
+Each story should include the happy path, the expected guardrail, and the
+observable recovery path. Tests should assert workspace files first, then CLI
+and JSON state.
+
+| Story | User intent | Required coverage |
+|-------|-------------|-------------------|
+| Start a repo | "I want a normal directory where my tools can create files and JVS can start tracking checkpoints." | `init`, default `main` workspace, repo/workspace discovery from root and nested paths, clear rejection of unsafe or ambiguous setup paths. |
+| Import existing work | "I already have files and want the first checkpoint to preserve them." | `import` creates a new repo, captures payload only, tags the initial checkpoint, rejects control-plane metadata in the source, and leaves source data untouched. |
+| Save progress | "I want to checkpoint the full workspace without staging individual files." | File additions, edits, deletes, nested directories, binary files, empty directories where supported, repeated checkpoint creation from `latest`, notes, tags, and list output. |
+| Understand state | "I need to know whether my workspace is safe, current, historical, or dirty." | `status` and `checkpoint list` show `current`, `latest`, `at_latest`, and `dirty` consistently after checkpoint, edit, restore, and fork. |
+| Inspect history | "I want to compare or inspect earlier states without losing later checkpoints." | `diff`, `restore <checkpoint>`, `restore latest`, stable refs, unique ID prefixes, exact tags, and rejection of reserved tag names. |
+| Protect dirty work | "I do not want restore or removal commands to overwrite uncheckpointed work by accident." | Dirty restore refusal, `--include-working`, `--discard-dirty`, mutual exclusion of safety flags, and workspace removal guardrails. |
+| Fork from history | "I found a useful historical state and need a separate workspace from there." | `fork <name>`, `fork <ref> <name>`, `fork --from <ref> <name>`, checkpointing on the new workspace, and isolation from the original workspace. |
+| Work in parallel | "I need multiple real directories for separate experiments or agents." | Workspace list/path/rename/remove, independent `current` and `latest`, independent dirty state, and no accidental mutation across workspaces. |
+| Verify trust | "I need confidence that checkpoints have not been corrupted." | `verify`, `verify --all`, `doctor`, `doctor --strict`, clear failure on descriptor or payload tampering, and actionable recovery hints. |
+| Clone locally | "I need a local copy of a repo or current workspace, not a remote protocol." | `clone --scope current`, `clone --scope full`, new repo identity where documented, copied user-visible workspaces/checkpoints, and excluded active runtime state. |
+| Clean safely | "I need cleanup to be planned before anything is deleted." | `gc plan`, protected active lineages, stable plan ID, stale or mismatched plan rejection, and `gc run --plan-id` behavior. |
+| Probe filesystem capability | "I need to know whether this path will use JuiceFS clone, reflink, or copy." | `capability`, `--write-probe`, engine summary in setup commands, warnings, degraded reasons, and stable JSON fields. |
+
+### Test Design Principles
+
+- Start from the user's mental model: real workspaces, visible files,
+  checkpoints, restore, fork, and verification.
+- Prefer complete workflows over isolated command smoke tests. A story should
+  leave the workspace in a state that the next user action can observe.
+- Treat the filesystem as the source of truth. Assertions should read files and
+  directories the way user tools would.
+- Use public CLI output, exit codes, and stable JSON fields as the contract.
+  Avoid asserting private filenames, storage rows, or package internals.
+- Keep state transitions explicit. Every story should state when the workspace
+  is expected to be `latest`, historical, or `dirty`.
+- Exercise refusal paths as first-class UX. A safe failure with a clear hint is
+  a product success.
+- Keep v0 vocabulary consistent: repo, workspace, checkpoint, current, latest,
+  and dirty.
+- Make engine expectations explicit. Tests should distinguish supported
+  JuiceFS metadata clone, reflink/copy fallback, and environment skip.
+- Keep fixtures deterministic and local. Avoid time, network, user-global
+  config, shared mounts, or production paths as hidden dependencies.
+- Add new E2E coverage as failing story expectations before changing product
+  behavior.
+
+### JuiceFS Local Sqlite + Local Bucket Requirements
+
+The `story-juicefs-local` profile must use a real local JuiceFS deployment with
+no external service dependency:
+
+- Metadata store: a per-run sqlite database file in an isolated temporary
+  directory.
+- Object store: a per-run local bucket directory in an isolated temporary
+  directory.
+- Mount point: a per-run local mount directory where JVS repos and workspaces
+  are created.
+- Volume identity: unique per run to avoid collisions with developer or CI
+  state.
+- Lifecycle: format, mount, validate, unmount, and clean up within the test
+  profile.
+- Isolation: no network object store, remote metadata service, shared
+  production bucket, user credentials, or pre-existing JuiceFS volume.
+- Evidence: record JuiceFS CLI version, mount path, metadata path, bucket path,
+  JVS version, OS, and whether `juicefs-clone` was selected or degraded.
+- Capability gate: run `jvs capability --write-probe` against the mount before
+  story execution and classify the result as supported, degraded, or skipped.
+
+When the local JuiceFS environment reports supported clone behavior, the suite
+must confirm that checkpoint, restore, import/clone setup, and capability
+responses expose `juicefs-clone` or equivalent documented engine messaging.
+When the environment is valid but clone support is unavailable, the suite must
+not silently pass as if JuiceFS metadata-clone behavior was proven; it should
+report degraded coverage with the fallback engine and reason.
+
+### Defect Classification
+
+Defects should be triaged by user impact:
+
+| Class | Meaning | Release impact |
+|-------|---------|----------------|
+| P0 Data loss or corruption | A default workflow loses user data, corrupts checkpoint history, or reports corrupted data as valid. | Blocks release. |
+| P0 Safety bypass | A destructive command overwrites dirty work without explicit user intent. | Blocks release. |
+| P1 Story failure | A primary v0 story cannot be completed on the required local profile. | Blocks release unless explicitly waived. |
+| P1 JuiceFS false claim | Tests or product output imply supported JuiceFS metadata-clone behavior without real supported evidence. | Blocks release claims and JuiceFS profile signoff. |
+| P1 Automation contract break | JSON output for a story is malformed, mixed with diagnostics, or missing stable required fields. | Blocks release. |
+| P2 UX ambiguity | Errors, hints, or state labels leave a reasonable user unsure what happened or what to do next. | Must be fixed or documented before release. |
+| P2 Portability gap | Behavior differs across local and JuiceFS profiles without an explicit engine or filesystem explanation. | Requires triage before release. |
+| P3 Coverage debt | A story path lacks regression coverage but no current product failure is observed. | Track in the implementation plan. |
+
+### Deliverables
+
+- A runnable E2E story suite with separate local, JuiceFS-local, and JSON
+  selection profiles.
+- A traceability table mapping each test file or scenario to the user stories
+  in this document and the contract areas in `docs/11_CONFORMANCE_TEST_PLAN.md`.
+- Local JuiceFS environment setup and cleanup automation suitable for CI and
+  developer machines.
+- Release evidence that records environment details, engine selection,
+  pass/fail summary, skipped/degraded JuiceFS coverage, and defect
+  classification.
+- Product-facing documentation updates when tests reveal confusing terminology,
+  unsafe examples, or unsupported claims.
+
+### Acceptance Standards
+
+- All `story-local` tests pass before a v0 release.
+- All `story-json` tests pass for commands that document JSON output.
+- `story-juicefs-local` either passes on a real local sqlite-backed JuiceFS
+  mount with local bucket storage or reports an explicit environment skip that
+  prevents unsupported JuiceFS performance claims from being made.
+- Any P0 defect blocks release.
+- Any unwaived P1 defect blocks release.
+- Public docs, CLI help, examples, JSON fields, and test names use the same v0
+  vocabulary.
+- The suite proves that default destructive operations protect dirty user
+  files, and that explicit safety flags behave exactly as described.
+- The suite proves that JVS remains local-first: no test requires a remote
+  server, remote repository, push/pull command, merge/rebase operation, or
+  service-side permission model.
+
+### Phased Implementation Guidance
+
+1. **Story Baseline**: Build the `story-local` profile for repo setup,
+   checkpoint, status, restore, fork, workspace isolation, and dirty guards.
+   This phase should make the user state model visible and stable before
+   expanding into specialized environments.
+2. **Automation Parity**: Add `story-json` coverage for the same workflows.
+   Human-readable and JSON assertions should describe the same product
+   outcomes, with JSON tests focused on stable fields and machine-readable
+   errors.
+3. **Integrity And Cleanup**: Add verification, doctor, corruption detection,
+   clone, migration boundary, and GC planning/running stories. Keep corruption
+   setup scoped to documented integrity and portability promises.
+4. **Local JuiceFS Integration**: Add the sqlite metadata plus local bucket
+   JuiceFS profile. Start with capability probing and one checkpoint/restore
+   story, then expand to import, clone, fork, dirty guard, and verification
+   stories once environment setup is reliable.
+5. **Release Evidence And Gates**: Connect story profiles to release
+   qualification. Persist environment evidence, engine results,
+   skipped/degraded reasons, and defect classification so release notes can
+   make accurate product claims.
