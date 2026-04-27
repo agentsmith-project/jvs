@@ -54,6 +54,9 @@ func (id SnapshotID) IsValid() bool {
 type Descriptor struct {
 	SnapshotID           SnapshotID            `json:"snapshot_id"`
 	ParentID             *SnapshotID           `json:"parent_id,omitempty"`
+	StartedFrom          *SnapshotID           `json:"started_from,omitempty"`
+	RestoredFrom         *SnapshotID           `json:"restored_from,omitempty"`
+	RestoredPaths        []RestoredPathSource  `json:"restored_paths,omitempty"`
 	WorktreeName         string                `json:"worktree_name"`
 	CreatedAt            time.Time             `json:"created_at"`
 	Note                 string                `json:"note,omitempty"`
