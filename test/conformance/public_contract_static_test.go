@@ -177,7 +177,7 @@ func TestDocs_ReleaseBlockingManifestIncludesPublicDocs(t *testing.T) {
 func TestDocs_ReleaseBlockingManifestIncludesLinkedActiveMarkdownDocs(t *testing.T) {
 	docs := releaseBlockingContractDocs()
 	for _, link := range activePublicMarkdownDocLinks(t) {
-		if stringSliceContains(archivedNonReleaseFacingDocs(), link.target) {
+		if stringSliceContains(nonReleaseFacingDocs(), link.target) {
 			continue
 		}
 		if !stringSliceContains(docs, link.target) {
@@ -198,7 +198,7 @@ func TestDocs_PublicCommandManifestCoversReleaseBlockingDocs(t *testing.T) {
 func TestDocs_ActivePublicManifestCoversReleaseBlockingDocs(t *testing.T) {
 	activeDocs := activePublicContractDocs()
 	for _, doc := range releaseBlockingContractDocs() {
-		if stringSliceContains(archivedNonReleaseFacingDocs(), doc) {
+		if stringSliceContains(nonReleaseFacingDocs(), doc) {
 			continue
 		}
 		if !stringSliceContains(activeDocs, doc) {
@@ -220,12 +220,32 @@ func TestDocs_ArchivedDocsDeclareNonReleaseFacingStatus(t *testing.T) {
 	}
 }
 
+func TestDocs_ActiveNonReleaseFacingDesignDocsDeclareStatus(t *testing.T) {
+	for _, doc := range activeNonReleaseFacingDesignDocs() {
+		t.Run(doc, func(t *testing.T) {
+			rawBody := readRepoFile(t, doc)
+			body := strings.ToLower(rawBody)
+			for _, required := range []string{"active clean redesign", "non-release-facing", "not part of the v0 public contract"} {
+				if !strings.Contains(body, required) {
+					t.Fatalf("%s is excluded from v0 release-facing docs scans but does not declare %q", doc, required)
+				}
+			}
+			for _, forbidden := range []string{"**Status:** Archived", "Archived note:"} {
+				if strings.Contains(rawBody, forbidden) {
+					t.Fatalf("%s is active non-release-facing design work and must not declare archived marker %q", doc, forbidden)
+				}
+			}
+		})
+	}
+}
+
 func TestDocs_AllMarkdownDocsAreReleaseClassified(t *testing.T) {
 	classified := append([]string{}, activePublicContractDocs()...)
 	classified = append(classified, archivedNonReleaseFacingDocs()...)
+	classified = append(classified, activeNonReleaseFacingDesignDocs()...)
 	for _, doc := range markdownDocsUnder(t, "docs") {
 		if !stringSliceContains(classified, doc) {
-			t.Fatalf("%s must be active release-facing or explicitly archived/non-release-facing", doc)
+			t.Fatalf("%s must be active release-facing, active non-release-facing design, or explicitly archived/non-release-facing", doc)
 		}
 	}
 }
@@ -1726,7 +1746,6 @@ func activeReleaseFacingContractDocs() []string {
 
 func archivedNonReleaseFacingDocs() []string {
 	return []string{
-		"docs/21_SAVE_POINT_WORKSPACE_SEMANTICS.md",
 		"docs/JVS_SYNC.md",
 		"docs/SOURCES.md",
 		"docs/TEMPLATES.md",
@@ -1735,10 +1754,24 @@ func archivedNonReleaseFacingDocs() []string {
 	}
 }
 
+func activeNonReleaseFacingDesignDocs() []string {
+	return []string{
+		"docs/21_SAVE_POINT_WORKSPACE_SEMANTICS.md",
+	}
+}
+
+func nonReleaseFacingDocs() []string {
+	docs := append([]string{}, archivedNonReleaseFacingDocs()...)
+	for _, doc := range activeNonReleaseFacingDesignDocs() {
+		docs = appendUniqueString(docs, doc)
+	}
+	return docs
+}
+
 func activePublicContractDocs() []string {
 	var docs []string
 	for _, doc := range releaseBlockingContractDocs() {
-		if stringSliceContains(archivedNonReleaseFacingDocs(), doc) {
+		if stringSliceContains(nonReleaseFacingDocs(), doc) {
 			continue
 		}
 		docs = appendUniqueString(docs, doc)

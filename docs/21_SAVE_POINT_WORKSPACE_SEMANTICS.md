@@ -1,21 +1,21 @@
 # Save Point / Workspace Semantics
 
-**Status:** Archived, non-release-facing
+**Status:** Active clean redesign implementation plan; non-release-facing for v0
 
-> Archived note: this clean redesign semantics draft is not part of the v0 public contract.
-> Current release-facing guarantees are defined by the active v0 specs and
-> conformance gates; this document is retained as non-current product design
-> context.
+> This active clean-redesign semantics plan is not part of the v0 public contract.
+> It guides the clean redesign workstream only. Current v0 release-facing
+> guarantees remain defined by the active v0 specs and release gates until this
+> document, or a narrowed subset of it, is explicitly promoted.
 
 ## Status / Scope / Supersedes
 
-**状态**: 本文是 JVS clean product redesign / 干净重构后的产品语义总纲。
+**状态**: 本文是 JVS active clean redesign / clean-redesign implementation plan 的产品语义总纲；它对 clean redesign workstream 生效。
 
-**范围**: 本文约束公开 UX、CLI 命名、帮助文本、文档、验收用例、行为设计和后续实现方向。
+**范围**: 本文约束 clean redesign workstream 中的公开 UX、CLI 命名、帮助文本、文档、验收用例、行为设计和后续实现方向。它是 v0 non-release-facing 设计计划，不作为当前 v0 release-facing public contract 或 release gate 输入。
 
-**覆盖关系**: 当前产品尚未发布，本文 supersedes/replaces old draft semantics。凡旧草案、历史实现、旧文档中的公开心智、命令含义或用户文案与本文冲突，均以本文为准。实现应朝本文的新语义收敛，而不是把新旧两套心智并存。
+**覆盖关系**: 在 clean redesign workstream 内，本文 supersedes/replaces old draft semantics。凡旧草案、历史实现、旧文档中的公开心智、命令含义或用户文案与本文冲突，均以本文为准。本文不覆盖当前 v0 release-facing specs 和 release gates；在显式 promoted 之前，不得把它当作当前 v0 release-blocking contract。
 
-**Breaking change policy**: 命令/API 设计可以 breaking change。未发布前优先选择低心智、干净、一致的产品模型；不为兼容旧设计增加用户心智负担。
+**Breaking change policy**: 在 clean redesign workstream 中，命令/API 设计可以 breaking change。未发布前优先选择低心智、干净、一致的产品模型；不为兼容旧设计增加用户心智负担。
 
 JVS 的核心产品定义是：
 
