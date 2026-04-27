@@ -591,6 +591,28 @@ func TestWriteAndLoadWorktreeConfig(t *testing.T) {
 	assert.Equal(t, model.SnapshotID("1708300800000-abc12345"), cfg2.HeadSnapshotID)
 }
 
+func TestWorktreeConfigPersistsPathSources(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "testrepo")
+	_, err := repo.Init(repoPath, "testrepo")
+	require.NoError(t, err)
+
+	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	source := model.SnapshotID("1708300800000-abc12345")
+	cfg.PathSources = model.NewPathSources()
+	require.NoError(t, cfg.PathSources.Restore("src/app.txt", source))
+	require.NoError(t, repo.WriteWorktreeConfig(repoPath, "main", cfg))
+
+	loaded, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	entry, ok, err := loaded.PathSources.SourceForPath("src/app.txt")
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, "src/app.txt", entry.TargetPath)
+	assert.Equal(t, source, entry.SourceSnapshotID)
+}
+
 func TestLoadWorktreeConfig_NotFound(t *testing.T) {
 	dir := t.TempDir()
 	repoPath := filepath.Join(dir, "testrepo")

@@ -6,19 +6,23 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/restore"
+	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/pkg/color"
 	"github.com/agentsmith-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/pkg/pathutil"
 )
 
 var (
 	restoreInteractive    bool
 	restoreDiscardDirty   bool
 	restoreIncludeWorking bool
+	restorePath           string
 )
 
 var restoreCmd = &cobra.Command{
-	Use:   "restore <save-point>",
+	Use:   "restore [save-point] [--path path]",
 	Short: "Restore managed files to a save point",
 	Long: `Restore managed files in the active folder to a save point.
 
@@ -27,13 +31,19 @@ changes, save them first or discard them explicitly.
 
 Examples:
   jvs restore 1771589abc
+  jvs restore --path src/config.json
+  jvs restore 1771589abc --path src/config.json
   jvs restore 1771589abc --save-first
   jvs restore 1771589abc --discard-unsaved`,
-	Args: cobra.ExactArgs(1),
+	Args: validateRestoreArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		r, workspaceName, err := discoverRequiredWorktree()
 		if err != nil {
 			return err
+		}
+
+		if restorePathFlagChanged(cmd) {
+			return runRestorePath(cmd, args, r.Root, workspaceName)
 		}
 
 		targetID, err := resolvePublicSavePointID(r.Root, args[0])
@@ -67,6 +77,19 @@ Examples:
 	},
 }
 
+func validateRestoreArgs(cmd *cobra.Command, args []string) error {
+	if restorePathFlagChanged(cmd) {
+		if len(args) > 1 {
+			return fmt.Errorf("restore --path accepts at most one save point ID")
+		}
+		return nil
+	}
+	if len(args) != 1 {
+		return fmt.Errorf("save point ID is required. Choose a save point ID, then run the command again")
+	}
+	return nil
+}
+
 type publicRestoreResult struct {
 	Folder            string  `json:"folder"`
 	Workspace         string  `json:"workspace"`
@@ -77,6 +100,104 @@ type publicRestoreResult struct {
 	UnsavedChanges    bool    `json:"unsaved_changes"`
 	FilesState        string  `json:"files_state"`
 	HistoryChanged    bool    `json:"history_changed"`
+}
+
+type publicRestorePathCandidatesResult struct {
+	Mode         string                       `json:"mode"`
+	Folder       string                       `json:"folder"`
+	Workspace    string                       `json:"workspace"`
+	Path         string                       `json:"path"`
+	Candidates   []publicHistoryPathCandidate `json:"candidates"`
+	NextCommands []string                     `json:"next_commands"`
+	FilesChanged bool                         `json:"files_changed"`
+}
+
+type publicRestorePathResult struct {
+	Folder             string                     `json:"folder"`
+	Workspace          string                     `json:"workspace"`
+	RestoredPath       string                     `json:"restored_path"`
+	FromSavePoint      string                     `json:"from_save_point"`
+	SourceSavePoint    string                     `json:"source_save_point"`
+	NewestSavePoint    *string                    `json:"newest_save_point"`
+	HistoryHead        *string                    `json:"history_head"`
+	ContentSource      *string                    `json:"content_source"`
+	HistoryChanged     bool                       `json:"history_changed"`
+	FilesChanged       bool                       `json:"files_changed"`
+	PathSourceRecorded bool                       `json:"path_source_recorded"`
+	PathSources        []publicRestoredPathSource `json:"path_sources,omitempty"`
+	UnsavedChanges     bool                       `json:"unsaved_changes"`
+	FilesState         string                     `json:"files_state"`
+}
+
+func restorePathFlagChanged(cmd *cobra.Command) bool {
+	flag := cmd.Flags().Lookup("path")
+	return flag != nil && flag.Changed
+}
+
+func runRestorePath(cmd *cobra.Command, args []string, repoRoot, workspaceName string) error {
+	if len(args) == 0 {
+		path, err := normalizeRestorePathFlag(repoRoot, workspaceName, restorePath)
+		if err != nil {
+			return restorePathError(err, restorePath)
+		}
+		result, err := restorePathCandidates(repoRoot, workspaceName, path)
+		if err != nil {
+			return restorePathError(err, path)
+		}
+		if jsonOutput {
+			return outputJSON(result)
+		}
+		printRestorePathCandidates(result)
+		return nil
+	}
+
+	targetID, err := resolvePublicSavePointID(repoRoot, args[0])
+	if err != nil {
+		return restorePathError(err, restorePath)
+	}
+	if restoreDiscardDirty && restoreIncludeWorking {
+		return restorePathError(fmt.Errorf("--discard-unsaved and --save-first cannot be used together"), restorePath)
+	}
+
+	var result publicRestorePathResult
+	normalizedPath := ""
+	err = repo.WithMutationLock(repoRoot, "restore path", func() error {
+		path, err := normalizeRestorePathFlag(repoRoot, workspaceName, restorePath)
+		if err != nil {
+			return err
+		}
+		normalizedPath = path
+		if err := ensureRestorePathSourceExists(repoRoot, workspaceName, targetID, path); err != nil {
+			return err
+		}
+		if restoreIncludeWorking {
+			if _, err := snapshot.NewCreator(repoRoot, detectEngine(repoRoot)).CreateSavePointLocked(workspaceName, "save before restore path", nil); err != nil {
+				return err
+			}
+		} else if !restoreDiscardDirty {
+			pathDirty, err := workspacePathDirty(repoRoot, workspaceName, path)
+			if err != nil {
+				return err
+			}
+			if pathDirty {
+				return fmt.Errorf("path has unsaved changes in %s; use --save-first to save them before restore or --discard-unsaved to discard changes in this path", path)
+			}
+		}
+
+		if err := restore.NewRestorer(repoRoot, detectEngine(repoRoot)).RestorePathLocked(workspaceName, targetID, path); err != nil {
+			return err
+		}
+		result, err = publicRestorePathStatus(repoRoot, workspaceName, path, targetID)
+		return err
+	})
+	if err != nil {
+		return restorePathError(err, restorePath, normalizedPath)
+	}
+	if jsonOutput {
+		return outputJSON(result)
+	}
+	printRestorePathResult(result)
+	return nil
 }
 
 func rejectUnsavedChangesForRestore(repoRoot, workspaceName string) error {
@@ -111,6 +232,105 @@ func publicRestoreStatus(repoRoot, workspaceName string, restoredID model.Snapsh
 	}, nil
 }
 
+func normalizeRestorePathFlag(repoRoot, workspaceName, raw string) (string, error) {
+	path, err := normalizeViewPath(raw)
+	if err != nil || path == "" {
+		return "", fmt.Errorf("path must be a workspace-relative path")
+	}
+	boundary, err := repo.WorktreeManagedPayloadBoundary(repoRoot, workspaceName)
+	if err != nil {
+		return "", fmt.Errorf("workspace path: %w", err)
+	}
+	if boundary.ExcludesRelativePath(path) {
+		return "", fmt.Errorf("path must be a workspace-relative path; JVS control data is not managed")
+	}
+	if err := pathutil.ValidateNoSymlinkParents(boundary.Root, path); err != nil {
+		return "", fmt.Errorf("path must be a workspace-relative path: %w", err)
+	}
+	return path, nil
+}
+
+func restorePathCandidates(repoRoot, workspaceName, path string) (publicRestorePathCandidatesResult, error) {
+	historyResult, err := findHistoryPathCandidates(repoRoot, workspaceName, path)
+	if err != nil {
+		return publicRestorePathCandidatesResult{}, err
+	}
+	return publicRestorePathCandidatesResult{
+		Mode:         "candidates",
+		Folder:       historyResult.Folder,
+		Workspace:    historyResult.Workspace,
+		Path:         historyResult.Path,
+		Candidates:   historyResult.Candidates,
+		NextCommands: restorePathNextCommands(path, historyResult.Candidates),
+		FilesChanged: false,
+	}, nil
+}
+
+func restorePathNextCommands(path string, candidates []publicHistoryPathCandidate) []string {
+	if len(candidates) == 0 {
+		return []string{}
+	}
+	return []string{genericRestorePathCommand(path)}
+}
+
+func genericRestorePathCommand(path string) string {
+	if strings.HasPrefix(path, "-") {
+		return fmt.Sprintf("jvs restore <save> --path=%s", shellQuoteArg(path))
+	}
+	return fmt.Sprintf("jvs restore <save> --path %s", shellQuoteArg(path))
+}
+
+func ensureRestorePathSourceExists(repoRoot, workspaceName string, savePointID model.SnapshotID, path string) error {
+	desc, err := snapshot.LoadDescriptor(repoRoot, savePointID)
+	if err != nil {
+		return fmt.Errorf("load save point: %w", err)
+	}
+	boundary, err := repo.WorktreeManagedPayloadBoundary(repoRoot, workspaceName)
+	if err != nil {
+		return fmt.Errorf("workspace managed boundary: %w", err)
+	}
+	exists, err := savePointContainsHistoryPath(repoRoot, desc, path, boundary)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("path does not exist in save point: %s", path)
+	}
+	return nil
+}
+
+func publicRestorePathStatus(repoRoot, workspaceName, path string, sourceID model.SnapshotID) (publicRestorePathResult, error) {
+	status, err := buildWorkspaceStatus(repoRoot, workspaceName)
+	if err != nil {
+		return publicRestorePathResult{}, err
+	}
+	return publicRestorePathResult{
+		Folder:             status.Folder,
+		Workspace:          status.Workspace,
+		RestoredPath:       path,
+		FromSavePoint:      string(sourceID),
+		SourceSavePoint:    string(sourceID),
+		NewestSavePoint:    status.NewestSavePoint,
+		HistoryHead:        status.HistoryHead,
+		ContentSource:      status.ContentSource,
+		HistoryChanged:     false,
+		FilesChanged:       true,
+		PathSourceRecorded: pathSourceRecorded(status.PathSources, path, sourceID),
+		PathSources:        status.PathSources,
+		UnsavedChanges:     status.UnsavedChanges,
+		FilesState:         status.FilesState,
+	}, nil
+}
+
+func pathSourceRecorded(sources []publicRestoredPathSource, path string, sourceID model.SnapshotID) bool {
+	for _, source := range sources {
+		if source.TargetPath == path && source.SourceSavePoint == string(sourceID) {
+			return true
+		}
+	}
+	return false
+}
+
 func printRestoreResult(result publicRestoreResult) {
 	restored := color.SnapshotID(result.RestoredSavePoint)
 	fmt.Printf("Folder: %s\n", result.Folder)
@@ -128,11 +348,148 @@ func printRestoreResult(result publicRestoreResult) {
 	fmt.Println("History was not changed.")
 }
 
+func printRestorePathCandidates(result publicRestorePathCandidatesResult) {
+	fmt.Printf("Folder: %s\n", result.Folder)
+	fmt.Printf("Workspace: %s\n", result.Workspace)
+	fmt.Println("No save point ID was provided.")
+	fmt.Printf("Candidates for path: %s\n", result.Path)
+	if len(result.Candidates) == 0 {
+		fmt.Println("No candidates found.")
+	} else {
+		for _, candidate := range result.Candidates {
+			message := candidate.Message
+			if message == "" {
+				message = color.Dim("(no message)")
+			}
+			fmt.Printf("%s  %s  %s\n",
+				color.SnapshotID(candidate.SavePointID),
+				color.Dim(candidate.CreatedAt.Format("2006-01-02 15:04")),
+				message,
+			)
+		}
+	}
+	fmt.Println("Choose a save point ID, then run:")
+	commands := result.NextCommands
+	if len(commands) == 0 {
+		commands = []string{genericRestorePathCommand(result.Path)}
+	}
+	for _, command := range commands {
+		fmt.Printf("  %s\n", command)
+	}
+	fmt.Println("No files were changed.")
+}
+
+func printRestorePathResult(result publicRestorePathResult) {
+	fmt.Printf("Folder: %s\n", result.Folder)
+	fmt.Printf("Workspace: %s\n", result.Workspace)
+	fmt.Printf("Restored path: %s\n", result.RestoredPath)
+	fmt.Printf("From save point: %s\n", color.SnapshotID(result.FromSavePoint))
+	newest := formatStatusSavePoint(result.NewestSavePoint)
+	fmt.Printf("Newest save point is still %s.\n", newest)
+	fmt.Println("History was not changed.")
+	fmt.Printf("Next save creates a new save point after %s and records this restored path.\n", newest)
+}
+
 func restorePointError(err error) error {
 	if err == nil {
 		return nil
 	}
 	return fmt.Errorf("%s", restorePointVocabulary(err.Error()))
+}
+
+func restorePathError(err error, protectedValues ...string) error {
+	if err == nil {
+		return nil
+	}
+	message := restorePathVocabulary(err.Error(), protectedValues...)
+	if !strings.Contains(message, "No files were changed.") {
+		message += ". No files were changed."
+	}
+	return fmt.Errorf("%s", message)
+}
+
+func restorePathVocabulary(value string, protectedValues ...string) string {
+	protected := compactProtectedValues(protectedValues)
+	if len(protected) == 0 {
+		return restorePointVocabulary(value)
+	}
+	var out strings.Builder
+	for i := 0; i < len(value); {
+		if match := protectedValueAt(value, i, protected); match != "" {
+			out.WriteString(match)
+			i += len(match)
+			continue
+		}
+		next := len(value)
+		if idx := nextProtectedValueOffset(value, i, protected); idx >= 0 {
+			next = idx
+		}
+		out.WriteString(restorePointVocabulary(value[i:next]))
+		i = next
+	}
+	return out.String()
+}
+
+func compactProtectedValues(values []string) []string {
+	var protected []string
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		protected = append(protected, value)
+	}
+	return protected
+}
+
+func protectedValueAt(value string, offset int, protected []string) string {
+	for _, candidate := range protected {
+		if strings.HasPrefix(value[offset:], candidate) && protectedValueHasDelimiters(value, offset, len(candidate)) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func nextProtectedValueOffset(value string, start int, protected []string) int {
+	for i := start; i < len(value); i++ {
+		if protectedValueAt(value, i, protected) != "" {
+			return i
+		}
+	}
+	return -1
+}
+
+func protectedValueHasDelimiters(value string, start, length int) bool {
+	return protectedValueStartDelimited(value, start) && protectedValueEndDelimited(value, start+length)
+}
+
+func protectedValueStartDelimited(value string, start int) bool {
+	if start == 0 {
+		return true
+	}
+	return isProtectedValueDelimiter(value[start-1])
+}
+
+func protectedValueEndDelimited(value string, end int) bool {
+	if end >= len(value) {
+		return true
+	}
+	return isProtectedValueDelimiter(value[end])
+}
+
+func isProtectedValueDelimiter(b byte) bool {
+	if isASCIISpace(b) {
+		return true
+	}
+	switch b {
+	case '"', '\'', '`', ':', ';', ',', '(', ')', '[', ']', '{', '}', '<', '>', '=', '.':
+		return true
+	default:
+		return false
+	}
 }
 
 func restorePointVocabulary(value string) string {
@@ -166,5 +523,6 @@ func init() {
 	restoreCmd.Flags().Lookup("discard-dirty").Hidden = true
 	restoreCmd.Flags().BoolVar(&restoreIncludeWorking, "include-working", false, "checkpoint dirty workspace changes before this operation")
 	restoreCmd.Flags().Lookup("include-working").Hidden = true
+	restoreCmd.Flags().StringVar(&restorePath, "path", "", "restore only this workspace-relative path")
 	rootCmd.AddCommand(restoreCmd)
 }

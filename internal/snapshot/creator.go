@@ -17,6 +17,7 @@ import (
 	"github.com/agentsmith-project/jvs/internal/integrity"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshotpayload"
+	"github.com/agentsmith-project/jvs/internal/workspacepath"
 	"github.com/agentsmith-project/jvs/internal/worktree"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/agentsmith-project/jvs/pkg/fsutil"
@@ -109,6 +110,12 @@ func (c *Creator) CreateSavePoint(worktreeName, note string, tags []string) (*mo
 	return desc, err
 }
 
+// CreateSavePointLocked creates a public save point while the caller already
+// holds the repository mutation lock.
+func (c *Creator) CreateSavePointLocked(worktreeName, note string, tags []string) (*model.Descriptor, error) {
+	return c.createSavePoint(worktreeName, note, tags)
+}
+
 // CreatePartial performs a snapshot of specific paths within the worktree.
 // If paths is nil or empty, performs a full snapshot.
 func (c *Creator) CreatePartial(worktreeName, note string, tags []string, paths []string) (*model.Descriptor, error) {
@@ -156,12 +163,10 @@ func (c *Creator) createPartialWithDescriptorParentAndLineage(worktreeName, note
 	if err != nil {
 		return nil, fmt.Errorf("get worktree: %w", err)
 	}
-	descriptorCfg := *cfg
 	if overrideParent {
 		if parentOverride != cfg.LatestSnapshotID {
 			return nil, fmt.Errorf("snapshot parent %s is stale; latest is %s", parentOverride, cfg.LatestSnapshotID)
 		}
-		descriptorCfg.HeadSnapshotID = parentOverride
 	}
 
 	// Normalize and validate paths if provided
@@ -184,6 +189,15 @@ func (c *Creator) createPartialWithDescriptorParentAndLineage(worktreeName, note
 	}
 	if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(boundary.Root); err != nil {
 		return nil, err
+	}
+	reconciledPathSources, err := workspacepath.ReconcilePathSources(c.repoRoot, boundary, cfg.PathSources)
+	if err != nil {
+		return nil, fmt.Errorf("reconcile restored paths: %w", err)
+	}
+	cfg.PathSources = reconciledPathSources
+	descriptorCfg := *cfg
+	if overrideParent {
+		descriptorCfg.HeadSnapshotID = parentOverride
 	}
 	if err := c.auditLogger.EnsureAppendable(); err != nil {
 		return nil, fmt.Errorf("audit log not appendable: %w", err)
@@ -243,6 +257,7 @@ func workspaceStateFromWorktreeConfig(cfg *model.WorktreeConfig) model.Workspace
 	if cfg.HeadSnapshotID != "" && cfg.HeadSnapshotID != cfg.LatestSnapshotID {
 		state.RestoreWhole(cfg.HeadSnapshotID)
 	}
+	state.PathSources = cfg.PathSources.Clone()
 	return state
 }
 

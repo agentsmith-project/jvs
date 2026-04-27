@@ -36,13 +36,14 @@ type publicSavePointRecord struct {
 }
 
 type publicSavePointCreatedRecord struct {
-	SavePointID     string    `json:"save_point_id"`
-	Workspace       string    `json:"workspace"`
-	Message         string    `json:"message"`
-	CreatedAt       time.Time `json:"created_at"`
-	NewestSavePoint string    `json:"newest_save_point"`
-	RestoredFrom    string    `json:"restored_from,omitempty"`
-	UnsavedChanges  bool      `json:"unsaved_changes"`
+	SavePointID     string                     `json:"save_point_id"`
+	Workspace       string                     `json:"workspace"`
+	Message         string                     `json:"message"`
+	CreatedAt       time.Time                  `json:"created_at"`
+	NewestSavePoint string                     `json:"newest_save_point"`
+	RestoredFrom    string                     `json:"restored_from,omitempty"`
+	RestoredPaths   []publicRestoredPathSource `json:"restored_paths,omitempty"`
+	UnsavedChanges  bool                       `json:"unsaved_changes"`
 }
 
 type publicSavePointHistoryRecord struct {
@@ -112,6 +113,13 @@ type publicGCPlan struct {
 	DeletableBytesEstimate int64     `json:"deletable_bytes_estimate"`
 }
 
+type publicRestoredPathSource struct {
+	TargetPath      string                 `json:"target_path"`
+	SourceSavePoint string                 `json:"source_save_point"`
+	SourcePath      string                 `json:"source_path"`
+	Status          model.PathSourceStatus `json:"status"`
+}
+
 func publicCheckpoint(desc *model.Descriptor) publicCheckpointRecord {
 	record := publicCheckpointRecord{
 		CheckpointID:         string(desc.SnapshotID),
@@ -172,7 +180,24 @@ func publicSavePointCreated(desc *model.Descriptor, unsavedChanges bool) publicS
 	if desc.RestoredFrom != nil {
 		record.RestoredFrom = string(*desc.RestoredFrom)
 	}
+	record.RestoredPaths = publicRestoredPathSources(desc.RestoredPaths)
 	return record
+}
+
+func publicRestoredPathSources(sources []model.RestoredPathSource) []publicRestoredPathSource {
+	if len(sources) == 0 {
+		return nil
+	}
+	records := make([]publicRestoredPathSource, 0, len(sources))
+	for _, source := range sources {
+		records = append(records, publicRestoredPathSource{
+			TargetPath:      source.TargetPath,
+			SourceSavePoint: string(source.SourceSnapshotID),
+			SourcePath:      source.SourcePath,
+			Status:          source.Status,
+		})
+	}
+	return records
 }
 
 func publicSavePointHistory(workspace string, descs []*model.Descriptor, newest model.SnapshotID) publicSavePointHistoryRecord {

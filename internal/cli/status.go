@@ -5,19 +5,22 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/agentsmith-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/internal/workspacepath"
 	"github.com/agentsmith-project/jvs/internal/worktree"
 	"github.com/agentsmith-project/jvs/pkg/color"
 	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
 type workspaceStatus struct {
-	Folder          string  `json:"folder"`
-	Workspace       string  `json:"workspace"`
-	NewestSavePoint *string `json:"newest_save_point"`
-	HistoryHead     *string `json:"history_head"`
-	ContentSource   *string `json:"content_source"`
-	UnsavedChanges  bool    `json:"unsaved_changes"`
-	FilesState      string  `json:"files_state"`
+	Folder          string                     `json:"folder"`
+	Workspace       string                     `json:"workspace"`
+	NewestSavePoint *string                    `json:"newest_save_point"`
+	HistoryHead     *string                    `json:"history_head"`
+	ContentSource   *string                    `json:"content_source"`
+	UnsavedChanges  bool                       `json:"unsaved_changes"`
+	FilesState      string                     `json:"files_state"`
+	PathSources     []publicRestoredPathSource `json:"path_sources,omitempty"`
 }
 
 type legacyWorkspaceStatus struct {
@@ -73,6 +76,16 @@ func printWorkspaceStatus(status workspaceStatus) {
 	} else {
 		fmt.Println("Unsaved changes: no")
 	}
+	if len(status.PathSources) > 0 {
+		fmt.Println("Restored paths:")
+		for _, source := range status.PathSources {
+			suffix := ""
+			if source.Status == model.PathSourceModifiedAfterRestore {
+				suffix = " (modified after restore)"
+			}
+			fmt.Printf("  %s from save point %s%s\n", source.TargetPath, formatStatusSavePoint(stringPtrOrNil(source.SourceSavePoint)), suffix)
+		}
+	}
 }
 
 func buildWorkspaceStatus(repoRoot, workspaceName string) (workspaceStatus, error) {
@@ -89,6 +102,14 @@ func buildWorkspaceStatus(repoRoot, workspaceName string) (workspaceStatus, erro
 	if err != nil {
 		return workspaceStatus{}, err
 	}
+	boundary, err := repo.WorktreeManagedPayloadBoundary(repoRoot, workspaceName)
+	if err != nil {
+		return workspaceStatus{}, fmt.Errorf("workspace path: %w", err)
+	}
+	projectedPathSources, err := workspacepath.ReconcilePathSources(repoRoot, boundary, cfg.PathSources)
+	if err != nil {
+		return workspaceStatus{}, fmt.Errorf("reconcile restored paths: %w", err)
+	}
 
 	historyHead := statusStringPointer(cfg.LatestSnapshotID)
 	contentSource := statusStringPointer(cfg.HeadSnapshotID)
@@ -100,6 +121,7 @@ func buildWorkspaceStatus(repoRoot, workspaceName string) (workspaceStatus, erro
 		ContentSource:   contentSource,
 		UnsavedChanges:  unsavedChanges,
 		FilesState:      filesState(historyHead, contentSource, unsavedChanges),
+		PathSources:     publicRestoredPathSources(projectedPathSources.RestoredPaths()),
 	}, nil
 }
 

@@ -62,6 +62,20 @@ func (r *Restorer) Restore(worktreeName string, snapshotID model.SnapshotID) err
 	})
 }
 
+// RestorePath replaces one workspace-relative file or directory from a save
+// point without moving the workspace history or whole-workspace content source.
+func (r *Restorer) RestorePath(worktreeName string, snapshotID model.SnapshotID, path string) error {
+	return repo.WithMutationLock(r.repoRoot, "restore path", func() error {
+		return r.restorePath(worktreeName, snapshotID, path)
+	})
+}
+
+// RestorePathLocked performs RestorePath while the caller already holds the
+// repository mutation lock.
+func (r *Restorer) RestorePathLocked(worktreeName string, snapshotID model.SnapshotID, path string) error {
+	return r.restorePath(worktreeName, snapshotID, path)
+}
+
 // restore performs the actual restore operation.
 func (r *Restorer) restore(worktreeName string, snapshotID model.SnapshotID) error {
 	if worktreeName == "" {
@@ -174,6 +188,105 @@ func (r *Restorer) restore(worktreeName string, snapshotID model.SnapshotID) err
 		return fmt.Errorf("write audit log: %w", err)
 	}
 
+	return nil
+}
+
+func (r *Restorer) restorePath(worktreeName string, snapshotID model.SnapshotID, rawPath string) error {
+	if worktreeName == "" {
+		return fmt.Errorf("worktree name is required")
+	}
+	if snapshotID == "" {
+		return fmt.Errorf("snapshot ID is required")
+	}
+	if err := snapshotID.Validate(); err != nil {
+		return fmt.Errorf("load snapshot: %w", err)
+	}
+
+	desc, err := snapshot.LoadDescriptor(r.repoRoot, snapshotID)
+	if err != nil {
+		return fmt.Errorf("load snapshot: %w", err)
+	}
+	if desc.SnapshotID != snapshotID {
+		return fmt.Errorf("load snapshot: descriptor snapshot ID %s does not match requested %s", desc.SnapshotID, snapshotID)
+	}
+
+	verifyResult, err := verify.NewVerifier(r.repoRoot).VerifySnapshot(snapshotID, true)
+	if err != nil {
+		return fmt.Errorf("verify snapshot: %w", err)
+	}
+	if verifyResult.TamperDetected {
+		return verifySnapshotResultError(verifyResult, "tamper detected")
+	}
+
+	wtMgr := worktree.NewManager(r.repoRoot)
+	if _, err := wtMgr.Get(worktreeName); err != nil {
+		return fmt.Errorf("get worktree: %w", err)
+	}
+	boundary, err := repo.WorktreeManagedPayloadBoundary(r.repoRoot, worktreeName)
+	if err != nil {
+		return fmt.Errorf("worktree payload path: %w", err)
+	}
+	if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(boundary.Root); err != nil {
+		return err
+	}
+	relPath, err := normalizeRestorePath(rawPath, boundary)
+	if err != nil {
+		return err
+	}
+	if err := r.auditLogger.EnsureAppendable(); err != nil {
+		return fmt.Errorf("audit log not appendable: %w", err)
+	}
+
+	backupPath := boundary.Root + ".restore-backup-" + uuidutil.NewV4()[:8]
+	snapshotDir, err := repo.SnapshotPathForRead(r.repoRoot, snapshotID)
+	if err != nil {
+		return fmt.Errorf("snapshot path: %w", err)
+	}
+	tempPath := boundary.Root + ".restore-path-tmp-" + uuidutil.NewV4()[:8]
+	if err := snapshotpayload.MaterializeToNew(snapshotDir, tempPath, snapshotpayload.OptionsFromDescriptor(desc), func(src, dst string) error {
+		_, err := engine.CloneToNew(r.engine, src, dst)
+		return err
+	}); err != nil {
+		os.RemoveAll(tempPath)
+		return fmt.Errorf("materialize snapshot: %w", err)
+	}
+	defer os.RemoveAll(tempPath)
+	if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(tempPath); err != nil {
+		return fmt.Errorf("materialized snapshot payload: %w", err)
+	}
+	if err := repo.ValidateManagedPayloadOnly(boundary, tempPath); err != nil {
+		return err
+	}
+	if err := validateRestorePathSourceAndDestination(boundary.Root, tempPath, relPath); err != nil {
+		return err
+	}
+
+	changes, err := overlayPartialPayload(boundary, tempPath, backupPath, []string{relPath})
+	if err != nil {
+		return fmt.Errorf("restore path %s: %w", relPath, err)
+	}
+
+	if err := recordPathRestoreSource(r.repoRoot, worktreeName, relPath, snapshotID); err != nil {
+		if recorded, recordErr := pathSourceMatches(r.repoRoot, worktreeName, relPath, snapshotID); recordErr == nil && recorded {
+			return retainBackup(backupPath, fmt.Errorf("record path source: %w (metadata records restored path; payload left restored)", err))
+		} else if recordErr != nil {
+			err = fmt.Errorf("%w (inspect path source after failure: %v)", err, recordErr)
+		}
+		if rollbackErr := rollbackPartialRestore(boundary.Root, backupPath, changes); rollbackErr != nil {
+			return retainBackup(backupPath, fmt.Errorf("record path source: %w (rollback failed: %v)", err, rollbackErr))
+		}
+		return cleanupBackupAfterRollback(backupPath, fmt.Errorf("record path source: %w", err))
+	}
+
+	if err := os.RemoveAll(backupPath); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to cleanup backup %s: %v\n", backupPath, err)
+	}
+	if err := r.auditLogger.Append(model.EventTypeRestore, worktreeName, snapshotID, map[string]any{
+		"path":            relPath,
+		"history_changed": false,
+	}); err != nil {
+		return fmt.Errorf("write audit log: %w", err)
+	}
 	return nil
 }
 
@@ -486,6 +599,82 @@ func normalizePartialPaths(paths []string) ([]string, error) {
 		}
 	}
 	return collapsed, nil
+}
+
+func normalizeRestorePath(raw string, boundary repo.WorktreePayloadBoundary) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", fmt.Errorf("path must be a workspace-relative path")
+	}
+	if strings.ContainsRune(raw, '\x00') || filepath.IsAbs(raw) || looksLikeWindowsRestorePath(raw) {
+		return "", fmt.Errorf("path must be a workspace-relative path")
+	}
+	clean, err := model.NormalizeWorkspaceRelativePathKey(raw)
+	if err != nil {
+		return "", fmt.Errorf("path must be a workspace-relative path: %w", err)
+	}
+	if clean == "." {
+		return "", fmt.Errorf("path must be a workspace-relative path")
+	}
+	if boundary.ExcludesRelativePath(clean) {
+		return "", fmt.Errorf("path must be a workspace-relative path; JVS control data is not managed")
+	}
+	return clean, nil
+}
+
+func looksLikeWindowsRestorePath(path string) bool {
+	if strings.HasPrefix(path, `\\`) || strings.Contains(path, `\`) {
+		return true
+	}
+	if len(path) >= 2 && path[1] == ':' {
+		first := path[0]
+		return (first >= 'A' && first <= 'Z') || (first >= 'a' && first <= 'z')
+	}
+	return false
+}
+
+func validateRestorePathSourceAndDestination(payloadRoot, sourceRoot, relPath string) error {
+	if err := pathutil.ValidateNoSymlinkParents(sourceRoot, relPath); err != nil {
+		return fmt.Errorf("source path parent containment for %s: %w", relPath, err)
+	}
+	if _, err := os.Lstat(filepath.Join(sourceRoot, filepath.FromSlash(relPath))); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("path does not exist in save point: %s", relPath)
+		}
+		return fmt.Errorf("stat source path %s: %w", relPath, err)
+	}
+	if err := pathutil.ValidateNoSymlinkParents(payloadRoot, relPath); err != nil {
+		return fmt.Errorf("destination path parent containment for %s: %w", relPath, err)
+	}
+	return nil
+}
+
+func recordPathRestoreSource(repoRoot, worktreeName, relPath string, source model.SnapshotID) error {
+	cfg, err := repo.LoadWorktreeConfig(repoRoot, worktreeName)
+	if err != nil {
+		return fmt.Errorf("load worktree config: %w", err)
+	}
+	if cfg.PathSources == nil {
+		cfg.PathSources = model.NewPathSources()
+	}
+	if err := cfg.PathSources.Restore(relPath, source); err != nil {
+		return err
+	}
+	if err := repo.WriteWorktreeConfig(repoRoot, worktreeName, cfg); err != nil {
+		return fmt.Errorf("write worktree config: %w", err)
+	}
+	return nil
+}
+
+func pathSourceMatches(repoRoot, worktreeName, relPath string, source model.SnapshotID) (bool, error) {
+	cfg, err := repo.LoadWorktreeConfig(repoRoot, worktreeName)
+	if err != nil {
+		return false, err
+	}
+	entry, ok, err := cfg.PathSources.SourceForPath(relPath)
+	if err != nil || !ok {
+		return false, err
+	}
+	return entry.TargetPath == relPath && entry.SourceSnapshotID == source, nil
 }
 
 func preflightPartialPayload(payloadPath, tempPath string, paths []string) error {

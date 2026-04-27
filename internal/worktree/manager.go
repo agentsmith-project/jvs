@@ -478,6 +478,7 @@ func (m *Manager) UpdateHead(name string, snapshotID model.SnapshotID) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 	cfg.HeadSnapshotID = snapshotID
+	cfg.PathSources = model.NewPathSources()
 	return writeWorktreeConfig(m.repoRoot, name, cfg)
 }
 
@@ -493,6 +494,7 @@ func (m *Manager) SetLatest(name string, snapshotID model.SnapshotID) error {
 	}
 	cfg.HeadSnapshotID = snapshotID
 	cfg.LatestSnapshotID = snapshotID
+	cfg.PathSources = model.NewPathSources()
 	return writeWorktreeConfig(m.repoRoot, name, cfg)
 }
 
