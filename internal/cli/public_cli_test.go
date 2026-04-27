@@ -40,11 +40,7 @@ func setupPublicCLIRepo(t *testing.T, name string) (repoPath string, mainPath st
 	})
 
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err = executeCommand(cmd, "init", name)
-	require.NoError(t, err)
-
-	repoPath = filepath.Join(dir, name)
+	repoPath = initLegacyRepoForCLITest(t, name)
 	mainPath = filepath.Join(repoPath, "main")
 	require.NoError(t, os.Chdir(mainPath))
 	return repoPath, mainPath
@@ -683,15 +679,8 @@ func TestPublicCLIErrorsPreserveUserRepoPathsWithSpacesAndLegacyWords(t *testing
 	defer os.Chdir(originalWd)
 
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "target worktree snapshot history")
-	require.NoError(t, err)
-	cmd = createTestRootCmd()
-	_, err = executeCommand(cmd, "init", "current worktree snapshot history")
-	require.NoError(t, err)
-
-	targetRepo := filepath.Join(dir, "target worktree snapshot history")
-	currentRepo := filepath.Join(dir, "current worktree snapshot history")
+	targetRepo := initLegacyRepoForCLITest(t, "target worktree snapshot history")
+	currentRepo := initLegacyRepoForCLITest(t, "current worktree snapshot history")
 	stdout, stderr, exitCode := runContractSubprocess(
 		t,
 		filepath.Join(currentRepo, "main"),

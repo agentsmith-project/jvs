@@ -16,18 +16,16 @@ func TestResolveCheckpointRefWithTag(t *testing.T) {
 	defer os.Chdir(originalWd)
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "diffrepo_tags")
-	assert.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "diffrepo_tags")
 
 	// Change into main worktree
-	mainPath := filepath.Join(dir, "diffrepo_tags", "main")
+	mainPath := filepath.Join(repoPath, "main")
 	assert.NoError(t, os.Chdir(mainPath))
 
 	// Create two snapshots with different tags
 	assert.NoError(t, os.WriteFile("file1.txt", []byte("v1"), 0644))
 	cmd2 := createTestRootCmd()
-	_, err = executeCommand(cmd2, "snapshot", "--tag", "first-tag", "first snapshot")
+	_, err := executeCommand(cmd2, "snapshot", "--tag", "first-tag", "first snapshot")
 	assert.NoError(t, err)
 
 	assert.NoError(t, os.WriteFile("file1.txt", []byte("v2"), 0644))
@@ -57,18 +55,16 @@ func TestResolveCheckpointRefWithID(t *testing.T) {
 	defer os.Chdir(originalWd)
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "diffrepo_ids")
-	assert.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "diffrepo_ids")
 
 	// Change into main worktree
-	mainPath := filepath.Join(dir, "diffrepo_ids", "main")
+	mainPath := filepath.Join(repoPath, "main")
 	assert.NoError(t, os.Chdir(mainPath))
 
 	// Create a snapshot and get its ID
 	assert.NoError(t, os.WriteFile("file1.txt", []byte("id test"), 0644))
 	cmd2 := createTestRootCmd()
-	stdout, _ := executeCommand(cmd2, "snapshot", "id test snapshot", "--json")
+	stdout, err := executeCommand(cmd2, "snapshot", "id test snapshot", "--json")
 	assert.NoError(t, err)
 
 	// Extract snapshot ID
@@ -110,18 +106,16 @@ func TestResolveCheckpointRefWithShortID(t *testing.T) {
 	defer os.Chdir(originalWd)
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "diffrepo_short")
-	assert.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "diffrepo_short")
 
 	// Change into main worktree
-	mainPath := filepath.Join(dir, "diffrepo_short", "main")
+	mainPath := filepath.Join(repoPath, "main")
 	assert.NoError(t, os.Chdir(mainPath))
 
 	// Create a snapshot
 	assert.NoError(t, os.WriteFile("file1.txt", []byte("short id test"), 0644))
 	cmd2 := createTestRootCmd()
-	stdout, _ := executeCommand(cmd2, "snapshot", "short snapshot", "--json")
+	stdout, err := executeCommand(cmd2, "snapshot", "short snapshot", "--json")
 	assert.NoError(t, err)
 
 	// Extract short ID (first 8 chars)

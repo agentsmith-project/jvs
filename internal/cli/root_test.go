@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/pkg/model"
 	"github.com/spf13/cobra"
@@ -59,6 +60,14 @@ func setupTestDir(t *testing.T) string {
 	return dir
 }
 
+func initLegacyRepoForCLITest(t testing.TB, path string) string {
+	t.Helper()
+
+	r, err := repo.InitTarget(path)
+	require.NoError(t, err)
+	return r.Root
+}
+
 func TestRootCommand_Help(t *testing.T) {
 	cmd := createTestRootCmd()
 	stdout, err := executeCommand(cmd, "--help")
@@ -92,18 +101,17 @@ func TestRootCommand_JSONFlag(t *testing.T) {
 
 func TestInitCommand_CreatesRepo(t *testing.T) {
 	setupTestDir(t)
+	require.NoError(t, os.Mkdir("testrepo", 0755))
 	cmd := createTestRootCmd()
 	stdout, err := executeCommand(cmd, "init", "testrepo")
 	require.NoError(t, err)
-	assert.Contains(t, stdout, "Initialized JVS repository")
+	assert.Contains(t, stdout, "JVS is ready for this folder.")
 
-	// Check repo was created
 	_, statErr := os.Stat("testrepo/.jvs")
 	assert.NoError(t, statErr)
 
-	// Check main worktree exists
 	_, statErr = os.Stat("testrepo/main")
-	assert.NoError(t, statErr)
+	assert.True(t, os.IsNotExist(statErr), "init must not create a main payload directory")
 }
 
 func TestWorktreeCommand_List(t *testing.T) {
@@ -112,12 +120,10 @@ func TestWorktreeCommand_List(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into repo
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo")))
+	require.NoError(t, os.Chdir(repoPath))
 
 	// List worktrees - should show main
 	cmd2 := createTestRootCmd()
@@ -134,12 +140,10 @@ func TestInfoCommand_WithRepo(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into repo
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo")))
+	require.NoError(t, os.Chdir(repoPath))
 
 	// Check info
 	cmd2 := createTestRootCmd()
@@ -156,12 +160,10 @@ func TestInfoCommand_JSON(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into repo
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo")))
+	require.NoError(t, os.Chdir(repoPath))
 
 	// Check info with JSON
 	cmd2 := createTestRootCmd()
@@ -178,12 +180,10 @@ func TestDoctorCommand_Healthy(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into repo
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo")))
+	require.NoError(t, os.Chdir(repoPath))
 
 	// Run doctor
 	cmd2 := createTestRootCmd()
@@ -198,14 +198,11 @@ func TestHistoryCommand_Empty(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 
-	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree (history requires being inside worktree)
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	require.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	// History on empty repo
 	cmd2 := createTestRootCmd()
@@ -223,16 +220,14 @@ func TestVerifyCommand_Empty(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into repo
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo")))
+	require.NoError(t, os.Chdir(repoPath))
 
 	// Verify --all on empty repo
 	cmd2 := createTestRootCmd()
-	_, err = executeCommand(cmd2, "verify", "--all")
+	_, err := executeCommand(cmd2, "verify", "--all")
 	require.NoError(t, err)
 
 	os.Chdir(originalWd)
@@ -244,16 +239,14 @@ func TestGCCommand_Plan(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into repo
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo")))
+	require.NoError(t, os.Chdir(repoPath))
 
 	// GC plan
 	cmd2 := createTestRootCmd()
-	_, err = executeCommand(cmd2, "gc", "plan")
+	_, err := executeCommand(cmd2, "gc", "plan")
 	require.NoError(t, err)
 
 	os.Chdir(originalWd)
@@ -265,11 +258,10 @@ func TestGCCommand_RejectsExtraArgs(t *testing.T) {
 	defer os.Chdir(originalWd)
 
 	require.NoError(t, os.Chdir(dir))
-	_, err := executeCommand(createTestRootCmd(), "init", "testrepo")
-	require.NoError(t, err)
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo")))
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
+	require.NoError(t, os.Chdir(repoPath))
 
-	_, err = executeCommand(createTestRootCmd(), "gc", "plan", "extra")
+	_, err := executeCommand(createTestRootCmd(), "gc", "plan", "extra")
 	require.Error(t, err)
 
 	stdout, err := executeCommand(createTestRootCmd(), "--json", "gc", "plan")
@@ -304,14 +296,11 @@ func TestSnapshotCommand_CreatesSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 
-	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	require.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	// Create a file
 	os.WriteFile("file.txt", []byte("content"), 0644)
@@ -329,14 +318,11 @@ func TestSnapshotCommand_WithTags(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 
-	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	require.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	// Create a file
 	os.WriteFile("file.txt", []byte("content"), 0644)
@@ -354,14 +340,11 @@ func TestHistoryCommand_WithSnapshots(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 
-	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	require.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	// Create files and snapshots
 	os.WriteFile("file1.txt", []byte("content1"), 0644)
@@ -385,14 +368,11 @@ func TestHistoryCommand_WithTagFilter(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 
-	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	require.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	// Create files and snapshots with tags (reset snapshotTags before each)
 	snapshotTags = []string{}
@@ -420,14 +400,11 @@ func TestHistoryCommand_WithGrepFilter(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 
-	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	require.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	// Create files and snapshots
 	os.WriteFile("file1.txt", []byte("content1"), 0644)
@@ -452,14 +429,11 @@ func TestWorktreeCommand_Create(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 
-	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into repo
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo")))
+	require.NoError(t, os.Chdir(repoPath))
 
 	// Create worktree
 	cmd2 := createTestRootCmd()
@@ -478,14 +452,11 @@ func TestVerifyCommand_WithSnapshots(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 
-	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	require.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	// Create file and snapshot
 	os.WriteFile("file.txt", []byte("content"), 0644)
@@ -493,7 +464,7 @@ func TestVerifyCommand_WithSnapshots(t *testing.T) {
 	executeCommand(cmd2, "snapshot", "test")
 
 	// Change into repo
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo")))
+	require.NoError(t, os.Chdir(repoPath))
 
 	// Verify all
 	cmd3 := createTestRootCmd()
@@ -607,14 +578,11 @@ func TestRestoreCommand(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 
-	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	require.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	// Create file and snapshot
 	os.WriteFile("file.txt", []byte("version1"), 0644)
@@ -645,14 +613,11 @@ func TestWorktreeCommand_Fork(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 
-	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	require.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	// Create file and snapshot
 	os.WriteFile("file.txt", []byte("content"), 0644)
@@ -666,7 +631,7 @@ func TestWorktreeCommand_Fork(t *testing.T) {
 	assert.Contains(t, stdout, "feature")
 
 	// Verify forked worktree exists
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo")))
+	require.NoError(t, os.Chdir(repoPath))
 	_, err = os.Stat("worktrees/feature")
 	assert.NoError(t, err)
 
@@ -677,22 +642,18 @@ func TestWorktreeCommand_Remove(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 
-	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into repo
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo")))
-
+	require.NoError(t, os.Chdir(repoPath))
 	// Create worktree
 	cmd2 := createTestRootCmd()
 	executeCommand(cmd2, "worktree", "create", "to-remove")
 
 	// Remove worktree
 	cmd3 := createTestRootCmd()
-	_, err = executeCommand(cmd3, "worktree", "remove", "to-remove")
+	_, err := executeCommand(cmd3, "worktree", "remove", "to-remove")
 	require.NoError(t, err)
 
 	// Verify worktree is gone
@@ -706,14 +667,11 @@ func TestWorktreeCommand_Path(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 
-	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into repo
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo")))
+	require.NoError(t, os.Chdir(repoPath))
 
 	// Get main worktree path
 	cmd2 := createTestRootCmd()
@@ -730,12 +688,10 @@ func TestDoctorCommand_Strict(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into repo
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo")))
+	require.NoError(t, os.Chdir(repoPath))
 
 	// Run doctor --strict
 	cmd2 := createTestRootCmd()
@@ -752,19 +708,17 @@ func TestDoctorCommand_Repair(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into repo
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo")))
+	require.NoError(t, os.Chdir(repoPath))
 
 	// Create an orphan tmp file
 	os.WriteFile(".jvs-tmp-orphan", []byte("data"), 0644)
 
 	// Run doctor repair
 	cmd2 := createTestRootCmd()
-	_, err = executeCommand(cmd2, "doctor", "--repair-runtime")
+	_, err := executeCommand(cmd2, "doctor", "--repair-runtime")
 	require.NoError(t, err)
 
 	// Verify tmp file is cleaned
@@ -780,12 +734,10 @@ func TestGCCommand_PlanJSON(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into repo
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo")))
+	require.NoError(t, os.Chdir(repoPath))
 
 	// GC plan with JSON output
 	cmd2 := createTestRootCmd()
@@ -800,14 +752,11 @@ func TestHistoryCommand_Limit(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 
-	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	require.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	// Create multiple snapshots
 	for i := 0; i < 5; i++ {
@@ -830,14 +779,11 @@ func TestWorktreeCommand_Rename(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 
-	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into repo
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo")))
+	require.NoError(t, os.Chdir(repoPath))
 
 	// Create worktree
 	cmd2 := createTestRootCmd()
@@ -845,7 +791,7 @@ func TestWorktreeCommand_Rename(t *testing.T) {
 
 	// Rename worktree
 	cmd3 := createTestRootCmd()
-	_, err = executeCommand(cmd3, "worktree", "rename", "old-name", "new-name")
+	_, err := executeCommand(cmd3, "worktree", "rename", "old-name", "new-name")
 	require.NoError(t, err)
 
 	// Verify old name is gone
@@ -865,12 +811,10 @@ func TestInfoCommand_JSONFields(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into repo
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo")))
+	require.NoError(t, os.Chdir(repoPath))
 
 	// Check info JSON has required fields
 	cmd2 := createTestRootCmd()
@@ -892,12 +836,10 @@ func TestVerifyCommand_SingleSnapshot(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	require.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	// Create file and snapshot
 	os.WriteFile("file.txt", []byte("content"), 0644)
@@ -917,14 +859,11 @@ func TestSnapshotCommand_DetachedState(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 
-	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	require.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	// Create file and two snapshots
 	os.WriteFile("file.txt", []byte("version1"), 0644)
@@ -949,12 +888,10 @@ func TestResolveSnapshotID(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	require.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	// Create file and snapshot
 	os.WriteFile("file.txt", []byte("content"), 0644)
@@ -964,7 +901,7 @@ func TestResolveSnapshotID(t *testing.T) {
 	require.Contains(t, stdout, "snapshot")
 
 	// Read snapshot descriptor directly from disk
-	repoRoot := filepath.Join(dir, "testrepo")
+	repoRoot := repoPath
 
 	// List snapshots to get the ID
 	snapshots, err := snapshot.ListAll(repoRoot)
@@ -1044,12 +981,10 @@ func TestWorktreeCreateWithSnapshot(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	require.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	// Create file and snapshot with tag
 	os.WriteFile("file.txt", []byte("content"), 0644)
@@ -1059,7 +994,7 @@ func TestWorktreeCreateWithSnapshot(t *testing.T) {
 	assert.Contains(t, stdout, "snapshot")
 
 	// Change to repo root
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo")))
+	require.NoError(t, os.Chdir(repoPath))
 
 	// Create worktree from snapshot using --from flag
 	cmd3 := createTestRootCmd()
@@ -1081,12 +1016,10 @@ func TestWorktreeForkWithSnapshotID(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	require.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	// Create file and snapshot
 	os.WriteFile("file.txt", []byte("content"), 0644)
@@ -1095,7 +1028,7 @@ func TestWorktreeForkWithSnapshotID(t *testing.T) {
 	require.NoError(t, err)
 
 	// Get snapshot ID directly from disk
-	repoRoot := filepath.Join(dir, "testrepo")
+	repoRoot := repoPath
 	snapshots, err := snapshot.ListAll(repoRoot)
 	require.NoError(t, err)
 	require.Greater(t, len(snapshots), 0)
@@ -1122,12 +1055,10 @@ func TestJSONOutputWithCommands(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Test info with JSON
-	repoRoot := filepath.Join(dir, "testrepo")
+	repoRoot := repoPath
 	require.NoError(t, os.Chdir(repoRoot))
 	cmd2 := createTestRootCmd()
 	stdout, err := executeCommand(cmd2, "--json", "info")
@@ -1151,21 +1082,19 @@ func TestResolveSnapshotIDShortPrefix(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	require.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	// Create file and snapshot
 	os.WriteFile("file.txt", []byte("content"), 0644)
 	cmd2 := createTestRootCmd()
-	_, err = executeCommand(cmd2, "snapshot", "test", "--tag", "mytag")
+	_, err := executeCommand(cmd2, "snapshot", "test", "--tag", "mytag")
 	require.NoError(t, err)
 
 	// Get snapshot ID directly from disk
-	repoRoot := filepath.Join(dir, "testrepo")
+	repoRoot := repoPath
 	snapshots, err := snapshot.ListAll(repoRoot)
 	require.NoError(t, err)
 	require.Greater(t, len(snapshots), 0)
@@ -1195,11 +1124,9 @@ func TestDetectEngine(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
-	repoRoot := filepath.Join(dir, "testrepo")
+	repoRoot := repoPath
 
 	// Test detectEngine - should return Copy as fallback if no special engine
 	engineType := detectEngine(repoRoot)
@@ -1215,12 +1142,10 @@ func TestWorktreeCreateEmpty(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change to repo root
-	repoRoot := filepath.Join(dir, "testrepo")
+	repoRoot := repoPath
 	require.NoError(t, os.Chdir(repoRoot))
 
 	// Create empty worktree (no --from flag)
@@ -1258,12 +1183,10 @@ func TestWorktreeListJSON(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change to repo root
-	repoRoot := filepath.Join(dir, "testrepo")
+	repoRoot := repoPath
 	require.NoError(t, os.Chdir(repoRoot))
 
 	// List worktrees with JSON
@@ -1282,12 +1205,10 @@ func TestWorktreePathNoArgs(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	require.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	// Get path without specifying worktree name
 	cmd2 := createTestRootCmd()
@@ -1305,17 +1226,15 @@ func TestHistoryWithAllFlag(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	require.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	// Create a snapshot
 	os.WriteFile("file.txt", []byte("content"), 0644)
 	cmd2 := createTestRootCmd()
-	_, err = executeCommand(cmd2, "snapshot", "test snapshot")
+	_, err := executeCommand(cmd2, "snapshot", "test snapshot")
 	require.NoError(t, err)
 
 	// View history with --all flag
@@ -1334,17 +1253,15 @@ func TestWorktreeRemoveForce(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change to repo root
-	repoRoot := filepath.Join(dir, "testrepo")
+	repoRoot := repoPath
 	require.NoError(t, os.Chdir(repoRoot))
 
 	// Create a worktree
 	cmd2 := createTestRootCmd()
-	_, err = executeCommand(cmd2, "worktree", "create", "to-remove-force")
+	_, err := executeCommand(cmd2, "worktree", "create", "to-remove-force")
 	require.NoError(t, err)
 
 	// Remove with --force flag
@@ -1366,12 +1283,10 @@ func TestDoctorJSONOutput(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change to repo root
-	repoRoot := filepath.Join(dir, "testrepo")
+	repoRoot := repoPath
 	require.NoError(t, os.Chdir(repoRoot))
 
 	// Run doctor with JSON
@@ -1411,12 +1326,10 @@ func TestInfoFields(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change to repo root
-	repoRoot := filepath.Join(dir, "testrepo")
+	repoRoot := repoPath
 	require.NoError(t, os.Chdir(repoRoot))
 
 	// Run info and check for expected fields
@@ -1437,17 +1350,15 @@ func TestRestoreToHead(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	require.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	// Create a snapshot
 	os.WriteFile("file.txt", []byte("version 1"), 0644)
 	cmd2 := createTestRootCmd()
-	_, err = executeCommand(cmd2, "snapshot", "first snapshot")
+	_, err := executeCommand(cmd2, "snapshot", "first snapshot")
 	require.NoError(t, err)
 
 	// Modify file
@@ -1474,18 +1385,16 @@ func TestRestoreToTag(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	require.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	// Create a file and snapshot with unique tag
 	os.WriteFile("file.txt", []byte("tagged version"), 0644)
 	cmd2 := createTestRootCmd()
 	uniqueTag := fmt.Sprintf("restore-tag-%x", t.TempDir()) // Use temp dir for uniqueness
-	_, err = executeCommand(cmd2, "snapshot", "tagged snapshot", "--tag", uniqueTag)
+	_, err := executeCommand(cmd2, "snapshot", "tagged snapshot", "--tag", uniqueTag)
 	require.NoError(t, err)
 
 	// Restore by tag immediately.
@@ -1504,12 +1413,10 @@ func TestSnapshotWithJSON(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	require.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	require.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	// Create a file
 	os.WriteFile("file.txt", []byte("content"), 0644)
@@ -1531,12 +1438,10 @@ func TestWorktreeCommandJSON(t *testing.T) {
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change to repo root
-	repoRoot := filepath.Join(dir, "testrepo")
+	repoRoot := repoPath
 	require.NoError(t, os.Chdir(repoRoot))
 
 	// Create worktree with JSON output

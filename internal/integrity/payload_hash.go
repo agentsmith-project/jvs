@@ -17,6 +17,12 @@ import (
 // Algorithm: walk in byte-order sorted path order, compute per-entry hash,
 // concatenate all lines, hash the result.
 func ComputePayloadRootHash(root string) (model.HashValue, error) {
+	return ComputePayloadRootHashWithExclusions(root, nil)
+}
+
+// ComputePayloadRootHashWithExclusions computes a payload hash while skipping
+// any workspace-relative paths reported as excluded.
+func ComputePayloadRootHashWithExclusions(root string, excluded func(rel string) bool) (model.HashValue, error) {
 	var lines []string
 
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
@@ -34,6 +40,12 @@ func ComputePayloadRootHash(root string) (model.HashValue, error) {
 			return fmt.Errorf("relative path: %w", err)
 		}
 		if filepath.ToSlash(rel) == ".READY" {
+			return nil
+		}
+		if excluded != nil && excluded(rel) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -38,14 +39,10 @@ func TestCLIJSONEnvelope_InfoIsSingleObject(t *testing.T) {
 	defer os.Chdir(originalWd)
 
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
-
-	repoRoot := filepath.Join(dir, "testrepo")
+	repoRoot := initLegacyContractRepo(t, "testrepo")
 	require.NoError(t, os.Chdir(filepath.Join(repoRoot, "main")))
 
-	cmd = createTestRootCmd()
+	cmd := createTestRootCmd()
 	stdout, err := executeCommand(cmd, "--json", "info")
 	require.NoError(t, err)
 
@@ -71,11 +68,7 @@ func TestCLITargetingRepoFlag_RejectsOutsideAnyRepo(t *testing.T) {
 	defer os.Chdir(originalWd)
 
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
-
-	repoRoot := filepath.Join(dir, "testrepo")
+	repoRoot := initLegacyContractRepo(t, "testrepo")
 	outside := filepath.Join(dir, "outside")
 	require.NoError(t, os.Mkdir(outside, 0755))
 
@@ -115,14 +108,10 @@ func TestCLITargetingWorkspaceFlag_StatusFromRepoRoot(t *testing.T) {
 	defer os.Chdir(originalWd)
 
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
-
-	repoRoot := filepath.Join(dir, "testrepo")
+	repoRoot := initLegacyContractRepo(t, "testrepo")
 	require.NoError(t, os.Chdir(repoRoot))
 
-	cmd = createTestRootCmd()
+	cmd := createTestRootCmd()
 	stdout, err := executeCommand(cmd, "--json", "--workspace", "main", "status")
 	require.NoError(t, err)
 
@@ -146,14 +135,10 @@ func TestCLITargetingRepoFlag_StatusInfersWorkspaceFromRealCWD(t *testing.T) {
 	defer os.Chdir(originalWd)
 
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "repoA")
-	require.NoError(t, err)
-
-	repoRoot := filepath.Join(dir, "repoA")
+	repoRoot := initLegacyContractRepo(t, "repoA")
 	require.NoError(t, os.Chdir(filepath.Join(repoRoot, "main")))
 
-	cmd = createTestRootCmd()
+	cmd := createTestRootCmd()
 	stdout, err := executeCommand(cmd, "--json", "--repo", repoRoot, "status")
 	require.NoError(t, err, stdout)
 
@@ -177,16 +162,12 @@ func TestCLITargetingRepoFlag_StatusAcceptsPathInsideSameRepoFromSubdir(t *testi
 	defer os.Chdir(originalWd)
 
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "repoA")
-	require.NoError(t, err)
-
-	repoRoot := filepath.Join(dir, "repoA")
+	repoRoot := initLegacyContractRepo(t, "repoA")
 	subdir := filepath.Join(repoRoot, "main", "subdir")
 	require.NoError(t, os.Mkdir(subdir, 0755))
 	require.NoError(t, os.Chdir(subdir))
 
-	cmd = createTestRootCmd()
+	cmd := createTestRootCmd()
 	stdout, err := executeCommand(cmd, "--json", "--repo", filepath.Join(repoRoot, "main"), "status")
 	require.NoError(t, err, stdout)
 
@@ -205,16 +186,12 @@ func TestCLITargetingRepoFlag_StatusAcceptsSymlinkedPathInsideSamePhysicalRepo(t
 	defer os.Chdir(originalWd)
 
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "repoA")
-	require.NoError(t, err)
-
-	repoRoot := filepath.Join(dir, "repoA")
+	repoRoot := initLegacyContractRepo(t, "repoA")
 	repoLink := filepath.Join(dir, "repo-link")
 	require.NoError(t, os.Symlink(repoRoot, repoLink))
 	require.NoError(t, os.Chdir(filepath.Join(repoRoot, "main")))
 
-	cmd = createTestRootCmd()
+	cmd := createTestRootCmd()
 	stdout, err := executeCommand(cmd, "--json", "--repo", filepath.Join(repoLink, "main"), "status")
 	require.NoError(t, err, stdout)
 
@@ -427,15 +404,9 @@ func TestCLITargetingRepoFlag_StatusRejectsWorkspaceFromDifferentRepo(t *testing
 	defer os.Chdir(originalWd)
 
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "repoA")
-	require.NoError(t, err)
-	cmd = createTestRootCmd()
-	_, err = executeCommand(cmd, "init", "repoB")
-	require.NoError(t, err)
-
-	repoA := filepath.Join(dir, "repoA")
-	repoBMain := filepath.Join(dir, "repoB", "main")
+	repoA := initLegacyContractRepo(t, "repoA")
+	repoB := initLegacyContractRepo(t, "repoB")
+	repoBMain := filepath.Join(repoB, "main")
 	stdout, stderr, exitCode := runContractSubprocess(t, repoBMain, "--json", "--repo", repoA, "--workspace", "main", "status")
 
 	require.Equal(t, 1, exitCode)
@@ -548,15 +519,8 @@ func TestCLITargetingRepoFlag_RejectsDifferentRepoWithDuplicatedRepoID(t *testin
 	defer os.Chdir(originalWd)
 
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "repoA")
-	require.NoError(t, err)
-	cmd = createTestRootCmd()
-	_, err = executeCommand(cmd, "init", "repoB")
-	require.NoError(t, err)
-
-	repoA := filepath.Join(dir, "repoA")
-	repoB := filepath.Join(dir, "repoB")
+	repoA := initLegacyContractRepo(t, "repoA")
+	repoB := initLegacyContractRepo(t, "repoB")
 	repoAID, err := os.ReadFile(filepath.Join(repoA, ".jvs", "repo_id"))
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(repoB, ".jvs", "repo_id"), repoAID, 0600))
@@ -649,11 +613,7 @@ func TestCLIJSONErrorEnvelope_StatusRequiresWorkspace(t *testing.T) {
 	defer os.Chdir(originalWd)
 
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
-
-	repoRoot := filepath.Join(dir, "testrepo")
+	repoRoot := initLegacyContractRepo(t, "testrepo")
 	stdout, stderr, exitCode := runContractSubprocess(t, repoRoot, "--json", "status")
 
 	require.Equal(t, 1, exitCode)
@@ -743,9 +703,7 @@ func TestDoctorRepairRuntimeRejectsPositionalArgs(t *testing.T) {
 	originalWd, _ := os.Getwd()
 	defer os.Chdir(originalWd)
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	initLegacyContractRepo(t, "testrepo")
 
 	stdout, stderr, exitCode := runContractSubprocess(t, filepath.Join(repoPath, "main"), "--json", "doctor", "--repair-runtime", "clean_runtime_tmp")
 
@@ -765,9 +723,7 @@ func TestDoctorRepairRuntimeJSONIncludesRepairResults(t *testing.T) {
 	originalWd, _ := os.Getwd()
 	defer os.Chdir(originalWd)
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	initLegacyContractRepo(t, "testrepo")
 	require.NoError(t, os.WriteFile(filepath.Join(repoPath, ".jvs-tmp-orphan"), []byte("tmp"), 0644))
 
 	stdout, stderr, exitCode := runContractSubprocess(t, filepath.Join(repoPath, "main"), "--json", "doctor", "--repair-runtime")
@@ -800,9 +756,7 @@ func TestDoctorHumanOutputUsesPublicVocabulary(t *testing.T) {
 	originalWd, _ := os.Getwd()
 	defer os.Chdir(originalWd)
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	initLegacyContractRepo(t, "testrepo")
 	require.NoError(t, os.RemoveAll(filepath.Join(repoPath, "main")))
 
 	stdout, stderr, exitCode := runContractSubprocess(t, repoPath, "doctor")
@@ -822,9 +776,7 @@ func TestVerifyAllRejectsCheckpointArg(t *testing.T) {
 	originalWd, _ := os.Getwd()
 	defer os.Chdir(originalWd)
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	initLegacyContractRepo(t, "testrepo")
 
 	stdout, stderr, exitCode := runContractSubprocess(t, filepath.Join(repoPath, "main"), "--json", "verify", "--all", "1708300800000-deadbeef")
 
@@ -845,9 +797,7 @@ func TestVerifyAllIsCheckpointScopedAndDoctorStrictOwnsAuditChain(t *testing.T) 
 	originalWd, _ := os.Getwd()
 	defer os.Chdir(originalWd)
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	initLegacyContractRepo(t, "testrepo")
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("checkpoint payload"), 0644))
 
 	stdout, stderr, exitCode := runContractSubprocess(t, mainPath, "--json", "checkpoint", "audit contract")
@@ -900,9 +850,7 @@ func TestVerifyPayloadMismatchHasErrorCodeAndNonzeroExit(t *testing.T) {
 	originalWd, _ := os.Getwd()
 	defer os.Chdir(originalWd)
 	require.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	require.NoError(t, err)
+	initLegacyContractRepo(t, "testrepo")
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("before"), 0644))
 
 	stdout, stderr, exitCode := runContractSubprocess(t, mainPath, "--json", "checkpoint", "before")
@@ -990,12 +938,17 @@ func setupTargetingContractRepo(t *testing.T) (repoRoot string, mainPath string)
 		require.NoError(t, os.Chdir(originalWd))
 	})
 
-	stdout, err := executeCommand(createTestRootCmd(), "init", "testrepo")
-	require.NoError(t, err, stdout)
-
-	repoRoot = filepath.Join(dir, "testrepo")
+	repoRoot = initLegacyContractRepo(t, "testrepo")
 	mainPath = filepath.Join(repoRoot, "main")
 	return repoRoot, mainPath
+}
+
+func initLegacyContractRepo(t *testing.T, name string) string {
+	t.Helper()
+
+	r, err := repo.InitTarget(name)
+	require.NoError(t, err)
+	return r.Root
 }
 
 func createTargetingContractCheckpoint(t *testing.T, mainPath, note string) string {

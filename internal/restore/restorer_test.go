@@ -65,6 +65,59 @@ func writeUnsafeSnapshotTrap(t *testing.T, repoPath string, snapshotID model.Sna
 	require.NoError(t, os.WriteFile(descriptorPath, data, 0644))
 }
 
+func writeControlPathPartialSnapshot(t *testing.T, repoPath, rel string, content []byte) model.SnapshotID {
+	t.Helper()
+
+	return writePartialSnapshotWithPayload(t, repoPath, []string{rel}, map[string][]byte{
+		rel: content,
+	})
+}
+
+func writePartialSnapshotWithPayload(t *testing.T, repoPath string, partialPaths []string, files map[string][]byte) model.SnapshotID {
+	t.Helper()
+
+	snapshotID := model.NewSnapshotID()
+	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID))
+	for rel, content := range files {
+		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(snapshotDir, rel)), 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(snapshotDir, rel), content, 0644))
+	}
+
+	payloadHash, err := integrity.ComputePayloadRootHash(snapshotDir)
+	require.NoError(t, err)
+
+	desc := &model.Descriptor{
+		SnapshotID:      snapshotID,
+		WorktreeName:    "main",
+		CreatedAt:       time.Now().UTC(),
+		Engine:          model.EngineCopy,
+		PayloadRootHash: payloadHash,
+		IntegrityState:  model.IntegrityVerified,
+		PartialPaths:    partialPaths,
+	}
+	checksum, err := integrity.ComputeDescriptorChecksum(desc)
+	require.NoError(t, err)
+	desc.DescriptorChecksum = checksum
+
+	data, err := json.MarshalIndent(desc, "", "  ")
+	require.NoError(t, err)
+	descriptorPath := filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json")
+	require.NoError(t, os.WriteFile(descriptorPath, data, 0644))
+
+	ready := model.ReadyMarker{
+		SnapshotID:         snapshotID,
+		CompletedAt:        time.Now().UTC(),
+		PayloadHash:        payloadHash,
+		Engine:             model.EngineCopy,
+		DescriptorChecksum: checksum,
+	}
+	readyData, err := json.MarshalIndent(ready, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(snapshotDir, ".READY"), readyData, 0644))
+
+	return snapshotID
+}
+
 func TestRestorer_Restore(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	desc := createSnapshot(t, repoPath)
@@ -93,6 +146,100 @@ func TestRestorer_Restore(t *testing.T) {
 	assert.Equal(t, desc.SnapshotID, cfg.LatestSnapshotID)
 	assert.NoFileExists(t, filepath.Join(mainPath, ".READY"))
 	assert.NoFileExists(t, filepath.Join(mainPath, ".READY.gz"))
+}
+
+func TestRestorerRestoreAdoptedMainReplacesManagedFilesAndPreservesControlData(t *testing.T) {
+	repoPath := t.TempDir()
+	r, err := repo.InitAdoptedWorkspace(repoPath)
+	require.NoError(t, err)
+	require.Equal(t, repoPath, r.Root)
+
+	require.NoError(t, os.MkdirAll(filepath.Join(repoPath, "src"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(repoPath, "src", "app.txt"), []byte("baseline"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(repoPath, "keep.txt"), []byte("keep"), 0644))
+	controlBefore, err := os.ReadFile(filepath.Join(repoPath, ".jvs", "format_version"))
+	require.NoError(t, err)
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	desc, err := creator.Create("main", "baseline", nil)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(repoPath, "src", "app.txt"), []byte("modified"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(repoPath, "current-only.txt"), []byte("remove me"), 0644))
+
+	err = restore.NewRestorer(repoPath, model.EngineCopy).Restore("main", desc.SnapshotID)
+	require.NoError(t, err)
+
+	content, err := os.ReadFile(filepath.Join(repoPath, "src", "app.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "baseline", string(content))
+	content, err = os.ReadFile(filepath.Join(repoPath, "keep.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "keep", string(content))
+	assert.NoFileExists(t, filepath.Join(repoPath, "current-only.txt"))
+
+	controlAfter, err := os.ReadFile(filepath.Join(repoPath, ".jvs", "format_version"))
+	require.NoError(t, err)
+	assert.Equal(t, controlBefore, controlAfter)
+	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	assert.Equal(t, desc.SnapshotID, cfg.HeadSnapshotID)
+}
+
+func TestRestorerRestorePartialRejectsAdoptedControlPathWithoutMutation(t *testing.T) {
+	repoPath := t.TempDir()
+	_, err := repo.InitAdoptedWorkspace(repoPath)
+	require.NoError(t, err)
+
+	controlPath := filepath.Join(repoPath, ".jvs", "format_version")
+	controlBefore, err := os.ReadFile(controlPath)
+	require.NoError(t, err)
+
+	snapshotID := writeControlPathPartialSnapshot(t, repoPath, ".jvs/format_version", []byte("malicious control data"))
+
+	err = restore.NewRestorer(repoPath, model.EngineCopy).Restore("main", snapshotID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "control data")
+
+	controlAfter, readErr := os.ReadFile(controlPath)
+	require.NoError(t, readErr)
+	assert.Equal(t, controlBefore, controlAfter)
+	cfg, cfgErr := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, cfgErr)
+	assert.Empty(t, cfg.HeadSnapshotID)
+}
+
+func TestRestorerRestorePartialRejectsAdoptedSourceControlPayloadWithoutMutation(t *testing.T) {
+	repoPath := t.TempDir()
+	_, err := repo.InitAdoptedWorkspace(repoPath)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(repoPath, "file.txt"), []byte("current"), 0644))
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	baseline, err := creator.Create("main", "current", nil)
+	require.NoError(t, err)
+	controlPath := filepath.Join(repoPath, ".jvs", "format_version")
+	controlBefore, err := os.ReadFile(controlPath)
+	require.NoError(t, err)
+
+	snapshotID := writePartialSnapshotWithPayload(t, repoPath, []string{"file.txt"}, map[string][]byte{
+		"file.txt":            []byte("tainted snapshot"),
+		".jvs/format_version": []byte("malicious control data"),
+	})
+
+	err = restore.NewRestorer(repoPath, model.EngineCopy).Restore("main", snapshotID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "control data")
+
+	content, readErr := os.ReadFile(filepath.Join(repoPath, "file.txt"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "current", string(content))
+	controlAfter, readErr := os.ReadFile(controlPath)
+	require.NoError(t, readErr)
+	assert.Equal(t, controlBefore, controlAfter)
+	cfg, cfgErr := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, cfgErr)
+	assert.Equal(t, baseline.SnapshotID, cfg.HeadSnapshotID)
 }
 
 func TestRestorer_RestorePreservesPublishStateErrorCode(t *testing.T) {

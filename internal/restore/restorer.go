@@ -98,11 +98,11 @@ func (r *Restorer) restore(worktreeName string, snapshotID model.SnapshotID) err
 		return fmt.Errorf("get worktree: %w", err)
 	}
 
-	payloadPath, err := wtMgr.Path(worktreeName)
+	boundary, err := repo.WorktreeManagedPayloadBoundary(r.repoRoot, worktreeName)
 	if err != nil {
 		return fmt.Errorf("worktree payload path: %w", err)
 	}
-	if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(payloadPath); err != nil {
+	if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(boundary.Root); err != nil {
 		return err
 	}
 	if err := r.auditLogger.EnsureAppendable(); err != nil {
@@ -110,12 +110,12 @@ func (r *Restorer) restore(worktreeName string, snapshotID model.SnapshotID) err
 	}
 
 	// Create backup directory for rollback while keeping payloadPath itself in place.
-	backupPath := payloadPath + ".restore-backup-" + uuidutil.NewV4()[:8]
+	backupPath := boundary.Root + ".restore-backup-" + uuidutil.NewV4()[:8]
 	snapshotDir, err := repo.SnapshotPathForRead(r.repoRoot, snapshotID)
 	if err != nil {
 		return fmt.Errorf("snapshot path: %w", err)
 	}
-	tempPath := payloadPath + ".restore-tmp-" + uuidutil.NewV4()[:8]
+	tempPath := boundary.Root + ".restore-tmp-" + uuidutil.NewV4()[:8]
 
 	// Step 1: Materialize logical snapshot payload to temp location
 	if err := snapshotpayload.MaterializeToNew(snapshotDir, tempPath, snapshotpayload.OptionsFromDescriptor(desc), func(src, dst string) error {
@@ -129,16 +129,19 @@ func (r *Restorer) restore(worktreeName string, snapshotID model.SnapshotID) err
 	if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(tempPath); err != nil {
 		return fmt.Errorf("materialized snapshot payload: %w", err)
 	}
+	if err := validateRestoreSourceManagedOnly(boundary, tempPath); err != nil {
+		return err
+	}
 
 	// Step 2: Replace or overlay contents inside the existing payload root.
 	var partialChanges []partialChange
 	if len(desc.PartialPaths) > 0 {
-		partialChanges, err = overlayPartialPayload(payloadPath, tempPath, backupPath, desc.PartialPaths)
+		partialChanges, err = overlayPartialPayload(boundary, tempPath, backupPath, desc.PartialPaths)
 		if err != nil {
 			return fmt.Errorf("overlay partial restore: %w", err)
 		}
 	} else {
-		if err := replacePayloadContents(payloadPath, tempPath, backupPath); err != nil {
+		if err := replacePayloadContents(boundary, tempPath, backupPath); err != nil {
 			return fmt.Errorf("replace payload contents: %w", err)
 		}
 	}
@@ -150,7 +153,7 @@ func (r *Restorer) restore(worktreeName string, snapshotID model.SnapshotID) err
 		} else if headErr != nil {
 			err = fmt.Errorf("%w (inspect head after failure: %v)", err, headErr)
 		}
-		if rollbackErr := rollbackRestoredPayload(payloadPath, backupPath, len(desc.PartialPaths) > 0, partialChanges); rollbackErr != nil {
+		if rollbackErr := rollbackRestoredPayload(boundary, backupPath, len(desc.PartialPaths) > 0, partialChanges); rollbackErr != nil {
 			return retainBackup(backupPath, fmt.Errorf("update head: %w (rollback failed: %v)", err, rollbackErr))
 		}
 		return retainBackup(backupPath, fmt.Errorf("update head: %w (payload rolled back)", err))
@@ -185,7 +188,8 @@ func verifySnapshotResultError(result *verify.Result, fallback string) error {
 	return fmt.Errorf("verify snapshot: %s", message)
 }
 
-func replacePayloadContents(payloadPath, tempPath, backupPath string) error {
+func replacePayloadContents(boundary repo.WorktreePayloadBoundary, tempPath, backupPath string) error {
+	payloadPath := boundary.Root
 	if err := validateRealDir(payloadPath); err != nil {
 		return err
 	}
@@ -193,13 +197,13 @@ func replacePayloadContents(payloadPath, tempPath, backupPath string) error {
 		return fmt.Errorf("create backup: %w", err)
 	}
 	var backupMoves []string
-	if err := moveContentsWithLedger(payloadPath, backupPath, func(rel string) {
+	if err := moveManagedContentsWithLedger(payloadPath, backupPath, boundary.ExcludesRelativePath, func(rel string) {
 		backupMoves = append(backupMoves, rel)
 	}); err != nil {
-		return rollbackFullBackupFailure(payloadPath, backupPath, backupMoves, fmt.Errorf("backup current contents: %w", err))
+		return rollbackFullBackupFailure(boundary, backupPath, backupMoves, fmt.Errorf("backup current contents: %w", err))
 	}
-	if err := moveContents(tempPath, payloadPath); err != nil {
-		if rollbackErr := rollbackFullRestore(payloadPath, backupPath); rollbackErr != nil {
+	if err := moveManagedContents(tempPath, payloadPath, boundary.ExcludesRelativePath); err != nil {
+		if rollbackErr := rollbackFullRestore(boundary, backupPath); rollbackErr != nil {
 			return retainBackup(backupPath, fmt.Errorf("move restored contents: %w (rollback failed: %v)", err, rollbackErr))
 		}
 		return fmt.Errorf("move restored contents: %w", err)
@@ -210,10 +214,16 @@ func replacePayloadContents(payloadPath, tempPath, backupPath string) error {
 	return nil
 }
 
-func overlayPartialPayload(payloadPath, tempPath, backupPath string, partialPaths []string) ([]partialChange, error) {
+func overlayPartialPayload(boundary repo.WorktreePayloadBoundary, tempPath, backupPath string, partialPaths []string) ([]partialChange, error) {
+	payloadPath := boundary.Root
 	paths, err := normalizePartialPaths(partialPaths)
 	if err != nil {
 		return nil, err
+	}
+	for _, rel := range paths {
+		if boundary.ExcludesRelativePath(rel) {
+			return nil, fmt.Errorf("path is repo control data and is not managed: %s", rel)
+		}
 	}
 	if err := preflightPartialPayload(payloadPath, tempPath, paths); err != nil {
 		return nil, err
@@ -296,6 +306,14 @@ func moveContents(srcRoot, dstRoot string) error {
 }
 
 func moveContentsWithLedger(srcRoot, dstRoot string, recordMove func(rel string)) error {
+	return moveManagedContentsWithLedger(srcRoot, dstRoot, nil, recordMove)
+}
+
+func moveManagedContents(srcRoot, dstRoot string, excluded func(rel string) bool) error {
+	return moveManagedContentsWithLedger(srcRoot, dstRoot, excluded, nil)
+}
+
+func moveManagedContentsWithLedger(srcRoot, dstRoot string, excluded func(rel string) bool, recordMove func(rel string)) error {
 	entries, err := os.ReadDir(srcRoot)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", srcRoot, err)
@@ -305,6 +323,9 @@ func moveContentsWithLedger(srcRoot, dstRoot string, recordMove func(rel string)
 	}
 	for _, entry := range entries {
 		rel := entry.Name()
+		if excluded != nil && excluded(rel) {
+			continue
+		}
 		if err := moveEntryWithLedger(filepath.Join(srcRoot, rel), filepath.Join(dstRoot, rel), func() {
 			if recordMove != nil {
 				recordMove(rel)
@@ -345,8 +366,8 @@ func moveEntryWithLedger(src, dst string, recordMove func()) error {
 	return nil
 }
 
-func rollbackFullBackupFailure(payloadPath, backupPath string, movedEntries []string, err error) error {
-	if rollbackErr := rollbackMovedBackupEntries(payloadPath, backupPath, movedEntries); rollbackErr != nil {
+func rollbackFullBackupFailure(boundary repo.WorktreePayloadBoundary, backupPath string, movedEntries []string, err error) error {
+	if rollbackErr := rollbackMovedBackupEntries(boundary.Root, backupPath, movedEntries); rollbackErr != nil {
 		return retainBackup(backupPath, fmt.Errorf("%w (rollback failed: %v)", err, rollbackErr))
 	}
 	return cleanupBackupAfterRollback(backupPath, err)
@@ -376,11 +397,11 @@ func cleanupBackupAfterRollback(backupPath string, err error) error {
 	return fmt.Errorf("%w (payload rolled back)", err)
 }
 
-func rollbackFullRestore(payloadPath, backupPath string) error {
-	if err := clearDirectory(payloadPath); err != nil {
+func rollbackFullRestore(boundary repo.WorktreePayloadBoundary, backupPath string) error {
+	if err := clearManagedDirectory(boundary); err != nil {
 		return err
 	}
-	return moveContents(backupPath, payloadPath)
+	return moveContents(backupPath, boundary.Root)
 }
 
 func rollbackPartialRestore(payloadPath, backupPath string, changes []partialChange) error {
@@ -399,11 +420,11 @@ func rollbackPartialRestore(payloadPath, backupPath string, changes []partialCha
 	return nil
 }
 
-func rollbackRestoredPayload(payloadPath, backupPath string, partial bool, changes []partialChange) error {
+func rollbackRestoredPayload(boundary repo.WorktreePayloadBoundary, backupPath string, partial bool, changes []partialChange) error {
 	if partial {
-		return rollbackPartialRestore(payloadPath, backupPath, changes)
+		return rollbackPartialRestore(boundary.Root, backupPath, changes)
 	}
-	return rollbackFullRestore(payloadPath, backupPath)
+	return rollbackFullRestore(boundary, backupPath)
 }
 
 func headMatchesSnapshot(wtMgr *worktree.Manager, worktreeName string, snapshotID model.SnapshotID) (bool, error) {
@@ -415,6 +436,11 @@ func headMatchesSnapshot(wtMgr *worktree.Manager, worktreeName string, snapshotI
 }
 
 func clearDirectory(root string) error {
+	return clearManagedDirectory(repo.WorktreePayloadBoundary{Root: root})
+}
+
+func clearManagedDirectory(boundary repo.WorktreePayloadBoundary) error {
+	root := boundary.Root
 	if err := validateRealDir(root); err != nil {
 		return err
 	}
@@ -423,8 +449,23 @@ func clearDirectory(root string) error {
 		return fmt.Errorf("read %s: %w", root, err)
 	}
 	for _, entry := range entries {
-		if err := removeContained(root, entry.Name()); err != nil {
-			return fmt.Errorf("remove %s: %w", entry.Name(), err)
+		rel := entry.Name()
+		if boundary.ExcludesRelativePath(rel) {
+			continue
+		}
+		if err := removeContained(root, rel); err != nil {
+			return fmt.Errorf("remove %s: %w", rel, err)
+		}
+	}
+	return nil
+}
+
+func validateRestoreSourceManagedOnly(boundary repo.WorktreePayloadBoundary, tempPath string) error {
+	for _, name := range boundary.ExcludedRootNames {
+		if _, err := os.Lstat(filepath.Join(tempPath, name)); err == nil {
+			return fmt.Errorf("snapshot payload contains repo control data and is not managed: %s", name)
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("stat restored control path %s: %w", name, err)
 		}
 	}
 	return nil

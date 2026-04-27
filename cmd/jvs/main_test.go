@@ -146,12 +146,14 @@ func TestBinaryExecutionIntegration(t *testing.T) {
 	cmd.Dir = tmpDir
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "init failed: %s", string(out))
-	assert.Contains(t, string(out), "Initialized")
+	assert.Contains(t, string(out), "JVS is ready for this folder.")
 
 	// Verify repo was created
 	repoPath := filepath.Join(tmpDir, "test")
 	_, err = os.Stat(filepath.Join(repoPath, ".jvs"))
 	assert.NoError(t, err)
+	_, err = os.Stat(filepath.Join(repoPath, "main"))
+	assert.ErrorIs(t, err, os.ErrNotExist)
 
 	// Test info command
 	cmd = exec.Command(binPath, "info")
@@ -179,8 +181,9 @@ func TestBinaryJSONOutput(t *testing.T) {
 	// Init repo
 	cmd := exec.Command(binPath, "init", "test")
 	cmd.Dir = tmpDir
-	out, _ := cmd.CombinedOutput()
-	require.Contains(t, string(out), "Initialized")
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "init failed: %s", string(out))
+	require.Contains(t, string(out), "JVS is ready for this folder.")
 
 	// Test JSON output
 	cmd = exec.Command(binPath, "--json", "info")
@@ -236,23 +239,22 @@ func TestBinarySnapshotFlow(t *testing.T) {
 	require.NoError(t, err)
 
 	repoPath := filepath.Join(tmpDir, "test")
-	mainPath := filepath.Join(repoPath, "main")
 
 	// Create a file
-	testFile := filepath.Join(mainPath, "test.txt")
+	testFile := filepath.Join(repoPath, "test.txt")
 	err = os.WriteFile(testFile, []byte("hello world"), 0644)
 	require.NoError(t, err)
 
 	// Create checkpoint
 	cmd = exec.Command(binPath, "checkpoint", "test checkpoint")
-	cmd.Dir = mainPath
+	cmd.Dir = repoPath
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err)
 	assert.Contains(t, string(out), "checkpoint")
 
 	// Check checkpoint list
 	cmd = exec.Command(binPath, "checkpoint", "list")
-	cmd.Dir = mainPath
+	cmd.Dir = repoPath
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err)
 	assert.Contains(t, string(out), "checkpoint")

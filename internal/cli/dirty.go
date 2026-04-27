@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/agentsmith-project/jvs/internal/integrity"
+	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/internal/snapshotpayload"
 	"github.com/agentsmith-project/jvs/internal/worktree"
@@ -18,16 +19,16 @@ func workspaceDirty(repoRoot, workspaceName string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("load workspace: %w", err)
 	}
-	payloadPath, err := mgr.Path(workspaceName)
+	boundary, err := repo.WorktreeManagedPayloadBoundary(repoRoot, workspaceName)
 	if err != nil {
 		return false, fmt.Errorf("workspace path: %w", err)
 	}
-	if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(payloadPath); err != nil {
+	if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(boundary.Root); err != nil {
 		return false, err
 	}
 
 	if cfg.HeadSnapshotID == "" {
-		return workspaceHasContent(payloadPath)
+		return workspaceHasManagedContent(boundary)
 	}
 
 	desc, err := snapshot.LoadDescriptor(repoRoot, cfg.HeadSnapshotID)
@@ -38,20 +39,30 @@ func workspaceDirty(repoRoot, workspaceName string) (bool, error) {
 		return true, nil
 	}
 
-	hash, err := integrity.ComputePayloadRootHash(payloadPath)
+	hash, err := integrity.ComputePayloadRootHashWithExclusions(boundary.Root, boundary.ExcludesRelativePath)
 	if err != nil {
 		return false, fmt.Errorf("hash workspace: %w", err)
 	}
 	return hash != desc.PayloadRootHash, nil
 }
 
-func workspaceHasContent(root string) (bool, error) {
+func workspaceHasManagedContent(boundary repo.WorktreePayloadBoundary) (bool, error) {
 	hasContent := false
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+	err := filepath.Walk(boundary.Root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		if path == root {
+		if path == boundary.Root {
+			return nil
+		}
+		rel, err := filepath.Rel(boundary.Root, path)
+		if err != nil {
+			return fmt.Errorf("relative path: %w", err)
+		}
+		if boundary.ExcludesRelativePath(rel) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		hasContent = true

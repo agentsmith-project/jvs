@@ -250,7 +250,20 @@ func (m *Manager) Get(name string) (*model.WorktreeConfig, error) {
 
 // Path returns the validated payload path for a worktree.
 func (m *Manager) Path(name string) (string, error) {
-	return m.payloadPathForMutation(name)
+	payloadPath, err := repo.WorktreePayloadPath(m.repoRoot, name)
+	if err != nil {
+		return "", err
+	}
+	if sameCleanAbsPath(m.repoRoot, payloadPath) {
+		if err := rejectSymlinkPath(payloadPath); err != nil {
+			return "", fmt.Errorf("validate payload path: %w", err)
+		}
+		return payloadPath, nil
+	}
+	if err := m.validatePathForMutation(payloadPath, "payload"); err != nil {
+		return "", err
+	}
+	return payloadPath, nil
 }
 
 // Rename renames a worktree.
@@ -761,4 +774,16 @@ func repoRelativePath(repoRoot, path string) (string, error) {
 		return "", fmt.Errorf("path escapes repo root: %s", path)
 	}
 	return rel, nil
+}
+
+func sameCleanAbsPath(a, b string) bool {
+	absA, err := filepath.Abs(a)
+	if err != nil {
+		return false
+	}
+	absB, err := filepath.Abs(b)
+	if err != nil {
+		return false
+	}
+	return filepath.Clean(absA) == filepath.Clean(absB)
 }

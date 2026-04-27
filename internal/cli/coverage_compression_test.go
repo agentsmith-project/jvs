@@ -15,12 +15,10 @@ func TestSnapshotWithMaxCompression(t *testing.T) {
 	defer os.Chdir(originalWd)
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "compressrepo")
-	assert.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "compressrepo")
 
 	// Change into main worktree
-	mainPath := filepath.Join(dir, "compressrepo", "main")
+	mainPath := filepath.Join(repoPath, "main")
 	assert.NoError(t, os.Chdir(mainPath))
 
 	// Create a file with compressible content
@@ -45,12 +43,10 @@ func TestSnapshotWithFastCompression(t *testing.T) {
 	defer os.Chdir(originalWd)
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "compressrepo2")
-	assert.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "compressrepo2")
 
 	// Change into main worktree
-	mainPath := filepath.Join(dir, "compressrepo2", "main")
+	mainPath := filepath.Join(repoPath, "main")
 	assert.NoError(t, os.Chdir(mainPath))
 
 	assert.NoError(t, os.WriteFile("fast.txt", []byte("fast compress test"), 0644))
@@ -70,12 +66,10 @@ func TestSnapshotWithNoneCompression(t *testing.T) {
 	defer os.Chdir(originalWd)
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "compressrepo3")
-	assert.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "compressrepo3")
 
 	// Change into main worktree
-	mainPath := filepath.Join(dir, "compressrepo3", "main")
+	mainPath := filepath.Join(repoPath, "main")
 	assert.NoError(t, os.Chdir(mainPath))
 
 	assert.NoError(t, os.WriteFile("none.txt", []byte("no compression"), 0644))

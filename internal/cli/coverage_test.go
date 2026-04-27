@@ -110,11 +110,7 @@ func TestResolveCheckpointRefForDiff(t *testing.T) {
 
 	// Init repo
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	assert.NoError(t, err)
-
-	repoPath := dir + "/testrepo"
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 	mainPath := repoPath + "/main"
 
 	t.Run("Resolve current without workspace returns error", func(t *testing.T) {
@@ -184,11 +180,7 @@ func TestResolveCheckpointRefByID(t *testing.T) {
 	originalWd, _ := os.Getwd()
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	assert.NoError(t, err)
-
-	repoPath := dir + "/testrepo"
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 	mainPath := repoPath + "/main"
 
 	// Create a snapshot
@@ -235,11 +227,7 @@ func TestResolveCheckpointRefByTag(t *testing.T) {
 	originalWd, _ := os.Getwd()
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	assert.NoError(t, err)
-
-	repoPath := dir + "/testrepo"
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 	mainPath := repoPath + "/main"
 
 	// Create a snapshot with a tag
@@ -280,11 +268,7 @@ func TestResolveCheckpointRefRejectsNote(t *testing.T) {
 	originalWd, _ := os.Getwd()
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	assert.NoError(t, err)
-
-	repoPath := dir + "/testrepo"
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 	mainPath := repoPath + "/main"
 
 	// Create a snapshot with a unique note
@@ -341,11 +325,7 @@ func TestResolveCheckpointRefMultipleTags(t *testing.T) {
 	originalWd, _ := os.Getwd()
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	assert.NoError(t, err)
-
-	repoPath := dir + "/testrepo"
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 	mainPath := repoPath + "/main"
 
 	// Create two snapshots with the same tag (bad practice but should handle)
@@ -359,7 +339,7 @@ func TestResolveCheckpointRefMultipleTags(t *testing.T) {
 	executeCommand(cmd3, "snapshot", "second", "--tag", "shared")
 
 	// Public refs reject ambiguous tags.
-	_, err = resolveCheckpointRef(repoPath, "main", "shared")
+	_, err := resolveCheckpointRef(repoPath, "main", "shared")
 	assert.Error(t, err)
 
 	os.Chdir(originalWd)
@@ -412,11 +392,7 @@ func TestResolveCheckpointRefEdgeCases(t *testing.T) {
 	originalWd, _ := os.Getwd()
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	assert.NoError(t, err)
-
-	repoPath := dir + "/testrepo"
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	t.Run("Resolve with very short prefix (<4 chars)", func(t *testing.T) {
 		_, err := resolveCheckpointRef(repoPath, "main", "abc")
@@ -465,12 +441,10 @@ func TestSnapshotWithCompression(t *testing.T) {
 	originalWd, _ := os.Getwd()
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	assert.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	assert.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	assert.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	// Create a larger compressible file
 	data := make([]byte, 1024*100) // 100KB
@@ -583,11 +557,7 @@ func TestResolveCheckpointRefNonExistentTag(t *testing.T) {
 	originalWd, _ := os.Getwd()
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	assert.NoError(t, err)
-
-	repoPath := dir + "/testrepo"
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	t.Run("Resolve non-existent tag returns error", func(t *testing.T) {
 		_, err := resolveCheckpointRef(repoPath, "main", "nonexistent-tag")
@@ -619,11 +589,7 @@ func TestResolveCheckpointRef_InvalidID(t *testing.T) {
 	originalWd, _ := os.Getwd()
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	assert.NoError(t, err)
-
-	repoPath := dir + "/testrepo"
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	t.Run("Resolve with invalid hex characters", func(t *testing.T) {
 		_, err := resolveCheckpointRef(repoPath, "main", "zzzzzzzzzzzz")
@@ -646,11 +612,7 @@ func TestResolveCheckpointRef_ByTagLikeIDPrefix(t *testing.T) {
 	originalWd, _ := os.Getwd()
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	assert.NoError(t, err)
-
-	repoPath := dir + "/testrepo"
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 	mainPath := repoPath + "/main"
 
 	// Create a snapshot with a tag that looks like an ID prefix
@@ -691,11 +653,7 @@ func TestResolveCheckpointRef_CurrentErrorPaths(t *testing.T) {
 	originalWd, _ := os.Getwd()
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	assert.NoError(t, err)
-
-	repoPath := dir + "/testrepo"
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 	mainPath := repoPath + "/main"
 
 	t.Run("current from workspace with no checkpoints", func(t *testing.T) {
@@ -742,12 +700,10 @@ func TestSnapshotCommand_WithNote(t *testing.T) {
 	originalWd, _ := os.Getwd()
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	assert.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	assert.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	assert.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	t.Run("Snapshot with empty note", func(t *testing.T) {
 		assert.NoError(t, os.WriteFile("empty.txt", []byte("test"), 0644))
@@ -783,12 +739,10 @@ func TestSnapshotCommand_WithCompress(t *testing.T) {
 	originalWd, _ := os.Getwd()
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	assert.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	assert.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	assert.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 	assert.NoError(t, os.WriteFile("compress.txt", []byte("test"), 0644))
 
 	t.Run("Snapshot with no compression", func(t *testing.T) {
@@ -814,12 +768,10 @@ func TestDoctorCommand(t *testing.T) {
 	originalWd, _ := os.Getwd()
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	assert.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	assert.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	assert.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	t.Run("Doctor basic check", func(t *testing.T) {
 		cmd2 := createTestRootCmd()
@@ -851,12 +803,10 @@ func TestHistoryCommand(t *testing.T) {
 	originalWd, _ := os.Getwd()
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	assert.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	assert.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	assert.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	t.Run("History with no snapshots", func(t *testing.T) {
 		cmd2 := createTestRootCmd()
@@ -868,7 +818,7 @@ func TestHistoryCommand(t *testing.T) {
 	t.Run("History after creating snapshot", func(t *testing.T) {
 		assert.NoError(t, os.WriteFile("historytest.txt", []byte("test"), 0644))
 		cmd3 := createTestRootCmd()
-		_, err = executeCommand(cmd3, "snapshot", "for history test")
+		_, err := executeCommand(cmd3, "snapshot", "for history test")
 		assert.NoError(t, err)
 
 		cmd4 := createTestRootCmd()
@@ -902,12 +852,10 @@ func TestInfoCommand(t *testing.T) {
 	originalWd, _ := os.Getwd()
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	assert.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	assert.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	assert.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	t.Run("Info in new repo", func(t *testing.T) {
 		cmd2 := createTestRootCmd()
@@ -932,12 +880,10 @@ func TestWorktreeCommands(t *testing.T) {
 	originalWd, _ := os.Getwd()
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	assert.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	assert.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	assert.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	// Create a snapshot first
 	assert.NoError(t, os.WriteFile("wttest.txt", []byte("test"), 0644))
@@ -985,17 +931,15 @@ func TestVerifyCommand(t *testing.T) {
 	originalWd, _ := os.Getwd()
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "testrepo")
-	assert.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 
 	// Change into main worktree
-	assert.NoError(t, os.Chdir(filepath.Join(dir, "testrepo", "main")))
+	assert.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
 
 	// Create a snapshot
 	assert.NoError(t, os.WriteFile("verify.txt", []byte("verify test"), 0644))
 	cmd2 := createTestRootCmd()
-	_, err = executeCommand(cmd2, "snapshot", "for verify")
+	_, err := executeCommand(cmd2, "snapshot", "for verify")
 	assert.NoError(t, err)
 
 	t.Run("Verify all snapshots", func(t *testing.T) {

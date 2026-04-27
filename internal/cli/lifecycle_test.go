@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/agentsmith-project/jvs/internal/engine"
@@ -15,38 +16,175 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestInitCommand_MultiLevelAbsoluteJSON(t *testing.T) {
-	target := filepath.Join(t.TempDir(), "parent", "child", "repo")
+func TestInitCommand_AdoptsCurrentDirectoryWhenNoArgs(t *testing.T) {
+	target := t.TempDir()
+	originalWd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, os.Chdir(originalWd)) })
+	require.NoError(t, os.Chdir(target))
+
+	stdout, err := executeCommand(createTestRootCmd(), "init")
+	require.NoError(t, err)
+
+	require.Contains(t, stdout, "Folder: "+target)
+	require.Contains(t, stdout, "Workspace: main")
+	require.Contains(t, stdout, "JVS is ready for this folder.")
+	require.Contains(t, stdout, "Files were not moved or copied.")
+	require.Contains(t, stdout, "Newest save point: none")
+	require.Contains(t, stdout, "Next: jvs save -m \"baseline\"")
+	require.DirExists(t, filepath.Join(target, ".jvs"))
+	require.NoDirExists(t, filepath.Join(target, "main"))
+
+	cfg, err := repo.LoadWorktreeConfig(target, "main")
+	require.NoError(t, err)
+	require.Equal(t, target, cfg.RealPath)
+}
+
+func TestInitCommand_JSONUsesFolderWorkspaceFields(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "folder")
+	require.NoError(t, os.MkdirAll(target, 0755))
 
 	stdout, err := executeCommand(createTestRootCmd(), "--json", "init", target)
 	require.NoError(t, err)
 
 	got := decodeJSONDataForTest(t, stdout)
+	require.Equal(t, target, got["folder"])
+	require.Equal(t, "main", got["workspace"])
 	require.Equal(t, target, got["repo_root"])
-	require.Equal(t, filepath.Join(target, "main"), got["main_workspace"])
+	require.NotEmpty(t, got["format_version"])
+	require.NotEmpty(t, got["repo_id"])
+	require.Nil(t, got["newest_save_point"])
+	require.Equal(t, true, got["unsaved_changes"])
 	require.Contains(t, got, "capabilities")
+	require.NotContains(t, got, "main_workspace")
 	require.DirExists(t, filepath.Join(target, ".jvs"))
-	require.DirExists(t, filepath.Join(target, "main"))
+	require.NoDirExists(t, filepath.Join(target, "main"))
 }
 
-func TestInitCommand_RejectsNonEmptyTarget(t *testing.T) {
-	target := filepath.Join(t.TempDir(), "repo")
-	require.NoError(t, os.MkdirAll(target, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(target, "existing.txt"), []byte("data"), 0644))
+func TestInitCommand_CreatesMissingFolderWithoutMainPayload(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "new-folder")
 
 	_, err := executeCommand(createTestRootCmd(), "init", target)
-	require.Error(t, err)
-	require.NoDirExists(t, filepath.Join(target, ".jvs"))
+	require.NoError(t, err)
+
+	require.DirExists(t, target)
+	require.DirExists(t, filepath.Join(target, ".jvs"))
+	require.NoDirExists(t, filepath.Join(target, "main"))
+}
+
+func TestInitCommand_AdoptsNonEmptyFolderWithoutMovingFiles(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "folder")
+	require.NoError(t, os.MkdirAll(target, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(target, "existing.txt"), []byte("data"), 0644))
+	require.NoError(t, os.Mkdir(filepath.Join(target, "nested"), 0755))
+
+	_, err := executeCommand(createTestRootCmd(), "init", target)
+	require.NoError(t, err)
+
+	require.FileExists(t, filepath.Join(target, "existing.txt"))
+	require.DirExists(t, filepath.Join(target, "nested"))
+	require.DirExists(t, filepath.Join(target, ".jvs"))
+	require.NoDirExists(t, filepath.Join(target, "main"))
+}
+
+func TestInitCommand_HumanOutputUsesFolderFirst(t *testing.T) {
+	target := t.TempDir()
+
+	stdout, err := executeCommand(createTestRootCmd(), "init", target)
+	require.NoError(t, err)
+
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	require.GreaterOrEqual(t, len(lines), 6)
+	require.Equal(t, "Folder: "+target, strings.TrimSpace(lines[0]))
+	require.Equal(t, "Workspace: main", strings.TrimSpace(lines[1]))
+	require.Contains(t, stdout, "JVS is ready for this folder.")
+	require.Contains(t, stdout, "Files were not moved or copied.")
+	require.Contains(t, stdout, "Unsaved changes: yes")
+	require.NotContains(t, stdout, "Main workspace")
+	require.NotContains(t, stdout, "main/")
+}
+
+func TestInitCommand_HelpUsesOptionalFolder(t *testing.T) {
+	stdout, err := executeCommand(createTestRootCmd(), "init", "--help")
+	require.NoError(t, err)
+
+	require.Contains(t, stdout, "init [folder]")
+	require.NotContains(t, stdout, "<repo-path>")
+	require.NotContains(t, stdout, "main/")
+	require.NotContains(t, stdout, "primary payload directory")
+}
+
+func TestInitCommand_StatusDiscoversAdoptedMainFromChild(t *testing.T) {
+	target := t.TempDir()
+	child := filepath.Join(target, "src", "pkg")
+	require.NoError(t, os.MkdirAll(child, 0755))
+	originalWd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, os.Chdir(originalWd)) })
+
+	_, err = executeCommand(createTestRootCmd(), "init", target)
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(child))
+
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "status")
+	require.NoError(t, err)
+
+	got := decodeJSONDataForTest(t, stdout)
+	require.Equal(t, "main", got["workspace"])
+	require.Equal(t, target, got["repo"])
+	require.Equal(t, true, got["dirty"])
+}
+
+func TestInitCommand_StatusIgnoresControlDataAfterCheckpoint(t *testing.T) {
+	target := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(target, "file.txt"), []byte("baseline"), 0644))
+
+	_, err := executeCommand(createTestRootCmd(), "init", target)
+	require.NoError(t, err)
+
+	originalWd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, os.Chdir(originalWd)) })
+	require.NoError(t, os.Chdir(target))
+
+	_, err = executeCommand(createTestRootCmd(), "--json", "checkpoint", "baseline")
+	require.NoError(t, err)
+
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "status")
+	require.NoError(t, err)
+
+	got := decodeJSONDataForTest(t, stdout)
+	require.Equal(t, false, got["dirty"])
+	require.Equal(t, true, got["at_latest"])
 }
 
 func TestInitCommand_RejectsNestedRepository(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "outer")
+	require.NoError(t, os.MkdirAll(root, 0755))
 	_, err := executeCommand(createTestRootCmd(), "init", root)
 	require.NoError(t, err)
 
-	_, err = executeCommand(createTestRootCmd(), "init", filepath.Join(root, "main", "nested"))
+	nested := filepath.Join(root, "nested")
+	require.NoError(t, os.MkdirAll(nested, 0755))
+	_, err = executeCommand(createTestRootCmd(), "init", nested)
 	require.Error(t, err)
-	require.NoDirExists(t, filepath.Join(root, "main", "nested", ".jvs"))
+	require.NoDirExists(t, filepath.Join(nested, ".jvs"))
+}
+
+func TestInitCommand_RejectsNestedMissingFolderWithoutLeavingCreatedParents(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "outer")
+	require.NoError(t, os.MkdirAll(root, 0755))
+	_, err := executeCommand(createTestRootCmd(), "init", root)
+	require.NoError(t, err)
+
+	parent := filepath.Join(root, "new")
+	nested := filepath.Join(parent, "child")
+	_, err = executeCommand(createTestRootCmd(), "init", nested)
+	require.Error(t, err)
+
+	require.NoDirExists(t, nested)
+	require.NoDirExists(t, parent)
+	require.DirExists(t, filepath.Join(root, ".jvs"))
 }
 
 func TestImportCommand_CopiesSourceCreatesInitialCheckpoint(t *testing.T) {
@@ -140,7 +278,7 @@ func TestCloneCommand_FullCopiesHistoryAndCreatesNewIdentity(t *testing.T) {
 	base := t.TempDir()
 	source := filepath.Join(base, "source")
 	dest := filepath.Join(base, "dest")
-	_, err := executeCommand(createTestRootCmd(), "init", source)
+	_, err := repo.InitTarget(source)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(source, "main", "file.txt"), []byte("v1"), 0644))
 
@@ -171,7 +309,7 @@ func TestCloneCommand_FullRejectsCorruptedSourceRepository(t *testing.T) {
 	base := t.TempDir()
 	source := filepath.Join(base, "source")
 	dest := filepath.Join(base, "dest")
-	_, err := executeCommand(createTestRootCmd(), "init", source)
+	_, err := repo.InitTarget(source)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(source, "main", "file.txt"), []byte("v1"), 0644))
 
@@ -199,7 +337,7 @@ func TestCloneCommand_FullRejectsCorruptedSourceRepository(t *testing.T) {
 func TestCloneCommand_FullRejectsPhysicalOverlapViaSymlinkParent(t *testing.T) {
 	base := t.TempDir()
 	source := filepath.Join(base, "source")
-	_, err := executeCommand(createTestRootCmd(), "init", source)
+	_, err := repo.InitTarget(source)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(source, "main", "file.txt"), []byte("v1"), 0644))
 
@@ -217,7 +355,7 @@ func TestCloneCommand_FullExcludesRuntimeState(t *testing.T) {
 	base := t.TempDir()
 	source := filepath.Join(base, "source")
 	dest := filepath.Join(base, "dest")
-	_, err := executeCommand(createTestRootCmd(), "init", source)
+	_, err := repo.InitTarget(source)
 	require.NoError(t, err)
 
 	sourceLocks := filepath.Join(source, ".jvs", "locks")
@@ -259,7 +397,7 @@ func TestCloneCommand_FullRejectsBusySource(t *testing.T) {
 	base := t.TempDir()
 	source := filepath.Join(base, "source")
 	dest := filepath.Join(base, "dest")
-	_, err := executeCommand(createTestRootCmd(), "init", source)
+	_, err := repo.InitTarget(source)
 	require.NoError(t, err)
 
 	held, err := repo.AcquireMutationLock(source, "test holder")
@@ -278,7 +416,7 @@ func TestCloneCommand_FullBusySourceJSONEnvelope(t *testing.T) {
 	base := t.TempDir()
 	source := filepath.Join(base, "source")
 	dest := filepath.Join(base, "dest")
-	_, err := executeCommand(createTestRootCmd(), "init", source)
+	_, err := repo.InitTarget(source)
 	require.NoError(t, err)
 
 	held, err := repo.AcquireMutationLock(source, "test holder")
@@ -300,7 +438,7 @@ func TestCloneCommand_CurrentCopiesWorkspaceAndDisconnectsHistory(t *testing.T) 
 	base := t.TempDir()
 	source := filepath.Join(base, "source")
 	dest := filepath.Join(base, "dest")
-	_, err := executeCommand(createTestRootCmd(), "init", source)
+	_, err := repo.InitTarget(source)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(source, "main", "file.txt"), []byte("snapshotted"), 0644))
 
@@ -344,7 +482,7 @@ func TestCloneCommand_CurrentVerifiesInitialCheckpointAndCleansUpOnFailure(t *te
 	base := t.TempDir()
 	source := filepath.Join(base, "source")
 	dest := filepath.Join(base, "dest")
-	_, err := executeCommand(createTestRootCmd(), "init", source)
+	_, err := repo.InitTarget(source)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(source, "main", "file.txt"), []byte("working state"), 0644))
 
@@ -375,7 +513,7 @@ func TestCloneCurrentJSONSeparatesTransferFromMaterializationEngine(t *testing.T
 
 	source := filepath.Join(base, "source")
 	dest := filepath.Join(base, "dest")
-	_, err = executeCommand(createTestRootCmd(), "init", source)
+	_, err = repo.InitTarget(source)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(source, "main", "file.txt"), []byte("v1"), 0644))
 
@@ -419,7 +557,7 @@ func TestLifecycleJSONEffectiveEngineMatchesInitialCheckpointDescriptor(t *testi
 	t.Run("clone-current", func(t *testing.T) {
 		source := filepath.Join(base, "clone-source")
 		dest := filepath.Join(base, "clone-dest")
-		_, err := executeCommand(createTestRootCmd(), "init", source)
+		_, err := repo.InitTarget(source)
 		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(filepath.Join(source, "main", "file.txt"), []byte("v1"), 0644))
 
@@ -470,7 +608,7 @@ func TestLifecycleJSONMaterializationFieldsPreferCheckpointDescriptor(t *testing
 func TestCloneCommand_CurrentRejectsPhysicalOverlapViaSymlinkParent(t *testing.T) {
 	base := t.TempDir()
 	source := filepath.Join(base, "source")
-	_, err := executeCommand(createTestRootCmd(), "init", source)
+	_, err := repo.InitTarget(source)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(source, "main", "file.txt"), []byte("v1"), 0644))
 
@@ -488,7 +626,7 @@ func TestCloneCurrentRejectsWorkspacePathSource(t *testing.T) {
 	base := t.TempDir()
 	source := filepath.Join(base, "source")
 	dest := filepath.Join(base, "dest")
-	_, err := executeCommand(createTestRootCmd(), "init", source)
+	_, err := repo.InitTarget(source)
 	require.NoError(t, err)
 
 	_, err = executeCommand(createTestRootCmd(), "clone", filepath.Join(source, "main"), dest, "--scope", "current")
@@ -502,7 +640,7 @@ func TestCloneCommand_CurrentRejectsBusySource(t *testing.T) {
 	base := t.TempDir()
 	source := filepath.Join(base, "source")
 	dest := filepath.Join(base, "dest")
-	_, err := executeCommand(createTestRootCmd(), "init", source)
+	_, err := repo.InitTarget(source)
 	require.NoError(t, err)
 
 	held, err := repo.AcquireMutationLock(source, "test holder")
@@ -519,7 +657,7 @@ func TestCloneCommand_CurrentHumanUsesWorkspaceVocabulary(t *testing.T) {
 	base := t.TempDir()
 	source := filepath.Join(base, "source")
 	dest := filepath.Join(base, "dest")
-	_, err := executeCommand(createTestRootCmd(), "init", source)
+	_, err := repo.InitTarget(source)
 	require.NoError(t, err)
 
 	stdout, err := executeCommand(createTestRootCmd(), "clone", source, dest, "--scope", "current")
@@ -532,7 +670,7 @@ func TestCloneFullRejectsWorkspacePathSource(t *testing.T) {
 	base := t.TempDir()
 	source := filepath.Join(base, "source")
 	dest := filepath.Join(base, "dest")
-	_, err := executeCommand(createTestRootCmd(), "init", source)
+	_, err := repo.InitTarget(source)
 	require.NoError(t, err)
 
 	_, err = executeCommand(createTestRootCmd(), "clone", filepath.Join(source, "main"), dest, "--scope", "full")
@@ -587,7 +725,11 @@ func TestSetupDestinationTargetsAllowMissingMultiLevelAndEmptyDirs(t *testing.T)
 				got := decodeJSONDataForTest(t, stdout)
 				require.Equal(t, wantRoot, got["repo_root"])
 				require.DirExists(t, filepath.Join(wantRoot, ".jvs"))
-				require.DirExists(t, filepath.Join(wantRoot, "main"))
+				if op == "init" {
+					require.NoDirExists(t, filepath.Join(wantRoot, "main"))
+				} else {
+					require.DirExists(t, filepath.Join(wantRoot, "main"))
+				}
 			})
 		}
 	}
@@ -596,6 +738,20 @@ func TestSetupDestinationTargetsAllowMissingMultiLevelAndEmptyDirs(t *testing.T)
 func TestSetupDestinationTargetsRejectInvalidDestinationsWithoutCleaningUserDirs(t *testing.T) {
 	originalWd, _ := os.Getwd()
 	t.Cleanup(func() { _ = os.Chdir(originalWd) })
+
+	t.Run("init_non_empty_dest_adopts_without_cleaning", func(t *testing.T) {
+		base := t.TempDir()
+		require.NoError(t, os.Chdir(base))
+		dest := filepath.Join(base, "non-empty")
+		require.NoError(t, os.MkdirAll(dest, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(dest, "keep.txt"), []byte("keep"), 0644))
+
+		stdout, err := runLifecycleSetupOperation(t, "init", base, dest)
+		require.NoError(t, err, stdout)
+		require.FileExists(t, filepath.Join(dest, "keep.txt"))
+		require.DirExists(t, filepath.Join(dest, ".jvs"))
+		require.NoDirExists(t, filepath.Join(dest, "main"))
+	})
 
 	for _, op := range []string{"init", "import", "clone-current", "clone-full"} {
 		t.Run(op+"_file_dest", func(t *testing.T) {
@@ -609,7 +765,9 @@ func TestSetupDestinationTargetsRejectInvalidDestinationsWithoutCleaningUserDirs
 			require.FileExists(t, dest)
 			require.NoDirExists(t, filepath.Join(dest, ".jvs"))
 		})
+	}
 
+	for _, op := range []string{"import", "clone-current", "clone-full"} {
 		t.Run(op+"_non_empty_dest", func(t *testing.T) {
 			base := t.TempDir()
 			require.NoError(t, os.Chdir(base))
@@ -622,7 +780,9 @@ func TestSetupDestinationTargetsRejectInvalidDestinationsWithoutCleaningUserDirs
 			require.FileExists(t, filepath.Join(dest, "keep.txt"))
 			require.NoDirExists(t, filepath.Join(dest, ".jvs"))
 		})
+	}
 
+	for _, op := range []string{"init", "import", "clone-current", "clone-full"} {
 		t.Run(op+"_parent_component_file", func(t *testing.T) {
 			base := t.TempDir()
 			require.NoError(t, os.Chdir(base))
@@ -668,7 +828,7 @@ func TestSetupCommandsRejectSourceDestinationOverlapWithoutCleaningPrecreatedDir
 		t.Run("clone_"+scope+"_same_source_and_dest", func(t *testing.T) {
 			base := t.TempDir()
 			source := filepath.Join(base, "source")
-			_, err := executeCommand(createTestRootCmd(), "init", source)
+			_, err := repo.InitTarget(source)
 			require.NoError(t, err)
 
 			_, err = executeCommand(createTestRootCmd(), "clone", source, source, "--scope", scope)
@@ -679,7 +839,7 @@ func TestSetupCommandsRejectSourceDestinationOverlapWithoutCleaningPrecreatedDir
 		t.Run("clone_"+scope+"_dest_inside_source", func(t *testing.T) {
 			base := t.TempDir()
 			source := filepath.Join(base, "source")
-			_, err := executeCommand(createTestRootCmd(), "init", source)
+			_, err := repo.InitTarget(source)
 			require.NoError(t, err)
 			dest := filepath.Join(source, "main", "precreated-empty")
 			require.NoError(t, os.MkdirAll(dest, 0755))
@@ -698,7 +858,7 @@ func TestSetupCommandsIgnoreRepoWorkspaceFlagsAndCWD(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chdir(originalWd) })
 
 	repoA := filepath.Join(dir, "repoA")
-	_, err := executeCommand(createTestRootCmd(), "init", repoA)
+	_, err := repo.InitTarget(repoA)
 	require.NoError(t, err)
 	require.NoError(t, os.Chdir(filepath.Join(repoA, "main")))
 
@@ -718,8 +878,11 @@ func TestSetupCommandsIgnoreRepoWorkspaceFlagsAndCWD(t *testing.T) {
 	require.NoError(t, err, stdout)
 	require.Equal(t, importTarget, decodeJSONDataForTest(t, stdout)["repo_root"])
 
+	cloneSource := filepath.Join(dir, "setup", "clone-source")
+	_, err = repo.InitTarget(cloneSource)
+	require.NoError(t, err)
 	cloneTarget := filepath.Join(dir, "setup", "clone-target")
-	stdout, err = executeCommand(createTestRootCmd(), "--json", "--repo", unusedRepoFlag, "--workspace", unusedWorkspaceFlag, "clone", initTarget, cloneTarget, "--scope", "current")
+	stdout, err = executeCommand(createTestRootCmd(), "--json", "--repo", unusedRepoFlag, "--workspace", unusedWorkspaceFlag, "clone", cloneSource, cloneTarget, "--scope", "current")
 	require.NoError(t, err, stdout)
 	require.Equal(t, cloneTarget, decodeJSONDataForTest(t, stdout)["repo_root"])
 
@@ -921,7 +1084,7 @@ func runLifecycleSetupOperation(t *testing.T, op, base, destArg string) (string,
 
 func createLifecycleSetupSourceRepo(t *testing.T, source string) {
 	t.Helper()
-	_, err := executeCommand(createTestRootCmd(), "init", source)
+	_, err := repo.InitTarget(source)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(source, "main", "file.txt"), []byte("clone"), 0644))
 }

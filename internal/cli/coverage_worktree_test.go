@@ -15,12 +15,9 @@ func TestWorktreePathCommand(t *testing.T) {
 	defer os.Chdir(originalWd)
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "wtpathrepo")
-	assert.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "wtpathrepo")
 
 	// Change to repo directory
-	repoPath := filepath.Join(dir, "wtpathrepo")
 	assert.NoError(t, os.Chdir(repoPath))
 
 	t.Run("Worktree path with name", func(t *testing.T) {
@@ -31,7 +28,7 @@ func TestWorktreePathCommand(t *testing.T) {
 	})
 
 	// Change to main worktree and test path without args
-	mainPath := filepath.Join(dir, "wtpathrepo", "main")
+	mainPath := filepath.Join(repoPath, "main")
 	assert.NoError(t, os.Chdir(mainPath))
 
 	t.Run("Worktree path from inside worktree", func(t *testing.T) {
@@ -49,17 +46,14 @@ func TestWorktreeRenameCommand(t *testing.T) {
 	defer os.Chdir(originalWd)
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "wtrename")
-	assert.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "wtrename")
 
 	// Change to repo directory
-	repoPath := filepath.Join(dir, "wtrename")
 	assert.NoError(t, os.Chdir(repoPath))
 
 	// Create a worktree first
 	cmd2 := createTestRootCmd()
-	_, err = executeCommand(cmd2, "worktree", "create", "oldname")
+	_, err := executeCommand(cmd2, "worktree", "create", "oldname")
 	assert.NoError(t, err)
 
 	t.Run("Rename worktree", func(t *testing.T) {
@@ -89,18 +83,16 @@ func TestWorktreeForkCommand(t *testing.T) {
 	defer os.Chdir(originalWd)
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "wtforkrepo")
-	assert.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "wtforkrepo")
 
 	// Change into main worktree
-	mainPath := filepath.Join(dir, "wtforkrepo", "main")
+	mainPath := filepath.Join(repoPath, "main")
 	assert.NoError(t, os.Chdir(mainPath))
 
 	// Create a snapshot
 	assert.NoError(t, os.WriteFile("forkfile.txt", []byte("fork content"), 0644))
 	cmd2 := createTestRootCmd()
-	_, err = executeCommand(cmd2, "snapshot", "fork base")
+	_, err := executeCommand(cmd2, "snapshot", "fork base")
 	assert.NoError(t, err)
 
 	t.Run("Fork from current position (auto-name)", func(t *testing.T) {
@@ -132,12 +124,9 @@ func TestWorktreeListCommand(t *testing.T) {
 	defer os.Chdir(originalWd)
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "wtlistrepo")
-	assert.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "wtlistrepo")
 
 	// Change to repo directory
-	repoPath := filepath.Join(dir, "wtlistrepo")
 	assert.NoError(t, os.Chdir(repoPath))
 
 	t.Run("List worktrees", func(t *testing.T) {
@@ -164,11 +153,14 @@ func TestInitCommandJSON(t *testing.T) {
 	assert.NoError(t, os.Chdir(dir))
 
 	t.Run("Init with JSON output", func(t *testing.T) {
+		assert.NoError(t, os.Mkdir("jsonrepo", 0755))
 		cmd := createTestRootCmd()
 		stdout, err := executeCommand(cmd, "init", "jsonrepo", "--json")
 		assert.NoError(t, err)
 		assert.Contains(t, stdout, "repo_root")
 		assert.Contains(t, stdout, "repo_id")
+		assert.Contains(t, stdout, "folder")
+		assert.Contains(t, stdout, "workspace")
 	})
 }
 
@@ -179,17 +171,14 @@ func TestWorktreeCreateForce(t *testing.T) {
 	defer os.Chdir(originalWd)
 
 	assert.NoError(t, os.Chdir(dir))
-	cmd := createTestRootCmd()
-	_, err := executeCommand(cmd, "init", "wtforceremove")
-	assert.NoError(t, err)
+	repoPath := initLegacyRepoForCLITest(t, "wtforceremove")
 
 	// Change to repo directory
-	repoPath := filepath.Join(dir, "wtforceremove")
 	assert.NoError(t, os.Chdir(repoPath))
 
 	// Create a worktree
 	cmd2 := createTestRootCmd()
-	_, err = executeCommand(cmd2, "worktree", "create", "toberemoved")
+	_, err := executeCommand(cmd2, "worktree", "create", "toberemoved")
 	assert.NoError(t, err)
 
 	t.Run("Remove worktree", func(t *testing.T) {
