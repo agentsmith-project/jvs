@@ -157,7 +157,7 @@ func TestPublicCLIDirtyRestoreRequiresExplicitChoice(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile("file.txt", []byte("local edit"), 0644))
 
-	stdout, err := runPublicCLI(t, "restore", "latest")
+	stdout, err := runPublicCLI(t, "restore", second)
 	require.Error(t, err)
 	assert.Empty(t, stdout)
 	assert.Contains(t, err.Error(), "unsaved changes")
@@ -910,7 +910,7 @@ func TestHiddenLegacyCommandErrorsUsePublicGuidance(t *testing.T) {
 	require.NoError(t, os.WriteFile("file.txt", []byte("v1"), 0644))
 	first := createCheckpointForPublicCLI(t, "first")
 	require.NoError(t, os.WriteFile("file.txt", []byte("v2"), 0644))
-	createCheckpointForPublicCLI(t, "second")
+	second := createCheckpointForPublicCLI(t, "second")
 
 	stdout, err := runPublicCLI(t, "--json", "restore", first)
 	require.NoError(t, err, stdout)
@@ -924,7 +924,7 @@ func TestHiddenLegacyCommandErrorsUsePublicGuidance(t *testing.T) {
 	assert.Contains(t, combined, "jvs fork")
 	assert.Contains(t, combined, "jvs restore latest")
 
-	stdout, err = runPublicCLI(t, "--json", "restore", "latest")
+	stdout, err = runPublicCLI(t, "--json", "restore", second)
 	require.NoError(t, err, stdout)
 	stdout, err = runPublicCLI(t, "--json", "fork", "feature")
 	require.NoError(t, err, stdout)

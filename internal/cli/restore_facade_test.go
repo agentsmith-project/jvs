@@ -41,6 +41,22 @@ func TestRestoreHumanOutputUsesSavePointStatusFacts(t *testing.T) {
 	assertRestoreOutputOmitsLegacyVocabulary(t, stdout)
 }
 
+func TestRestoreAcceptsUniqueSavePointPrefix(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	firstID, secondID := createTwoSavePoints(t, repoRoot)
+	firstPrefix := uniqueSavePointPrefix(firstID, secondID)
+
+	stdout, err := executeCommand(createTestRootCmd(), "restore", firstPrefix)
+	require.NoError(t, err)
+
+	assert.Contains(t, stdout, "Restored save point: "+firstID)
+	assert.Contains(t, stdout, "Newest save point is still "+secondID+".")
+	assertRestoreOutputOmitsLegacyVocabulary(t, stdout)
+	content, readErr := os.ReadFile(filepath.Join(repoRoot, "app.txt"))
+	require.NoError(t, readErr)
+	require.Equal(t, "v1", string(content))
+}
+
 func TestRestoreJSONUsesSavePointSchema(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	firstID, secondID := createTwoSavePoints(t, repoRoot)
@@ -91,6 +107,69 @@ func TestRestoreDirtyRefusalUsesUnsavedChangesVocabulary(t *testing.T) {
 	assert.Contains(t, env.Error.Message, "unsaved changes")
 	assert.Contains(t, env.Error.Message, "No files were changed.")
 	assertRestoreOutputOmitsLegacyVocabulary(t, env.Error.Message)
+}
+
+func TestRestoreRejectsOldRefsAndFuzzyInputsWithoutMutation(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("tagged"), 0644))
+	const tag = "restore-release"
+	_, err := executeCommand(createTestRootCmd(), "snapshot", "tagged legacy ref", "--tag", tag)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("newest"), 0644))
+	_ = savePointIDFromCLI(t, "newest")
+	before := captureViewMutationSnapshot(t, repoRoot)
+
+	for _, ref := range []string{"current", "latest", "dirty", tag, "tagged legacy ref"} {
+		t.Run(ref, func(t *testing.T) {
+			stdout, err := executeCommand(createTestRootCmd(), "restore", ref)
+			require.Error(t, err)
+			require.Empty(t, stdout)
+			assert.Contains(t, err.Error(), "save point ID")
+			assert.Contains(t, err.Error(), "Choose a save point ID")
+			assertRestoreOutputOmitsLegacyVocabulary(t, err.Error())
+			content, readErr := os.ReadFile(filepath.Join(repoRoot, "app.txt"))
+			require.NoError(t, readErr)
+			require.Equal(t, "newest", string(content))
+			before.assertUnchanged(t, repoRoot)
+		})
+	}
+}
+
+func TestRestoreRejectsOldRefsWithCleanJSONErrorWithoutMutation(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	_, _ = createTwoSavePoints(t, repoRoot)
+	before := captureViewMutationSnapshot(t, repoRoot)
+
+	jsonOut, stderr, exitCode := runContractSubprocess(t, repoRoot, "--json", "restore", "latest")
+	require.NotZero(t, exitCode)
+	require.Empty(t, strings.TrimSpace(stderr))
+
+	env := decodeContractEnvelope(t, jsonOut)
+	require.False(t, env.OK, jsonOut)
+	require.NotNil(t, env.Error)
+	assert.Contains(t, env.Error.Message, "save point ID")
+	assert.Contains(t, env.Error.Message, "Choose a save point ID")
+	assertRestoreOutputOmitsLegacyVocabulary(t, env.Error.Message)
+	before.assertUnchanged(t, repoRoot)
+}
+
+func TestRestoreRejectsAmbiguousSavePointPrefixWithoutMutation(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	firstID, secondID := createTwoSavePoints(t, repoRoot)
+	prefix := commonSavePointPrefix(firstID, secondID)
+	require.NotEmpty(t, prefix)
+	before := captureViewMutationSnapshot(t, repoRoot)
+
+	stdout, err := executeCommand(createTestRootCmd(), "restore", prefix)
+	require.Error(t, err)
+	require.Empty(t, stdout)
+	assert.Contains(t, err.Error(), "matches multiple save points")
+	assert.Contains(t, err.Error(), "full save point ID")
+	assertRestoreOutputOmitsLegacyVocabulary(t, err.Error())
+	content, readErr := os.ReadFile(filepath.Join(repoRoot, "app.txt"))
+	require.NoError(t, readErr)
+	require.Equal(t, "v2", string(content))
+	before.assertUnchanged(t, repoRoot)
 }
 
 func TestRestoreCurrentSourceDescriptorErrorUsesSavePointVocabulary(t *testing.T) {
@@ -184,6 +263,18 @@ func TestRestoreOutputShowsHistoryNotChangedAfterRestoringOlderSavePoint(t *test
 	assert.Contains(t, stdout, "Newest save point is still "+secondID+".")
 	assert.Contains(t, stdout, "History was not changed.")
 	assertRestoreOutputOmitsLegacyVocabulary(t, stdout)
+}
+
+func commonSavePointPrefix(first, second string) string {
+	limit := len(first)
+	if len(second) < limit {
+		limit = len(second)
+	}
+	i := 0
+	for i < limit && first[i] == second[i] {
+		i++
+	}
+	return first[:i]
 }
 
 func assertRestoreOutputOmitsLegacyVocabulary(t *testing.T, value string) {

@@ -36,7 +36,7 @@ Examples:
 			return err
 		}
 
-		targetID, err := resolveCheckpointRef(r.Root, workspaceName, args[0])
+		targetID, err := resolvePublicSavePointID(r.Root, args[0])
 		if err != nil {
 			return restorePointError(err)
 		}

@@ -1407,10 +1407,11 @@ func TestInfoFields(t *testing.T) {
 	os.Chdir(originalWd)
 }
 
-// TestRestoreToHead tests restoring to the latest checkpoint.
+// TestRestoreToHead tests that public restore no longer accepts old refs.
 func TestRestoreToHead(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
+	defer os.Chdir(originalWd)
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
@@ -1433,20 +1434,24 @@ func TestRestoreToHead(t *testing.T) {
 	_, err = executeCommand(cmd3, "snapshot", "second snapshot")
 	require.NoError(t, err)
 
-	// Restore to latest (should stay at current state)
+	// Public restore requires a concrete save point ID, not old refs.
 	cmd4 := createTestRootCmd()
 	stdout, err := executeCommand(cmd4, "restore", "latest")
-	require.NoError(t, err)
-	assert.Contains(t, stdout, "Restored save point:")
-	assert.NotContains(t, stdout, "checkpoint")
-
-	os.Chdir(originalWd)
+	require.Error(t, err)
+	assert.Empty(t, stdout)
+	assert.Contains(t, err.Error(), "save point ID")
+	assert.Contains(t, err.Error(), "Choose a save point ID")
+	assertRestoreOutputOmitsLegacyVocabulary(t, err.Error())
+	content, readErr := os.ReadFile("file.txt")
+	require.NoError(t, readErr)
+	assert.Equal(t, "version 2", string(content))
 }
 
-// TestRestoreToTag tests restoring by tag.
+// TestRestoreToTag tests that public restore no longer accepts tag refs.
 func TestRestoreToTag(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
+	defer os.Chdir(originalWd)
 
 	// Init repo
 	require.NoError(t, os.Chdir(dir))
@@ -1462,14 +1467,17 @@ func TestRestoreToTag(t *testing.T) {
 	_, err := executeCommand(cmd2, "snapshot", "tagged snapshot", "--tag", uniqueTag)
 	require.NoError(t, err)
 
-	// Restore by tag immediately.
+	// Public restore requires a concrete save point ID, not a tag.
 	cmd3 := createTestRootCmd()
 	stdout, err := executeCommand(cmd3, "restore", uniqueTag)
-	require.NoError(t, err)
-	assert.Contains(t, stdout, "Restored save point:")
-	assert.NotContains(t, stdout, "checkpoint")
-
-	os.Chdir(originalWd)
+	require.Error(t, err)
+	assert.Empty(t, stdout)
+	assert.Contains(t, err.Error(), "save point ID")
+	assert.Contains(t, err.Error(), "Choose a save point ID")
+	assertRestoreOutputOmitsLegacyVocabulary(t, err.Error())
+	content, readErr := os.ReadFile("file.txt")
+	require.NoError(t, readErr)
+	assert.Equal(t, "tagged version", string(content))
 }
 
 // TestSnapshotWithJSON tests snapshot command with JSON output.
