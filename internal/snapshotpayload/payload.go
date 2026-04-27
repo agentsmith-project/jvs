@@ -54,14 +54,30 @@ func OptionsForSnapshot(repoRoot string, snapshotID model.SnapshotID) (Options, 
 // user payload: control markers are removed and compressed payload files are
 // decoded when the descriptor says the snapshot is compressed.
 func Materialize(src, dst string, opts Options, clone CloneFunc) error {
+	return materialize(src, dst, opts, clone, false)
+}
+
+// MaterializeToNew clones a snapshot storage tree into an owned destination
+// path whose leaf must not already exist, then normalizes it into user payload.
+func MaterializeToNew(src, dst string, opts Options, clone CloneFunc) error {
+	return materialize(src, dst, opts, clone, true)
+}
+
+func materialize(src, dst string, opts Options, clone CloneFunc, destinationMustNotExist bool) error {
 	if clone == nil {
 		return fmt.Errorf("clone function is required")
 	}
 	if err := validateMaterializeSource(src); err != nil {
 		return err
 	}
-	if err := prepareMaterializeDestination(dst); err != nil {
-		return err
+	if destinationMustNotExist {
+		if err := prepareNewMaterializeDestination(dst); err != nil {
+			return err
+		}
+	} else {
+		if err := prepareMaterializeDestination(dst); err != nil {
+			return err
+		}
 	}
 	if err := clone(src, dst); err != nil {
 		return fmt.Errorf("clone: %w", err)
@@ -116,6 +132,21 @@ func prepareMaterializeDestination(dst string) error {
 	}
 	if len(entries) != 0 {
 		return fmt.Errorf("materialize destination must be empty: %s", dst)
+	}
+	return nil
+}
+
+func prepareNewMaterializeDestination(dst string) error {
+	if dst == "" {
+		return fmt.Errorf("materialize destination is required")
+	}
+	if err := validateNoSymlinkParents(dst); err != nil {
+		return fmt.Errorf("invalid materialize destination parent: %w", err)
+	}
+	if _, err := os.Lstat(dst); err == nil {
+		return fmt.Errorf("materialize destination already exists: %s", dst)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat materialize destination: %w", err)
 	}
 	return nil
 }
@@ -187,7 +218,7 @@ func ComputeHash(root string, opts Options) (model.HashValue, error) {
 	defer os.RemoveAll(tmpParent)
 
 	tmpPayload := filepath.Join(tmpParent, "payload")
-	if err := Materialize(root, tmpPayload, opts, copyTree); err != nil {
+	if err := MaterializeToNew(root, tmpPayload, opts, copyTreeToNew); err != nil {
 		return "", err
 	}
 
@@ -198,8 +229,8 @@ func ComputeHash(root string, opts Options) (model.HashValue, error) {
 	return hash, nil
 }
 
-func copyTree(src, dst string) error {
-	_, err := engine.NewCopyEngine().Clone(src, dst)
+func copyTreeToNew(src, dst string) error {
+	_, err := engine.CloneToNew(engine.NewCopyEngine(), src, dst)
 	return err
 }
 

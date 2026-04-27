@@ -468,11 +468,7 @@ func TestManager_CreateFromSnapshot(t *testing.T) {
 	mgr := worktree.NewManager(repoPath)
 	snapshotID := createManagerSnapshot(t, repoPath)
 
-	cloneFunc := func(src, dst string) error {
-		return nil // mock clone
-	}
-
-	cfg, err := mgr.CreateFromSnapshot("from-snap", snapshotID, cloneFunc)
+	cfg, err := mgr.CreateFromSnapshot("from-snap", snapshotID, copySnapshotTree)
 	require.NoError(t, err)
 	assert.Equal(t, "from-snap", cfg.Name)
 	assert.Equal(t, snapshotID, cfg.BaseSnapshotID)
@@ -594,12 +590,10 @@ func TestManager_CreateFromSnapshot_AlreadyExists(t *testing.T) {
 	mgr := worktree.NewManager(repoPath)
 	snapshotID := createManagerSnapshot(t, repoPath)
 
-	cloneFunc := func(src, dst string) error { return nil }
-
-	_, err := mgr.CreateFromSnapshot("feature", snapshotID, cloneFunc)
+	_, err := mgr.CreateFromSnapshot("feature", snapshotID, copySnapshotTree)
 	require.NoError(t, err)
 
-	_, err = mgr.CreateFromSnapshot("feature", "1708300900000-b4d8e2c3", cloneFunc)
+	_, err = mgr.CreateFromSnapshot("feature", "1708300900000-b4d8e2c3", copySnapshotTree)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "already exists")
 }
@@ -694,11 +688,7 @@ func TestManager_Fork(t *testing.T) {
 	mgr := worktree.NewManager(repoPath)
 	snapshotID := createManagerSnapshot(t, repoPath)
 
-	cloneFunc := func(src, dst string) error {
-		return nil // mock clone
-	}
-
-	cfg, err := mgr.Fork(snapshotID, "forked", cloneFunc)
+	cfg, err := mgr.Fork(snapshotID, "forked", copySnapshotTree)
 	require.NoError(t, err)
 	assert.Equal(t, "forked", cfg.Name)
 	assert.Equal(t, snapshotID, cfg.HeadSnapshotID)
@@ -810,12 +800,10 @@ func TestManager_Fork_AlreadyExists(t *testing.T) {
 	mgr := worktree.NewManager(repoPath)
 	snapshotID := createManagerSnapshot(t, repoPath)
 
-	cloneFunc := func(src, dst string) error { return nil }
-
-	_, err := mgr.Fork(snapshotID, "feature", cloneFunc)
+	_, err := mgr.Fork(snapshotID, "feature", copySnapshotTree)
 	require.NoError(t, err)
 
-	_, err = mgr.Fork("1708300900000-b4d8e2c3", "feature", cloneFunc)
+	_, err = mgr.Fork("1708300900000-b4d8e2c3", "feature", copySnapshotTree)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "already exists")
 }
@@ -938,8 +926,7 @@ func TestManager_CreateFromSnapshot_WriteConfigError(t *testing.T) {
 	mgr := worktree.NewManager(repoPath)
 	snapshotID := createManagerSnapshot(t, repoPath)
 
-	cloneFunc := func(src, dst string) error { return nil }
-	cfg, err := mgr.CreateFromSnapshot("test", snapshotID, cloneFunc)
+	cfg, err := mgr.CreateFromSnapshot("test", snapshotID, copySnapshotTree)
 	require.NoError(t, err)
 	assert.Equal(t, "test", cfg.Name)
 }
@@ -951,8 +938,7 @@ func TestManager_Fork_WriteConfigError(t *testing.T) {
 	mgr := worktree.NewManager(repoPath)
 	snapshotID := createManagerSnapshot(t, repoPath)
 
-	cloneFunc := func(src, dst string) error { return nil }
-	cfg, err := mgr.Fork(snapshotID, "test-fork", cloneFunc)
+	cfg, err := mgr.Fork(snapshotID, "test-fork", copySnapshotTree)
 	require.NoError(t, err)
 	assert.Equal(t, "test-fork", cfg.Name)
 }

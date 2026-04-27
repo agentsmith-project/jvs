@@ -2,6 +2,8 @@ package engine
 
 import (
 	"bufio"
+	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,7 +16,8 @@ import (
 // When juicefs is unavailable or the source is not on JuiceFS,
 // it falls back to the copy engine.
 type JuiceFSEngine struct {
-	CopyEngine *CopyEngine // Fallback
+	CopyEngine      *CopyEngine // Fallback
+	isOnJuiceFSFunc func(string) bool
 }
 
 // NewJuiceFSEngine creates a new JuiceFSEngine.
@@ -32,6 +35,20 @@ func (e *JuiceFSEngine) Name() model.EngineType {
 // Clone performs a juicefs clone if available, falls back to copy otherwise.
 // Returns a degraded result if juicefs is not available or not on JuiceFS.
 func (e *JuiceFSEngine) Clone(src, dst string) (*CloneResult, error) {
+	return e.clone(src, dst, false)
+}
+
+// CloneToNew performs a juicefs clone into an owned destination path whose leaf
+// must not already exist. If juicefs leaves a partial leaf before failing, it is
+// removed before fallback copy.
+func (e *JuiceFSEngine) CloneToNew(src, dst string) (*CloneResult, error) {
+	if err := PrepareCloneToNewDestination(dst); err != nil {
+		return nil, err
+	}
+	return e.clone(src, dst, true)
+}
+
+func (e *JuiceFSEngine) clone(src, dst string, ownedNewDestination bool) (*CloneResult, error) {
 	// Check if juicefs command is available
 	if !e.isJuiceFSAvailable() {
 		// Fall back to copy engine
@@ -44,7 +61,7 @@ func (e *JuiceFSEngine) Clone(src, dst string) (*CloneResult, error) {
 	}
 
 	// Check if source is on JuiceFS
-	if !e.isOnJuiceFS(src) {
+	if !e.isSourceOnJuiceFS(src) {
 		// Fall back to copy engine
 		result, err := e.CopyEngine.Clone(src, dst)
 		if err != nil {
@@ -56,16 +73,35 @@ func (e *JuiceFSEngine) Clone(src, dst string) (*CloneResult, error) {
 
 	// Execute juicefs clone
 	cmd := exec.Command("juicefs", "clone", src, dst, "-p")
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
+		context := juiceFSCommandContext(stdout.String(), stderr.String())
+		if ownedNewDestination {
+			if cleanupErr := os.RemoveAll(dst); cleanupErr != nil {
+				return nil, fmt.Errorf("%s; cleanup partial destination: %w", juiceFSCloneFailureMessage(context), cleanupErr)
+			}
+			if _, statErr := os.Lstat(dst); statErr == nil {
+				return nil, fmt.Errorf("%s; cleanup partial destination left existing path: %s", juiceFSCloneFailureMessage(context), dst)
+			} else if !os.IsNotExist(statErr) {
+				return nil, fmt.Errorf("%s; verify partial destination cleanup: %w", juiceFSCloneFailureMessage(context), statErr)
+			}
+		}
 		// Fall back to copy on failure
 		result, err := e.CopyEngine.Clone(src, dst)
 		if err != nil {
-			return nil, err
+			if context != "" {
+				return nil, fmt.Errorf("%s, fallback copy: %w", juiceFSCloneFailureMessage(context), err)
+			}
+			return nil, fmt.Errorf("juicefs clone failed, fallback copy: %w", err)
 		}
 		result.AddDegradation("juicefs-clone-failed", model.EngineCopy)
+		if context != "" {
+			result.AddDegradation("juicefs-clone-context: "+context, model.EngineCopy)
+		}
 		return result, nil
 	}
 
@@ -75,6 +111,13 @@ func (e *JuiceFSEngine) Clone(src, dst string) (*CloneResult, error) {
 func (e *JuiceFSEngine) isJuiceFSAvailable() bool {
 	_, err := exec.LookPath("juicefs")
 	return err == nil
+}
+
+func (e *JuiceFSEngine) isSourceOnJuiceFS(path string) bool {
+	if e.isOnJuiceFSFunc != nil {
+		return e.isOnJuiceFSFunc(path)
+	}
+	return e.isOnJuiceFS(path)
 }
 
 func (e *JuiceFSEngine) isOnJuiceFS(path string) bool {
@@ -117,6 +160,36 @@ func (e *JuiceFSEngine) isOnJuiceFS(path string) bool {
 	}
 
 	return bestMount != ""
+}
+
+func juiceFSCloneFailureMessage(context string) string {
+	if context != "" {
+		return "juicefs clone failed (" + context + ")"
+	}
+	return "juicefs clone failed"
+}
+
+func juiceFSCommandContext(stdout, stderr string) string {
+	stderr = strings.TrimSpace(stderr)
+	stdout = strings.TrimSpace(stdout)
+	switch {
+	case stderr != "" && stdout != "":
+		return limitDiagnostic("stderr: " + stderr + "; stdout: " + stdout)
+	case stderr != "":
+		return limitDiagnostic("stderr: " + stderr)
+	case stdout != "":
+		return limitDiagnostic("stdout: " + stdout)
+	default:
+		return ""
+	}
+}
+
+func limitDiagnostic(value string) string {
+	const max = 512
+	if len(value) <= max {
+		return value
+	}
+	return value[:max] + "...(truncated)"
 }
 
 // DetectEngine auto-detects the best available engine for the given repository.

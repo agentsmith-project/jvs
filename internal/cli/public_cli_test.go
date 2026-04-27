@@ -113,6 +113,22 @@ func TestPublicCLIStatusAndCheckpointCleanliness(t *testing.T) {
 	assert.NotEmpty(t, clean.Engine)
 }
 
+func TestPublicCLIPartialCheckpointFilePathWithReflinkEngine(t *testing.T) {
+	repoPath, _ := setupPublicCLIRepo(t, "partialreflink")
+	t.Setenv("JVS_SNAPSHOT_ENGINE", string(model.EngineReflinkCopy))
+
+	require.NoError(t, os.WriteFile("config.yaml", []byte("config"), 0644))
+	require.NoError(t, os.WriteFile("README.md", []byte("readme"), 0644))
+
+	id := createCheckpointForPublicCLI(t, "config only", "--paths", "config.yaml")
+
+	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", id)
+	content, err := os.ReadFile(filepath.Join(snapshotDir, "config.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t, "config", string(content))
+	assert.NoFileExists(t, filepath.Join(snapshotDir, "README.md"))
+}
+
 func TestPublicCLIStatusTreatsRootReadyAsDirtyOrReserved(t *testing.T) {
 	setupPublicCLIRepo(t, "reservedstatus")
 

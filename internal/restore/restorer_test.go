@@ -338,6 +338,9 @@ type mockEngine struct {
 
 func (m *mockEngine) clone(src, dst string) error {
 	// Copy test content
+	if err := os.MkdirAll(dst, 0755); err != nil {
+		return err
+	}
 	return os.WriteFile(filepath.Join(dst, "file.txt"), []byte(m.content), 0644)
 }
 

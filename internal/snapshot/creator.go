@@ -211,10 +211,6 @@ func (c *Creator) stageSnapshot(
 	tags []string,
 	partialPaths []string,
 ) (*model.Descriptor, error) {
-	// Step 4: Create snapshot .tmp directory (atomic publish pattern)
-	if err := os.MkdirAll(publishPaths.tmpDir, 0755); err != nil {
-		return nil, fmt.Errorf("create snapshot tmp dir: %w", err)
-	}
 	cleanupTmp := func() {
 		os.RemoveAll(publishPaths.tmpDir)
 	}
@@ -267,13 +263,16 @@ func (c *Creator) stageSnapshot(
 func (c *Creator) cloneSnapshotPayload(payloadPath, snapshotTmpDir string, partialPaths []string) (*engine.CloneResult, error) {
 	// For partial snapshots, only copy specified paths
 	if len(partialPaths) > 0 {
+		if err := os.MkdirAll(snapshotTmpDir, 0755); err != nil {
+			return nil, fmt.Errorf("create snapshot tmp dir: %w", err)
+		}
 		result, err := c.clonePaths(payloadPath, snapshotTmpDir, partialPaths)
 		if err != nil {
 			return nil, fmt.Errorf("clone partial paths: %w", err)
 		}
 		return result, nil
 	}
-	result, err := c.engine.Clone(payloadPath, snapshotTmpDir)
+	result, err := engine.CloneToNew(c.engine, payloadPath, snapshotTmpDir)
 	if err != nil {
 		return nil, fmt.Errorf("clone payload: %w", err)
 	}
@@ -507,8 +506,11 @@ func (c *Creator) clonePaths(src, dst string, paths []string) (*engine.CloneResu
 		}
 
 		if info.IsDir() {
+			if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
+				return nil, fmt.Errorf("create parent dir for %s: %w", p, err)
+			}
 			// Clone directory tree
-			result, err := c.engine.Clone(srcPath, dstPath)
+			result, err := engine.CloneToNew(c.engine, srcPath, dstPath)
 			if err != nil {
 				return nil, fmt.Errorf("clone directory %s: %w", p, err)
 			}
@@ -518,7 +520,7 @@ func (c *Creator) clonePaths(src, dst string, paths []string) (*engine.CloneResu
 			if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
 				return nil, fmt.Errorf("create parent dir for %s: %w", p, err)
 			}
-			result, err := c.engine.Clone(srcPath, dstPath)
+			result, err := engine.CloneToNew(c.engine, srcPath, dstPath)
 			if err != nil {
 				return nil, fmt.Errorf("clone file %s: %w", p, err)
 			}

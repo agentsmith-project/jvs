@@ -152,12 +152,9 @@ func runCloneCurrent(sourceArg, destArg string) error {
 		}
 		mainWorkspace = filepath.Join(r.Root, "main")
 
-		transferPlan, err = planTransfer(sourceWorkspace, mainWorkspace, r.Root)
+		transferPlan, err = transferIntoMainWorkspace(sourceWorkspace, mainWorkspace, r.Root)
 		if err != nil {
-			return fmt.Errorf("plan current workspace transfer: %w", err)
-		}
-		if _, err := cloneDirectory(sourceWorkspace, mainWorkspace, transferPlan); err != nil {
-			return fmt.Errorf("copy current workspace: %w", err)
+			return fmt.Errorf("copy current workspace: %w", cleanupLifecycleDestination(r.Root, err))
 		}
 		return nil
 	}); err != nil {

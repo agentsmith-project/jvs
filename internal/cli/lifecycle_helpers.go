@@ -12,8 +12,12 @@ import (
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/pkg/config"
+	"github.com/agentsmith-project/jvs/pkg/fsutil"
 	"github.com/agentsmith-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/pkg/uuidutil"
 )
+
+var newTransferEngine = engine.NewEngine
 
 func existingDirectory(path string) (string, error) {
 	abs, err := filepath.Abs(path)
@@ -139,9 +143,14 @@ func pathContains(parent, child string) bool {
 }
 
 func planTransfer(source, dest, repoRoot string) (*engine.TransferPlan, error) {
+	destinationPath := dest
+	if _, err := os.Stat(destinationPath); os.IsNotExist(err) {
+		destinationPath = filepath.Dir(destinationPath)
+	}
 	return engine.PlanTransfer(engine.TransferPlanRequest{
 		SourcePath:      source,
-		DestinationPath: dest,
+		DestinationPath: destinationPath,
+		CapabilityPath:  repoRoot,
 		RequestedEngine: requestedTransferEngine(repoRoot),
 	})
 }
@@ -160,13 +169,85 @@ func requestedTransferEngine(repoRoot string) model.EngineType {
 }
 
 func cloneDirectory(source, dest string, plan *engine.TransferPlan) (*engine.CloneResult, error) {
-	eng := engine.NewEngine(plan.TransferEngine)
-	result, err := eng.Clone(source, dest)
+	eng := newTransferEngine(plan.TransferEngine)
+	result, err := engine.CloneToNew(eng, source, dest)
 	if err != nil {
 		return nil, err
 	}
 	completeTransferPlan(plan, result)
 	return result, nil
+}
+
+func transferIntoMainWorkspace(source, mainWorkspace, repoRoot string) (*engine.TransferPlan, error) {
+	stagingPath, err := mainWorkspaceTransferStagingPath(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	cleanupStaging := true
+	defer func() {
+		if cleanupStaging {
+			_ = os.RemoveAll(stagingPath)
+		}
+	}()
+
+	transferPlan, err := planTransfer(source, stagingPath, repoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("plan transfer: %w", err)
+	}
+	if _, err := cloneDirectory(source, stagingPath, transferPlan); err != nil {
+		return nil, fmt.Errorf("clone into staging: %w", err)
+	}
+	if err := publishMainWorkspaceStaging(stagingPath, mainWorkspace); err != nil {
+		return nil, fmt.Errorf("publish main workspace: %w", err)
+	}
+	cleanupStaging = false
+	return transferPlan, nil
+}
+
+func mainWorkspaceTransferStagingPath(repoRoot string) (string, error) {
+	for range 16 {
+		path := filepath.Join(repoRoot, ".main.transfer-"+uuidutil.NewV4()[:8])
+		if _, err := os.Lstat(path); os.IsNotExist(err) {
+			return path, nil
+		} else if err != nil {
+			return "", fmt.Errorf("stat transfer staging: %w", err)
+		}
+	}
+	return "", fmt.Errorf("allocate transfer staging path")
+}
+
+func publishMainWorkspaceStaging(stagingPath, mainWorkspace string) error {
+	if err := validateExistingEmptyDirectory(mainWorkspace); err != nil {
+		return err
+	}
+	if err := os.Remove(mainWorkspace); err != nil {
+		return fmt.Errorf("remove empty main workspace: %w", err)
+	}
+	if err := fsutil.RenameNoReplaceAndSync(stagingPath, mainWorkspace); err != nil {
+		return fmt.Errorf("rename staging into main workspace: %w", err)
+	}
+	return nil
+}
+
+func validateExistingEmptyDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("stat directory: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("directory is symlink: %s", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("path is not directory: %s", path)
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return fmt.Errorf("read directory: %w", err)
+	}
+	if len(entries) != 0 {
+		return fmt.Errorf("directory must be empty: %s", path)
+	}
+	return nil
 }
 
 func createInitialCheckpoint(repoRoot, note string, tags []string) (*model.Descriptor, error) {

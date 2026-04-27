@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/agentsmith-project/jvs/internal/engine"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/internal/verify"
 	"github.com/agentsmith-project/jvs/internal/worktree"
@@ -60,7 +61,7 @@ Examples:
 			eng := newCloneEngine(r.Root)
 
 			cfg, err := mgr.CreateFromSnapshot(name, snapshotID, func(src, dst string) error {
-				_, err := eng.Clone(src, dst)
+				_, err := engine.CloneToNew(eng, src, dst)
 				return err
 			})
 			if err != nil {
@@ -364,7 +365,7 @@ Examples:
 		// Fork the workspace.
 		mgr := worktree.NewManager(r.Root)
 		cfg, err := mgr.Fork(snapshotID, name, func(src, dst string) error {
-			_, err := eng.Clone(src, dst)
+			_, err := engine.CloneToNew(eng, src, dst)
 			return err
 		})
 		if err != nil {

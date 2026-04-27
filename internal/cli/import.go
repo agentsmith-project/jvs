@@ -31,12 +31,9 @@ var importCmd = &cobra.Command{
 		}
 
 		mainWorkspace := filepath.Join(r.Root, "main")
-		transferPlan, err := planTransfer(source, mainWorkspace, r.Root)
+		transferPlan, err := transferIntoMainWorkspace(source, mainWorkspace, r.Root)
 		if err != nil {
-			return fmt.Errorf("plan source transfer: %w", err)
-		}
-		if _, err := cloneDirectory(source, mainWorkspace, transferPlan); err != nil {
-			return fmt.Errorf("copy source into main workspace: %w", err)
+			return fmt.Errorf("copy source into main workspace: %w", cleanupLifecycleDestination(r.Root, err))
 		}
 
 		note := fmt.Sprintf("initial import from %s", source)

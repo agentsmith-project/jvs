@@ -72,6 +72,56 @@ func TestReflinkEngine_CloneNestedStructure(t *testing.T) {
 	_ = result
 }
 
+func TestReflinkEngine_CloneToNewFileLeaf(t *testing.T) {
+	srcDir := t.TempDir()
+	srcFile := filepath.Join(srcDir, "config.yaml")
+	require.NoError(t, os.WriteFile(srcFile, []byte("setting: true\n"), 0644))
+
+	dstFile := filepath.Join(t.TempDir(), "nested", "config.yaml")
+	_, err := engine.CloneToNew(engine.NewReflinkEngine(), srcFile, dstFile)
+	require.NoError(t, err)
+
+	info, err := os.Lstat(dstFile)
+	require.NoError(t, err)
+	require.False(t, info.IsDir(), "file leaf destination must not be precreated as a directory")
+	content, err := os.ReadFile(dstFile)
+	require.NoError(t, err)
+	assert.Equal(t, "setting: true\n", string(content))
+}
+
+func TestReflinkEngine_CloneToNewSymlinkLeaf(t *testing.T) {
+	srcDir := t.TempDir()
+	srcLink := filepath.Join(srcDir, "config-link")
+	if err := os.Symlink("config.yaml", srcLink); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	dstLink := filepath.Join(t.TempDir(), "nested", "config-link")
+	_, err := engine.CloneToNew(engine.NewReflinkEngine(), srcLink, dstLink)
+	require.NoError(t, err)
+
+	info, err := os.Lstat(dstLink)
+	require.NoError(t, err)
+	assert.NotZero(t, info.Mode()&os.ModeSymlink)
+	target, err := os.Readlink(dstLink)
+	require.NoError(t, err)
+	assert.Equal(t, "config.yaml", target)
+}
+
+func TestReflinkEngine_CloneToNewDirectoryTree(t *testing.T) {
+	src := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "nested"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "nested", "file.txt"), []byte("payload"), 0644))
+
+	dst := filepath.Join(t.TempDir(), "owned-new")
+	_, err := engine.CloneToNew(engine.NewReflinkEngine(), src, dst)
+	require.NoError(t, err)
+
+	content, err := os.ReadFile(filepath.Join(dst, "nested", "file.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "payload", string(content))
+}
+
 func TestReflinkEngine_CloneWithSymlinks(t *testing.T) {
 	src := t.TempDir()
 	dst := t.TempDir()

@@ -11,7 +11,7 @@ override RELEASE_FUZZ_EXCLUDE_TARGETS :=
 override RELEASE_FUZZ_ALL_TARGETS = $(call release_fuzz_checked_shell,set -eu; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT HUP INT TERM; for pkg in $(RELEASE_FUZZ_PACKAGES); do go test -list '^Fuzz' "$$pkg" >"$$tmp"; sed -n "s|^\(Fuzz[A-Za-z0-9_]*\)$$|$$pkg:\1|p" "$$tmp"; done,release fuzz target discovery failed)
 override RELEASE_FUZZ_TARGETS = $(filter-out $(RELEASE_FUZZ_EXCLUDE_TARGETS),$(RELEASE_FUZZ_ALL_TARGETS))
 
-.PHONY: build test library fuzz-tests tools lint conformance regression contract-check docs-contract ci-contract verify security sec fuzz fuzz-list test-race test-cover test-all integration release-gate clean
+.PHONY: build test library fuzz-tests tools lint conformance regression contract-check docs-contract ci-contract verify security sec fuzz fuzz-list test-race test-cover test-all integration release-gate story-local story-json story-e2e story-juicefs-local release-gate-juicefs clean
 
 build:
 	go build -o bin/jvs ./cmd/jvs
@@ -40,6 +40,37 @@ fuzz-tests:
 
 conformance: build
 	PATH="$(CURDIR)/bin:$$PATH" go test -tags conformance -count=1 -v ./test/conformance/...
+
+story-local: build
+	PATH="$(CURDIR)/bin:$$PATH" go test -tags conformance -count=1 -v -run '^TestStoryLocal_' ./test/conformance/...
+
+story-json: build
+	PATH="$(CURDIR)/bin:$$PATH" go test -tags conformance -count=1 -v -run '^TestStoryJSON_' ./test/conformance/...
+
+story-e2e: story-local story-json
+
+story-juicefs-local: $(if $(filter 1,$(JVS_STORY_JUICEFS_LOCAL) $(JVS_JUICEFS_E2E)),build)
+	@set -eu; \
+	if [ "$${JVS_STORY_JUICEFS_LOCAL:-}" != "1" ] && [ "$${JVS_JUICEFS_E2E:-}" != "1" ]; then \
+		echo "SKIP story-juicefs-local: set JVS_STORY_JUICEFS_LOCAL=1 or JVS_JUICEFS_E2E=1 to run the real local JuiceFS profile."; \
+		exit 0; \
+	fi; \
+	run_pattern='^(TestStoryJuiceFSLocal_|TestJuiceFSUserStory_)'; \
+	list_file="$$(mktemp)"; \
+	trap 'rm -f "$$list_file"' EXIT HUP INT TERM; \
+	if ! JVS_JUICEFS_E2E=1 PATH="$(CURDIR)/bin:$$PATH" go test -tags 'conformance juicefs_e2e' -list "$$run_pattern" ./test/conformance/... >"$$list_file"; then \
+		echo "Failed to list local JuiceFS story tests; see go test output above." >&2; \
+		exit 1; \
+	fi; \
+	tests="$$(sed -n '/^TestStoryJuiceFSLocal_/p; /^TestJuiceFSUserStory_/p' "$$list_file")"; \
+	if [ -z "$$tests" ]; then \
+		echo "No local JuiceFS story tests registered; JuiceFS story implementation is owned separately." >&2; \
+		exit 1; \
+	fi; \
+	JVS_JUICEFS_E2E=1 PATH="$(CURDIR)/bin:$$PATH" go test -tags 'conformance juicefs_e2e' -count=1 -v -run "$$run_pattern" ./test/conformance/...
+
+release-gate-juicefs:
+	$(MAKE) JVS_STORY_JUICEFS_LOCAL=1 JVS_JUICEFS_E2E=1 JVS_JUICEFS_E2E_REQUIRED=1 story-juicefs-local
 
 regression: build
 	PATH="$(CURDIR)/bin:$$PATH" go test -tags conformance -count=1 -v ./test/regression/...

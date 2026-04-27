@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/agentsmith-project/jvs/internal/engine"
 	"github.com/agentsmith-project/jvs/internal/worktree"
 	"github.com/agentsmith-project/jvs/pkg/color"
 	"github.com/agentsmith-project/jvs/pkg/model"
@@ -228,7 +229,7 @@ var forkCmd = &cobra.Command{
 		mgr := worktree.NewManager(r.Root)
 		eng := newCloneEngine(r.Root)
 		cfg, err := mgr.Fork(targetID, name, func(src, dst string) error {
-			_, err := eng.Clone(src, dst)
+			_, err := engine.CloneToNew(eng, src, dst)
 			return err
 		})
 		if err != nil {

@@ -848,6 +848,25 @@ func TestCreatePartial_SingleFile(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(snapshotDir, "README.md"))
 }
 
+func TestCreatePartial_SingleFileWithReflinkEngine(t *testing.T) {
+	repoPath := setupTestRepo(t)
+
+	mainPath := filepath.Join(repoPath, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "config.yaml"), []byte("config"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "README.md"), []byte("readme"), 0644))
+
+	creator := snapshot.NewCreator(repoPath, model.EngineReflinkCopy)
+	desc, err := creator.CreatePartial("main", "config only", nil, []string{"config.yaml"})
+	require.NoError(t, err)
+
+	require.Equal(t, []string{"config.yaml"}, desc.PartialPaths)
+	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(desc.SnapshotID))
+	content, err := os.ReadFile(filepath.Join(snapshotDir, "config.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t, "config", string(content))
+	assert.NoFileExists(t, filepath.Join(snapshotDir, "README.md"))
+}
+
 // TestCreatePartial_EmptyPathsEquivalentToFull tests that empty paths behaves like full snapshot.
 func TestCreatePartial_EmptyPathsEquivalentToFull(t *testing.T) {
 	repoPath := setupTestRepo(t)

@@ -118,8 +118,8 @@ func (r *Restorer) restore(worktreeName string, snapshotID model.SnapshotID) err
 	tempPath := payloadPath + ".restore-tmp-" + uuidutil.NewV4()[:8]
 
 	// Step 1: Materialize logical snapshot payload to temp location
-	if err := snapshotpayload.Materialize(snapshotDir, tempPath, snapshotpayload.OptionsFromDescriptor(desc), func(src, dst string) error {
-		_, err := r.engine.Clone(src, dst)
+	if err := snapshotpayload.MaterializeToNew(snapshotDir, tempPath, snapshotpayload.OptionsFromDescriptor(desc), func(src, dst string) error {
+		_, err := engine.CloneToNew(r.engine, src, dst)
 		return err
 	}); err != nil {
 		os.RemoveAll(tempPath)

@@ -17,6 +17,7 @@ import (
 	"github.com/agentsmith-project/jvs/pkg/fsutil"
 	"github.com/agentsmith-project/jvs/pkg/model"
 	"github.com/agentsmith-project/jvs/pkg/pathutil"
+	"github.com/agentsmith-project/jvs/pkg/uuidutil"
 )
 
 // Manager handles worktree CRUD operations.
@@ -135,7 +136,7 @@ func (m *Manager) createMaterializedSnapshotWorktreeLocked(name string, snapshot
 	}
 	opts := snapshotpayload.OptionsFromDescriptor(desc)
 
-	payloadPath, stagingPath, err := m.preparePayloadStaging(name)
+	payloadPath, stagingPath, err := m.prepareMissingPayloadStaging(name)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +148,7 @@ func (m *Manager) createMaterializedSnapshotWorktreeLocked(name string, snapshot
 	}()
 
 	// Materialize snapshot content to worktree
-	if err := snapshotpayload.Materialize(snapshotDir, stagingPath, opts, cloneFunc); err != nil {
+	if err := snapshotpayload.MaterializeToNew(snapshotDir, stagingPath, opts, cloneFunc); err != nil {
 		return nil, fmt.Errorf("clone snapshot content: %w", err)
 	}
 
@@ -532,6 +533,36 @@ func (m *Manager) prepareConfigDir(configPath string) error {
 }
 
 func (m *Manager) preparePayloadStaging(name string) (string, string, error) {
+	payloadPath, parent, err := m.prepareNewPayloadTarget(name)
+	if err != nil {
+		return "", "", err
+	}
+
+	stagingPath, err := os.MkdirTemp(parent, "."+name+".staging-*")
+	if err != nil {
+		return "", "", fmt.Errorf("create payload staging: %w", err)
+	}
+	return payloadPath, stagingPath, nil
+}
+
+func (m *Manager) prepareMissingPayloadStaging(name string) (string, string, error) {
+	payloadPath, parent, err := m.prepareNewPayloadTarget(name)
+	if err != nil {
+		return "", "", err
+	}
+
+	for range 16 {
+		stagingPath := filepath.Join(parent, "."+name+".staging-"+uuidutil.NewV4()[:8])
+		if _, err := os.Lstat(stagingPath); os.IsNotExist(err) {
+			return payloadPath, stagingPath, nil
+		} else if err != nil {
+			return "", "", fmt.Errorf("stat payload staging: %w", err)
+		}
+	}
+	return "", "", fmt.Errorf("allocate payload staging path")
+}
+
+func (m *Manager) prepareNewPayloadTarget(name string) (string, string, error) {
 	payloadPath, err := repo.WorktreePayloadPath(m.repoRoot, name)
 	if err != nil {
 		return "", "", err
@@ -557,11 +588,7 @@ func (m *Manager) preparePayloadStaging(name string) (string, string, error) {
 		return "", "", fmt.Errorf("stat payload path: %w", err)
 	}
 
-	stagingPath, err := os.MkdirTemp(parent, "."+name+".staging-*")
-	if err != nil {
-		return "", "", fmt.Errorf("create payload staging: %w", err)
-	}
-	return payloadPath, stagingPath, nil
+	return payloadPath, parent, nil
 }
 
 func (m *Manager) payloadPathForMutation(name string) (string, error) {
