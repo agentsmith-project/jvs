@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 
 	"github.com/agentsmith-project/jvs/internal/repo"
@@ -72,16 +73,68 @@ func TestRootCommand_Help(t *testing.T) {
 	cmd := createTestRootCmd()
 	stdout, err := executeCommand(cmd, "--help")
 	require.NoError(t, err)
-	assert.Contains(t, stdout, "save point")
-	assert.Contains(t, stdout, "save")
-	assert.Contains(t, stdout, "history")
-	assert.Contains(t, stdout, "workspace")
-	assert.NotContains(t, stdout, "checkpoint")
-	assert.NotContains(t, stdout, "snapshot")
-	assert.NotContains(t, stdout, "worktree")
-	assert.NotContains(t, stdout, "detached")
-	assert.NotContains(t, stdout, "config")
-	assert.NotContains(t, stdout, "conformance")
+
+	for _, line := range []string{
+		"Start with:",
+		"jvs init",
+		`jvs save -m "baseline"`,
+		"jvs history",
+		"jvs view <save> [path]",
+		"jvs restore <save>",
+	} {
+		assert.Contains(t, stdout, line)
+	}
+	for _, command := range []string{"init", "save", "status", "history", "view", "restore", "doctor", "completion", "help"} {
+		assertRootHelpListsCommand(t, stdout, command)
+	}
+	for _, word := range []string{
+		"fork",
+		"gc",
+		"clone",
+		"import",
+		"checkpoint",
+		"snapshot",
+		"worktree",
+		"branch",
+		"checkout",
+		"commit",
+		"promote",
+		"detached",
+		"current",
+		"latest",
+		"dirty",
+		"config",
+		"conformance",
+		"diff",
+		"verify",
+		"capability",
+		"info",
+	} {
+		assertRootHelpOmitsWord(t, stdout, word)
+	}
+}
+
+func assertRootHelpListsCommand(t *testing.T, help, command string) {
+	t.Helper()
+	pattern := regexp.MustCompile(`(?m)^\s+` + regexp.QuoteMeta(command) + `\s+`)
+	assert.True(t, pattern.MatchString(help), "root help should list %q:\n%s", command, help)
+}
+
+func assertRootHelpOmitsWord(t *testing.T, help, word string) {
+	t.Helper()
+	pattern := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(word) + `\b`)
+	assert.False(t, pattern.MatchString(help), "root help should not expose %q:\n%s", word, help)
+}
+
+func TestRootCommand_HiddenAdvancedCommandsRemainDirectlyInvocable(t *testing.T) {
+	stdout, err := executeCommand(createTestRootCmd(), "fork", "--help")
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "fork")
+
+	setupAdoptedSaveFacadeRepo(t)
+	stdout, err = executeCommand(createTestRootCmd(), "gc", "plan")
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "Plan ID:")
 }
 
 func TestCheckpointCommand_HelpHidesUnpublishedFlags(t *testing.T) {
@@ -540,11 +593,12 @@ func createTestRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:              "jvs",
 		Short:            "JVS - Juicy Versioned Workspaces",
-		Long:             `JVS keeps save points for a folder.`,
+		Long:             publicRootLong,
 		SilenceUsage:     true,
 		SilenceErrors:    true,
 		PersistentPreRun: cliPersistentPreRun,
 	}
+	installPublicRootHelpSurface(cmd)
 	cmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output in JSON format")
 	cmd.PersistentFlags().BoolVar(&debugOutput, "debug", false, "enable debug logging")
 	cmd.PersistentFlags().BoolVar(&noProgress, "no-progress", false, "disable progress bars")
@@ -575,6 +629,7 @@ func createTestRootCmd() *cobra.Command {
 	cmd.AddCommand(importCmd)
 	cmd.AddCommand(cloneCmd)
 	cmd.AddCommand(capabilityCmd)
+	configurePublicRootHelpSurface(cmd)
 
 	return cmd
 }

@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 
@@ -23,14 +24,9 @@ var (
 	resolvedWorkspace string
 	jsonErrorEmitted  bool
 	rootCmd           = &cobra.Command{
-		Use:   "jvs",
-		Short: "JVS - Juicy Versioned Workspaces",
-		Long: `JVS keeps save points for a folder.
-
-Start with:
-  jvs init
-  jvs save -m "baseline"
-  jvs history`,
+		Use:              "jvs",
+		Short:            "JVS - Juicy Versioned Workspaces",
+		Long:             publicRootLong,
 		SilenceUsage:     true,
 		SilenceErrors:    true,
 		PersistentPreRun: cliPersistentPreRun,
@@ -38,6 +34,27 @@ Start with:
 )
 
 const cliJSONSchemaVersion = 1
+
+const publicRootLong = `JVS keeps save points for a folder.
+
+Start with:
+  jvs init
+  jvs save -m "baseline"
+  jvs history
+  jvs view <save> [path]
+  jvs restore <save>`
+
+var publicRootCommandNames = map[string]bool{
+	"completion": true,
+	"doctor":     true,
+	"help":       true,
+	"history":    true,
+	"init":       true,
+	"restore":    true,
+	"save":       true,
+	"status":     true,
+	"view":       true,
+}
 
 type cliJSONEnvelope struct {
 	SchemaVersion int           `json:"schema_version"`
@@ -62,10 +79,35 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable colored output (also respects NO_COLOR env var)")
 	rootCmd.PersistentFlags().StringVar(&targetRepoPath, "repo", "", "target repository root or path inside a repository")
 	rootCmd.PersistentFlags().StringVar(&targetWorkspaceName, "workspace", "", "target workspace name")
+	installPublicRootHelpSurface(rootCmd)
+}
+
+func installPublicRootHelpSurface(cmd *cobra.Command) {
+	cmd.SetHelpFunc(func(helpCmd *cobra.Command, args []string) {
+		if helpCmd == helpCmd.Root() {
+			configurePublicRootHelpSurface(helpCmd)
+		}
+		if long := strings.TrimSpace(helpCmd.Long); long != "" {
+			fmt.Fprintln(os.Stdout, long)
+			fmt.Fprintln(os.Stdout)
+		}
+		fmt.Fprint(os.Stdout, helpCmd.UsageString())
+	})
+}
+
+func configurePublicRootHelpSurface(cmd *cobra.Command) {
+	if cmd == nil {
+		return
+	}
+	cmd.Long = publicRootLong
+	for _, child := range cmd.Commands() {
+		child.Hidden = !publicRootCommandNames[child.Name()]
+	}
 }
 
 // Execute runs the root command.
 func Execute() {
+	configurePublicRootHelpSurface(rootCmd)
 	primeJSONOutputFromArgs(os.Args[1:])
 	cmd, err := rootCmd.ExecuteC()
 	if err != nil {
