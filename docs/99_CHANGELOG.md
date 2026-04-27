@@ -1,5 +1,85 @@
 # Changelog
 
+## v0.4.2 - 2026-04-27
+
+### Highlights
+
+- Candidate patch release for compatible fixes and release-facing docs/test
+  coverage after `v0.4.1`; no public CLI, library API, or on-disk repository
+  format changes are introduced.
+- Partial checkpoint path handling now canonicalizes overlapping
+  ancestor/descendant selections to the ancestor path in descriptors and audit
+  records, while still validating every requested path before checkpoint
+  creation.
+- EMPTY workspace behavior is documented and covered as a first-checkpoint
+  workflow: a newly initialized empty `main` workspace can create the first
+  checkpoint, making it both `current` and `latest`.
+- User-story E2E coverage now records local story targets, JSON automation
+  story coverage, JuiceFS local story qualification requirements, and
+  release-blocking defect classification for product-facing flows.
+- Transfer and materialization paths used by clone, import, restore, fork, and
+  checkpoint flows are covered by destination-owned staging checks so story
+  tests exercise safer setup and workspace lifecycle behavior.
+- The release-facing identity remains
+  `github.com/agentsmith-project/jvs`; final releases remain published under
+  URLs such as `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.0`
+  and `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.1`.
+
+### Breaking changes
+
+- None for the stable v0 public CLI contract.
+
+### Known limitations
+
+- v0 does not include remote push/pull.
+- v0 does not include signing commands.
+- v0 does not include partial checkpoint contracts; the path-folding fix
+  improves existing behavior but does not promote partial checkpoints to a
+  stable public contract.
+- v0 does not include compression contracts.
+- v0 does not include merge/rebase.
+- v0 does not include complex retention policy flags.
+- Full verification reads checkpoint payloads and can be I/O intensive on large
+  workspaces.
+- Descriptor signing and in-JVS trust policy remain outside the stable v0
+  repository format.
+
+### Risk labels
+
+- `integrity`: descriptor checksum and payload hash detect independent
+  corruption; coordinated descriptor-plus-checksum rewrite remains a v0
+  residual risk.
+- `migration`: active `.jvs/locks/`, `.jvs/intents/`, and `.jvs/gc/*.json`
+  runtime state is non-portable and must be rebuilt at the destination with
+  `jvs doctor --strict --repair-runtime`.
+
+### Migration notes
+
+- Existing repositories do not need an on-disk migration for this patch
+  release candidate; `.jvs/format_version` remains a repository layout
+  version, not the application release version.
+- After upgrading, run `jvs doctor --strict` and `jvs verify --all` on a
+  representative repo before relying on it for release workflows.
+- After a physical backup or storage migration, run
+  `jvs doctor --strict --repair-runtime` at the destination before
+  verification.
+- Exclude active `.jvs/locks/`, `.jvs/intents/`, and `.jvs/gc/*.json` runtime
+  state during physical sync; copied mutation locks may block destination
+  writes until repaired.
+
+### Release evidence
+
+- See the [release evidence ledger](RELEASE_EVIDENCE.md#v042---2026-04-27)
+  for the `v0.4.2` GA candidate readiness record. It is not final, not tagged,
+  and not published; final tag, release-gate, coverage, representative repo,
+  artifact, and signing evidence remain pending final release qualification.
+
+### Release artifacts
+
+- No release artifacts have been published for this candidate entry. Final
+  binaries, `SHA256SUMS`, `.sig`, and `.pem` artifacts must be produced by the
+  tag-gated release workflow after `make release-gate` succeeds.
+
 ## v0.4.1 - 2026-04-26
 
 ### Highlights

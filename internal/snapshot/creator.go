@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/agentsmith-project/jvs/internal/audit"
@@ -489,7 +491,34 @@ func (c *Creator) validateAndNormalizePaths(paths []string, worktreeName string)
 		}
 	}
 
-	return unique, nil
+	return collapseAncestorCoveredPaths(unique), nil
+}
+
+func collapseAncestorCoveredPaths(paths []string) []string {
+	sort.Strings(paths)
+
+	collapsed := make([]string, 0, len(paths))
+	for _, p := range paths {
+		covered := false
+		for _, existing := range collapsed {
+			if partialPathCovers(existing, p) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			collapsed = append(collapsed, p)
+		}
+	}
+	return collapsed
+}
+
+func partialPathCovers(ancestor, path string) bool {
+	rel, err := filepath.Rel(ancestor, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)))
 }
 
 // clonePaths clones only the specified paths from source to destination.

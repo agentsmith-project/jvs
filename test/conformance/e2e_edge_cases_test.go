@@ -12,24 +12,49 @@ import (
 // E2E Scenario: Error Handling and Edge Cases
 // User Story: System handles errors gracefully and provides clear feedback
 
-// TestE2E_EdgeCases_SnapshotWithEmptyPayload tests snapshotting an empty worktree
+// TestE2E_EdgeCases_SnapshotWithEmptyPayload tests checkpointing an empty workspace.
 func TestE2E_EdgeCases_SnapshotWithEmptyPayload(t *testing.T) {
 	repoPath, _ := initTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+	requireEmptyWorkspaceDirectory(t, mainPath)
 
-	// Snapshot with empty worktree
 	t.Run("empty_snapshot", func(t *testing.T) {
-		// main/ exists but is empty
-		stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "empty baseline")
-		if code != 0 {
-			t.Logf("Empty snapshot failed (may be expected): %s", stderr)
-		} else {
-			t.Logf("Empty snapshot succeeded: %s", stdout)
-			// Should still have created a snapshot
-			if !strings.Contains(stdout, "Created checkpoint") {
-				t.Error("expected success message")
-			}
+		checkpoint := storyCheckpointJSONAt(t, mainPath, "empty baseline")
+		if checkpoint.Workspace != "main" {
+			t.Fatalf("empty checkpoint workspace = %q, want main", checkpoint.Workspace)
 		}
+		if checkpoint.Note != "empty baseline" {
+			t.Fatalf("empty checkpoint note = %q, want empty baseline", checkpoint.Note)
+		}
+
+		checkpoints := storyCheckpointList(t, mainPath)
+		if len(checkpoints) != 1 {
+			t.Fatalf("empty workspace should create exactly one first checkpoint, got %d: %#v", len(checkpoints), checkpoints)
+		}
+		if checkpoints[0].CheckpointID != checkpoint.CheckpointID {
+			t.Fatalf("latest checkpoint = %q, want created checkpoint %q", checkpoints[0].CheckpointID, checkpoint.CheckpointID)
+		}
+
+		status := storyStatus(t, mainPath)
+		storyRequireStatus(t, status, checkpoint.CheckpointID, checkpoint.CheckpointID, false, true)
+		requireEmptyWorkspaceDirectory(t, mainPath)
 	})
+}
+
+func requireEmptyWorkspaceDirectory(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read workspace directory %s: %v", dir, err)
+	}
+	if len(entries) == 0 {
+		return
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	t.Fatalf("expected empty workspace payload directory, found entries: %v", names)
 }
 
 // TestE2E_EdgeCases_RestoreToNonExistentSnapshot tests restore error handling

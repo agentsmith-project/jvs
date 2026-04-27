@@ -8,23 +8,23 @@ This document captures typical user scenarios and expected behaviors for JVS (Ju
 
 | State | Description | Can Checkpoint? |
 |-------|-------------|---------------|
-| **EMPTY** | Newly created workspace, no checkpoints yet | No (nothing to checkpoint) |
+| **EMPTY** | Newly initialized main workspace, no checkpoints yet; payload may be empty | Yes (creates the first/latest checkpoint) |
 | **latest** | At the latest checkpoint of the lineage | Yes |
 | **historical** | At a historical checkpoint | No (must fork first) |
 
 ### State Transitions
 
 ```
-EMPTY ──[checkpoint]──► latest ◄──[restore latest]──► historical
-                          │                         │
-                          │     [restore <id>]      │
-                          └────────────────────────►│
-                          │                         │
-                          │       [jvs fork]         │
-                          │◄────────────────────────┤
-                          │                         │
-                          │      [jvs fork]          │
-                          └──────► NEW latest ◄───────┘
+EMPTY ──[checkpoint creates first/latest]──► latest ◄──[restore latest]──► historical
+                                             │                         │
+                                             │     [restore <id>]      │
+                                             └────────────────────────►│
+                                             │                         │
+                                             │       [jvs fork]         │
+                                             │◄────────────────────────┤
+                                             │                         │
+                                             │      [jvs fork]          │
+                                             └──────► NEW latest ◄───────┘
 ```
 
 ---
@@ -39,10 +39,14 @@ $ cd /projects
 $ jvs init myproject
 $ cd myproject/main
 
+# Create first checkpoint, even before files exist
+$ jvs checkpoint "empty baseline"
+Created checkpoint 1771589366481-aaa11111
+
 # Work on project...
 $ echo "version 1" > file.txt
 
-# Create first checkpoint
+# Create a payload checkpoint
 $ jvs checkpoint "initial version"
 Created checkpoint 1771589366482-abc12345
 
@@ -57,12 +61,14 @@ Created checkpoint 1771589366483-def78901
 $ jvs checkpoint list
 1771589  2026-02-21 10:30  updated content     [latest]
 1771588  2026-02-21 10:25  initial version
+1771587  2026-02-21 10:20  empty baseline
 ◄── you are here (latest)
 ```
 
 **Key Behaviors**:
+- A newly initialized empty main workspace can create its first checkpoint; it becomes both current and latest even when the payload is empty
 - Each checkpoint automatically becomes the new latest
-- User can always create new checkpoints (in latest state)
+- User can create new checkpoints from EMPTY or latest state
 - Files in workspace are always "live" - what you see is what you have
 
 ---
@@ -296,7 +302,7 @@ Workspace is now at a historical checkpoint.
 
 | Command | Description | State Change |
 |---------|-------------|--------------|
-| `jvs checkpoint [note]` | Create checkpoint | latest → latest (new head) |
+| `jvs checkpoint [note]` | Create checkpoint | EMPTY → latest (first head); latest → latest (new head) |
 | `jvs restore <id>` | Restore to checkpoint | Any → historical |
 | `jvs restore latest` | Restore to latest | historical → latest |
 | `jvs fork [name]` | Fork from current | (creates new latest) |
@@ -435,9 +441,9 @@ and JSON state.
 
 | Story | User intent | Required coverage |
 |-------|-------------|-------------------|
-| Start a repo | "I want a normal directory where my tools can create files and JVS can start tracking checkpoints." | `init`, default `main` workspace, repo/workspace discovery from root and nested paths, clear rejection of unsafe or ambiguous setup paths. |
+| Start a repo | "I want a normal directory where my tools can create files and JVS can start tracking checkpoints." | `init`, default `main` workspace, empty `main` can create the first/latest checkpoint, repo/workspace discovery from root and nested paths, clear rejection of unsafe or ambiguous setup paths. |
 | Import existing work | "I already have files and want the first checkpoint to preserve them." | `import` creates a new repo, captures payload only, tags the initial checkpoint, rejects control-plane metadata in the source, and leaves source data untouched. |
-| Save progress | "I want to checkpoint the full workspace without staging individual files." | File additions, edits, deletes, nested directories, binary files, empty directories where supported, repeated checkpoint creation from `latest`, notes, tags, and list output. |
+| Save progress | "I want to checkpoint the full workspace without staging individual files." | Empty payload first checkpoint, file additions, edits, deletes, nested directories, binary files, empty directories where supported, repeated checkpoint creation from `latest`, notes, tags, and list output. |
 | Understand state | "I need to know whether my workspace is safe, current, historical, or dirty." | `status` and `checkpoint list` show `current`, `latest`, `at_latest`, and `dirty` consistently after checkpoint, edit, restore, and fork. |
 | Inspect history | "I want to compare or inspect earlier states without losing later checkpoints." | `diff`, `restore <checkpoint>`, `restore latest`, stable refs, unique ID prefixes, exact tags, and rejection of reserved tag names. |
 | Protect dirty work | "I do not want restore or removal commands to overwrite uncheckpointed work by accident." | Dirty restore refusal, `--include-working`, `--discard-dirty`, mutual exclusion of safety flags, and workspace removal guardrails. |

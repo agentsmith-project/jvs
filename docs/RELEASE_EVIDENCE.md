@@ -11,6 +11,101 @@ This ledger records compact release evidence. It has two evidence classes:
 
 Raw logs and `coverage.out` are not stored here.
 
+## v0.4.2 - 2026-04-27
+
+### Release identity
+
+- Evidence class: GA candidate readiness
+- Candidate target tag: `v0.4.2`
+- Candidate status: not final, not tagged, and not published; pending final tag
+  creation and release-gate qualification.
+- Changelog heading date: `2026-04-27`
+- Baseline: compatible fixes, release evidence updates, and story coverage
+  after the published `v0.4.1` release.
+- CI run link rule:
+  `https://github.com/agentsmith-project/jvs/actions/runs/<run_id>`
+- Release URL rule after publication:
+  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.2`
+- Scope: partial checkpoint overlapping path canonicalization, EMPTY workspace
+  first-checkpoint docs and acceptance coverage, local user-story E2E coverage,
+  JuiceFS story qualification requirements, destination-owned transfer staging
+  checks, and post-`v0.4.1` release evidence finalization on main.
+
+### Release gate summary
+
+Command required before final tag: `make release-gate`
+
+The table lists required checks for the candidate. Final-only results remain
+pending final tag qualification and the tag-gated release workflow.
+
+| Check | Command or target | Candidate evidence |
+| --- | --- | --- |
+| Release gate | `make release-gate` | required before pending final tag |
+| Docs contract | `make docs-contract` | local pre-update verification completed successfully; required again in final release gate |
+| CI contract | `make ci-contract` | required before pending final tag |
+| Race tests | `make test-race` | required before pending final tag |
+| Coverage | `make test-cover` | required before pending final tag |
+| Lint | `make lint` | required before pending final tag |
+| Build | `make build` | required before pending final tag |
+| Conformance | `make conformance` | required before pending final tag |
+| Library facade | `make library` | required before pending final tag |
+| Regression | `make regression` | required before pending final tag |
+| Fuzz ordinary tests | `make fuzz-tests` | required before pending final tag |
+| Fuzz smoke | `make fuzz` | required before pending final tag |
+
+### Coverage
+
+- Coverage total: pending final release-gate `make test-cover` result.
+- Coverage threshold: `60.0%`
+- Evidence command: `make test-cover`
+- Evidence summary: final coverage evidence must replace this candidate note
+  after the tag-gated release gate completes.
+
+### Representative repo evidence
+
+- Representative repo class: required existing v0 repo with checkpoint history,
+  workspace state, audit chain validation, and runtime repair path.
+- Doctor command: `jvs doctor --strict`
+- Doctor result: pending final release qualification.
+- Verify command: `jvs verify --all`
+- Verify result: pending final release qualification.
+- Migration repair command for copied repos:
+  `jvs doctor --strict --repair-runtime`
+- Required evidence: final release qualification must record strict doctor,
+  full verification, and runtime repair results before this candidate can be
+  converted into final tagged release evidence.
+
+### GA docs evidence
+
+- GA docs: `docs/99_CHANGELOG.md`, `docs/12_RELEASE_POLICY.md`,
+  `docs/14_TRACEABILITY_MATRIX.md`, and this ledger define the release
+  readiness and evidence contract for `v0.4.2`.
+- Changelog scope: partial checkpoint overlapping path folding, EMPTY workspace
+  first-checkpoint docs/acceptance alignment, user-story E2E and JuiceFS story
+  coverage, destination-owned transfer staging checks, and post-`v0.4.1`
+  release evidence finalization on main.
+- Runtime-state migration boundary: active `.jvs/locks/`, `.jvs/intents/`,
+  and `.jvs/gc/*.json` runtime state remains non-portable and must be rebuilt
+  at the destination.
+
+### Artifact and signing evidence
+
+- Artifact workflow: `.github/workflows/ci.yml` release job.
+- Artifact publication: not published for this candidate; artifact counts,
+  checksums, and download verification are pending final tag publication.
+- Signing workflow: final artifacts must include `.sig` and `.pem` sidecars
+  produced by the tag-gated release workflow.
+- Signing command family: `cosign sign-blob --yes`
+- Certificate identity rule:
+  `https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@<workflow-ref>`
+- OIDC issuer: `https://token.actions.githubusercontent.com`
+
+### Runbook references
+
+- Verification and recovery: `docs/13_OPERATION_RUNBOOK.md`
+- Migration and backup: `docs/18_MIGRATION_AND_BACKUP.md`
+- Artifact signing and verification: `docs/SIGNING.md`
+
 ## v0.4.1 - 2026-04-26
 
 ### Release identity

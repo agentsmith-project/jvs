@@ -988,6 +988,77 @@ func TestCreatePartial_DuplicatePathsDeduplicated(t *testing.T) {
 	assert.Equal(t, "models", desc.PartialPaths[0])
 }
 
+func TestCreatePartial_AncestorCoveredPathsAreFolded(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		paths []string
+	}{
+		{
+			name:  "ancestor first",
+			paths: []string{"models", "models/checkpoints/checkpoint.pt"},
+		},
+		{
+			name:  "descendant first",
+			paths: []string{"models/checkpoints/checkpoint.pt", "models"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repoPath := setupTestRepo(t)
+
+			mainPath := filepath.Join(repoPath, "main")
+			require.NoError(t, os.MkdirAll(filepath.Join(mainPath, "models", "checkpoints"), 0755))
+			require.NoError(t, os.WriteFile(filepath.Join(mainPath, "models", "model1.pt"), []byte("model"), 0644))
+			require.NoError(t, os.WriteFile(filepath.Join(mainPath, "models", "checkpoints", "checkpoint.pt"), []byte("checkpoint"), 0644))
+			require.NoError(t, os.WriteFile(filepath.Join(mainPath, "README.md"), []byte("readme"), 0644))
+
+			creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+			desc, err := creator.CreatePartial("main", "covered paths", nil, tc.paths)
+			require.NoError(t, err)
+			require.Equal(t, []string{"models"}, desc.PartialPaths)
+
+			loaded, err := snapshot.LoadDescriptor(repoPath, desc.SnapshotID)
+			require.NoError(t, err)
+			assert.Equal(t, []string{"models"}, loaded.PartialPaths)
+
+			auditPath := filepath.Join(repoPath, ".jvs", "audit", "audit.jsonl")
+			auditData, err := os.ReadFile(auditPath)
+			require.NoError(t, err)
+			lines := strings.Split(strings.TrimSpace(string(auditData)), "\n")
+			require.NotEmpty(t, lines)
+
+			var record model.AuditRecord
+			require.NoError(t, json.Unmarshal([]byte(lines[len(lines)-1]), &record))
+			require.Equal(t, model.EventTypeSnapshotCreate, record.EventType)
+			require.NotNil(t, record.Details)
+			partialData, err := json.Marshal(record.Details["partial_paths"])
+			require.NoError(t, err)
+			var auditPartialPaths []string
+			require.NoError(t, json.Unmarshal(partialData, &auditPartialPaths))
+			assert.Equal(t, []string{"models"}, auditPartialPaths)
+
+			snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", string(desc.SnapshotID))
+			assert.FileExists(t, filepath.Join(snapshotDir, "models", "model1.pt"))
+			assert.FileExists(t, filepath.Join(snapshotDir, "models", "checkpoints", "checkpoint.pt"))
+			assert.NoFileExists(t, filepath.Join(snapshotDir, "README.md"))
+		})
+	}
+}
+
+func TestCreatePartial_AncestorCoveredInvalidDescendantStillRejected(t *testing.T) {
+	repoPath := setupTestRepo(t)
+
+	mainPath := filepath.Join(repoPath, "main")
+	require.NoError(t, os.MkdirAll(filepath.Join(mainPath, "models"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "models", "model1.pt"), []byte("model"), 0644))
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	desc, err := creator.CreatePartial("main", "invalid covered path", nil, []string{"models", "models/missing.pt"})
+	require.Error(t, err)
+	assert.Nil(t, desc)
+	assert.Contains(t, err.Error(), "path does not exist: models/missing.pt")
+	assert.Empty(t, readDirNames(t, filepath.Join(repoPath, ".jvs", "snapshots")))
+}
+
 // TestCreatePartial_NestedDirectories tests partial snapshot with nested directory paths.
 func TestCreatePartial_NestedDirectories(t *testing.T) {
 	repoPath := setupTestRepo(t)
