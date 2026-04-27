@@ -28,11 +28,16 @@ func TestRestoreHumanOutputUsesSavePointStatusFacts(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	firstID, secondID := createTwoSavePoints(t, repoRoot)
 
-	stdout, err := executeCommand(createTestRootCmd(), "restore", firstID)
+	previewOut, err := executeCommand(createTestRootCmd(), "restore", firstID)
+	require.NoError(t, err)
+	planID := restorePlanIDFromHumanOutput(t, previewOut)
+
+	stdout, err := executeCommand(createTestRootCmd(), "restore", "--run", planID)
 	require.NoError(t, err)
 
 	assert.Contains(t, stdout, "Folder: "+repoRoot)
 	assert.Contains(t, stdout, "Workspace: main")
+	assert.Contains(t, stdout, "Plan: "+planID)
 	assert.Contains(t, stdout, "Restored save point: "+firstID)
 	assert.Contains(t, stdout, "Managed files now match save point "+firstID+".")
 	assert.Contains(t, stdout, "Newest save point is still "+secondID+".")
@@ -46,7 +51,12 @@ func TestRestoreAcceptsUniqueSavePointPrefix(t *testing.T) {
 	firstID, secondID := createTwoSavePoints(t, repoRoot)
 	firstPrefix := uniqueSavePointPrefix(firstID, secondID)
 
-	stdout, err := executeCommand(createTestRootCmd(), "restore", firstPrefix)
+	previewOut, err := executeCommand(createTestRootCmd(), "restore", firstPrefix)
+	require.NoError(t, err)
+	assert.Contains(t, previewOut, "Source save point: "+firstID)
+	planID := restorePlanIDFromHumanOutput(t, previewOut)
+
+	stdout, err := executeCommand(createTestRootCmd(), "restore", "--run", planID)
 	require.NoError(t, err)
 
 	assert.Contains(t, stdout, "Restored save point: "+firstID)
@@ -61,21 +71,30 @@ func TestRestoreJSONUsesSavePointSchema(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	firstID, secondID := createTwoSavePoints(t, repoRoot)
 
-	stdout, err := executeCommand(createTestRootCmd(), "--json", "restore", firstID)
+	previewOut, err := executeCommand(createTestRootCmd(), "--json", "restore", firstID)
+	require.NoError(t, err)
+	_, previewData := decodeFacadeDataMap(t, previewOut)
+	planID := previewData["plan_id"].(string)
+
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "restore", "--run", planID)
 	require.NoError(t, err)
 
 	env, data := decodeFacadeDataMap(t, stdout)
 	require.True(t, env.OK, stdout)
 	require.Equal(t, "restore", env.Command)
+	require.Equal(t, "run", data["mode"])
+	require.Equal(t, planID, data["plan_id"])
 	require.Equal(t, repoRoot, data["folder"])
 	require.Equal(t, "main", data["workspace"])
 	require.Equal(t, firstID, data["restored_save_point"])
+	require.Equal(t, firstID, data["source_save_point"])
 	require.Equal(t, secondID, data["newest_save_point"])
 	require.Equal(t, secondID, data["history_head"])
 	require.Equal(t, firstID, data["content_source"])
 	require.Equal(t, false, data["unsaved_changes"])
 	require.Equal(t, "matches_save_point", data["files_state"])
 	require.Equal(t, false, data["history_changed"])
+	require.Equal(t, true, data["files_changed"])
 	assertRestoreJSONOmitsLegacyFields(t, data)
 }
 
@@ -209,10 +228,17 @@ func TestRestoreDiscardUnsavedRestoresWithoutLegacyFields(t *testing.T) {
 	firstID := savePointIDFromCLI(t, "first")
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("local edit"), 0644))
 
-	stdout, err := executeCommand(createTestRootCmd(), "--json", "restore", firstID, "--discard-unsaved")
+	previewOut, err := executeCommand(createTestRootCmd(), "--json", "restore", firstID, "--discard-unsaved")
+	require.NoError(t, err)
+	_, previewData := decodeFacadeDataMap(t, previewOut)
+	planID := previewData["plan_id"].(string)
+
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "restore", "--run", planID)
 	require.NoError(t, err)
 
 	_, data := decodeFacadeDataMap(t, stdout)
+	require.Equal(t, "run", data["mode"])
+	require.Equal(t, planID, data["plan_id"])
 	require.Equal(t, firstID, data["restored_save_point"])
 	require.Equal(t, firstID, data["content_source"])
 	require.Equal(t, false, data["unsaved_changes"])
@@ -231,7 +257,12 @@ func TestRestoreSaveFirstUsesSavePointVocabulary(t *testing.T) {
 	firstID := savePointIDFromCLI(t, "first")
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("local edit"), 0644))
 
-	stdout, err := executeCommand(createTestRootCmd(), "--json", "restore", firstID, "--save-first")
+	previewOut, err := executeCommand(createTestRootCmd(), "--json", "restore", firstID, "--save-first")
+	require.NoError(t, err)
+	_, previewData := decodeFacadeDataMap(t, previewOut)
+	planID := previewData["plan_id"].(string)
+
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "restore", "--run", planID)
 	require.NoError(t, err)
 
 	env, data := decodeFacadeDataMap(t, stdout)
@@ -256,7 +287,11 @@ func TestRestoreOutputShowsHistoryNotChangedAfterRestoringOlderSavePoint(t *test
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	firstID, secondID := createTwoSavePoints(t, repoRoot)
 
-	stdout, err := executeCommand(createTestRootCmd(), "restore", firstID)
+	previewOut, err := executeCommand(createTestRootCmd(), "restore", firstID)
+	require.NoError(t, err)
+	planID := restorePlanIDFromHumanOutput(t, previewOut)
+
+	stdout, err := executeCommand(createTestRootCmd(), "restore", "--run", planID)
 	require.NoError(t, err)
 
 	assert.Contains(t, stdout, "Restored save point: "+firstID)

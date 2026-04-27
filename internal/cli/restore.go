@@ -8,6 +8,7 @@ import (
 
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/restore"
+	"github.com/agentsmith-project/jvs/internal/restoreplan"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/pkg/color"
 	"github.com/agentsmith-project/jvs/pkg/model"
@@ -19,6 +20,7 @@ var (
 	restoreDiscardDirty   bool
 	restoreIncludeWorking bool
 	restorePath           string
+	restoreRunPlanID      string
 )
 
 var restoreCmd = &cobra.Command{
@@ -29,8 +31,12 @@ var restoreCmd = &cobra.Command{
 The workspace history is not changed by restore. If the folder has unsaved
 changes, save them first or discard them explicitly.
 
+Whole-folder restore creates a preview plan first. Run the listed plan ID to
+change files. Path restore with --path runs immediately.
+
 Examples:
   jvs restore 1771589abc
+  jvs restore --run <plan-id>
   jvs restore --path src/config.json
   jvs restore 1771589abc --path src/config.json
   jvs restore 1771589abc --save-first
@@ -46,6 +52,10 @@ Examples:
 			return runRestorePath(cmd, args, r.Root, workspaceName)
 		}
 
+		if restoreRunFlagChanged(cmd) {
+			return runRestorePlan(r.Root, workspaceName, restoreRunPlanID)
+		}
+
 		targetID, err := resolvePublicSavePointID(r.Root, args[0])
 		if err != nil {
 			return restorePointError(err)
@@ -54,30 +64,40 @@ Examples:
 		if err := rejectUnsavedChangesForRestore(r.Root, workspaceName); err != nil {
 			return restorePointError(err)
 		}
-		if restoreIncludeWorking {
-			if _, err := createSavePointDescriptor(r.Root, workspaceName, "save before restore"); err != nil {
-				return restorePointError(err)
-			}
-		}
 
-		if err := restore.NewRestorer(r.Root, detectEngine(r.Root)).Restore(workspaceName, targetID); err != nil {
-			return restorePointError(err)
-		}
-
-		result, err := publicRestoreStatus(r.Root, workspaceName, targetID)
+		plan, err := restoreplan.Create(r.Root, workspaceName, targetID, detectEngine(r.Root), restoreplan.Options{
+			DiscardUnsaved: restoreDiscardDirty,
+			SaveFirst:      restoreIncludeWorking,
+		})
 		if err != nil {
 			return restorePointError(err)
 		}
+		result := publicRestorePreviewFromPlan(plan)
 		if jsonOutput {
 			return outputJSON(result)
 		}
 
-		printRestoreResult(result)
+		printRestorePreviewResult(result)
 		return nil
 	},
 }
 
 func validateRestoreArgs(cmd *cobra.Command, args []string) error {
+	if restoreRunFlagChanged(cmd) {
+		if restorePathFlagChanged(cmd) {
+			return fmt.Errorf("--run cannot be used with --path")
+		}
+		if flags := changedRestoreRunBehaviorFlags(cmd); len(flags) > 0 {
+			return fmt.Errorf("restore --run options are fixed by the preview plan; run preview again to change %s. No files were changed.", strings.Join(flags, ", "))
+		}
+		if len(args) != 0 {
+			return fmt.Errorf("restore --run accepts only a plan ID")
+		}
+		if strings.TrimSpace(restoreRunPlanID) == "" {
+			return fmt.Errorf("--run requires a restore plan ID")
+		}
+		return nil
+	}
 	if restorePathFlagChanged(cmd) {
 		if len(args) > 1 {
 			return fmt.Errorf("restore --path accepts at most one save point ID")
@@ -91,15 +111,36 @@ func validateRestoreArgs(cmd *cobra.Command, args []string) error {
 }
 
 type publicRestoreResult struct {
+	Mode              string  `json:"mode,omitempty"`
+	PlanID            string  `json:"plan_id,omitempty"`
 	Folder            string  `json:"folder"`
 	Workspace         string  `json:"workspace"`
 	RestoredSavePoint string  `json:"restored_save_point"`
+	SourceSavePoint   string  `json:"source_save_point,omitempty"`
 	NewestSavePoint   *string `json:"newest_save_point"`
 	HistoryHead       *string `json:"history_head"`
 	ContentSource     *string `json:"content_source"`
 	UnsavedChanges    bool    `json:"unsaved_changes"`
 	FilesState        string  `json:"files_state"`
 	HistoryChanged    bool    `json:"history_changed"`
+	FilesChanged      bool    `json:"files_changed"`
+}
+
+type publicRestorePreviewResult struct {
+	Mode                    string                         `json:"mode"`
+	PlanID                  string                         `json:"plan_id"`
+	Folder                  string                         `json:"folder"`
+	Workspace               string                         `json:"workspace"`
+	SourceSavePoint         string                         `json:"source_save_point"`
+	NewestSavePoint         *string                        `json:"newest_save_point"`
+	HistoryHead             *string                        `json:"history_head"`
+	ExpectedNewestSavePoint *string                        `json:"expected_newest_save_point"`
+	ExpectedFolderEvidence  string                         `json:"expected_folder_evidence"`
+	ManagedFiles            restoreplan.ManagedFilesImpact `json:"managed_files"`
+	Options                 restoreplan.Options            `json:"options,omitempty"`
+	HistoryChanged          bool                           `json:"history_changed"`
+	FilesChanged            bool                           `json:"files_changed"`
+	RunCommand              string                         `json:"run_command"`
 }
 
 type publicRestorePathCandidatesResult struct {
@@ -132,6 +173,78 @@ type publicRestorePathResult struct {
 func restorePathFlagChanged(cmd *cobra.Command) bool {
 	flag := cmd.Flags().Lookup("path")
 	return flag != nil && flag.Changed
+}
+
+func restoreRunFlagChanged(cmd *cobra.Command) bool {
+	flag := cmd.Flags().Lookup("run")
+	return flag != nil && flag.Changed
+}
+
+func changedRestoreRunBehaviorFlags(cmd *cobra.Command) []string {
+	flags := []struct {
+		name       string
+		publicName string
+	}{
+		{name: "save-first", publicName: "--save-first"},
+		{name: "include-working", publicName: "--save-first"},
+		{name: "discard-unsaved", publicName: "--discard-unsaved"},
+		{name: "discard-dirty", publicName: "--discard-unsaved"},
+		{name: "interactive", publicName: "run-time restore options"},
+	}
+	var changed []string
+	seen := map[string]bool{}
+	for _, item := range flags {
+		flag := cmd.Flags().Lookup(item.name)
+		if flag != nil && flag.Changed {
+			if seen[item.publicName] {
+				continue
+			}
+			seen[item.publicName] = true
+			changed = append(changed, item.publicName)
+		}
+	}
+	return changed
+}
+
+func runRestorePlan(repoRoot, workspaceName, planID string) error {
+	var result publicRestoreResult
+	err := repo.WithMutationLock(repoRoot, "restore run", func() error {
+		plan, err := restoreplan.Load(repoRoot, planID)
+		if err != nil {
+			return err
+		}
+		if err := restoreplan.ValidateTarget(repoRoot, workspaceName, plan); err != nil {
+			return err
+		}
+		if err := restoreplan.ValidateSource(repoRoot, workspaceName, plan, detectEngine(repoRoot)); err != nil {
+			return err
+		}
+		if plan.Options.SaveFirst {
+			if _, err := snapshot.NewCreator(repoRoot, detectEngine(repoRoot)).CreateSavePointLocked(workspaceName, "save before restore", nil); err != nil {
+				return err
+			}
+		}
+		if err := restore.NewRestorer(repoRoot, detectEngine(repoRoot)).RestoreLocked(workspaceName, plan.SourceSavePoint); err != nil {
+			return err
+		}
+		result, err = publicRestoreStatus(repoRoot, workspaceName, plan.SourceSavePoint)
+		if err != nil {
+			return err
+		}
+		result.Mode = "run"
+		result.PlanID = plan.PlanID
+		result.SourceSavePoint = string(plan.SourceSavePoint)
+		result.FilesChanged = true
+		return nil
+	})
+	if err != nil {
+		return restorePointError(err)
+	}
+	if jsonOutput {
+		return outputJSON(result)
+	}
+	printRestoreResult(result)
+	return nil
 }
 
 func runRestorePath(cmd *cobra.Command, args []string, repoRoot, workspaceName string) error {
@@ -211,7 +324,7 @@ func rejectUnsavedChangesForRestore(repoRoot, workspaceName string) error {
 	if !unsavedChanges || restoreDiscardDirty || restoreIncludeWorking {
 		return nil
 	}
-	return fmt.Errorf("folder has unsaved changes; use --save-first to save them before restore or --discard-unsaved to discard them. No files were changed.")
+	return fmt.Errorf("folder has unsaved changes; use --save-first to save them before restore, --discard-unsaved to discard them, or cancel. No files were changed.")
 }
 
 func publicRestoreStatus(repoRoot, workspaceName string, restoredID model.SnapshotID) (publicRestoreResult, error) {
@@ -229,7 +342,35 @@ func publicRestoreStatus(repoRoot, workspaceName string, restoredID model.Snapsh
 		UnsavedChanges:    status.UnsavedChanges,
 		FilesState:        status.FilesState,
 		HistoryChanged:    false,
+		FilesChanged:      true,
 	}, nil
+}
+
+func publicRestorePreviewFromPlan(plan *restoreplan.Plan) publicRestorePreviewResult {
+	return publicRestorePreviewResult{
+		Mode:                    "preview",
+		PlanID:                  plan.PlanID,
+		Folder:                  plan.Folder,
+		Workspace:               plan.Workspace,
+		SourceSavePoint:         string(plan.SourceSavePoint),
+		NewestSavePoint:         publicSnapshotIDPtr(plan.NewestSavePoint),
+		HistoryHead:             publicSnapshotIDPtr(plan.HistoryHead),
+		ExpectedNewestSavePoint: publicSnapshotIDPtr(plan.ExpectedNewestSavePoint),
+		ExpectedFolderEvidence:  plan.ExpectedFolderEvidence,
+		ManagedFiles:            plan.ManagedFiles,
+		Options:                 plan.Options,
+		HistoryChanged:          false,
+		FilesChanged:            false,
+		RunCommand:              plan.RunCommand,
+	}
+}
+
+func publicSnapshotIDPtr(id *model.SnapshotID) *string {
+	if id == nil || *id == "" {
+		return nil
+	}
+	value := string(*id)
+	return &value
 }
 
 func normalizeRestorePathFlag(repoRoot, workspaceName, raw string) (string, error) {
@@ -335,6 +476,9 @@ func printRestoreResult(result publicRestoreResult) {
 	restored := color.SnapshotID(result.RestoredSavePoint)
 	fmt.Printf("Folder: %s\n", result.Folder)
 	fmt.Printf("Workspace: %s\n", result.Workspace)
+	if result.PlanID != "" {
+		fmt.Printf("Plan: %s\n", result.PlanID)
+	}
 	fmt.Printf("Restored save point: %s\n", restored)
 	fmt.Printf("Managed files now match save point %s.\n", restored)
 	if result.NewestSavePoint != nil && *result.NewestSavePoint != result.RestoredSavePoint {
@@ -346,6 +490,44 @@ func printRestoreResult(result publicRestoreResult) {
 	}
 	fmt.Printf("Newest save point: %s\n", formatStatusSavePoint(result.NewestSavePoint))
 	fmt.Println("History was not changed.")
+}
+
+func printRestorePreviewResult(result publicRestorePreviewResult) {
+	fmt.Println("Preview only. No files were changed.")
+	fmt.Printf("Folder: %s\n", result.Folder)
+	fmt.Printf("Workspace: %s\n", result.Workspace)
+	fmt.Printf("Plan: %s\n", result.PlanID)
+	fmt.Printf("Source save point: %s\n", color.SnapshotID(result.SourceSavePoint))
+	printRestorePreviewImpact("overwrite", result.ManagedFiles.Overwrite)
+	printRestorePreviewImpact("delete", result.ManagedFiles.Delete)
+	printRestorePreviewImpact("create", result.ManagedFiles.Create)
+	printRestorePreviewOptions(result.Options)
+	fmt.Println("Ignored/unmanaged files will be kept.")
+	fmt.Println("History will not change.")
+	newest := formatStatusSavePoint(result.NewestSavePoint)
+	fmt.Printf("Newest save point is still %s.\n", newest)
+	if result.NewestSavePoint != nil {
+		fmt.Printf("You can return to save point %s.\n", color.SnapshotID(*result.NewestSavePoint))
+	}
+	fmt.Printf("Expected newest save point: %s\n", formatStatusSavePoint(result.ExpectedNewestSavePoint))
+	fmt.Printf("Expected folder evidence: %s\n", result.ExpectedFolderEvidence)
+	fmt.Printf("Run: `%s`\n", result.RunCommand)
+}
+
+func printRestorePreviewImpact(label string, summary restoreplan.ChangeSummary) {
+	fmt.Printf("Managed files to %s: %d\n", label, summary.Count)
+	for _, sample := range summary.Samples {
+		fmt.Printf("  %s\n", sample)
+	}
+}
+
+func printRestorePreviewOptions(options restoreplan.Options) {
+	switch {
+	case options.SaveFirst:
+		fmt.Println("Run options: save unsaved changes first")
+	case options.DiscardUnsaved:
+		fmt.Println("Run options: discard unsaved changes")
+	}
 }
 
 func printRestorePathCandidates(result publicRestorePathCandidatesResult) {
@@ -524,5 +706,6 @@ func init() {
 	restoreCmd.Flags().BoolVar(&restoreIncludeWorking, "include-working", false, "checkpoint dirty workspace changes before this operation")
 	restoreCmd.Flags().Lookup("include-working").Hidden = true
 	restoreCmd.Flags().StringVar(&restorePath, "path", "", "restore only this workspace-relative path")
+	restoreCmd.Flags().StringVar(&restoreRunPlanID, "run", "", "execute a restore preview plan")
 	rootCmd.AddCommand(restoreCmd)
 }

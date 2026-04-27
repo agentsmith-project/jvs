@@ -212,6 +212,7 @@ func createControlPlane(path string) (string, error) {
 		filepath.Join(jvsDir, "intents"),
 		filepath.Join(jvsDir, "audit"),
 		filepath.Join(jvsDir, "locks"),
+		filepath.Join(jvsDir, "restore-plans"),
 		filepath.Join(jvsDir, "gc"),
 		filepath.Join(jvsDir, "gc", "pins"),
 		filepath.Join(jvsDir, "gc", "tombstones"),
@@ -1213,6 +1214,41 @@ func GCPlanPathForWrite(repoRoot, planID string) (string, error) {
 // wrong-type existing final leaf. Missing leaves are allowed.
 func GCPlanPathForDelete(repoRoot, planID string) (string, error) {
 	path, err := GCPlanPath(repoRoot, planID)
+	if err != nil {
+		return "", err
+	}
+	if err := validateControlLeaf(path, controlLeafRegularFile, true); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// RestorePlanPath returns the path for a restore operation plan ID after
+// rejecting path-like names.
+func RestorePlanPath(repoRoot, planID string) (string, error) {
+	if err := pathutil.ValidateName(planID); err != nil {
+		return "", err
+	}
+	return controlFilePath(repoRoot, []string{"restore-plans"}, planID+".json")
+}
+
+// RestorePlanPathForRead returns an existing restore plan path after rejecting
+// a symlink or wrong-type final leaf.
+func RestorePlanPathForRead(repoRoot, planID string) (string, error) {
+	path, err := RestorePlanPath(repoRoot, planID)
+	if err != nil {
+		return "", err
+	}
+	if err := validateControlLeaf(path, controlLeafRegularFile, false); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// RestorePlanPathForWrite returns a restore plan path after rejecting a
+// symlink or wrong-type existing final leaf. Missing leaves are allowed.
+func RestorePlanPathForWrite(repoRoot, planID string) (string, error) {
+	path, err := RestorePlanPath(repoRoot, planID)
 	if err != nil {
 		return "", err
 	}

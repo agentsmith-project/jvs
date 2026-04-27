@@ -61,7 +61,10 @@ func TestStatusFacadeAfterWholeRestoreKeepsNewestAndShowsSource(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	firstID, secondID := createTwoSavePoints(t, repoRoot)
 
-	_, err := executeCommand(createTestRootCmd(), "restore", firstID, "--discard-dirty")
+	previewOut, err := executeCommand(createTestRootCmd(), "restore", firstID, "--discard-dirty")
+	require.NoError(t, err)
+	planID := restorePlanIDFromHumanOutput(t, previewOut)
+	_, err = executeCommand(createTestRootCmd(), "restore", "--run", planID)
 	require.NoError(t, err)
 
 	stdout, err := executeCommand(createTestRootCmd(), "status")
@@ -77,7 +80,10 @@ func TestStatusFacadeAfterRestoreThenEditKeepsRestoredSourceAndDirty(t *testing.
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	firstID, secondID := createTwoSavePoints(t, repoRoot)
 
-	_, err := executeCommand(createTestRootCmd(), "restore", firstID, "--discard-dirty")
+	previewOut, err := executeCommand(createTestRootCmd(), "restore", firstID, "--discard-dirty")
+	require.NoError(t, err)
+	planID := restorePlanIDFromHumanOutput(t, previewOut)
+	_, err = executeCommand(createTestRootCmd(), "restore", "--run", planID)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("edited from restored"), 0644))
 
@@ -103,7 +109,10 @@ func TestStatusFacadeAfterRestoreThenEditKeepsRestoredSourceAndDirty(t *testing.
 func TestStatusFacadeJSONDoesNotExposeLegacyFields(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	firstID, secondID := createTwoSavePoints(t, repoRoot)
-	_, err := executeCommand(createTestRootCmd(), "restore", firstID, "--discard-dirty")
+	previewOut, err := executeCommand(createTestRootCmd(), "restore", firstID, "--discard-dirty")
+	require.NoError(t, err)
+	planID := restorePlanIDFromHumanOutput(t, previewOut)
+	_, err = executeCommand(createTestRootCmd(), "restore", "--run", planID)
 	require.NoError(t, err)
 
 	stdout, err := executeCommand(createTestRootCmd(), "--json", "status")

@@ -585,6 +585,7 @@ func createTestRootCmd() *cobra.Command {
 	restoreDiscardDirty = false
 	restoreIncludeWorking = false
 	restorePath = ""
+	restoreRunPlanID = ""
 	gcPlanID = ""
 	diffStatOnly = false
 	cloneScope = "full"

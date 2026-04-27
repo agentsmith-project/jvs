@@ -76,6 +76,25 @@ func readStatusForPublicCLI(t *testing.T) statusCommandOutput {
 	return out
 }
 
+func runPublicRestoreJSON(t *testing.T, savePoint string, flags ...string) map[string]any {
+	t.Helper()
+
+	previewArgs := append([]string{"--json", "restore", savePoint}, flags...)
+	stdout, err := runPublicCLI(t, previewArgs...)
+	require.NoError(t, err, stdout)
+	var preview map[string]any
+	decodePublicData(t, stdout, &preview)
+	planID, ok := preview["plan_id"].(string)
+	require.True(t, ok, "restore preview should return plan_id: %#v", preview)
+	require.NotEmpty(t, planID)
+
+	stdout, err = runPublicCLI(t, "--json", "restore", "--run", planID)
+	require.NoError(t, err, stdout)
+	var restored map[string]any
+	decodePublicData(t, stdout, &restored)
+	return restored
+}
+
 func decodePublicData(t *testing.T, stdout string, target any) contractEnvelope {
 	t.Helper()
 
@@ -153,8 +172,7 @@ func TestPublicCLIDirtyRestoreRequiresExplicitChoice(t *testing.T) {
 	require.NoError(t, os.WriteFile("file.txt", []byte("v2"), 0644))
 	second := createCheckpointForPublicCLI(t, "second")
 
-	_, err := runPublicCLI(t, "--json", "restore", first)
-	require.NoError(t, err)
+	_ = runPublicRestoreJSON(t, first)
 	require.NoError(t, os.WriteFile("file.txt", []byte("local edit"), 0644))
 
 	stdout, err := runPublicCLI(t, "restore", second)
@@ -168,10 +186,7 @@ func TestPublicCLIDirtyRestoreRequiresExplicitChoice(t *testing.T) {
 	require.NoError(t, readErr)
 	assert.Equal(t, "local edit", string(content))
 
-	stdout, err = runPublicCLI(t, "--json", "restore", second, "--discard-unsaved")
-	require.NoError(t, err, stdout)
-	var restored map[string]any
-	decodePublicData(t, stdout, &restored)
+	restored := runPublicRestoreJSON(t, second, "--discard-unsaved")
 	assert.Equal(t, second, restored["restored_save_point"])
 	assert.Equal(t, second, restored["newest_save_point"])
 	assert.Equal(t, second, restored["history_head"])
@@ -193,9 +208,8 @@ func TestPublicCLIDirtyRestoreIncludeWorkingCheckpointsFirst(t *testing.T) {
 	second := createCheckpointForPublicCLI(t, "second")
 	require.NoError(t, os.WriteFile("file.txt", []byte("local edit"), 0644))
 
-	stdout, err := runPublicCLI(t, "--json", "restore", first, "--save-first")
-	require.NoError(t, err, stdout)
-	assert.Contains(t, stdout, `"restored_save_point": "`+first+`"`)
+	restored := runPublicRestoreJSON(t, first, "--save-first")
+	assert.Equal(t, first, restored["restored_save_point"])
 
 	status := readStatusForPublicCLI(t)
 	assert.False(t, status.UnsavedChanges)
@@ -205,7 +219,7 @@ func TestPublicCLIDirtyRestoreIncludeWorkingCheckpointsFirst(t *testing.T) {
 	assert.NotEqual(t, second, *status.NewestSavePoint)
 	assert.Equal(t, "matches_save_point", status.FilesState)
 
-	stdout, err = runPublicCLI(t, "--json", "checkpoint", "list")
+	stdout, err := runPublicCLI(t, "--json", "checkpoint", "list")
 	require.NoError(t, err, stdout)
 	var checkpoints []checkpointCommandOutput
 	decodePublicData(t, stdout, &checkpoints)
@@ -484,19 +498,13 @@ func TestPublicCLIRestoreLatestAndJSONBoolConsistency(t *testing.T) {
 	require.NoError(t, os.WriteFile("file.txt", []byte("v2"), 0644))
 	second := createCheckpointForPublicCLI(t, "second")
 
-	stdout, err := runPublicCLI(t, "--json", "restore", first)
-	require.NoError(t, err, stdout)
-	var restored map[string]any
-	decodePublicData(t, stdout, &restored)
+	restored := runPublicRestoreJSON(t, first)
 	assert.Equal(t, first, restored["restored_save_point"])
 	assert.Equal(t, second, restored["newest_save_point"])
 	assert.Equal(t, first, restored["content_source"])
 	assert.Equal(t, false, restored["unsaved_changes"])
 
-	stdout, err = runPublicCLI(t, "--json", "restore", second)
-	require.NoError(t, err, stdout)
-	restored = map[string]any{}
-	decodePublicData(t, stdout, &restored)
+	restored = runPublicRestoreJSON(t, second)
 	assert.Equal(t, second, restored["restored_save_point"])
 	assert.Equal(t, second, restored["newest_save_point"])
 	assert.Equal(t, second, restored["content_source"])
@@ -912,8 +920,7 @@ func TestHiddenLegacyCommandErrorsUsePublicGuidance(t *testing.T) {
 	require.NoError(t, os.WriteFile("file.txt", []byte("v2"), 0644))
 	second := createCheckpointForPublicCLI(t, "second")
 
-	stdout, err := runPublicCLI(t, "--json", "restore", first)
-	require.NoError(t, err, stdout)
+	_ = runPublicRestoreJSON(t, first)
 
 	stdout, stderr, code := runContractSubprocess(t, mainPath, "snapshot", "from legacy command")
 	require.NotZero(t, code)
@@ -924,11 +931,17 @@ func TestHiddenLegacyCommandErrorsUsePublicGuidance(t *testing.T) {
 	assert.Contains(t, combined, "jvs fork")
 	assert.Contains(t, combined, "jvs restore latest")
 
-	stdout, err = runPublicCLI(t, "--json", "restore", second)
-	require.NoError(t, err, stdout)
+	_ = runPublicRestoreJSON(t, second)
+	var err error
 	stdout, err = runPublicCLI(t, "--json", "fork", "feature")
 	require.NoError(t, err, stdout)
 	stdout, err = runPublicCLI(t, "--json", "--workspace", "feature", "restore", first)
+	require.NoError(t, err, stdout)
+	var featurePreview map[string]any
+	decodePublicData(t, stdout, &featurePreview)
+	featurePlanID, ok := featurePreview["plan_id"].(string)
+	require.True(t, ok, "feature restore preview should return plan_id: %#v", featurePreview)
+	stdout, err = runPublicCLI(t, "--json", "--workspace", "feature", "restore", "--run", featurePlanID)
 	require.NoError(t, err, stdout)
 
 	stdout, stderr, code = runContractSubprocess(t, repoPath, "worktree", "remove", "feature")

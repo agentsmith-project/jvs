@@ -62,6 +62,12 @@ func (r *Restorer) Restore(worktreeName string, snapshotID model.SnapshotID) err
 	})
 }
 
+// RestoreLocked performs Restore while the caller already holds the repository
+// mutation lock.
+func (r *Restorer) RestoreLocked(worktreeName string, snapshotID model.SnapshotID) error {
+	return r.restore(worktreeName, snapshotID)
+}
+
 // RestorePath replaces one workspace-relative file or directory from a save
 // point without moving the workspace history or whole-workspace content source.
 func (r *Restorer) RestorePath(worktreeName string, snapshotID model.SnapshotID, path string) error {
