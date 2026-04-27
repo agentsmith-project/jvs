@@ -258,11 +258,91 @@ func TestCreator_CreateSavePointUsesLatestParentWhenHeadIsRestored(t *testing.T)
 	require.NoError(t, err)
 	require.NotNil(t, third.ParentID)
 	assert.Equal(t, second.SnapshotID, *third.ParentID)
+	require.NotNil(t, third.RestoredFrom)
+	assert.Equal(t, first.SnapshotID, *third.RestoredFrom)
+	loadedThird, err := snapshot.LoadDescriptor(repoPath, third.SnapshotID)
+	require.NoError(t, err)
+	require.NotNil(t, loadedThird.RestoredFrom)
+	assert.Equal(t, first.SnapshotID, *loadedThird.RestoredFrom)
+	require.NoError(t, snapshot.VerifySnapshot(repoPath, third.SnapshotID, true))
 
 	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
 	require.NoError(t, err)
 	assert.Equal(t, third.SnapshotID, cfg.HeadSnapshotID)
 	assert.Equal(t, third.SnapshotID, cfg.LatestSnapshotID)
+}
+
+func TestCreator_CreateSavePointConsecutiveSavesDoNotSetRestoredFrom(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("v1"), 0644))
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	first, err := creator.CreateSavePoint("main", "first", nil)
+	require.NoError(t, err)
+	assert.Nil(t, first.RestoredFrom)
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("v2"), 0644))
+
+	second, err := creator.CreateSavePoint("main", "second", nil)
+	require.NoError(t, err)
+	require.NotNil(t, second.ParentID)
+	assert.Equal(t, first.SnapshotID, *second.ParentID)
+	assert.Nil(t, second.RestoredFrom)
+	require.NoError(t, snapshot.VerifySnapshot(repoPath, second.SnapshotID, true))
+}
+
+func TestCreator_CreateSavePointAtNewestDoesNotSetRestoredFrom(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("v1"), 0644))
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	_, err := creator.CreateSavePoint("main", "first", nil)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("v2"), 0644))
+	second, err := creator.CreateSavePoint("main", "second", nil)
+	require.NoError(t, err)
+	require.NoError(t, worktree.NewManager(repoPath).UpdateHead("main", second.SnapshotID))
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("v3"), 0644))
+
+	third, err := creator.CreateSavePoint("main", "third", nil)
+	require.NoError(t, err)
+	require.NotNil(t, third.ParentID)
+	assert.Equal(t, second.SnapshotID, *third.ParentID)
+	assert.Nil(t, third.RestoredFrom)
+	require.NoError(t, snapshot.VerifySnapshot(repoPath, third.SnapshotID, true))
+
+}
+
+func TestCreator_CreateSavePointWithHeadButNoLatestDoesNotInventRestoredFrom(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("base"), 0644))
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	base, err := creator.CreateSavePoint("main", "base", nil)
+	require.NoError(t, err)
+	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	cfg.HeadSnapshotID = base.SnapshotID
+	cfg.LatestSnapshotID = ""
+	require.NoError(t, repo.WriteWorktreeConfig(repoPath, "main", cfg))
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("first no history"), 0644))
+
+	first, err := creator.CreateSavePoint("main", "first no history", nil)
+	require.NoError(t, err)
+	assert.Nil(t, first.ParentID)
+	assert.Nil(t, first.RestoredFrom)
+	loadedFirst, err := snapshot.LoadDescriptor(repoPath, first.SnapshotID)
+	require.NoError(t, err)
+	assert.Nil(t, loadedFirst.ParentID)
+	assert.Nil(t, loadedFirst.RestoredFrom)
+	require.NoError(t, snapshot.VerifySnapshot(repoPath, first.SnapshotID, true))
+
+	updated, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	assert.Equal(t, first.SnapshotID, updated.HeadSnapshotID)
+	assert.Equal(t, first.SnapshotID, updated.LatestSnapshotID)
 }
 
 func TestCreator_PayloadContentPreserved(t *testing.T) {

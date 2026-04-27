@@ -52,6 +52,9 @@ Examples:
 		if message != "" {
 			fmt.Printf("Message: %s\n", message)
 		}
+		if desc.RestoredFrom != nil {
+			fmt.Printf("Created from restored save point %s\n", color.SnapshotID(desc.RestoredFrom.String()))
+		}
 		fmt.Printf("Newest save point: %s\n", color.SnapshotID(desc.SnapshotID.String()))
 		if unsavedChanges {
 			fmt.Println("Unsaved changes: yes")

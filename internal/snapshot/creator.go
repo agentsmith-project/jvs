@@ -42,6 +42,8 @@ type snapshotPublishPaths struct {
 	descriptorPath string
 }
 
+type descriptorLineageFunc func(model.SnapshotID, *model.WorktreeConfig) model.WorkspaceSaveLineage
+
 var ErrDescriptorNotFound = errors.New("descriptor not found")
 
 func IsDescriptorNotFound(err error) bool {
@@ -124,7 +126,7 @@ func (c *Creator) createSavePoint(worktreeName, note string, tags []string) (*mo
 	if err != nil {
 		return nil, fmt.Errorf("get worktree: %w", err)
 	}
-	return c.createPartialWithDescriptorParent(worktreeName, note, tags, nil, cfg.LatestSnapshotID, true)
+	return c.createPartialWithDescriptorParentAndLineage(worktreeName, note, tags, nil, cfg.LatestSnapshotID, true, savePointLineage)
 }
 
 func (c *Creator) createWithParent(worktreeName, note string, tags []string, parentID model.SnapshotID) (*model.Descriptor, error) {
@@ -144,6 +146,10 @@ func (c *Creator) createPartial(worktreeName, note string, tags []string, paths 
 }
 
 func (c *Creator) createPartialWithDescriptorParent(worktreeName, note string, tags []string, paths []string, parentOverride model.SnapshotID, overrideParent bool) (*model.Descriptor, error) {
+	return c.createPartialWithDescriptorParentAndLineage(worktreeName, note, tags, paths, parentOverride, overrideParent, nil)
+}
+
+func (c *Creator) createPartialWithDescriptorParentAndLineage(worktreeName, note string, tags []string, paths []string, parentOverride model.SnapshotID, overrideParent bool, lineageFn descriptorLineageFunc) (*model.Descriptor, error) {
 	// Step 1: Validate worktree exists
 	wtMgr := worktree.NewManager(c.repoRoot)
 	cfg, err := wtMgr.Get(worktreeName)
@@ -189,7 +195,13 @@ func (c *Creator) createPartialWithDescriptorParent(worktreeName, note string, t
 		return nil, err
 	}
 
-	desc, err := c.stageSnapshot(&descriptorCfg, boundary, publishPaths, snapshotID, worktreeName, note, tags, partialPaths)
+	var lineage *model.WorkspaceSaveLineage
+	if lineageFn != nil {
+		nextLineage := lineageFn(snapshotID, cfg)
+		lineage = &nextLineage
+	}
+
+	desc, err := c.stageSnapshot(&descriptorCfg, boundary, publishPaths, snapshotID, worktreeName, note, tags, partialPaths, lineage)
 	if err != nil {
 		return nil, err
 	}
@@ -213,6 +225,25 @@ func (c *Creator) createPartialWithDescriptorParent(worktreeName, note string, t
 	}
 
 	return desc, nil
+}
+
+func savePointLineage(snapshotID model.SnapshotID, cfg *model.WorktreeConfig) model.WorkspaceSaveLineage {
+	state := workspaceStateFromWorktreeConfig(cfg)
+	return state.NextSaveLineage(snapshotID)
+}
+
+func workspaceStateFromWorktreeConfig(cfg *model.WorktreeConfig) model.WorkspaceState {
+	if cfg == nil {
+		return model.WorkspaceState{}
+	}
+	if cfg.LatestSnapshotID == "" {
+		return model.WorkspaceState{}
+	}
+	state := model.WorkspaceStateAtSavePoint(cfg.LatestSnapshotID)
+	if cfg.HeadSnapshotID != "" && cfg.HeadSnapshotID != cfg.LatestSnapshotID {
+		state.RestoreWhole(cfg.HeadSnapshotID)
+	}
+	return state
 }
 
 func (c *Creator) normalizePartialPaths(paths []string, worktreeName string) ([]string, error) {
@@ -268,6 +299,7 @@ func (c *Creator) stageSnapshot(
 	note string,
 	tags []string,
 	partialPaths []string,
+	lineage *model.WorkspaceSaveLineage,
 ) (*model.Descriptor, error) {
 	cleanupTmp := func() {
 		os.RemoveAll(publishPaths.tmpDir)
@@ -288,6 +320,9 @@ func (c *Creator) stageSnapshot(
 
 	// Step 7: Create descriptor
 	desc := c.newSnapshotDescriptor(cfg, snapshotID, worktreeName, note, tags, payloadHash, partialPaths, cloneResult)
+	if lineage != nil {
+		lineage.ApplyToDescriptor(desc)
+	}
 
 	// Step 8: Compute descriptor checksum
 	checksum, err := integrity.ComputeDescriptorChecksum(desc)

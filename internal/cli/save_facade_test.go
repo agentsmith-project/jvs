@@ -61,6 +61,7 @@ func TestSaveCommandJSONUsesSavePointSchema(t *testing.T) {
 	require.Equal(t, data["save_point_id"], data["newest_save_point"])
 	require.Equal(t, false, data["unsaved_changes"])
 	require.NotEmpty(t, data["created_at"])
+	assert.NotContains(t, data, "restored_from")
 	assertNoLegacyJSONFields(t, data)
 	assertNoOldSavePointVocabulary(t, string(env.Data))
 }
@@ -159,7 +160,9 @@ func TestSaveCommandAfterRestoreCreatesNewSavePointFromNewestParent(t *testing.T
 	require.NoError(t, err)
 	_, secondData := decodeFacadeDataMap(t, secondOut)
 	secondID := model.SnapshotID(secondData["save_point_id"].(string))
-	require.NoError(t, worktree.NewManager(repoRoot).UpdateHead("main", firstID))
+	restoreOut, err := executeCommand(createTestRootCmd(), "restore", string(firstID))
+	require.NoError(t, err)
+	assert.Contains(t, restoreOut, "Restored save point: "+string(firstID))
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v3"), 0644))
 
 	stdout, err := executeCommand(createTestRootCmd(), "--json", "save", "-m", "third")
@@ -173,6 +176,10 @@ func TestSaveCommandAfterRestoreCreatesNewSavePointFromNewestParent(t *testing.T
 	require.NoError(t, err)
 	require.NotNil(t, thirdDesc.ParentID)
 	require.Equal(t, secondID, *thirdDesc.ParentID)
+	require.NotNil(t, thirdDesc.RestoredFrom)
+	require.Equal(t, firstID, *thirdDesc.RestoredFrom)
+	require.Equal(t, string(firstID), data["restored_from"])
+	require.NoError(t, snapshot.VerifySnapshot(repoRoot, thirdID, true))
 
 	cfg, err := worktree.NewManager(repoRoot).Get("main")
 	require.NoError(t, err)
@@ -188,12 +195,16 @@ func TestSaveCommandAfterRestoreCreatesNewSavePointFromNewestParent(t *testing.T
 	require.NoError(t, os.WriteFile(filepath.Join(humanRepoRoot, "app.txt"), []byte("v2"), 0644))
 	_, err = executeCommand(createTestRootCmd(), "--json", "save", "-m", "second")
 	require.NoError(t, err)
-	require.NoError(t, worktree.NewManager(humanRepoRoot).UpdateHead("main", humanFirstID))
+	restoreHumanOut, err := executeCommand(createTestRootCmd(), "restore", string(humanFirstID))
+	require.NoError(t, err)
+	assert.Contains(t, restoreHumanOut, "Restored save point: "+string(humanFirstID))
 	require.NoError(t, os.WriteFile(filepath.Join(humanRepoRoot, "app.txt"), []byte("v3"), 0644))
 
 	human, err := executeCommand(createTestRootCmd(), "save", "-m", "third")
 	require.NoError(t, err)
 	assert.Contains(t, human, "Saved save point")
+	assert.Contains(t, human, "Created from restored save point "+string(humanFirstID))
+	assert.NotContains(t, human, "restored_from")
 	assertNoOldSavePointVocabulary(t, human)
 }
 

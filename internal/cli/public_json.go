@@ -41,6 +41,7 @@ type publicSavePointCreatedRecord struct {
 	Message         string    `json:"message"`
 	CreatedAt       time.Time `json:"created_at"`
 	NewestSavePoint string    `json:"newest_save_point"`
+	RestoredFrom    string    `json:"restored_from,omitempty"`
 	UnsavedChanges  bool      `json:"unsaved_changes"`
 }
 
@@ -160,7 +161,7 @@ func publicSavePoints(descs []*model.Descriptor) []publicSavePointRecord {
 }
 
 func publicSavePointCreated(desc *model.Descriptor, unsavedChanges bool) publicSavePointCreatedRecord {
-	return publicSavePointCreatedRecord{
+	record := publicSavePointCreatedRecord{
 		SavePointID:     string(desc.SnapshotID),
 		Workspace:       desc.WorktreeName,
 		Message:         desc.Note,
@@ -168,6 +169,10 @@ func publicSavePointCreated(desc *model.Descriptor, unsavedChanges bool) publicS
 		NewestSavePoint: string(desc.SnapshotID),
 		UnsavedChanges:  unsavedChanges,
 	}
+	if desc.RestoredFrom != nil {
+		record.RestoredFrom = string(*desc.RestoredFrom)
+	}
+	return record
 }
 
 func publicSavePointHistory(workspace string, descs []*model.Descriptor, newest model.SnapshotID) publicSavePointHistoryRecord {
