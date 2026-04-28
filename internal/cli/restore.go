@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/agentsmith-project/jvs/internal/restoreplan"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/pkg/color"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/agentsmith-project/jvs/pkg/model"
 	"github.com/agentsmith-project/jvs/pkg/pathutil"
 )
@@ -61,6 +63,11 @@ Examples:
 			return restorePointError(err)
 		}
 
+		if !restoreDiscardDirty && !restoreIncludeWorking {
+			if err := checkRestorePreviewPreDirtyCapacity(r.Root, workspaceName, targetID, ""); err != nil {
+				return restorePointError(err)
+			}
+		}
 		if err := rejectUnsavedChangesForRestore(r.Root, workspaceName); err != nil {
 			return restorePointError(err)
 		}
@@ -230,6 +237,13 @@ func runRestorePlan(repoRoot, workspaceName, planID string) error {
 			if err := restoreplan.ValidateTarget(repoRoot, workspaceName, plan); err != nil {
 				return err
 			}
+			sourceState, err := restoreplan.InspectSourceReadOnly(repoRoot, plan.SourceSavePoint)
+			if err != nil {
+				return err
+			}
+			if err := checkRestoreRunCapacity(repoRoot, workspaceName, plan, sourceState.SnapshotDir, sourceState.Descriptor); err != nil {
+				return err
+			}
 			if err := restoreplan.ValidateSource(repoRoot, workspaceName, plan, detectEngine(repoRoot)); err != nil {
 				return err
 			}
@@ -252,6 +266,13 @@ func runRestorePlan(repoRoot, workspaceName, planID string) error {
 			return nil
 		case restoreplan.ScopePath:
 			if err := restoreplan.ValidatePathTarget(repoRoot, workspaceName, plan); err != nil {
+				return err
+			}
+			sourceState, err := restoreplan.InspectSourceReadOnly(repoRoot, plan.SourceSavePoint)
+			if err != nil {
+				return err
+			}
+			if err := checkRestoreRunCapacity(repoRoot, workspaceName, plan, sourceState.SnapshotDir, sourceState.Descriptor); err != nil {
 				return err
 			}
 			if err := restoreplan.ValidateSourcePath(repoRoot, workspaceName, plan, detectEngine(repoRoot)); err != nil {
@@ -326,6 +347,9 @@ func runRestorePath(cmd *cobra.Command, args []string, repoRoot, workspaceName s
 		return restorePathError(err, restorePath)
 	}
 	if !restoreIncludeWorking && !restoreDiscardDirty {
+		if err := checkRestorePreviewPreDirtyCapacity(repoRoot, workspaceName, targetID, path); err != nil {
+			return restorePathError(err, restorePath, path)
+		}
 		pathDirty, err := workspacePathDirty(repoRoot, workspaceName, path)
 		if err != nil {
 			return restorePathError(err, restorePath, path)
@@ -354,11 +378,14 @@ func rejectUnsavedChangesForRestore(repoRoot, workspaceName string) error {
 	if restoreDiscardDirty && restoreIncludeWorking {
 		return fmt.Errorf("--discard-unsaved and --save-first cannot be used together")
 	}
+	if restoreDiscardDirty || restoreIncludeWorking {
+		return nil
+	}
 	unsavedChanges, err := workspaceDirty(repoRoot, workspaceName)
 	if err != nil {
 		return err
 	}
-	if !unsavedChanges || restoreDiscardDirty || restoreIncludeWorking {
+	if !unsavedChanges {
 		return nil
 	}
 	return fmt.Errorf("folder has unsaved changes; use --save-first to save them before restore, --discard-unsaved to discard them, or cancel. No files were changed.")
@@ -627,7 +654,12 @@ func restorePointError(err error) error {
 	if err == nil {
 		return nil
 	}
-	return fmt.Errorf("%s", restorePointVocabulary(err.Error()))
+	message := restorePointVocabulary(err.Error())
+	var jvsErr *errclass.JVSError
+	if errors.As(err, &jvsErr) {
+		return &errclass.JVSError{Code: jvsErr.Code, Message: message, Hint: restorePointVocabulary(jvsErr.Hint)}
+	}
+	return fmt.Errorf("%s", message)
 }
 
 func restorePathError(err error, protectedValues ...string) error {
@@ -637,6 +669,10 @@ func restorePathError(err error, protectedValues ...string) error {
 	message := restorePathVocabulary(err.Error(), protectedValues...)
 	if !strings.Contains(message, "No files were changed.") {
 		message += ". No files were changed."
+	}
+	var jvsErr *errclass.JVSError
+	if errors.As(err, &jvsErr) {
+		return &errclass.JVSError{Code: jvsErr.Code, Message: message, Hint: restorePathVocabulary(jvsErr.Hint, protectedValues...)}
 	}
 	return fmt.Errorf("%s", message)
 }

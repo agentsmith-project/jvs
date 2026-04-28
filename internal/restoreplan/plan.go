@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentsmith-project/jvs/internal/capacitygate"
 	"github.com/agentsmith-project/jvs/internal/engine"
 	"github.com/agentsmith-project/jvs/internal/integrity"
 	"github.com/agentsmith-project/jvs/internal/repo"
@@ -29,10 +30,13 @@ import (
 const (
 	SchemaVersion = 1
 	sampleLimit   = 5
+	metadataFloor = 1 << 20
 
 	ScopeWhole = "whole"
 	ScopePath  = "path"
 )
+
+var planCapacityGate = capacitygate.Default()
 
 type Options struct {
 	DiscardUnsaved bool `json:"discard_unsaved,omitempty"`
@@ -77,6 +81,14 @@ func (p *Plan) EffectiveScope() string {
 	return p.Scope
 }
 
+func SetCapacityGateForTest(gate capacitygate.Gate) func() {
+	previous := planCapacityGate
+	planCapacityGate = gate
+	return func() {
+		planCapacityGate = previous
+	}
+}
+
 func Create(repoRoot, workspaceName string, sourceID model.SnapshotID, engineType model.EngineType, options Options) (*Plan, error) {
 	if options.DiscardUnsaved && options.SaveFirst {
 		return nil, fmt.Errorf("--discard-unsaved and --save-first cannot be used together")
@@ -103,6 +115,16 @@ func Create(repoRoot, workspaceName string, sourceID model.SnapshotID, engineTyp
 	}
 	evidence, err := WorkspaceEvidence(repoRoot, workspaceName)
 	if err != nil {
+		return nil, err
+	}
+	sourceState, err := InspectSourceReadOnly(repoRoot, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := checkPreviewCapacity(repoRoot, folder, workspaceName, sourceID, "", sourceState.SnapshotDir, sourceState.Descriptor); err != nil {
+		return nil, err
+	}
+	if err := ValidateSource(repoRoot, workspaceName, &Plan{SourceSavePoint: sourceID}, engineType); err != nil {
 		return nil, err
 	}
 	impact, err := ComputeManagedImpact(repoRoot, workspaceName, sourceID, engineType)
@@ -165,6 +187,16 @@ func CreatePath(repoRoot, workspaceName string, sourceID model.SnapshotID, path 
 	}
 	pathEvidence, err := PathEvidence(repoRoot, workspaceName, path)
 	if err != nil {
+		return nil, err
+	}
+	sourceState, err := InspectSourceReadOnly(repoRoot, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := checkPreviewCapacity(repoRoot, folder, workspaceName, sourceID, path, sourceState.SnapshotDir, sourceState.Descriptor); err != nil {
+		return nil, err
+	}
+	if err := ValidateSourcePath(repoRoot, workspaceName, &Plan{SourceSavePoint: sourceID, Path: path}, engineType); err != nil {
 		return nil, err
 	}
 	impact, err := ComputeManagedPathImpact(repoRoot, workspaceName, sourceID, path, engineType)
@@ -360,6 +392,40 @@ func ValidateSourcePath(repoRoot, workspaceName string, plan *Plan, engineType m
 		return sourceNotRestorableError(err)
 	}
 	return nil
+}
+
+func InspectSourceReadOnly(repoRoot string, sourceID model.SnapshotID) (*snapshot.PublishState, error) {
+	state, issue := snapshot.InspectPublishState(repoRoot, sourceID, snapshot.PublishStateOptions{
+		RequireReady:             true,
+		RequirePayload:           true,
+		VerifyDescriptorChecksum: true,
+		VerifyPayloadHash:        false,
+	})
+	if issue != nil {
+		return state, sourceNotRestorableError(snapshot.PublishStateIssueError(issue))
+	}
+	return state, nil
+}
+
+func checkPreviewCapacity(repoRoot, folder, workspaceName string, sourceID model.SnapshotID, path, snapshotDir string, desc *model.Descriptor) (*capacitygate.Decision, error) {
+	sourceEstimate, err := snapshotpayload.EstimateMaterializationCapacity(snapshotDir, snapshotpayload.OptionsFromDescriptor(desc))
+	if err != nil {
+		return nil, err
+	}
+	return planCapacityGate.Check(capacitygate.Request{
+		Operation:       "restore preview",
+		Folder:          folder,
+		Workspace:       workspaceName,
+		SourceSavePoint: string(sourceID),
+		Path:            path,
+		Components: []capacitygate.Component{
+			{Name: "source hash", Path: filepath.Join(os.TempDir(), "jvs-payload-hash-probe"), Bytes: sourceEstimate.PeakBytes},
+			{Name: "source validation", Path: filepath.Join(repoRoot, repo.JVSDirName, "restore-preview-probe", "source"), Bytes: sourceEstimate.PeakBytes},
+			{Name: "impact preview", Path: filepath.Join(repoRoot, repo.JVSDirName, "restore-preview-probe", "impact"), Bytes: sourceEstimate.PeakBytes},
+			{Name: "restore plan", Path: filepath.Join(repoRoot, repo.JVSDirName, "restore-plans"), Bytes: metadataFloor},
+		},
+		FailureMessages: []string{"No restore plan was created.", "No files were changed."},
+	})
 }
 
 func validateSourcePayload(repoRoot, workspaceName string, sourceID model.SnapshotID, engineType model.EngineType) (string, func(), error) {

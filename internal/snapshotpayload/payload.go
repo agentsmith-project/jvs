@@ -24,6 +24,11 @@ type Options struct {
 	Compressed bool
 }
 
+type MaterializationCapacityEstimate struct {
+	FinalBytes int64
+	PeakBytes  int64
+}
+
 // OptionsFromDescriptor derives payload materialization options from a descriptor.
 func OptionsFromDescriptor(desc *model.Descriptor) Options {
 	return Options{Compressed: desc != nil && desc.Compression != nil}
@@ -48,6 +53,62 @@ func OptionsForSnapshot(repoRoot string, snapshotID model.SnapshotID) (Options, 
 		return Options{}, fmt.Errorf("descriptor snapshot ID %q does not match requested %q", desc.SnapshotID, snapshotID)
 	}
 	return OptionsFromDescriptor(&desc), nil
+}
+
+// MaterializedLogicalSize estimates the user payload size after materialization
+// without cloning, decompressing, or hashing the snapshot storage tree.
+func MaterializedLogicalSize(root string, opts Options) (int64, error) {
+	estimate, err := EstimateMaterializationCapacity(root, opts)
+	if err != nil {
+		return 0, err
+	}
+	return estimate.FinalBytes, nil
+}
+
+// EstimateMaterializationCapacity estimates both final logical user payload
+// bytes and the temporary peak written by MaterializeToNew without writing.
+func EstimateMaterializationCapacity(root string, opts Options) (MaterializationCapacityEstimate, error) {
+	if err := validateMaterializeSource(root); err != nil {
+		return MaterializationCapacityEstimate{}, err
+	}
+	storageBytes, err := materializedTreeSize(root, nil)
+	if err != nil {
+		return MaterializationCapacityEstimate{}, err
+	}
+
+	exclude := map[string]struct{}{
+		storageReadyMarkerName:     {},
+		storageReadyGzipMarkerName: {},
+	}
+
+	var stagedOriginalBytes int64
+	if opts.Compressed {
+		plan, err := compression.PlanMaterializedSize(root)
+		if err != nil {
+			return MaterializationCapacityEstimate{}, fmt.Errorf("plan compressed payload size: %w", err)
+		}
+		stagedOriginalBytes = plan.OriginalBytes
+		for _, rel := range plan.ConsumedCompressedPaths {
+			exclude[rel] = struct{}{}
+		}
+	}
+
+	treeBytes, err := materializedTreeSize(root, exclude)
+	if err != nil {
+		return MaterializationCapacityEstimate{}, err
+	}
+	finalBytes := treeBytes
+	if opts.Compressed {
+		finalBytes = saturatingPayloadSize(stagedOriginalBytes, treeBytes)
+	}
+	peakBytes := storageBytes
+	if opts.Compressed {
+		peakBytes = saturatingPayloadSize(storageBytes, stagedOriginalBytes)
+	}
+	return MaterializationCapacityEstimate{
+		FinalBytes: finalBytes,
+		PeakBytes:  peakBytes,
+	}, nil
 }
 
 // Materialize clones a snapshot storage tree and normalizes it into the logical
@@ -256,3 +317,54 @@ func removeControlMarker(path string) error {
 	}
 	return nil
 }
+
+func materializedTreeSize(root string, exclude map[string]struct{}) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return fmt.Errorf("relative payload path: %w", err)
+		}
+		rel = filepath.ToSlash(rel)
+		if rel != "." {
+			if _, ok := exclude[rel]; ok {
+				if entry.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return fmt.Errorf("stat payload path %s: %w", rel, err)
+		}
+		total = saturatingPayloadSize(total, logicalPayloadEntrySize(info))
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+func logicalPayloadEntrySize(info os.FileInfo) int64 {
+	if info == nil || info.IsDir() {
+		return 0
+	}
+	if info.Size() < 0 {
+		return 0
+	}
+	return info.Size()
+}
+
+func saturatingPayloadSize(a, b int64) int64 {
+	if b > 0 && a > maxPayloadSize-b {
+		return maxPayloadSize
+	}
+	return a + b
+}
+
+const maxPayloadSize = int64(^uint64(0) >> 1)

@@ -424,6 +424,11 @@ type stagedDecompression struct {
 	trashPath  string
 }
 
+type MaterializedSizePlan struct {
+	OriginalBytes           int64
+	ConsumedCompressedPaths []string
+}
+
 type decompressionRollbackLedger struct {
 	installedOutputs []string
 	movedCompressed  []movedCompressedFile
@@ -513,6 +518,32 @@ func planManifestDecompression(root string, manifest *compressionManifest) ([]de
 	return plan, nil
 }
 
+func PlanMaterializedSize(root string) (*MaterializedSizePlan, error) {
+	if err := validateManifestRoot(root); err != nil {
+		return nil, err
+	}
+	manifest, err := readCompressionManifest(root)
+	if err != nil {
+		return nil, err
+	}
+	plan, err := planManifestDecompression(root, manifest)
+	if err != nil {
+		return nil, err
+	}
+	sizePlan := &MaterializedSizePlan{
+		ConsumedCompressedPaths: make([]string, 0, len(plan)),
+	}
+	for _, file := range plan {
+		sizePlan.OriginalBytes = saturatingManifestSize(sizePlan.OriginalBytes, file.originalSize)
+		rel, err := filepath.Rel(root, file.compressedPath)
+		if err != nil {
+			return nil, fmt.Errorf("relative compressed path: %w", err)
+		}
+		sizePlan.ConsumedCompressedPaths = append(sizePlan.ConsumedCompressedPaths, filepath.ToSlash(rel))
+	}
+	return sizePlan, nil
+}
+
 func validateManifestRoot(root string) error {
 	info, err := os.Lstat(root)
 	if err != nil {
@@ -526,6 +557,15 @@ func validateManifestRoot(root string) error {
 	}
 	return nil
 }
+
+func saturatingManifestSize(a, b int64) int64 {
+	if b > 0 && a > maxManifestSize-b {
+		return maxManifestSize
+	}
+	return a + b
+}
+
+const maxManifestSize = int64(^uint64(0) >> 1)
 
 func cleanManifestPath(path string) (string, error) {
 	if path == "" {

@@ -48,6 +48,80 @@ func TestMaterialize_UncompressedSnapshotKeepsUserGzipFile(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(dst, ".READY"))
 }
 
+func TestMaterializedLogicalSizeUncompressedExcludesOnlyRootControlMarkers(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".READY"), []byte("root control"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".READY.gz"), []byte("root control gzip"), 0644))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "nested"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "file.txt"), []byte("payload"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "nested", ".READY"), []byte("user ready"), 0644))
+
+	size, err := snapshotpayload.MaterializedLogicalSize(root, snapshotpayload.Options{})
+	require.NoError(t, err)
+	assert.EqualValues(t, len("payload")+len("user ready"), size)
+}
+
+func TestMaterializedLogicalSizeCompressedUsesManifestOriginalSize(t *testing.T) {
+	root := t.TempDir()
+	writeGzipFile(t, filepath.Join(root, "large.txt.gz"), []byte("tiny storage"), 0644)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "user.gz"), []byte("user gzip file"), 0644))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "nested"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "nested", ".READY"), []byte("user ready"), 0644))
+	writeReadyWithCompressionManifestEntries(t, root, []map[string]any{
+		{
+			"path":            "large.txt",
+			"compressed_path": "large.txt.gz",
+			"original_size":   int64(10_000_000),
+		},
+	})
+
+	size, err := snapshotpayload.MaterializedLogicalSize(root, snapshotpayload.Options{Compressed: true})
+	require.NoError(t, err)
+	assert.EqualValues(t, 10_000_000+len("user gzip file")+len("user ready"), size)
+}
+
+func TestMaterializedLogicalSizeCompressedFailsClosedOnInvalidManifest(t *testing.T) {
+	root := t.TempDir()
+	writeGzipFile(t, filepath.Join(root, "large.txt.gz"), []byte("tiny storage"), 0644)
+	writeReadyWithCompressionManifestEntries(t, root, []map[string]any{
+		{
+			"path":            "large.txt",
+			"compressed_path": "large.txt.gz",
+		},
+	})
+
+	_, err := snapshotpayload.MaterializedLogicalSize(root, snapshotpayload.Options{Compressed: true})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing original size")
+}
+
+func TestMaterializationCapacityEstimateCompressedPeakIncludesStorageCloneAndStaging(t *testing.T) {
+	root := t.TempDir()
+	writeGzipFile(t, filepath.Join(root, "tiny.txt.gz"), []byte("x"), 0644)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "user.txt"), []byte("plain"), 0644))
+	writeReadyWithCompressionManifest(t, root, []string{"tiny.txt"})
+	storageBytes := logicalFixtureTreeSize(t, root)
+
+	estimate, err := snapshotpayload.EstimateMaterializationCapacity(root, snapshotpayload.Options{Compressed: true})
+	require.NoError(t, err)
+
+	assert.EqualValues(t, len("x")+len("plain"), estimate.FinalBytes)
+	assert.EqualValues(t, storageBytes+int64(len("x")), estimate.PeakBytes)
+	assert.Greater(t, estimate.PeakBytes, estimate.FinalBytes)
+}
+
+func TestMaterializationCapacityEstimateUncompressedPeakIncludesStorageControlMarkers(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".READY"), []byte("root control"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "file.txt"), []byte("payload"), 0644))
+
+	estimate, err := snapshotpayload.EstimateMaterializationCapacity(root, snapshotpayload.Options{})
+	require.NoError(t, err)
+
+	assert.EqualValues(t, len("payload"), estimate.FinalBytes)
+	assert.EqualValues(t, len("root control")+len("payload"), estimate.PeakBytes)
+}
+
 func TestMaterialize_CompressedSnapshotRemovesRootReadyGzipControlMarker(t *testing.T) {
 	src := t.TempDir()
 	dst := filepath.Join(t.TempDir(), "materialized")
@@ -310,4 +384,19 @@ func gzipFixtureOriginalSize(t *testing.T, path string) int64 {
 		}
 		return 0
 	}
+}
+
+func logicalFixtureTreeSize(t *testing.T, root string) int64 {
+	t.Helper()
+	var total int64
+	require.NoError(t, filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		require.NoError(t, err)
+		info, err := entry.Info()
+		require.NoError(t, err)
+		if !info.IsDir() {
+			total += info.Size()
+		}
+		return nil
+	}))
+	return total
 }

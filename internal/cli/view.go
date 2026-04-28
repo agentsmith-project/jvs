@@ -9,14 +9,19 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/agentsmith-project/jvs/internal/capacitygate"
 	"github.com/agentsmith-project/jvs/internal/engine"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/internal/snapshotpayload"
+	"github.com/agentsmith-project/jvs/internal/worktree"
 	"github.com/agentsmith-project/jvs/pkg/color"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/agentsmith-project/jvs/pkg/model"
 	"github.com/agentsmith-project/jvs/pkg/pathutil"
 )
+
+var viewCapacityGate = capacitygate.Default()
 
 var viewCmd = &cobra.Command{
 	Use:   "view <save-point> [path]",
@@ -146,7 +151,7 @@ func looksLikeWindowsPath(path string) bool {
 }
 
 func openReadOnlySavePointView(repoRoot, workspaceName string, savePointID model.SnapshotID, pathInside string) (result publicViewResult, err error) {
-	status, err := buildWorkspaceStatus(repoRoot, workspaceName)
+	folder, err := workspaceFolder(repoRoot, workspaceName)
 	if err != nil {
 		return publicViewResult{}, err
 	}
@@ -155,7 +160,7 @@ func openReadOnlySavePointView(repoRoot, workspaceName string, savePointID model
 		RequireReady:             true,
 		RequirePayload:           true,
 		VerifyDescriptorChecksum: true,
-		VerifyPayloadHash:        true,
+		VerifyPayloadHash:        false,
 	})
 	if issue != nil {
 		return publicViewResult{}, snapshot.PublishStateIssueError(issue)
@@ -164,6 +169,34 @@ func openReadOnlySavePointView(repoRoot, workspaceName string, savePointID model
 	viewID := "view-" + string(model.NewSnapshotID())
 	viewRoot := filepath.Join(repoRoot, repo.JVSDirName, "views", viewID)
 	payloadRoot := filepath.Join(viewRoot, "payload")
+	sourceEstimate, err := snapshotpayload.EstimateMaterializationCapacity(state.SnapshotDir, snapshotpayload.OptionsFromDescriptor(state.Descriptor))
+	if err != nil {
+		return publicViewResult{}, err
+	}
+	if _, err := viewCapacityGate.Check(capacitygate.Request{
+		Operation:       "view",
+		Folder:          folder,
+		Workspace:       workspaceName,
+		SourceSavePoint: string(savePointID),
+		Path:            pathInside,
+		Components: []capacitygate.Component{
+			{Name: "payload hash", Path: filepath.Join(os.TempDir(), "jvs-payload-hash-probe"), Bytes: sourceEstimate.PeakBytes},
+			{Name: "view payload", Path: payloadRoot, Bytes: sourceEstimate.PeakBytes},
+			{Name: "view metadata", Path: viewRoot, Bytes: metadataFloor},
+		},
+		FailureMessages: []string{"No view was opened.", "No files or history changed."},
+	}); err != nil {
+		return publicViewResult{}, err
+	}
+	state, issue = snapshot.InspectPublishState(repoRoot, savePointID, snapshot.PublishStateOptions{
+		RequireReady:             true,
+		RequirePayload:           true,
+		VerifyDescriptorChecksum: true,
+		VerifyPayloadHash:        true,
+	})
+	if issue != nil {
+		return publicViewResult{}, snapshot.PublishStateIssueError(issue)
+	}
 	if err := prepareViewRoot(viewRoot); err != nil {
 		return publicViewResult{}, err
 	}
@@ -212,8 +245,8 @@ func openReadOnlySavePointView(repoRoot, workspaceName string, savePointID model
 	cleanupOnError = false
 
 	return publicViewResult{
-		Folder:                      status.Folder,
-		Workspace:                   status.Workspace,
+		Folder:                      folder,
+		Workspace:                   workspaceName,
 		SavePoint:                   string(savePointID),
 		PathInsideSavePoint:         pathInside,
 		ViewID:                      viewID,
@@ -221,6 +254,15 @@ func openReadOnlySavePointView(repoRoot, workspaceName string, savePointID model
 		ReadOnly:                    true,
 		NoWorkspaceOrHistoryChanged: true,
 	}, nil
+}
+
+func workspaceFolder(repoRoot, workspaceName string) (string, error) {
+	mgr := worktree.NewManager(repoRoot)
+	folder, err := mgr.Path(workspaceName)
+	if err != nil {
+		return "", fmt.Errorf("workspace folder: %w", err)
+	}
+	return folder, nil
 }
 
 func removeFailedViewRoot(viewRoot string) error {
@@ -395,6 +437,10 @@ func viewPointError(err error) error {
 	message := viewPointVocabulary(err.Error())
 	if !strings.Contains(message, "No files or history changed.") {
 		message += ". No files or history changed."
+	}
+	var jvsErr *errclass.JVSError
+	if errors.As(err, &jvsErr) {
+		return &errclass.JVSError{Code: jvsErr.Code, Message: message, Hint: viewPointVocabulary(jvsErr.Hint)}
 	}
 	return fmt.Errorf("%s", message)
 }
