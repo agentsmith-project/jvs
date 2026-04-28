@@ -26,7 +26,7 @@ var releaseEvidenceHeadingPattern = regexp.MustCompile(`(?m)^## (v0\.[0-9]+\.[0-
 var releaseEvidenceCommitPattern = regexp.MustCompile("(?m)^- Final tagged commit: `([0-9a-f]{40})`$")
 var releaseEvidenceTagPattern = regexp.MustCompile("(?m)^- Tag: `(v0\\.[0-9]+\\.[0-9]+)`$")
 var releaseEvidenceStatusPassPattern = regexp.MustCompile(`(?mi)^- Status:\s*PASS\b`)
-var releaseEvidenceGatePassPattern = regexp.MustCompile(`(?mi)\|\s*Release gate\s*\|[^|]*\|\s*PASS\s*\|`)
+var releaseEvidenceGatePassPattern = regexp.MustCompile(`(?mi)\|\s*Release gate\s*\|[^|]*\|\s*PASS\b[^|]*\|`)
 var releaseEvidencePublishedArtifactCountPattern = regexp.MustCompile(`(?mi)^- Published artifact count:\s*` + "`?" + `[1-9][0-9]*` + "`?")
 var releaseFacingPerformanceClaimPattern = regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_])(?:o\(1\)|instant(?:ly)?|constant-time|constant overhead)([^A-Za-z0-9_]|$)`)
 var releaseFacingStorageScopePattern = regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_-])juicefs-clone([^A-Za-z0-9_-]|$)|\bsupported\s+[^A-Za-z0-9_]*juicefs\b`)
@@ -1340,6 +1340,84 @@ func TestDocs_ReleaseEvidenceLedgerCoversLatestChangelogTagDate(t *testing.T) {
 		return
 	}
 	requireCandidateReleaseEvidence(t, latestHeading, entry)
+}
+
+func TestDocs_V042GAReleaseEvidenceRecordsPublishedRelease(t *testing.T) {
+	const heading = "## v0.4.2 - 2026-04-28"
+	const commit = "c21b676dfb04d32f8cf3b9fa301e465f6886ca94"
+	const runURL = "https://github.com/agentsmith-project/jvs/actions/runs/25056873829"
+	const releaseURL = "https://github.com/agentsmith-project/jvs/releases/tag/v0.4.2"
+
+	changelogEntry := firstChangelogEntry(readRepoFile(t, "docs/99_CHANGELOG.md"))
+	if !strings.Contains(changelogEntry, heading) {
+		t.Fatalf("latest changelog entry must be the published v0.4.2 GA release heading %q", heading)
+	}
+	for _, forbidden := range []string{
+		"GA candidate",
+		"not final",
+		"not tagged",
+		"not published",
+		"pending final",
+	} {
+		requireReleaseReadinessAbsentText(t, "published v0.4.2 changelog entry", changelogEntry, forbidden)
+	}
+	for _, required := range []string{
+		"GA release",
+		runURL,
+		releaseURL,
+		"draft=false",
+		"prerelease=false",
+		"Asset count: `12`",
+	} {
+		requireReleaseReadinessText(t, "published v0.4.2 changelog entry", changelogEntry, required)
+	}
+
+	entry := releaseEvidenceEntry(t, readRepoFile(t, "docs/RELEASE_EVIDENCE.md"), heading)
+	requireFinalTaggedReleaseEvidence(t, heading, entry)
+	for _, required := range []string{
+		"Evidence class: Final release evidence",
+		"Tag: `v0.4.2`",
+		"Final tagged commit: `" + commit + "`",
+		"Commit message: `ci: publish release signatures as bundles`",
+		"Status: PASS",
+		runURL,
+		releaseURL,
+		"draft=false",
+		"prerelease=false",
+		"Published artifact count: `12`",
+		"sha256sum --check --strict SHA256SUMS",
+		"jvs-linux-amd64 --help",
+		"cosign version: `v3.0.5`",
+		"https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@refs/tags/v0.4.2",
+		"https://token.actions.githubusercontent.com",
+	} {
+		requireReleaseReadinessText(t, "published v0.4.2 release evidence", entry, required)
+	}
+	for _, asset := range []string{
+		"jvs-darwin-amd64",
+		"jvs-darwin-amd64.bundle",
+		"jvs-darwin-arm64",
+		"jvs-darwin-arm64.bundle",
+		"jvs-linux-amd64",
+		"jvs-linux-amd64.bundle",
+		"jvs-linux-arm64",
+		"jvs-linux-arm64.bundle",
+		"jvs-windows-amd64.exe",
+		"jvs-windows-amd64.exe.bundle",
+		"SHA256SUMS",
+		"SHA256SUMS.bundle",
+	} {
+		requireReleaseReadinessText(t, "published v0.4.2 release evidence assets", entry, asset)
+	}
+	for _, forbidden := range []string{
+		"GA candidate",
+		"not final",
+		"not tagged",
+		"not published",
+		"pending final",
+	} {
+		requireReleaseReadinessAbsentText(t, "published v0.4.2 release evidence", entry, forbidden)
+	}
 }
 
 func TestDocs_ReleaseEvidenceDoesNotMixCandidateAndFinalSemantics(t *testing.T) {
@@ -3144,6 +3222,7 @@ func releaseEvidenceClaimsFinalTaggedRelease(entry string) bool {
 		releaseEvidenceGatePassPattern.MatchString(entry) ||
 		releaseEvidencePublishedArtifactCountPattern.MatchString(entry) ||
 		releaseEvidenceTagPattern.MatchString(entry) ||
+		strings.Contains(strings.ToLower(entry), "evidence class: final release evidence") ||
 		strings.Contains(strings.ToLower(entry), "evidence class: final tagged release")
 }
 
@@ -3163,6 +3242,7 @@ func requireCandidateReleaseEvidence(t *testing.T, heading, entry string) {
 
 func requireFinalTaggedReleaseEvidence(t *testing.T, heading, entry string) {
 	t.Helper()
+	requireReleaseReadinessText(t, "final tagged release evidence "+heading, entry, "Evidence class: Final release evidence")
 	tagMatch := releaseEvidenceTagPattern.FindStringSubmatch(entry)
 	if tagMatch == nil {
 		t.Fatalf("final tagged release evidence %q must record a final Tag line", heading)
