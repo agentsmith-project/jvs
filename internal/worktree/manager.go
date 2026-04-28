@@ -110,6 +110,40 @@ func (m *Manager) CreateFromSnapshot(name string, snapshotID model.SnapshotID, c
 	return m.createMaterializedSnapshotWorktree(name, snapshotID, cloneFunc)
 }
 
+// CreateStartedFromSnapshot creates a new workspace whose files come from a
+// save point, without inheriting that save point as workspace history.
+func (m *Manager) CreateStartedFromSnapshot(name string, snapshotID model.SnapshotID, cloneFunc func(src, dst string) error) (*model.WorktreeConfig, error) {
+	var cfg *model.WorktreeConfig
+	err := repo.WithMutationLock(m.repoRoot, "workspace new from save point", func() error {
+		var err error
+		cfg, err = m.createStartedFromSnapshotLocked(name, snapshotID, cloneFunc)
+		return err
+	})
+	return cfg, err
+}
+
+// PlannedStartedFromPath returns the workspace folder that CreateStartedFromSnapshot
+// would publish, without creating staging, payload, or metadata paths.
+func (m *Manager) PlannedStartedFromPath(name string) (string, error) {
+	if err := pathutil.ValidateName(name); err != nil {
+		return "", err
+	}
+	if _, err := m.configPathForNewWorktree(name); err != nil {
+		return "", err
+	}
+	externalPath, useExternal, err := m.externalStartedFromPayloadPath(name)
+	if err != nil {
+		return "", err
+	}
+	if useExternal {
+		if err := m.validateExternalPayloadTarget(externalPath); err != nil {
+			return "", err
+		}
+		return externalPath, nil
+	}
+	return m.plannedMissingPayloadTarget(name)
+}
+
 func (m *Manager) createMaterializedSnapshotWorktree(name string, snapshotID model.SnapshotID, cloneFunc func(src, dst string) error) (*model.WorktreeConfig, error) {
 	var cfg *model.WorktreeConfig
 	err := repo.WithMutationLock(m.repoRoot, "worktree create from snapshot", func() error {
@@ -189,6 +223,84 @@ func (m *Manager) createMaterializedSnapshotWorktreeLocked(name string, snapshot
 	return cfg, nil
 }
 
+func (m *Manager) createStartedFromSnapshotLocked(name string, snapshotID model.SnapshotID, cloneFunc func(src, dst string) error) (*model.WorktreeConfig, error) {
+	if err := pathutil.ValidateName(name); err != nil {
+		return nil, err
+	}
+
+	configPath, err := m.configPathForNewWorktree(name)
+	if err != nil {
+		return nil, err
+	}
+
+	desc, snapshotDir, err := m.loadPublishedSnapshotForMaterialization(snapshotID)
+	if err != nil {
+		return nil, fmt.Errorf("load save point: %w", err)
+	}
+	opts := snapshotpayload.OptionsFromDescriptor(desc)
+
+	payloadPath, stagingPath, realPath, err := m.prepareStartedFromPayloadStaging(name)
+	if err != nil {
+		return nil, err
+	}
+	cleanupStaging := true
+	defer func() {
+		if cleanupStaging {
+			_ = os.RemoveAll(stagingPath)
+		}
+	}()
+
+	if err := snapshotpayload.MaterializeToNew(snapshotDir, stagingPath, opts, cloneFunc); err != nil {
+		return nil, fmt.Errorf("copy save point contents: %w", err)
+	}
+	if err := validateStartedFromMaterializedPayload(stagingPath); err != nil {
+		return nil, fmt.Errorf("validate save point contents: %w", err)
+	}
+
+	if err := fsyncPayloadStaging(stagingPath); err != nil {
+		return nil, fmt.Errorf("fsync workspace staging: %w", err)
+	}
+
+	if err := publishPayloadStaging(stagingPath, payloadPath); err != nil {
+		if fsutil.IsCommitUncertain(err) {
+			if cleanupErr := cleanupNewWorkspaceResidue(payloadPath, configPath); cleanupErr != nil {
+				return nil, fmt.Errorf("publish workspace folder commit uncertain: %w; additionally failed to cleanup workspace: %v", err, cleanupErr)
+			}
+			return nil, fmt.Errorf("publish workspace folder commit uncertain; removed unregistered workspace folder: %w", err)
+		}
+		return nil, fmt.Errorf("publish workspace folder: %w", err)
+	}
+	cleanupStaging = false
+
+	if err := m.prepareConfigDir(configPath); err != nil {
+		if cleanupErr := cleanupNewWorkspaceResidue(payloadPath, configPath); cleanupErr != nil {
+			return nil, fmt.Errorf("create config directory: %w; additionally failed to cleanup workspace: %v", err, cleanupErr)
+		}
+		return nil, fmt.Errorf("create config directory: %w", err)
+	}
+
+	cfg := &model.WorktreeConfig{
+		Name:                  name,
+		RealPath:              realPath,
+		CreatedAt:             time.Now().UTC(),
+		HeadSnapshotID:        snapshotID,
+		StartedFromSnapshotID: snapshotID,
+		PathSources:           model.NewPathSources(),
+	}
+
+	if err := writeWorktreeConfig(m.repoRoot, name, cfg); err != nil {
+		if fsutil.IsCommitUncertain(err) {
+			return nil, fmt.Errorf("write config commit uncertain after publishing workspace folder; leaving folder in place: %w", err)
+		}
+		if cleanupErr := cleanupNewWorkspaceResidue(payloadPath, configPath); cleanupErr != nil {
+			return nil, fmt.Errorf("write config: %w; additionally failed to cleanup workspace: %v", err, cleanupErr)
+		}
+		return nil, fmt.Errorf("write config: %w", err)
+	}
+
+	return cfg, nil
+}
+
 func (m *Manager) loadPublishedSnapshotForMaterialization(snapshotID model.SnapshotID) (*model.Descriptor, string, error) {
 	state, issue := publishstate.Inspect(m.repoRoot, snapshotID, publishstate.Options{
 		RequireReady:             true,
@@ -200,6 +312,16 @@ func (m *Manager) loadPublishedSnapshotForMaterialization(snapshotID model.Snaps
 		return nil, "", publishStateIssueError(issue)
 	}
 	return state.Descriptor, state.SnapshotDir, nil
+}
+
+func validateStartedFromMaterializedPayload(payloadRoot string) error {
+	if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(payloadRoot); err != nil {
+		return err
+	}
+	return repo.ValidateManagedPayloadOnly(repo.WorktreePayloadBoundary{
+		Root:              payloadRoot,
+		ExcludedRootNames: []string{repo.JVSDirName},
+	}, payloadRoot)
 }
 
 func publishStateIssueError(issue *publishstate.Issue) error {
@@ -256,6 +378,12 @@ func (m *Manager) Path(name string) (string, error) {
 	}
 	if sameCleanAbsPath(m.repoRoot, payloadPath) {
 		if err := rejectSymlinkPath(payloadPath); err != nil {
+			return "", fmt.Errorf("validate payload path: %w", err)
+		}
+		return payloadPath, nil
+	}
+	if !pathIsInsideRepo(m.repoRoot, payloadPath) {
+		if err := validateExistingRealDir(payloadPath); err != nil {
 			return "", fmt.Errorf("validate payload path: %w", err)
 		}
 		return payloadPath, nil
@@ -577,6 +705,157 @@ func (m *Manager) prepareMissingPayloadStaging(name string) (string, string, err
 	return "", "", fmt.Errorf("allocate payload staging path")
 }
 
+func (m *Manager) prepareStartedFromPayloadStaging(name string) (payloadPath, stagingPath, realPath string, err error) {
+	externalPath, useExternal, err := m.externalStartedFromPayloadPath(name)
+	if err != nil {
+		return "", "", "", err
+	}
+	if !useExternal {
+		payloadPath, stagingPath, err := m.prepareMissingPayloadStaging(name)
+		return payloadPath, stagingPath, "", err
+	}
+
+	payloadPath, stagingPath, err = m.prepareExternalPayloadStaging(name, externalPath)
+	if err != nil {
+		return "", "", "", err
+	}
+	return payloadPath, stagingPath, payloadPath, nil
+}
+
+func (m *Manager) externalStartedFromPayloadPath(name string) (string, bool, error) {
+	cfg, err := repo.LoadWorktreeConfig(m.repoRoot, "main")
+	if err != nil {
+		return "", false, fmt.Errorf("load main workspace: %w", err)
+	}
+	if cfg.RealPath == "" || !sameCleanAbsPath(cfg.RealPath, m.repoRoot) {
+		return "", false, nil
+	}
+	path, err := filepath.Abs(filepath.Join(filepath.Dir(m.repoRoot), name))
+	if err != nil {
+		return "", false, err
+	}
+	return filepath.Clean(path), true, nil
+}
+
+func (m *Manager) prepareExternalPayloadStaging(name, payloadPath string) (string, string, error) {
+	if err := m.validateExternalPayloadTarget(payloadPath); err != nil {
+		return "", "", err
+	}
+
+	parent := filepath.Dir(payloadPath)
+	for range 16 {
+		stagingPath := filepath.Join(parent, "."+name+".staging-"+uuidutil.NewV4()[:8])
+		if _, err := os.Lstat(stagingPath); os.IsNotExist(err) {
+			return payloadPath, stagingPath, nil
+		} else if err != nil {
+			return "", "", fmt.Errorf("stat workspace staging: %w", err)
+		}
+	}
+	return "", "", fmt.Errorf("allocate workspace staging path")
+}
+
+func (m *Manager) validateExternalPayloadTarget(payloadPath string) error {
+	parent := filepath.Dir(payloadPath)
+	if err := validateExistingRealDir(parent); err != nil {
+		return fmt.Errorf("validate workspace parent: %w", err)
+	}
+	if _, err := os.Lstat(payloadPath); err == nil {
+		return fmt.Errorf("workspace folder already exists: %s", payloadPath)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat workspace folder: %w", err)
+	}
+	return m.validateNewWorkspacePayloadPath(payloadPath)
+}
+
+func (m *Manager) validateNewWorkspacePayloadPath(payloadPath string) error {
+	candidateLexical, err := filepath.Abs(payloadPath)
+	if err != nil {
+		return fmt.Errorf("resolve workspace folder: %w", err)
+	}
+	candidateLexical = filepath.Clean(candidateLexical)
+	candidatePhysical, err := physicalPathForMissingLeaf(candidateLexical)
+	if err != nil {
+		return err
+	}
+
+	configs, err := m.List()
+	if err != nil {
+		return err
+	}
+	for _, cfg := range configs {
+		existingPath, err := repo.WorktreePayloadPath(m.repoRoot, cfg.Name)
+		if err != nil {
+			return err
+		}
+		existingLexical, err := filepath.Abs(existingPath)
+		if err != nil {
+			return fmt.Errorf("resolve existing workspace folder: %w", err)
+		}
+		existingLexical = filepath.Clean(existingLexical)
+		existingPhysical, err := filepath.EvalSymlinks(existingLexical)
+		if err != nil {
+			return fmt.Errorf("resolve existing workspace folder: %w", err)
+		}
+		if pathsOverlap(candidateLexical, existingLexical) || pathsOverlap(candidatePhysical, existingPhysical) {
+			return fmt.Errorf("workspace real path overlap: %s at %s and %s at %s", cfg.Name, existingPath, "new", payloadPath)
+		}
+	}
+	return nil
+}
+
+func (m *Manager) plannedMissingPayloadTarget(name string) (string, error) {
+	payloadPath, err := repo.WorktreePayloadPath(m.repoRoot, name)
+	if err != nil {
+		return "", err
+	}
+	rel, err := repoRelativePath(m.repoRoot, payloadPath)
+	if err != nil {
+		return "", err
+	}
+	if err := pathutil.ValidateNoSymlinkParents(m.repoRoot, rel); err != nil {
+		return "", fmt.Errorf("validate payload path: %w", err)
+	}
+	parent := filepath.Dir(payloadPath)
+	if err := validateExistingRealDir(parent); err != nil {
+		return "", fmt.Errorf("validate payload parent: %w", err)
+	}
+	if _, err := os.Lstat(payloadPath); err == nil {
+		return "", fmt.Errorf("payload path already exists: %s", payloadPath)
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("stat payload path: %w", err)
+	}
+	return payloadPath, nil
+}
+
+func physicalPathForMissingLeaf(path string) (string, error) {
+	parent := filepath.Dir(path)
+	physicalParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace parent: %w", err)
+	}
+	return filepath.Join(physicalParent, filepath.Base(path)), nil
+}
+
+func pathsOverlap(a, b string) bool {
+	aContainsB, err := pathContains(a, b)
+	if err != nil {
+		return false
+	}
+	bContainsA, err := pathContains(b, a)
+	if err != nil {
+		return false
+	}
+	return aContainsB || bContainsA
+}
+
+func pathContains(parent, child string) (bool, error) {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false, err
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && !filepath.IsAbs(rel)), nil
+}
+
 func (m *Manager) prepareNewPayloadTarget(name string) (string, string, error) {
 	payloadPath, err := repo.WorktreePayloadPath(m.repoRoot, name)
 	if err != nil {
@@ -707,7 +986,7 @@ func publishPayloadStaging(stagingPath, payloadPath string) error {
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("stat payload path: %w", err)
 	}
-	return fsutil.RenameNoReplaceAndSync(stagingPath, payloadPath)
+	return renamePath(stagingPath, payloadPath)
 }
 
 func fsyncPayloadStaging(stagingPath string) error {
@@ -729,6 +1008,46 @@ func removeOwnedPath(path string) error {
 		return os.Remove(path)
 	}
 	return os.RemoveAll(path)
+}
+
+func cleanupNewWorkspaceResidue(payloadPath, configPath string) error {
+	if err := ensureNewWorktreeConfigAbsent(configPath); err != nil {
+		return err
+	}
+	var cleanupErrs []string
+	if err := removeOwnedPath(payloadPath); err != nil {
+		cleanupErrs = append(cleanupErrs, fmt.Sprintf("remove workspace folder: %v", err))
+	}
+	if err := removeNewWorktreeConfigDir(configPath); err != nil {
+		cleanupErrs = append(cleanupErrs, fmt.Sprintf("remove workspace metadata: %v", err))
+	}
+	if len(cleanupErrs) > 0 {
+		return errors.New(strings.Join(cleanupErrs, "; "))
+	}
+	return nil
+}
+
+func ensureNewWorktreeConfigAbsent(configPath string) error {
+	if _, err := os.Lstat(configPath); err == nil {
+		return fmt.Errorf("config file exists at %s", configPath)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat config file: %w", err)
+	}
+	return nil
+}
+
+func removeNewWorktreeConfigDir(configPath string) error {
+	configDir := filepath.Dir(configPath)
+	if _, err := os.Lstat(configDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat metadata directory: %w", err)
+	}
+	if err := ensureNewWorktreeConfigAbsent(configPath); err != nil {
+		return err
+	}
+	return os.RemoveAll(configDir)
 }
 
 func rejectSymlinkPath(path string) error {
@@ -788,4 +1107,9 @@ func sameCleanAbsPath(a, b string) bool {
 		return false
 	}
 	return filepath.Clean(absA) == filepath.Clean(absB)
+}
+
+func pathIsInsideRepo(repoRoot, path string) bool {
+	_, err := repoRelativePath(repoRoot, path)
+	return err == nil
 }

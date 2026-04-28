@@ -18,6 +18,7 @@ const (
 
 var restoreRunCapacityGate = capacitygate.Default()
 var saveCapacityGate = capacitygate.Default()
+var workspaceNewCapacityGate = capacitygate.Default()
 
 func checkSaveCapacity(repoRoot, workspaceName string) error {
 	folder, err := workspaceFolder(repoRoot, workspaceName)
@@ -150,6 +151,37 @@ func checkRestoreRunCapacity(repoRoot, workspaceName string, plan *restoreplan.P
 		Path:            plan.Path,
 		Components:      components,
 		FailureMessages: []string{"No save point was created.", "History was not changed.", "No files were changed."},
+	})
+	return err
+}
+
+func checkWorkspaceNewCapacity(repoRoot, workspaceName string, sourceID model.SnapshotID) error {
+	mgr := worktree.NewManager(repoRoot)
+	folder, err := mgr.PlannedStartedFromPath(workspaceName)
+	if err != nil {
+		return err
+	}
+	state, err := restoreplan.InspectSourceReadOnly(repoRoot, sourceID)
+	if err != nil {
+		return err
+	}
+	estimate, err := snapshotpayload.EstimateMaterializationCapacity(state.SnapshotDir, snapshotpayload.OptionsFromDescriptor(state.Descriptor))
+	if err != nil {
+		return err
+	}
+
+	components := []capacitygate.Component{
+		{Name: "source hash", Path: filepath.Join(os.TempDir(), "jvs-payload-hash-workspace-new-source-probe"), Bytes: estimate.PeakBytes},
+		{Name: "workspace folder", Path: folder, Bytes: estimate.PeakBytes},
+		{Name: "workspace metadata", Path: filepath.Join(repoRoot, repo.JVSDirName, "worktrees", workspaceName), Bytes: metadataFloor},
+	}
+	_, err = workspaceNewCapacityGate.Check(capacitygate.Request{
+		Operation:       "workspace new",
+		Folder:          folder,
+		Workspace:       workspaceName,
+		SourceSavePoint: string(sourceID),
+		Components:      components,
+		FailureMessages: []string{"No workspace was created.", "No files were changed."},
 	})
 	return err
 }

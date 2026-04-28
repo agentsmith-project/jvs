@@ -270,9 +270,21 @@ func workspaceStateFromWorktreeConfig(cfg *model.WorktreeConfig) model.Workspace
 		return model.WorkspaceState{}
 	}
 	if cfg.LatestSnapshotID == "" {
+		if cfg.StartedFromSnapshotID != "" {
+			state := model.WorkspaceStateStartedFrom(cfg.StartedFromSnapshotID)
+			if cfg.HeadSnapshotID != "" && cfg.HeadSnapshotID != cfg.StartedFromSnapshotID {
+				state.RestoreWhole(cfg.HeadSnapshotID)
+			}
+			state.PathSources = cfg.PathSources.Clone()
+			return state
+		}
 		return model.WorkspaceState{}
 	}
 	state := model.WorkspaceStateAtSavePoint(cfg.LatestSnapshotID)
+	if cfg.StartedFromSnapshotID != "" {
+		startedFrom := cfg.StartedFromSnapshotID
+		state.StartedFrom = &startedFrom
+	}
 	if cfg.HeadSnapshotID != "" && cfg.HeadSnapshotID != cfg.LatestSnapshotID {
 		state.RestoreWhole(cfg.HeadSnapshotID)
 	}

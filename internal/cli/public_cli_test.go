@@ -472,7 +472,8 @@ func TestLegacyWorktreeRemoveRejectsDirtyAtLatestWorkspace(t *testing.T) {
 	stdout, stderr, exitCode := runContractSubprocess(t, mainPath, "worktree", "remove", "feature")
 	require.Equal(t, 1, exitCode, "dirty legacy remove unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
 	assert.Empty(t, strings.TrimSpace(stdout))
-	assert.Contains(t, stderr, "dirty")
+	assert.Contains(t, stderr, "unsaved changes")
+	assert.NotContains(t, stderr, "checkpoint")
 	require.FileExists(t, featureFile)
 }
 
@@ -667,7 +668,8 @@ func TestPublicCLIWorkspaceRemoveRejectsDirtyByDefault(t *testing.T) {
 	stdout, err = runPublicCLI(t, "workspace", "remove", "feature")
 	require.Error(t, err)
 	assert.Empty(t, stdout)
-	assert.Contains(t, err.Error(), "dirty")
+	assert.Contains(t, err.Error(), "unsaved changes")
+	assert.NotContains(t, err.Error(), "checkpoint")
 	assert.FileExists(t, featureFile)
 
 	stdout, err = runPublicCLI(t, "--json", "workspace", "remove", "feature", "--force")
@@ -948,10 +950,11 @@ func TestHiddenLegacyCommandErrorsUsePublicGuidance(t *testing.T) {
 	require.NotZero(t, code)
 	combined = stdout + stderr
 	assertNoLegacyStateGuidance(t, combined)
-	assert.Contains(t, combined, "current differs from latest")
-	assert.Contains(t, combined, "jvs workspace remove --force feature")
-	assert.Contains(t, combined, "jvs fork")
-	assert.Contains(t, combined, "jvs restore latest")
+	assert.Contains(t, combined, "not at its newest save point")
+	assert.Contains(t, combined, "use --force to remove")
+	assert.NotContains(t, combined, "current differs from latest")
+	assert.NotContains(t, combined, "jvs fork")
+	assert.NotContains(t, combined, "jvs restore latest")
 }
 
 func assertNoLegacyStateGuidance(t *testing.T, output string) {

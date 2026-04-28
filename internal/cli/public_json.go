@@ -36,28 +36,30 @@ type publicSavePointRecord struct {
 }
 
 type publicSavePointCreatedRecord struct {
-	SavePointID     string                     `json:"save_point_id"`
-	Workspace       string                     `json:"workspace"`
-	Message         string                     `json:"message"`
-	CreatedAt       time.Time                  `json:"created_at"`
-	NewestSavePoint string                     `json:"newest_save_point"`
-	RestoredFrom    string                     `json:"restored_from,omitempty"`
-	RestoredPaths   []publicRestoredPathSource `json:"restored_paths,omitempty"`
-	UnsavedChanges  bool                       `json:"unsaved_changes"`
+	SavePointID          string                     `json:"save_point_id"`
+	Workspace            string                     `json:"workspace"`
+	Message              string                     `json:"message"`
+	CreatedAt            time.Time                  `json:"created_at"`
+	NewestSavePoint      string                     `json:"newest_save_point"`
+	StartedFromSavePoint string                     `json:"started_from_save_point,omitempty"`
+	RestoredFrom         string                     `json:"restored_from,omitempty"`
+	RestoredPaths        []publicRestoredPathSource `json:"restored_paths,omitempty"`
+	UnsavedChanges       bool                       `json:"unsaved_changes"`
 }
 
 type publicSavePointHistoryRecord struct {
-	Workspace       string                  `json:"workspace"`
-	SavePoints      []publicSavePointRecord `json:"save_points"`
-	NewestSavePoint string                  `json:"newest_save_point,omitempty"`
+	Workspace            string                  `json:"workspace"`
+	SavePoints           []publicSavePointRecord `json:"save_points"`
+	NewestSavePoint      string                  `json:"newest_save_point,omitempty"`
+	StartedFromSavePoint string                  `json:"started_from_save_point,omitempty"`
 }
 
 type publicWorkspaceRecord struct {
-	Workspace      string    `json:"workspace"`
-	BaseCheckpoint string    `json:"base_checkpoint,omitempty"`
-	Current        string    `json:"current,omitempty"`
-	Latest         string    `json:"latest,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
+	Workspace            string    `json:"workspace"`
+	ContentSource        string    `json:"content_source,omitempty"`
+	NewestSavePoint      string    `json:"newest_save_point,omitempty"`
+	StartedFromSavePoint string    `json:"started_from_save_point,omitempty"`
+	CreatedAt            time.Time `json:"created_at"`
 }
 
 type publicDiffResult struct {
@@ -180,6 +182,9 @@ func publicSavePointCreated(desc *model.Descriptor, unsavedChanges bool) publicS
 	if desc.RestoredFrom != nil {
 		record.RestoredFrom = string(*desc.RestoredFrom)
 	}
+	if desc.StartedFrom != nil {
+		record.StartedFromSavePoint = string(*desc.StartedFrom)
+	}
 	record.RestoredPaths = publicRestoredPathSources(desc.RestoredPaths)
 	return record
 }
@@ -200,21 +205,22 @@ func publicRestoredPathSources(sources []model.RestoredPathSource) []publicResto
 	return records
 }
 
-func publicSavePointHistory(workspace string, descs []*model.Descriptor, newest model.SnapshotID) publicSavePointHistoryRecord {
+func publicSavePointHistory(workspace string, descs []*model.Descriptor, newest model.SnapshotID, startedFrom model.SnapshotID) publicSavePointHistoryRecord {
 	return publicSavePointHistoryRecord{
-		Workspace:       workspace,
-		SavePoints:      publicSavePoints(descs),
-		NewestSavePoint: string(newest),
+		Workspace:            workspace,
+		SavePoints:           publicSavePoints(descs),
+		NewestSavePoint:      string(newest),
+		StartedFromSavePoint: string(startedFrom),
 	}
 }
 
 func publicWorkspace(cfg *model.WorktreeConfig) publicWorkspaceRecord {
 	return publicWorkspaceRecord{
-		Workspace:      cfg.Name,
-		BaseCheckpoint: string(cfg.BaseSnapshotID),
-		Current:        string(cfg.HeadSnapshotID),
-		Latest:         string(cfg.LatestSnapshotID),
-		CreatedAt:      cfg.CreatedAt,
+		Workspace:            cfg.Name,
+		ContentSource:        string(cfg.HeadSnapshotID),
+		NewestSavePoint:      string(cfg.LatestSnapshotID),
+		StartedFromSavePoint: string(cfg.StartedFromSnapshotID),
+		CreatedAt:            cfg.CreatedAt,
 	}
 }
 

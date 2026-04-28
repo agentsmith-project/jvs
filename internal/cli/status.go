@@ -13,14 +13,15 @@ import (
 )
 
 type workspaceStatus struct {
-	Folder          string                     `json:"folder"`
-	Workspace       string                     `json:"workspace"`
-	NewestSavePoint *string                    `json:"newest_save_point"`
-	HistoryHead     *string                    `json:"history_head"`
-	ContentSource   *string                    `json:"content_source"`
-	UnsavedChanges  bool                       `json:"unsaved_changes"`
-	FilesState      string                     `json:"files_state"`
-	PathSources     []publicRestoredPathSource `json:"path_sources,omitempty"`
+	Folder               string                     `json:"folder"`
+	Workspace            string                     `json:"workspace"`
+	NewestSavePoint      *string                    `json:"newest_save_point"`
+	HistoryHead          *string                    `json:"history_head"`
+	ContentSource        *string                    `json:"content_source"`
+	StartedFromSavePoint *string                    `json:"started_from_save_point,omitempty"`
+	UnsavedChanges       bool                       `json:"unsaved_changes"`
+	FilesState           string                     `json:"files_state"`
+	PathSources          []publicRestoredPathSource `json:"path_sources,omitempty"`
 }
 
 type legacyWorkspaceStatus struct {
@@ -70,6 +71,8 @@ func printWorkspaceStatus(status workspaceStatus) {
 		fmt.Printf("Files changed since save point: %s\n", formatStatusSavePoint(status.ContentSource))
 	case "restored_then_changed":
 		fmt.Printf("Files were last restored from: %s\n", formatStatusSavePoint(status.ContentSource))
+	case "started_from_save_point":
+		fmt.Printf("Started from save point: %s\n", formatStatusSavePoint(status.StartedFromSavePoint))
 	}
 	if status.UnsavedChanges {
 		fmt.Println("Unsaved changes: yes")
@@ -113,21 +116,26 @@ func buildWorkspaceStatus(repoRoot, workspaceName string) (workspaceStatus, erro
 
 	historyHead := statusStringPointer(cfg.LatestSnapshotID)
 	contentSource := statusStringPointer(cfg.HeadSnapshotID)
+	startedFrom := statusStringPointer(cfg.StartedFromSnapshotID)
 	return workspaceStatus{
-		Folder:          folder,
-		Workspace:       workspaceName,
-		NewestSavePoint: historyHead,
-		HistoryHead:     historyHead,
-		ContentSource:   contentSource,
-		UnsavedChanges:  unsavedChanges,
-		FilesState:      filesState(historyHead, contentSource, unsavedChanges),
-		PathSources:     publicRestoredPathSources(projectedPathSources.RestoredPaths()),
+		Folder:               folder,
+		Workspace:            workspaceName,
+		NewestSavePoint:      historyHead,
+		HistoryHead:          historyHead,
+		ContentSource:        contentSource,
+		StartedFromSavePoint: startedFrom,
+		UnsavedChanges:       unsavedChanges,
+		FilesState:           filesState(historyHead, contentSource, startedFrom, unsavedChanges),
+		PathSources:          publicRestoredPathSources(projectedPathSources.RestoredPaths()),
 	}, nil
 }
 
-func filesState(historyHead, contentSource *string, unsavedChanges bool) string {
+func filesState(historyHead, contentSource, startedFrom *string, unsavedChanges bool) string {
 	if contentSource == nil {
 		return "not_saved"
+	}
+	if historyHead == nil && startedFrom != nil && sameStatusSavePoint(contentSource, startedFrom) {
+		return "started_from_save_point"
 	}
 	if unsavedChanges && !sameStatusSavePoint(historyHead, contentSource) {
 		return "restored_then_changed"

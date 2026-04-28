@@ -58,6 +58,9 @@ Examples:
 		if desc.RestoredFrom != nil {
 			fmt.Printf("Created from restored save point %s\n", color.SnapshotID(desc.RestoredFrom.String()))
 		}
+		if desc.StartedFrom != nil {
+			fmt.Printf("Started from save point %s\n", color.SnapshotID(desc.StartedFrom.String()))
+		}
 		for _, restoredPath := range desc.RestoredPaths {
 			fmt.Printf("Includes restored path %s from save point %s.\n",
 				restoredPath.TargetPath,

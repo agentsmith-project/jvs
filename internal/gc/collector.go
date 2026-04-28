@@ -529,15 +529,22 @@ func (c *Collector) computeProtectedSet() ([]model.SnapshotID, int, error) {
 		return nil, 0, err
 	}
 	roots := make(map[model.SnapshotID]bool)
+	directProtected := make(map[model.SnapshotID]bool)
 	addRoot := func(id model.SnapshotID) {
 		if id != "" {
 			roots[id] = true
+		}
+	}
+	addDirectProtected := func(id model.SnapshotID) {
+		if id != "" {
+			directProtected[id] = true
 		}
 	}
 	for _, cfg := range wtList {
 		addRoot(cfg.HeadSnapshotID)
 		addRoot(cfg.LatestSnapshotID)
 		addRoot(cfg.BaseSnapshotID)
+		addDirectProtected(cfg.StartedFromSnapshotID)
 	}
 
 	rootIDs := make([]model.SnapshotID, 0, len(roots))
@@ -547,6 +554,12 @@ func (c *Collector) computeProtectedSet() ([]model.SnapshotID, int, error) {
 		}
 		protected[id] = true
 		rootIDs = append(rootIDs, id)
+	}
+	for id := range directProtected {
+		if err := id.Validate(); err != nil {
+			continue
+		}
+		protected[id] = true
 	}
 	sortSnapshotIDs(rootIDs)
 
@@ -625,6 +638,10 @@ func (c *Collector) walkLineageSeen(snapshotID model.SnapshotID, protected map[m
 	if desc.ParentID != nil && !protected[*desc.ParentID] {
 		protected[*desc.ParentID] = true
 		count = 1 + c.walkLineageSeen(*desc.ParentID, protected, seen)
+	}
+	if desc.StartedFrom != nil && !protected[*desc.StartedFrom] {
+		protected[*desc.StartedFrom] = true
+		count++
 	}
 	return count
 }

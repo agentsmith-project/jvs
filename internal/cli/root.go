@@ -55,6 +55,7 @@ var publicRootCommandNames = map[string]bool{
 	"save":       true,
 	"status":     true,
 	"view":       true,
+	"workspace":  true,
 }
 
 type cliJSONEnvelope struct {

@@ -850,14 +850,17 @@ func installCapacityGateHooks(gate capacitygate.Gate) func() {
 	oldViewGate := viewCapacityGate
 	oldRunGate := restoreRunCapacityGate
 	oldSaveGate := saveCapacityGate
+	oldWorkspaceNewGate := workspaceNewCapacityGate
 	restorePlanGate := restoreplan.SetCapacityGateForTest(gate)
 	viewCapacityGate = gate
 	restoreRunCapacityGate = gate
 	saveCapacityGate = gate
+	workspaceNewCapacityGate = gate
 	return func() {
 		viewCapacityGate = oldViewGate
 		restoreRunCapacityGate = oldRunGate
 		saveCapacityGate = oldSaveGate
+		workspaceNewCapacityGate = oldWorkspaceNewGate
 		restorePlanGate()
 	}
 }

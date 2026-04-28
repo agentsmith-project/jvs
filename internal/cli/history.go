@@ -70,14 +70,20 @@ After finding a candidate, open it with:
 		}
 
 		if jsonOutput {
-			return outputJSON(publicSavePointHistory(workspaceName, savePoints, cfg.LatestSnapshotID))
+			return outputJSON(publicSavePointHistory(workspaceName, savePoints, cfg.LatestSnapshotID, cfg.StartedFromSnapshotID))
 		}
 
 		if len(savePoints) == 0 {
 			fmt.Println("No save points yet.")
+			if cfg.StartedFromSnapshotID != "" {
+				fmt.Printf("Workspace started from %s.\n", color.SnapshotID(cfg.StartedFromSnapshotID.String()))
+			}
 			return nil
 		}
 
+		if cfg.StartedFromSnapshotID != "" {
+			fmt.Printf("Workspace started from %s.\n", color.SnapshotID(cfg.StartedFromSnapshotID.String()))
+		}
 		if historyAll {
 			fmt.Println("Save points:")
 		} else {

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentsmith-project/jvs/internal/engine"
 	"github.com/agentsmith-project/jvs/internal/gc"
 	"github.com/agentsmith-project/jvs/internal/recovery"
 	"github.com/agentsmith-project/jvs/internal/repo"
@@ -896,6 +897,45 @@ func TestCollector_Plan_ProtectsActiveRecoveryPlanWithoutSourcePinAndIgnoresReso
 	require.NoError(t, err)
 	assert.NotContains(t, gcPlan.ProtectedSet, sourceID)
 	assert.Contains(t, gcPlan.ToDelete, sourceID)
+}
+
+func TestCollector_Plan_ProtectsWorkspaceStartedFromSourceBeforeAndAfterFirstSave(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	sourceID := createRemovedWorktreeSnapshots(t, repoPath, "source", 1)[0]
+	wtMgr := worktree.NewManager(repoPath)
+	_, err := wtMgr.CreateStartedFromSnapshot("exp", sourceID, func(src, dst string) error {
+		_, err := engine.CloneToNew(engine.NewCopyEngine(), src, dst)
+		return err
+	})
+	require.NoError(t, err)
+
+	collector := gc.NewCollector(repoPath)
+	plan, err := collector.PlanWithPolicy(zeroRetention)
+	require.NoError(t, err)
+	assert.Contains(t, plan.ProtectedSet, sourceID)
+	assert.NotContains(t, plan.ToDelete, sourceID)
+
+	expPath := requireWorktreePath(t, wtMgr, "exp")
+	require.NoError(t, os.WriteFile(filepath.Join(expPath, "file.txt"), []byte("exp first"), 0644))
+	firstDesc, err := snapshot.NewCreator(repoPath, model.EngineCopy).CreateSavePoint("exp", "exp first", nil)
+	require.NoError(t, err)
+	require.NotNil(t, firstDesc.StartedFrom)
+	assert.Equal(t, sourceID, *firstDesc.StartedFrom)
+
+	plan, err = collector.PlanWithPolicy(zeroRetention)
+	require.NoError(t, err)
+	assert.Contains(t, plan.ProtectedSet, sourceID)
+	assert.NotContains(t, plan.ToDelete, sourceID)
+
+	cfg, err := wtMgr.Get("exp")
+	require.NoError(t, err)
+	cfg.StartedFromSnapshotID = ""
+	require.NoError(t, repo.WriteWorktreeConfig(repoPath, "exp", cfg))
+
+	plan, err = collector.PlanWithPolicy(zeroRetention)
+	require.NoError(t, err)
+	assert.Contains(t, plan.ProtectedSet, sourceID)
+	assert.NotContains(t, plan.ToDelete, sourceID)
 }
 
 func TestCollector_Plan_SortsPlanSets(t *testing.T) {

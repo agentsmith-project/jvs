@@ -167,6 +167,132 @@ func TestManager_CreateLikeUncertainConfigWriteKeepsPayloadAndVisibleConfig(t *t
 	}
 }
 
+func TestManager_CreateStartedFromPublishFailureLeavesNoWorkspaceOrMetadataResidue(t *testing.T) {
+	repoPath := setupFailureTestRepo(t)
+	mgr := NewManager(repoPath)
+	snapshotID := createFailureTestSnapshot(t, repoPath)
+	name := "started-publish-fail"
+	payloadPath := filepath.Join(repoPath, "worktrees", name)
+	configDir := filepath.Join(repoPath, ".jvs", "worktrees", name)
+
+	oldRename := renamePath
+	renamePath = func(oldpath, newpath string) error {
+		if newpath == payloadPath {
+			return errors.New("injected publish failure")
+		}
+		return oldRename(oldpath, newpath)
+	}
+	t.Cleanup(func() {
+		renamePath = oldRename
+	})
+
+	_, err := mgr.CreateStartedFromSnapshot(name, snapshotID, copyFailureTestSnapshotTree)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "publish workspace folder")
+	assert.NoDirExists(t, payloadPath)
+	assert.NoDirExists(t, configDir)
+	assertNoFailureTestStagingPayloads(t, repoPath, name)
+}
+
+func TestManager_CreateStartedFromPublishCommitUncertainLeavesNoOrphanWorkspace(t *testing.T) {
+	repoPath := setupFailureTestRepo(t)
+	mgr := NewManager(repoPath)
+	snapshotID := createFailureTestSnapshot(t, repoPath)
+	name := "started-publish-uncertain"
+	payloadPath := filepath.Join(repoPath, "worktrees", name)
+	configDir := filepath.Join(repoPath, ".jvs", "worktrees", name)
+
+	oldRename := renamePath
+	renamePath = func(oldpath, newpath string) error {
+		if newpath == payloadPath {
+			require.NoError(t, oldRename(oldpath, newpath))
+			return &fsutil.CommitUncertainError{
+				Op:   "publish workspace folder",
+				Path: newpath,
+				Err:  errors.New("injected post-rename fsync failure"),
+			}
+		}
+		return oldRename(oldpath, newpath)
+	}
+	t.Cleanup(func() {
+		renamePath = oldRename
+	})
+
+	_, err := mgr.CreateStartedFromSnapshot(name, snapshotID, copyFailureTestSnapshotTree)
+	require.Error(t, err)
+	assert.True(t, fsutil.IsCommitUncertain(err), "publish commit-uncertain state must remain detectable")
+	assertNoFailureTestStagingPayloads(t, repoPath, name)
+
+	info, statErr := os.Lstat(payloadPath)
+	if statErr == nil && info.IsDir() {
+		loaded, loadErr := repo.LoadWorktreeConfig(repoPath, name)
+		require.NoError(t, loadErr, "visible workspace folder must not be orphaned")
+		assert.Equal(t, name, loaded.Name)
+		assert.Equal(t, snapshotID, loaded.HeadSnapshotID)
+		assert.Equal(t, snapshotID, loaded.StartedFromSnapshotID)
+		return
+	}
+	require.True(t, os.IsNotExist(statErr), "workspace folder should either be removed or registered")
+	assert.NoDirExists(t, configDir)
+}
+
+func TestManager_CreateStartedFromConfigWriteFailureRemovesWorkspaceAndMetadataResidue(t *testing.T) {
+	repoPath := setupFailureTestRepo(t)
+	mgr := NewManager(repoPath)
+	snapshotID := createFailureTestSnapshot(t, repoPath)
+	name := "started-config-fail"
+	payloadPath := filepath.Join(repoPath, "worktrees", name)
+	configDir := filepath.Join(repoPath, ".jvs", "worktrees", name)
+
+	oldWrite := writeWorktreeConfig
+	writeWorktreeConfig = func(repoRoot, name string, cfg *model.WorktreeConfig) error {
+		return errors.New("injected config write failure")
+	}
+	t.Cleanup(func() {
+		writeWorktreeConfig = oldWrite
+	})
+
+	_, err := mgr.CreateStartedFromSnapshot(name, snapshotID, copyFailureTestSnapshotTree)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "write config")
+	assert.NoDirExists(t, payloadPath)
+	assert.NoDirExists(t, configDir)
+	assertNoFailureTestStagingPayloads(t, repoPath, name)
+}
+
+func TestManager_CreateStartedFromUncertainConfigWriteKeepsVisibleWorkspace(t *testing.T) {
+	repoPath := setupFailureTestRepo(t)
+	mgr := NewManager(repoPath)
+	snapshotID := createFailureTestSnapshot(t, repoPath)
+	name := "started-config-uncertain"
+	payloadPath := filepath.Join(repoPath, "worktrees", name)
+
+	oldWrite := writeWorktreeConfig
+	writeWorktreeConfig = func(repoRoot, name string, cfg *model.WorktreeConfig) error {
+		require.NoError(t, repo.WriteWorktreeConfig(repoRoot, name, cfg))
+		return &fsutil.CommitUncertainError{
+			Op:   "worktree config write",
+			Path: filepath.Join(repoRoot, ".jvs", "worktrees", name, "config.json"),
+			Err:  errors.New("injected post-rename fsync failure"),
+		}
+	}
+	t.Cleanup(func() {
+		writeWorktreeConfig = oldWrite
+	})
+
+	_, err := mgr.CreateStartedFromSnapshot(name, snapshotID, copyFailureTestSnapshotTree)
+	require.Error(t, err)
+	assert.True(t, fsutil.IsCommitUncertain(err), "uncertain config write must remain detectable")
+	assert.DirExists(t, payloadPath)
+	assert.FileExists(t, filepath.Join(payloadPath, "snapshot.txt"))
+	loaded, loadErr := repo.LoadWorktreeConfig(repoPath, name)
+	require.NoError(t, loadErr)
+	assert.Equal(t, name, loaded.Name)
+	assert.Equal(t, snapshotID, loaded.HeadSnapshotID)
+	assert.Equal(t, snapshotID, loaded.StartedFromSnapshotID)
+	assertNoFailureTestStagingPayloads(t, repoPath, name)
+}
+
 func TestManager_SetLatestPropagatesUncertainConfigWrite(t *testing.T) {
 	repoPath := setupFailureTestRepo(t)
 	mgr := NewManager(repoPath)

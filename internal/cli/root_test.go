@@ -87,7 +87,7 @@ func TestRootCommand_Help(t *testing.T) {
 	} {
 		assert.Contains(t, stdout, line)
 	}
-	for _, command := range []string{"init", "save", "status", "history", "view", "restore", "doctor", "completion", "help"} {
+	for _, command := range []string{"init", "save", "status", "history", "view", "restore", "workspace", "doctor", "completion", "help"} {
 		assertRootHelpListsCommand(t, stdout, command)
 	}
 	for _, word := range []string{
@@ -566,6 +566,7 @@ func createTestRootCmd() *cobra.Command {
 	worktreeCreateFrom = ""
 	worktreeForce = false
 	workspaceRemoveForce = false
+	workspaceNewFromRef = ""
 	forkFromRef = ""
 	forkDiscardDirty = false
 	forkIncludeWorking = false
