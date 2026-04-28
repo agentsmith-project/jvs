@@ -331,6 +331,13 @@ func (d *Doctor) repairRebindWorkspacePaths() RepairResult {
 			reasons = append(reasons, fmt.Sprintf("%s: %v", cfg.Name, err))
 			continue
 		}
+		if cfg.Name != "main" {
+			if err := repo.WriteWorkspaceLocator(candidate, d.repoRoot); err != nil {
+				failed++
+				reasons = append(reasons, fmt.Sprintf("%s locator: %v", cfg.Name, err))
+				continue
+			}
+		}
 		rebound++
 	}
 
@@ -376,6 +383,14 @@ func (d *Doctor) externalWorkspaceRebindPlan(cfg *model.WorktreeConfig) (string,
 	}
 	candidate := filepath.Join(filepath.Dir(d.repoRoot), cfg.Name)
 	if d.externalWorkspaceBindingIsDestinationLocal(cfg, candidate) {
+		current, reason := d.externalWorkspaceLocatorIsCurrent(candidate)
+		if reason != "" {
+			return "", true, false, reason
+		}
+		if !current {
+			candidate, ok, reason := d.externalWorkspaceRebindCandidate(cfg, candidate)
+			return candidate, true, ok, reason
+		}
 		return "", false, true, ""
 	}
 	candidate, ok, reason := d.externalWorkspaceRebindCandidate(cfg, candidate)
@@ -437,6 +452,14 @@ func (d *Doctor) externalWorkspaceRebindCandidate(cfg *model.WorktreeConfig, can
 	return candidate, true, ""
 }
 
+func (d *Doctor) externalWorkspaceLocatorIsCurrent(candidate string) (bool, string) {
+	matches, err := repo.WorkspaceLocatorMatchesRepo(candidate, d.repoRoot)
+	if err != nil {
+		return false, fmt.Sprintf("inspect destination workspace locator: %v", err)
+	}
+	return matches, ""
+}
+
 func (d *Doctor) externalWorkspaceCandidateMatchesRecordedSource(cfg *model.WorktreeConfig, candidate string) (bool, string) {
 	if cfg.HeadSnapshotID == "" {
 		return false, "workspace has no recorded content source"
@@ -451,7 +474,11 @@ func (d *Doctor) externalWorkspaceCandidateMatchesRecordedSource(cfg *model.Work
 	if len(desc.PartialPaths) > 0 {
 		return false, "content source is a partial save point"
 	}
-	hash, err := integrity.ComputePayloadRootHash(candidate)
+	excluded, err := destinationWorkspaceControlExclusions(candidate)
+	if err != nil {
+		return false, fmt.Sprintf("inspect destination workspace locator: %v", err)
+	}
+	hash, err := integrity.ComputePayloadRootHashWithExclusions(candidate, excluded)
 	if err != nil {
 		return false, fmt.Sprintf("hash destination sibling folder: %v", err)
 	}
@@ -459,6 +486,18 @@ func (d *Doctor) externalWorkspaceCandidateMatchesRecordedSource(cfg *model.Work
 		return false, "destination sibling content does not match recorded content source"
 	}
 	return true, ""
+}
+
+func destinationWorkspaceControlExclusions(candidate string) (func(string) bool, error) {
+	hasLocator, err := repo.WorkspaceLocatorPresent(candidate)
+	if err != nil {
+		return nil, err
+	}
+	if !hasLocator {
+		return nil, nil
+	}
+	boundary := repo.WorktreePayloadBoundary{Root: candidate, ExcludedRootNames: []string{repo.JVSDirName}}
+	return boundary.ExcludesRelativePath, nil
 }
 
 func pathsReferToSameLocation(left, right string) bool {
@@ -1117,16 +1156,36 @@ func (d *Doctor) checkExternalWorkspaceLocalBinding(result *Result, cfg *model.W
 		return
 	}
 	candidate := filepath.Join(filepath.Dir(d.repoRoot), cfg.Name)
-	if d.externalWorkspaceBindingIsDestinationLocal(cfg, candidate) {
+	if !d.externalWorkspaceBindingIsDestinationLocal(cfg, candidate) {
+		result.Findings = append(result.Findings, Finding{
+			Category:    "worktree",
+			Description: fmt.Sprintf("worktree '%s' path binding is not destination-local; run doctor --repair-runtime", cfg.Name),
+			Severity:    "error",
+			ErrorCode:   ErrorCodeWorktreePathBindingInvalid,
+			Path:        cfg.RealPath,
+		})
 		return
 	}
-	result.Findings = append(result.Findings, Finding{
-		Category:    "worktree",
-		Description: fmt.Sprintf("worktree '%s' path binding is not destination-local; run doctor --repair-runtime", cfg.Name),
-		Severity:    "error",
-		ErrorCode:   ErrorCodeWorktreePathBindingInvalid,
-		Path:        cfg.RealPath,
-	})
+	locatorCurrent, reason := d.externalWorkspaceLocatorIsCurrent(candidate)
+	if reason != "" {
+		result.Findings = append(result.Findings, Finding{
+			Category:    "worktree",
+			Description: fmt.Sprintf("worktree '%s' workspace locator invalid: %s; run doctor --repair-runtime", cfg.Name, reason),
+			Severity:    "error",
+			ErrorCode:   ErrorCodeWorktreePathBindingInvalid,
+			Path:        filepath.Join(candidate, repo.JVSDirName),
+		})
+		return
+	}
+	if !locatorCurrent {
+		result.Findings = append(result.Findings, Finding{
+			Category:    "worktree",
+			Description: fmt.Sprintf("worktree '%s' workspace locator is not bound to this repository; run doctor --repair-runtime", cfg.Name),
+			Severity:    "error",
+			ErrorCode:   ErrorCodeWorktreePathBindingInvalid,
+			Path:        filepath.Join(candidate, repo.JVSDirName),
+		})
+	}
 }
 
 func (d *Doctor) checkWorktreeSnapshotRef(result *Result, worktreeName, field string, id model.SnapshotID) bool {

@@ -218,6 +218,63 @@ func TestMigrationPhysicalCopyRepairRuntimeRebindsExternalWorkspaceWhenSourceSti
 	}
 }
 
+func TestMigrationPhysicalCopyRepairRuntimeRewritesCopiedExternalWorkspaceLocatorWhenSourceOffline(t *testing.T) {
+	sourceRepo, cleanup := initTestRepo(t)
+	defer cleanup()
+
+	createFiles(t, sourceRepo, map[string]string{"app.txt": "v1\n", "keep.txt": "kept\n"})
+	base := savePoint(t, sourceRepo, "baseline before workspace")
+	stdout, stderr, code := runJVSInRepo(t, sourceRepo, "--json", "workspace", "new", "feature", "--from", base)
+	if code != 0 {
+		t.Fatalf("workspace new failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+
+	sourceFeature := filepath.Join(filepath.Dir(sourceRepo), "feature")
+	copiedRepo := filepath.Join(t.TempDir(), "fresh-volume", "project")
+	copiedFeature := filepath.Join(filepath.Dir(copiedRepo), "feature")
+	copyMigrationTree(t, sourceRepo, copiedRepo)
+	copyMigrationTree(t, sourceFeature, copiedFeature)
+	if err := os.Rename(sourceRepo, sourceRepo+".offline"); err != nil {
+		t.Fatalf("take source repo offline: %v", err)
+	}
+	if err := os.Rename(sourceFeature, sourceFeature+".offline"); err != nil {
+		t.Fatalf("take source workspace offline: %v", err)
+	}
+
+	stdout, stderr, code = runJVSInRepo(t, copiedRepo, "--json", "doctor", "--strict", "--repair-runtime")
+	if code != 0 {
+		t.Fatalf("doctor repair-runtime failed after physical copy with offline external workspace: stdout=%s stderr=%s", stdout, stderr)
+	}
+	doctorData := decodeContractDataMap(t, stdout)
+	if doctorData["healthy"] != true {
+		t.Fatalf("doctor repair-runtime should leave copied external workspace healthy: %#v\n%s", doctorData, stdout)
+	}
+
+	statusOut := jvsJSON(t, copiedFeature, "status")
+	statusEnv := decodeContractEnvelope(t, statusOut)
+	if statusEnv.RepoRoot == nil || *statusEnv.RepoRoot != copiedRepo {
+		t.Fatalf("copied external workspace should self-discover copied repo: %#v", statusEnv.RepoRoot)
+	}
+	status := decodeContractDataMap(t, statusOut)
+	if status["workspace"] != "feature" || status["folder"] != copiedFeature || status["started_from_save_point"] != base {
+		t.Fatalf("copied external workspace status mismatch: %#v", status)
+	}
+
+	createFiles(t, copiedFeature, map[string]string{"feature.txt": "offline copy work\n"})
+	saveOut := jvsJSON(t, copiedFeature, "save", "-m", "offline copied feature")
+	saveEnv := decodeContractEnvelope(t, saveOut)
+	if saveEnv.RepoRoot == nil || *saveEnv.RepoRoot != copiedRepo || saveEnv.Workspace == nil || *saveEnv.Workspace != "feature" {
+		t.Fatalf("copied external workspace save targeted wrong repo/workspace: repo=%#v workspace=%#v", saveEnv.RepoRoot, saveEnv.Workspace)
+	}
+	saveData := decodeContractDataMap(t, saveOut)
+	featureSave, _ := saveData["save_point_id"].(string)
+	if featureSave == "" {
+		t.Fatalf("copied external workspace save missing save_point_id: %#v", saveData)
+	}
+	requireHistoryIDsInCWD(t, copiedFeature, []string{featureSave})
+	requireHistoryIDs(t, copiedRepo, []string{base})
+}
+
 func TestMigrationPhysicalCopyRepairRuntimeKeepsExternalWorkspaceUnhealthyWhenSourceStillExistsAndDestinationMissing(t *testing.T) {
 	sourceRepo, cleanup := initTestRepo(t)
 	defer cleanup()

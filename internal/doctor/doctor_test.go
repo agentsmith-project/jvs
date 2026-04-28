@@ -71,6 +71,19 @@ func writeSnapshotIntent(t *testing.T, repoPath string, snapshotID model.Snapsho
 	return intentPath
 }
 
+func writeDoctorTestWorkspaceLocator(t *testing.T, dir, repoRoot string) []byte {
+	t.Helper()
+
+	data, err := json.Marshal(map[string]any{
+		"type":           "jvs-workspace",
+		"format_version": repo.FormatVersion,
+		"repo_root":      repoRoot,
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, repo.JVSDirName), data, 0644))
+	return data
+}
+
 func copyDoctorTestTree(t *testing.T, src, dst string) {
 	t.Helper()
 
@@ -488,6 +501,93 @@ func TestDoctorRepairRuntimeRebindsCopiedExternalWorkspaceWhenContentMatches(t *
 	featurePayload, err := repo.WorktreePayloadPath(copied, "feature")
 	require.NoError(t, err)
 	assert.Equal(t, copiedFeature, featurePayload)
+}
+
+func TestDoctorRepairRuntimeRewritesCopiedExternalWorkspaceLocatorWhenSourceOffline(t *testing.T) {
+	base := t.TempDir()
+	source := filepath.Join(base, "source", "project")
+	require.NoError(t, os.MkdirAll(source, 0755))
+	_, err := repo.InitAdoptedWorkspace(source)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(source, "app.txt"), []byte("baseline\n"), 0644))
+
+	desc, err := snapshot.NewCreator(source, model.EngineCopy).CreateSavePoint("main", "baseline", nil)
+	require.NoError(t, err)
+	_, err = worktree.NewManager(source).CreateStartedFromSnapshot("feature", desc.SnapshotID, func(src, dst string) error {
+		_, err := engine.CloneToNew(engine.NewCopyEngine(), src, dst)
+		return err
+	})
+	require.NoError(t, err)
+
+	sourceFeature := filepath.Join(filepath.Dir(source), "feature")
+	copied := filepath.Join(base, "restored", "project")
+	copiedFeature := filepath.Join(filepath.Dir(copied), "feature")
+	copyDoctorTestTree(t, source, copied)
+	copyDoctorTestTree(t, sourceFeature, copiedFeature)
+	require.NoError(t, os.Rename(source, source+".offline"))
+	require.NoError(t, os.Rename(sourceFeature, sourceFeature+".offline"))
+
+	doc := doctor.NewDoctor(copied)
+	results, err := doc.Repair(doctor.RuntimeRepairActionIDs())
+	require.NoError(t, err)
+	assertRepairActionSucceeded(t, results, doctor.RepairRebindWorkspacePaths)
+
+	after, err := doc.Check(true)
+	require.NoError(t, err)
+	assert.True(t, after.Healthy, "findings after repair: %#v", after.Findings)
+
+	discovered, workspace, err := repo.DiscoverWorktree(copiedFeature)
+	require.NoError(t, err)
+	assert.Equal(t, copied, discovered.Root)
+	assert.Equal(t, "feature", workspace)
+}
+
+func TestDoctorRepairRuntimeRejectsMalformedExternalWorkspaceLocatorEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		repoRoot string
+	}{
+		{name: "blank", repoRoot: ""},
+		{name: "relative", repoRoot: "relative/repo"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			source := filepath.Join(base, "source", "project")
+			require.NoError(t, os.MkdirAll(source, 0755))
+			_, err := repo.InitAdoptedWorkspace(source)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(source, "app.txt"), []byte("baseline\n"), 0644))
+
+			desc, err := snapshot.NewCreator(source, model.EngineCopy).CreateSavePoint("main", "baseline", nil)
+			require.NoError(t, err)
+			_, err = worktree.NewManager(source).CreateStartedFromSnapshot("feature", desc.SnapshotID, func(src, dst string) error {
+				_, err := engine.CloneToNew(engine.NewCopyEngine(), src, dst)
+				return err
+			})
+			require.NoError(t, err)
+
+			sourceFeature := filepath.Join(filepath.Dir(source), "feature")
+			copied := filepath.Join(base, "restored", "project")
+			copiedFeature := filepath.Join(filepath.Dir(copied), "feature")
+			copyDoctorTestTree(t, source, copied)
+			copyDoctorTestTree(t, sourceFeature, copiedFeature)
+			malformed := writeDoctorTestWorkspaceLocator(t, copiedFeature, tc.repoRoot)
+
+			doc := doctor.NewDoctor(copied)
+			results, err := doc.Repair(doctor.RuntimeRepairActionIDs())
+			require.NoError(t, err)
+			assertRepairActionFailed(t, results, doctor.RepairRebindWorkspacePaths)
+
+			after, err := os.ReadFile(filepath.Join(copiedFeature, repo.JVSDirName))
+			require.NoError(t, err)
+			assert.JSONEq(t, string(malformed), string(after))
+
+			check, err := doc.Check(true)
+			require.NoError(t, err)
+			assert.False(t, check.Healthy)
+			assertFindingCode(t, check, "worktree", doctor.ErrorCodeWorktreePathBindingInvalid)
+		})
+	}
 }
 
 func TestDoctorRepairRuntimeRebindsCopiedExternalWorkspaceWhenSourceStillExistsAndContentMatches(t *testing.T) {
@@ -1823,6 +1923,18 @@ func assertRepairActionFailed(t *testing.T, results []doctor.RepairResult, actio
 	for _, result := range results {
 		if result.Action == action {
 			assert.False(t, result.Success, "repair %s should fail/skip: %#v", action, result)
+			return
+		}
+	}
+	t.Fatalf("expected repair result for %s in %#v", action, results)
+}
+
+func assertRepairActionSucceeded(t *testing.T, results []doctor.RepairResult, action string) {
+	t.Helper()
+
+	for _, result := range results {
+		if result.Action == action {
+			assert.True(t, result.Success, "repair %s should succeed: %#v", action, result)
 			return
 		}
 	}

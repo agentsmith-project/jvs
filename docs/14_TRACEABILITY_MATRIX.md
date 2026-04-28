@@ -45,6 +45,7 @@ Normative docs:
 Evidence:
 
 - `workspace new --from <save>` conformance
+- entered workspace folder `status` and first-save story coverage
 - status JSON `started_from_save_point`
 - first-save provenance tests
 
@@ -117,3 +118,21 @@ Evidence:
 - release evidence ledger checks
 - changelog readiness sections
 - final tag validation checks
+
+## Promise 9: GA Stories Preserve User Mental Models
+
+Normative docs:
+
+- `docs/20_USER_SCENARIOS.md`
+- `docs/TARGET_USERS.md`
+- `docs/PRODUCT_PLAN.md`
+
+Evidence:
+
+- `docs/11_CONFORMANCE_TEST_PLAN.md` User Story Matrix Coverage
+- `make story-e2e` for the current first-batch story coverage:
+  ML run discovery, ETL path and stage retry, deletion recovery, restore
+  preview/run, and workspace creation
+- `make story-juicefs-local` when the real local JuiceFS profile is required
+- planned story gaps and product design improvement candidates tracked in
+  `docs/20_USER_SCENARIOS.md`

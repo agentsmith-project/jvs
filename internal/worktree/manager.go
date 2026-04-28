@@ -272,6 +272,15 @@ func (m *Manager) createStartedFromSnapshotLocked(name string, snapshotID model.
 	}
 	cleanupStaging = false
 
+	if realPath != "" {
+		if err := repo.WriteWorkspaceLocator(payloadPath, m.repoRoot); err != nil {
+			if cleanupErr := cleanupNewWorkspaceResidue(payloadPath, configPath); cleanupErr != nil {
+				return nil, fmt.Errorf("write workspace locator: %w; additionally failed to cleanup workspace: %v", err, cleanupErr)
+			}
+			return nil, fmt.Errorf("write workspace locator: %w", err)
+		}
+	}
+
 	if err := m.prepareConfigDir(configPath); err != nil {
 		if cleanupErr := cleanupNewWorkspaceResidue(payloadPath, configPath); cleanupErr != nil {
 			return nil, fmt.Errorf("create config directory: %w; additionally failed to cleanup workspace: %v", err, cleanupErr)

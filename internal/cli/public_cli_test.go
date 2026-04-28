@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/agentsmith-project/jvs/internal/integrity"
+	jvsrepo "github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -388,6 +389,138 @@ func TestPublicCLIErrorsPreserveUserRepoPathsWithSpacesAndLegacyWords(t *testing
 	assert.JSONEq(t, `null`, string(env.Data))
 }
 
+func TestPublicCLIRepoFlagMismatchRejectsChildLocatorForgery(t *testing.T) {
+	cases := []struct {
+		name          string
+		writeLocator  func(t *testing.T, dir, targetRepo string)
+		wantErrorCode string
+	}{
+		{
+			name: "forged target locator",
+			writeLocator: func(t *testing.T, dir, targetRepo string) {
+				t.Helper()
+				writePublicCLITestWorkspaceLocator(t, dir, targetRepo)
+			},
+			wantErrorCode: "E_TARGET_MISMATCH",
+		},
+		{
+			name: "invalid locator",
+			writeLocator: func(t *testing.T, dir, _ string) {
+				t.Helper()
+				require.NoError(t, os.WriteFile(filepath.Join(dir, jvsrepo.JVSDirName), []byte("{not-json"), 0644))
+			},
+			wantErrorCode: "E_TARGET_MISMATCH",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			originalWd, _ := os.Getwd()
+			defer os.Chdir(originalWd)
+
+			require.NoError(t, os.Chdir(dir))
+			targetRepo := initLegacyRepoForCLITest(t, "target")
+			currentRepo := initLegacyRepoForCLITest(t, "current")
+			child := filepath.Join(currentRepo, "main", "nested")
+			require.NoError(t, os.MkdirAll(child, 0755))
+			tc.writeLocator(t, child, targetRepo)
+
+			stdout, stderr, exitCode := runContractSubprocess(t, child, "--json", "--repo", targetRepo, "history")
+			require.Equal(t, 1, exitCode, "mismatched repo unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+			assert.Empty(t, strings.TrimSpace(stderr))
+
+			env := decodeContractEnvelope(t, stdout)
+			assert.False(t, env.OK)
+			require.NotNil(t, env.Error)
+			assert.Equal(t, tc.wantErrorCode, env.Error.Code)
+			assert.Contains(t, env.Error.Message, targetRepo)
+			assert.Contains(t, env.Error.Message, currentRepo)
+			assert.JSONEq(t, `null`, string(env.Data))
+		})
+	}
+}
+
+func TestPublicCLIRepoFlagPathPrefersPhysicalAncestorOverForgedLocator(t *testing.T) {
+	dir := t.TempDir()
+	originalWd, _ := os.Getwd()
+	defer os.Chdir(originalWd)
+
+	require.NoError(t, os.Chdir(dir))
+	targetRepo := initLegacyRepoForCLITest(t, "target")
+	attackerRepo := initLegacyRepoForCLITest(t, "attacker")
+	child := filepath.Join(targetRepo, "main", "nested")
+	require.NoError(t, os.MkdirAll(child, 0755))
+	writePublicCLITestWorkspaceLocator(t, child, attackerRepo)
+
+	outside := filepath.Join(dir, "outside")
+	require.NoError(t, os.MkdirAll(outside, 0755))
+	stdout, stderr, exitCode := runContractSubprocess(t, outside, "--json", "--repo", child, "status")
+	require.Equal(t, 0, exitCode, "status unexpectedly failed: stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+
+	env := decodeContractEnvelope(t, stdout)
+	assert.True(t, env.OK)
+	require.NotNil(t, env.RepoRoot)
+	assert.Equal(t, targetRepo, *env.RepoRoot)
+	require.NotNil(t, env.Workspace)
+	assert.Equal(t, "main", *env.Workspace)
+
+	var status statusCommandOutput
+	require.NoError(t, json.Unmarshal(env.Data, &status), stdout)
+	assert.Equal(t, filepath.Join(targetRepo, "main"), status.Folder)
+	assert.Equal(t, "main", status.Workspace)
+}
+
+func TestPublicCLIRepoFlagPropagatesMalformedLocatorFromCurrentWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	originalWd, _ := os.Getwd()
+	defer os.Chdir(originalWd)
+
+	require.NoError(t, os.Chdir(dir))
+	repoPath := initLegacyRepoForCLITest(t, "target")
+	child := filepath.Join(repoPath, "main", "nested")
+	require.NoError(t, os.MkdirAll(child, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(child, jvsrepo.JVSDirName), []byte("{not-json"), 0644))
+
+	stdout, stderr, exitCode := runContractSubprocess(t, child, "--json", "--repo", repoPath, "history")
+	require.Equal(t, 1, exitCode, "malformed locator unexpectedly defaulted to main: stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+
+	env := decodeContractEnvelope(t, stdout)
+	assert.False(t, env.OK)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, "E_USAGE", env.Error.Code)
+	assert.Contains(t, env.Error.Message, "parse JVS workspace locator")
+	assert.JSONEq(t, `null`, string(env.Data))
+}
+
+func TestPublicCLIRepoFlagPropagatesControlDiscoveryError(t *testing.T) {
+	dir := t.TempDir()
+	originalWd, _ := os.Getwd()
+	defer os.Chdir(originalWd)
+
+	require.NoError(t, os.Chdir(dir))
+	targetRepo := initLegacyRepoForCLITest(t, "target")
+	currentRepo := initLegacyRepoForCLITest(t, "current")
+	child := filepath.Join(currentRepo, "main", "nested")
+	require.NoError(t, os.MkdirAll(child, 0755))
+	if err := os.Symlink(jvsrepo.JVSDirName, filepath.Join(child, jvsrepo.JVSDirName)); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	stdout, stderr, exitCode := runContractSubprocess(t, child, "--json", "--repo", targetRepo, "history")
+	require.Equal(t, 1, exitCode, "control discovery error unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+
+	env := decodeContractEnvelope(t, stdout)
+	assert.False(t, env.OK)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, "E_USAGE", env.Error.Code)
+	assert.Contains(t, env.Error.Message, "stat JVS control directory")
+	assert.JSONEq(t, `null`, string(env.Data))
+}
+
 func TestPublicCLIJSONErrorsPreserveUserRepoPathWhenTargetIsMissing(t *testing.T) {
 	repoPath, _ := setupPublicCLIRepo(t, "missingtarget")
 
@@ -417,6 +550,18 @@ func TestPublicCLIErrorVocabularyPreservesQuotedUserText(t *testing.T) {
 	assert.Equal(t, "save point (/tmp/missing worktree snapshot history) history", got)
 	got = publicCLIErrorVocabulary("snapshot (worktree snapshot history) history")
 	assert.Equal(t, "save point (workspace save point history) history", got)
+}
+
+func writePublicCLITestWorkspaceLocator(t *testing.T, dir, repoRoot string) {
+	t.Helper()
+
+	data, err := json.Marshal(map[string]any{
+		"type":           "jvs-workspace",
+		"format_version": jvsrepo.FormatVersion,
+		"repo_root":      repoRoot,
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, jvsrepo.JVSDirName), data, 0644))
 }
 
 func TestPublicCLIJSONUsesSavePointWorkspaceTerms(t *testing.T) {

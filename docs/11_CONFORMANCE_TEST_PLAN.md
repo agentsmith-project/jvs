@@ -34,7 +34,7 @@ UX.
 ### Save And History
 
 - `jvs save -m <message>` creates a save point from managed files.
-- Failed capacity/staging checks do not publish partial save points.
+- A save that cannot finish must not appear as a new save point in history.
 - `jvs history` lists workspace save points.
 - `jvs history --path <path>` returns candidates and next commands without
   changing files.
@@ -52,10 +52,11 @@ UX.
 - `jvs restore <save> --path <path>` previews path restore and changes no
   files.
 - `jvs restore --path <path>` lists candidates only.
-- Preview output includes plan ID, impact counts, expected target evidence,
-  and run command.
-- `jvs restore --run <plan-id>` reloads the plan, revalidates target evidence,
-  and writes files only after validation.
+- Preview output includes plan ID, the files that would change, the current
+  folder or path state that will be checked again, and the run command.
+- `jvs restore --run <plan-id>` reloads the plan, checks that the folder or
+  path still matches the previewed state, and writes files only after that
+  check passes.
 - Whole-workspace and path restore leave history unchanged.
 - `--save-first` and `--discard-unsaved` are mutually exclusive.
 
@@ -73,6 +74,8 @@ UX.
 
 - `jvs workspace new <name> --from <save>` creates a real workspace folder.
 - The source workspace is unchanged.
+- After entering the printed workspace folder, `jvs status` and `jvs save`
+  target that workspace directly without requiring `--workspace <name>`.
 - The new workspace has no newest save point until first save.
 - Status and JSON record `started_from_save_point`.
 - First save in the new workspace starts a new history and records provenance.
@@ -95,6 +98,23 @@ UX.
 - Cleanup must protect live workspace needs, active views, active source
   operations, and active recovery plans.
 
+### User Story Matrix Coverage
+
+- `docs/20_USER_SCENARIOS.md` is the GA user story matrix and must stay
+  user-mental-model first.
+- Story coverage proves persona goals and workflows, not implementation
+  storage details or another tool's mental model.
+- `make story-local` covers the current human CLI story slices.
+- `make story-json` covers the current JSON story slices and public fields
+  that automation depends on.
+- `make story-e2e` combines those current story gates. It is a first-batch
+  story gate, not a claim that every GA story in the matrix is automated yet.
+- `make story-juicefs-local` qualifies the covered story slices on a real
+  local JuiceFS profile when that release profile is required.
+- If a story is not naturally supported by the public save point model, the gap
+  belongs in Product Design Improvement Candidates in
+  `docs/20_USER_SCENARIOS.md`.
+
 ## Release Gate Expectations
 
 - Public command smoke tests match visible help.
@@ -103,3 +123,7 @@ UX.
 - Migration tests exclude runtime state and run the restore drill.
 - Performance and benchmark docs scope engine claims and label internal
   package names as implementation facts only.
+- User story tests must match the current coverage stated in
+  `docs/20_USER_SCENARIOS.md`. Planned story gaps remain visible there until
+  covered by `make story-e2e`, with `make story-juicefs-local` added when the
+  real local JuiceFS profile is release-blocking.

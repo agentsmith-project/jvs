@@ -1,6 +1,7 @@
 package repo_test
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -146,6 +147,45 @@ func TestDiscover_NotFound(t *testing.T) {
 	dir := t.TempDir()
 	_, err := repo.Discover(dir)
 	assert.Error(t, err)
+}
+
+func TestDiscover_NotFoundIsTyped(t *testing.T) {
+	_, err := repo.Discover(t.TempDir())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, repo.ErrControlRepoNotFound)
+}
+
+func TestDiscover_MalformedLocatorIsNotTypedNotFound(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, repo.JVSDirName), []byte("{not-json"), 0644))
+
+	_, err := repo.Discover(dir)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, repo.ErrControlRepoNotFound)
+	assert.Contains(t, err.Error(), "parse JVS workspace locator")
+}
+
+func TestDiscoverControlRepo_NotFoundIsTyped(t *testing.T) {
+	_, err := repo.DiscoverControlRepo(t.TempDir())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, repo.ErrControlRepoNotFound)
+}
+
+func TestDiscoverControlRepo_PropagatesControlStatError(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "outer")
+	_, err := repo.Init(repoPath, "outer")
+	require.NoError(t, err)
+
+	child := filepath.Join(repoPath, "main", "child")
+	require.NoError(t, os.MkdirAll(child, 0755))
+	loop := filepath.Join(child, repo.JVSDirName)
+	require.NoError(t, os.Symlink(repo.JVSDirName, loop))
+
+	_, err = repo.DiscoverControlRepo(child)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, repo.ErrControlRepoNotFound)
+	assert.Contains(t, err.Error(), "stat JVS control directory")
 }
 
 func TestDiscoverWorktree_MainWorktree(t *testing.T) {
@@ -327,6 +367,48 @@ func TestWriteWorktreeConfigRejectsSymlinkParentWithoutOutsideWrite(t *testing.T
 	err = repo.WriteWorktreeConfig(repoPath, "feature", &model.WorktreeConfig{Name: "feature"})
 	require.Error(t, err)
 	assert.NoFileExists(t, filepath.Join(outside, "feature", "config.json"))
+}
+
+func TestWriteWorkspaceLocatorRejectsMalformedExistingRepoRoot(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "testrepo")
+	_, err := repo.Init(repoPath, "testrepo")
+	require.NoError(t, err)
+	workspace := filepath.Join(dir, "workspace")
+	require.NoError(t, os.MkdirAll(workspace, 0755))
+
+	for _, tc := range []struct {
+		name     string
+		repoRoot string
+	}{
+		{name: "blank", repoRoot: ""},
+		{name: "relative", repoRoot: "relative/repo"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := writeRepoTestWorkspaceLocator(t, workspace, tc.repoRoot)
+
+			err := repo.WriteWorkspaceLocator(workspace, repoPath)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "repo_root")
+
+			after, readErr := os.ReadFile(filepath.Join(workspace, repo.JVSDirName))
+			require.NoError(t, readErr)
+			assert.JSONEq(t, string(before), string(after))
+		})
+	}
+}
+
+func writeRepoTestWorkspaceLocator(t *testing.T, dir, repoRoot string) []byte {
+	t.Helper()
+
+	data, err := json.Marshal(map[string]any{
+		"type":           "jvs-workspace",
+		"format_version": repo.FormatVersion,
+		"repo_root":      repoRoot,
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, repo.JVSDirName), data, 0644))
+	return data
 }
 
 func TestSnapshotPathHelpersRejectInvalidSnapshotIDs(t *testing.T) {

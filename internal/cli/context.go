@@ -100,6 +100,33 @@ func discoveryStarts() (repoStart string, workspaceStart string, err error) {
 	}
 
 	workspaceStart = cwd
+	if targetRepoPath != "" {
+		targetRepo, err := resolveRepoFlagTarget(targetRepoPath)
+		if err != nil {
+			return "", "", err
+		}
+		recordResolvedTarget(targetRepo.Root, "")
+		currentRepo, err := repo.DiscoverControlRepo(cwd)
+		if err == nil {
+			if err := canonicalizeRepoRoot(currentRepo); err != nil {
+				return "", "", err
+			}
+			same, err := sameRepo(currentRepo, targetRepo)
+			if err != nil {
+				return "", "", err
+			}
+			if !same {
+				return "", "", errclass.ErrTargetMismatch.WithMessagef(
+					"targeting mismatch: --repo resolves to %s, but current directory belongs to %s",
+					cleanRepoRoot(targetRepo.Root), cleanRepoRoot(currentRepo.Root),
+				)
+			}
+		} else if !errors.Is(err, repo.ErrControlRepoNotFound) {
+			return "", "", err
+		}
+		return targetRepo.Root, workspaceStart, nil
+	}
+
 	currentRepo, err := repo.Discover(cwd)
 	if err != nil {
 		return "", "", errclass.ErrNotRepo.
@@ -111,24 +138,6 @@ func discoveryStarts() (repoStart string, workspaceStart string, err error) {
 	}
 
 	repoStart = currentRepo.Root
-	if targetRepoPath != "" {
-		targetRepo, err := resolveRepoFlagTarget(targetRepoPath)
-		if err != nil {
-			return "", "", err
-		}
-		recordResolvedTarget(targetRepo.Root, "")
-		same, err := sameRepo(currentRepo, targetRepo)
-		if err != nil {
-			return "", "", err
-		}
-		if !same {
-			return "", "", errclass.ErrTargetMismatch.WithMessagef(
-				"targeting mismatch: --repo resolves to %s, but current directory belongs to %s",
-				cleanRepoRoot(targetRepo.Root), cleanRepoRoot(currentRepo.Root),
-			)
-		}
-		repoStart = targetRepo.Root
-	}
 
 	return repoStart, workspaceStart, nil
 }
@@ -148,8 +157,24 @@ func resolveRepoFlagTarget(path string) (*repo.Repo, error) {
 	if !info.IsDir() {
 		discoveryStart = filepath.Dir(abs)
 	}
-	r, err := repo.Discover(discoveryStart)
+	r, err := repo.DiscoverControlRepo(discoveryStart)
+	if err == nil {
+		if err := repo.ValidateWorkspaceLocatorEvidence(discoveryStart, r.Root); err != nil {
+			return nil, err
+		}
+		if err := canonicalizeRepoRoot(r); err != nil {
+			return nil, err
+		}
+		return r, nil
+	}
+	if !errors.Is(err, repo.ErrControlRepoNotFound) {
+		return nil, err
+	}
+	r, err = repo.Discover(discoveryStart)
 	if err != nil {
+		if !errors.Is(err, repo.ErrControlRepoNotFound) {
+			return nil, err
+		}
 		return nil, errclass.ErrNotRepo.
 			WithMessagef("--repo is not inside a JVS repository: %s", path).
 			WithHint("Pass --repo as this repository root or a path inside it.")
@@ -210,12 +235,27 @@ func resolveOptionalWorkspace(r *repo.Repo, start string) (string, error) {
 		return resolveNamedWorkspace(r.Root, targetWorkspaceName)
 	}
 
-	return workspaceFromPath(r.Root, start)
+	workspace, err := workspaceFromPath(r.Root, start)
+	if err != nil || workspace != "" {
+		return workspace, err
+	}
+	if targetRepoPath != "" {
+		if _, err := repo.LoadWorktreeConfig(r.Root, "main"); err == nil {
+			return "main", nil
+		}
+	}
+	return "", nil
 }
 
 func workspaceFromPath(repoRoot, path string) (string, error) {
 	r, workspace, err := repo.DiscoverWorktree(path)
-	if err != nil || workspace == "" {
+	if err != nil {
+		if errors.Is(err, repo.ErrControlRepoNotFound) {
+			return "", nil
+		}
+		return "", err
+	}
+	if workspace == "" {
 		return "", nil
 	}
 	same, err := sameRepoRoot(r.Root, repoRoot)
