@@ -90,6 +90,36 @@ jobs:
           name: gosec-report
           path: gosec-report.json
 
+  release-toolchain-smoke:
+    name: Release Toolchain Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', github.event.inputs.tag) || github.ref }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.1
+        with:
+          cosign-release: v3.0.5
+
+      - name: Verify cosign version
+        env:
+          COSIGN_EXPECTED_VERSION: v3.0.5
+        run: |
+          set -eu
+          version_output="$(cosign version 2>&1)"
+          printf '%s\n' "$version_output"
+          case "$version_output" in
+            *"${COSIGN_EXPECTED_VERSION}"*|*"${COSIGN_EXPECTED_VERSION#v}"*) ;;
+            *)
+              echo "expected cosign ${COSIGN_EXPECTED_VERSION}" >&2
+              exit 1
+              ;;
+          esac
+
   dco-check:
     name: DCO Check
     runs-on: ubuntu-latest
@@ -167,7 +197,7 @@ jobs:
 
   release:
     name: Release
-    needs: [build, lint, security, release-gate]
+    needs: [build, lint, security, release-toolchain-smoke, release-gate]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     permissions:
@@ -186,7 +216,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@v4.1.1
         with:
           cosign-release: v3.0.5
 

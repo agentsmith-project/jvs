@@ -17,6 +17,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	pinnedCosignInstallerAction = "sigstore/cosign-installer@v4.1.1"
+	pinnedCosignReleaseVersion  = "v3.0.5"
+)
+
 func TestReleaseWorkflowRequiresReleaseGate(t *testing.T) {
 	root := repoRoot(t)
 	workflow := readWorkflow(t, root)
@@ -174,10 +179,64 @@ func TestWorkflowUsesPinnedReleaseChainTools(t *testing.T) {
 
 	release := requireMappingValue(t, jobs, "release")
 	cosign := requireStepUsing(t, release, "sigstore/cosign-installer@")
-	with := requireMappingValue(t, cosign, "with")
-	cosignRelease := scalarValue(t, requireMappingValue(t, with, "cosign-release"))
-	if cosignRelease != "v3.0.5" {
-		t.Fatalf("release workflow must pin cosign-release to v3.0.5, got %q", cosignRelease)
+	requirePinnedCosignInstaller(t, cosign, "release job")
+	requireCosignInstallerCompatibleWithRelease(t, cosign, "release job")
+}
+
+func TestReleaseToolchainSmokeInstallsPinnedCosign(t *testing.T) {
+	root := repoRoot(t)
+	workflow := readWorkflow(t, root)
+
+	on := requireMappingValue(t, workflow, "on")
+	push := requireMappingValue(t, on, "push")
+	if !nodeContainsScalar(requireMappingValue(t, push, "branches"), "main") {
+		t.Fatalf("release toolchain smoke must run on main branch pushes")
+	}
+	if !nodeContainsScalar(requireMappingValue(t, push, "tags"), "v*") {
+		t.Fatalf("release toolchain smoke must run on release tag pushes")
+	}
+	pullRequest := requireMappingValue(t, on, "pull_request")
+	if !nodeContainsScalar(requireMappingValue(t, pullRequest, "branches"), "main") {
+		t.Fatalf("release toolchain smoke must run on pull requests to main")
+	}
+	if mappingValue(on, "workflow_dispatch") == nil {
+		t.Fatalf("release toolchain smoke must run on workflow_dispatch")
+	}
+
+	jobs := requireMappingValue(t, workflow, "jobs")
+	smoke := requireMappingValue(t, jobs, "release-toolchain-smoke")
+	name := scalarValue(t, requireMappingValue(t, smoke, "name"))
+	if name != "Release Toolchain Smoke" {
+		t.Fatalf("release-toolchain-smoke job must be named Release Toolchain Smoke, got %q", name)
+	}
+	if condition := mappingValue(smoke, "if"); condition != nil {
+		t.Fatalf("release-toolchain-smoke must not be gated by a tag/manual release condition, got %q", scalarValue(t, condition))
+	}
+
+	release := requireMappingValue(t, jobs, "release")
+	releaseNeeds := requireMappingValue(t, release, "needs")
+	if !nodeContainsScalar(releaseNeeds, "release-toolchain-smoke") {
+		t.Fatalf("release job must need release-toolchain-smoke so toolchain failures block publication")
+	}
+
+	releaseCosign := requireStepUsing(t, release, "sigstore/cosign-installer@")
+	smokeCosign := requireStepUsing(t, smoke, "sigstore/cosign-installer@")
+	releaseConfig := requirePinnedCosignInstaller(t, releaseCosign, "release job")
+	smokeConfig := requirePinnedCosignInstaller(t, smokeCosign, "release-toolchain-smoke job")
+	if smokeConfig != releaseConfig {
+		t.Fatalf("release-toolchain-smoke must install the same cosign toolchain as release; smoke=%+v release=%+v", smokeConfig, releaseConfig)
+	}
+	requireCosignInstallerCompatibleWithRelease(t, smokeCosign, "release-toolchain-smoke job")
+
+	verify := requireStepNamed(t, smoke, "Verify cosign version")
+	run := scalarValue(t, requireMappingValue(t, verify, "run"))
+	requireContains(t, run, "cosign version")
+	requireContains(t, run, "COSIGN_EXPECTED_VERSION")
+	requireContains(t, run, "exit 1")
+	env := requireMappingValue(t, verify, "env")
+	expectedVersion := scalarValue(t, requireMappingValue(t, env, "COSIGN_EXPECTED_VERSION"))
+	if expectedVersion != pinnedCosignReleaseVersion {
+		t.Fatalf("release-toolchain-smoke must verify cosign %s, got %q", pinnedCosignReleaseVersion, expectedVersion)
 	}
 }
 
@@ -975,6 +1034,60 @@ func requireStepUsing(t *testing.T, job *yaml.Node, usesPrefix string) *yaml.Nod
 	}
 	t.Fatalf("missing workflow step using %q", usesPrefix)
 	return nil
+}
+
+type cosignInstallerConfig struct {
+	action        string
+	cosignRelease string
+}
+
+func requirePinnedCosignInstaller(t *testing.T, step *yaml.Node, context string) cosignInstallerConfig {
+	t.Helper()
+	uses := scalarValue(t, requireMappingValue(t, step, "uses"))
+	if uses != pinnedCosignInstallerAction {
+		t.Fatalf("%s must use precisely pinned %s, got %q", context, pinnedCosignInstallerAction, uses)
+	}
+	with := requireMappingValue(t, step, "with")
+	cosignRelease := scalarValue(t, requireMappingValue(t, with, "cosign-release"))
+	if cosignRelease != pinnedCosignReleaseVersion {
+		t.Fatalf("%s must pin cosign-release to %s, got %q", context, pinnedCosignReleaseVersion, cosignRelease)
+	}
+	return cosignInstallerConfig{
+		action:        uses,
+		cosignRelease: cosignRelease,
+	}
+}
+
+func requireCosignInstallerCompatibleWithRelease(t *testing.T, step *yaml.Node, context string) {
+	t.Helper()
+	uses := scalarValue(t, requireMappingValue(t, step, "uses"))
+	with := requireMappingValue(t, step, "with")
+	cosignRelease := scalarValue(t, requireMappingValue(t, with, "cosign-release"))
+	cosignMajor := majorVersionFromVRef(t, cosignRelease, context+" cosign-release")
+	installerMajor := majorVersionFromVRef(t, actionRef(t, uses, context+" installer action"), context+" installer action")
+	if cosignMajor >= 3 && installerMajor < 4 {
+		t.Fatalf("%s installs cosign %s, so cosign-installer must use v4 or a newer compatible line; got %q", context, cosignRelease, uses)
+	}
+}
+
+func actionRef(t *testing.T, uses, context string) string {
+	t.Helper()
+	before, ref, ok := strings.Cut(uses, "@")
+	if !ok || before == "" || ref == "" {
+		t.Fatalf("%s must use an action ref of the form owner/repo@version, got %q", context, uses)
+	}
+	return ref
+}
+
+func majorVersionFromVRef(t *testing.T, ref, context string) int {
+	t.Helper()
+	version := strings.TrimPrefix(ref, "v")
+	majorText, _, _ := strings.Cut(version, ".")
+	major, err := strconv.Atoi(majorText)
+	if err != nil || major < 0 {
+		t.Fatalf("%s must start with a numeric major version, got %q", context, ref)
+	}
+	return major
 }
 
 func requireCheckoutFetchesFullGitMetadata(t *testing.T, checkout *yaml.Node, jobName, command string) {

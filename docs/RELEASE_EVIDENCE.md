@@ -101,6 +101,10 @@ pending final tag qualification and the tag-gated release workflow.
 ### Artifact and signing evidence
 
 - Artifact workflow: `.github/workflows/ci.yml` release job.
+- Release toolchain smoke: non-publishing `release-toolchain-smoke` job installs
+  `sigstore/cosign-installer@v4.1.1` with `cosign-release: v3.0.5` and
+  verifies `cosign version` on pull request, main push, tag push, and
+  `workflow_dispatch` paths before release publication.
 - Artifact publication: not published for this candidate; artifact counts,
   checksums, and download validation are pending final tag publication.
 - Signing workflow: final artifacts must include `.sig` and `.pem` sidecars
