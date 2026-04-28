@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/agentsmith-project/jvs/internal/recovery"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/restore"
 	"github.com/agentsmith-project/jvs/internal/restoreplan"
@@ -237,6 +238,13 @@ func runRestorePlan(repoRoot, workspaceName, planID string) error {
 		if resultScope == restoreplan.ScopePath {
 			protectedRunPath = plan.Path
 		}
+		activeRecovery, err := recovery.NewManager(repoRoot).ActiveForWorkspace(workspaceName)
+		if err != nil {
+			return err
+		}
+		if len(activeRecovery) > 0 {
+			return activeRecoveryBlocksRestoreError(activeRecovery[0])
+		}
 		return withActiveOperationSourcePin(repoRoot, plan.SourceSavePoint, "restore run", func() error {
 			switch resultScope {
 			case restoreplan.ScopeWhole:
@@ -258,7 +266,23 @@ func runRestorePlan(repoRoot, workspaceName, planID string) error {
 						return err
 					}
 				}
-				if err := restore.NewRestorer(repoRoot, detectEngine(repoRoot)).RestoreLocked(workspaceName, plan.SourceSavePoint); err != nil {
+				recoveryPlan, err := recovery.NewManager(repoRoot).CreateActiveForRestore(plan, restoreRecoveryBackupPath(plan.Folder))
+				if err != nil {
+					return err
+				}
+				if err := restore.NewRestorer(repoRoot, detectEngine(repoRoot)).RestoreLockedWithOptions(workspaceName, plan.SourceSavePoint, restore.RunOptions{BackupPath: recoveryPlan.Backup.Path}); err != nil {
+					if _, ok := restore.AsIncompleteError(err); ok {
+						return keepRecoveryPlanActiveAfterRestoreFailure(repoRoot, recoveryPlan, err)
+					}
+					if resolveErr := recovery.NewManager(repoRoot).MarkResolved(recoveryPlan.PlanID); resolveErr != nil {
+						return fmt.Errorf("%w; additionally failed to resolve recovery plan: %v", err, resolveErr)
+					}
+					return err
+				}
+				if err := markRecoveryRestoreApplied(repoRoot, recoveryPlan); err != nil {
+					return err
+				}
+				if err := recovery.NewManager(repoRoot).MarkResolved(recoveryPlan.PlanID); err != nil {
 					return err
 				}
 				result, err = publicRestoreStatus(repoRoot, workspaceName, plan.SourceSavePoint)
@@ -289,7 +313,23 @@ func runRestorePlan(repoRoot, workspaceName, planID string) error {
 						return err
 					}
 				}
-				if err := restore.NewRestorer(repoRoot, detectEngine(repoRoot)).RestorePathLocked(workspaceName, plan.SourceSavePoint, plan.Path); err != nil {
+				recoveryPlan, err := recovery.NewManager(repoRoot).CreateActiveForRestore(plan, restoreRecoveryBackupPath(plan.Folder))
+				if err != nil {
+					return err
+				}
+				if err := restore.NewRestorer(repoRoot, detectEngine(repoRoot)).RestorePathLockedWithOptions(workspaceName, plan.SourceSavePoint, plan.Path, restore.RunOptions{BackupPath: recoveryPlan.Backup.Path}); err != nil {
+					if _, ok := restore.AsIncompleteError(err); ok {
+						return keepRecoveryPlanActiveAfterRestoreFailure(repoRoot, recoveryPlan, err)
+					}
+					if resolveErr := recovery.NewManager(repoRoot).MarkResolved(recoveryPlan.PlanID); resolveErr != nil {
+						return fmt.Errorf("%w; additionally failed to resolve recovery plan: %v", err, resolveErr)
+					}
+					return err
+				}
+				if err := markRecoveryRestoreApplied(repoRoot, recoveryPlan); err != nil {
+					return err
+				}
+				if err := recovery.NewManager(repoRoot).MarkResolved(recoveryPlan.PlanID); err != nil {
 					return err
 				}
 				pathResult, err = publicRestorePathStatus(repoRoot, workspaceName, plan.Path, plan.SourceSavePoint)

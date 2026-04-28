@@ -213,6 +213,7 @@ func createControlPlane(path string) (string, error) {
 		filepath.Join(jvsDir, "audit"),
 		filepath.Join(jvsDir, "locks"),
 		filepath.Join(jvsDir, "restore-plans"),
+		filepath.Join(jvsDir, "recovery-plans"),
 		filepath.Join(jvsDir, "gc"),
 		filepath.Join(jvsDir, "gc", "pins"),
 		filepath.Join(jvsDir, "gc", "tombstones"),
@@ -1249,6 +1250,47 @@ func RestorePlanPathForRead(repoRoot, planID string) (string, error) {
 // symlink or wrong-type existing final leaf. Missing leaves are allowed.
 func RestorePlanPathForWrite(repoRoot, planID string) (string, error) {
 	path, err := RestorePlanPath(repoRoot, planID)
+	if err != nil {
+		return "", err
+	}
+	if err := validateControlLeaf(path, controlLeafRegularFile, true); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// RecoveryPlansDirPath returns the recovery plan control directory after
+// validating it.
+func RecoveryPlansDirPath(repoRoot string) (string, error) {
+	return controlDirPath(repoRoot, "recovery-plans")
+}
+
+// RecoveryPlanPath returns the path for a recovery plan ID after rejecting
+// path-like names.
+func RecoveryPlanPath(repoRoot, planID string) (string, error) {
+	if err := pathutil.ValidateName(planID); err != nil {
+		return "", err
+	}
+	return controlFilePath(repoRoot, []string{"recovery-plans"}, planID+".json")
+}
+
+// RecoveryPlanPathForRead returns an existing recovery plan path after
+// rejecting a symlink or wrong-type final leaf.
+func RecoveryPlanPathForRead(repoRoot, planID string) (string, error) {
+	path, err := RecoveryPlanPath(repoRoot, planID)
+	if err != nil {
+		return "", err
+	}
+	if err := validateControlLeaf(path, controlLeafRegularFile, false); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// RecoveryPlanPathForWrite returns a recovery plan path after rejecting a
+// symlink or wrong-type existing final leaf. Missing leaves are allowed.
+func RecoveryPlanPathForWrite(repoRoot, planID string) (string, error) {
+	path, err := RecoveryPlanPath(repoRoot, planID)
 	if err != nil {
 		return "", err
 	}

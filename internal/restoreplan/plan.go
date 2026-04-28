@@ -493,7 +493,27 @@ func PathEvidence(repoRoot, workspaceName, normalizedPath string) (string, error
 		return "", fmt.Errorf("path parent containment for %s: %w", normalizedPath, err)
 	}
 
-	target := filepath.Join(boundary.Root, filepath.FromSlash(normalizedPath))
+	return PathEvidenceFromRoot(boundary.Root, normalizedPath, boundary.ExcludesRelativePath)
+}
+
+// PathEvidenceFromRoot computes path-level evidence for a managed payload root.
+func PathEvidenceFromRoot(root, normalizedPath string, excluded func(rel string) bool) (string, error) {
+	cleanPath, err := validatePlanRelativePath(normalizedPath)
+	if err != nil {
+		return "", err
+	}
+	normalizedPath = cleanPath
+	if excluded != nil && excluded(normalizedPath) {
+		return "", fmt.Errorf("path must be a workspace-relative path; JVS control data is not managed")
+	}
+	if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(root); err != nil {
+		return "", err
+	}
+	if err := pathutil.ValidateNoSymlinkParents(root, normalizedPath); err != nil {
+		return "", fmt.Errorf("path parent containment for %s: %w", normalizedPath, err)
+	}
+
+	target := filepath.Join(root, filepath.FromSlash(normalizedPath))
 	info, err := os.Lstat(target)
 	if os.IsNotExist(err) {
 		return hashEvidenceLines([]string{"missing\t" + normalizedPath}), nil
@@ -508,12 +528,12 @@ func PathEvidence(repoRoot, workspaceName, normalizedPath string) (string, error
 			if err != nil {
 				return err
 			}
-			rel, err := filepath.Rel(boundary.Root, path)
+			rel, err := filepath.Rel(root, path)
 			if err != nil {
 				return fmt.Errorf("relative path: %w", err)
 			}
 			rel = filepath.ToSlash(rel)
-			if boundary.ExcludesRelativePath(rel) {
+			if excluded != nil && excluded(rel) {
 				if entry.IsDir() {
 					return filepath.SkipDir
 				}

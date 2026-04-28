@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/agentsmith-project/jvs/internal/gc"
+	"github.com/agentsmith-project/jvs/internal/recovery"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/restore"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
@@ -857,6 +858,44 @@ func TestCollector_Plan_ProtectsDocumentedPinsAndIgnoresLegacyPins(t *testing.T)
 	assert.Contains(t, plan.ProtectedSet, documentedPinnedID)
 	assert.Contains(t, plan.ToDelete, legacyOnlyID)
 	assert.NotContains(t, plan.ProtectedSet, legacyOnlyID)
+}
+
+func TestCollector_Plan_ProtectsActiveRecoveryPlanWithoutSourcePinAndIgnoresResolved(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	ids := createRemovedWorktreeSnapshots(t, repoPath, "temp", 1)
+	sourceID := ids[0]
+	r, err := repo.Discover(repoPath)
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	plan := recovery.Plan{
+		SchemaVersion:          recovery.SchemaVersion,
+		RepoID:                 r.RepoID,
+		PlanID:                 "RP-gc-protects-recovery",
+		Status:                 recovery.StatusActive,
+		Operation:              recovery.OperationRestore,
+		RestorePlanID:          "restore-preview",
+		Workspace:              "main",
+		Folder:                 filepath.Join(repoPath, "main"),
+		SourceSavePoint:        sourceID,
+		CreatedAt:              now,
+		UpdatedAt:              now,
+		PreWorktreeState:       recovery.WorktreeState{Name: "main"},
+		Backup:                 recovery.Backup{Path: filepath.Join(repoPath, "main.restore-backup-test"), Scope: recovery.BackupScopeWhole, State: recovery.BackupStatePending},
+		RecommendedNextCommand: "jvs recovery status RP-gc-protects-recovery",
+	}
+	require.NoError(t, recovery.NewManager(repoPath).Write(&plan))
+
+	collector := gc.NewCollector(repoPath)
+	gcPlan, err := collector.PlanWithPolicy(zeroRetention)
+	require.NoError(t, err)
+	assert.Contains(t, gcPlan.ProtectedSet, sourceID)
+	assert.NotContains(t, gcPlan.ToDelete, sourceID)
+
+	require.NoError(t, recovery.NewManager(repoPath).MarkResolved(plan.PlanID))
+	gcPlan, err = collector.PlanWithPolicy(zeroRetention)
+	require.NoError(t, err)
+	assert.NotContains(t, gcPlan.ProtectedSet, sourceID)
+	assert.Contains(t, gcPlan.ToDelete, sourceID)
 }
 
 func TestCollector_Plan_SortsPlanSets(t *testing.T) {

@@ -32,10 +32,40 @@ type Restorer struct {
 	updateHead  func(*worktree.Manager, string, model.SnapshotID) error
 }
 
+type RunOptions struct {
+	BackupPath string
+}
+
+type Hooks struct {
+	FsyncDir         func(string) error
+	UpdateHead       func(*worktree.Manager, string, model.SnapshotID) error
+	RecordPathSource func(repoRoot, worktreeName, relPath string, source model.SnapshotID) error
+}
+
 var (
-	restoreRename   = os.Rename
-	restoreFsyncDir = fsutil.FsyncDir
+	restoreRename           = os.Rename
+	restoreFsyncDir         = fsutil.FsyncDir
+	restoreUpdateHead       func(*worktree.Manager, string, model.SnapshotID) error
+	restoreRecordPathSource = recordPathRestoreSource
 )
+
+func SetHooksForTest(hooks Hooks) func() {
+	previousFsyncDir := restoreFsyncDir
+	previousUpdateHead := restoreUpdateHead
+	previousRecordPathSource := restoreRecordPathSource
+	if hooks.FsyncDir != nil {
+		restoreFsyncDir = hooks.FsyncDir
+	}
+	restoreUpdateHead = hooks.UpdateHead
+	if hooks.RecordPathSource != nil {
+		restoreRecordPathSource = hooks.RecordPathSource
+	}
+	return func() {
+		restoreFsyncDir = previousFsyncDir
+		restoreUpdateHead = previousUpdateHead
+		restoreRecordPathSource = previousRecordPathSource
+	}
+}
 
 // NewRestorer creates a new restorer.
 func NewRestorer(repoRoot string, engineType model.EngineType) *Restorer {
@@ -48,6 +78,9 @@ func NewRestorer(repoRoot string, engineType model.EngineType) *Restorer {
 		engine:      eng,
 		auditLogger: audit.NewFileAppender(auditPath),
 		updateHead: func(wtMgr *worktree.Manager, worktreeName string, snapshotID model.SnapshotID) error {
+			if restoreUpdateHead != nil {
+				return restoreUpdateHead(wtMgr, worktreeName, snapshotID)
+			}
 			return wtMgr.UpdateHead(worktreeName, snapshotID)
 		},
 	}
@@ -68,6 +101,10 @@ func (r *Restorer) RestoreLocked(worktreeName string, snapshotID model.SnapshotI
 	return r.restore(worktreeName, snapshotID)
 }
 
+func (r *Restorer) RestoreLockedWithOptions(worktreeName string, snapshotID model.SnapshotID, options RunOptions) error {
+	return r.restoreWithOptions(worktreeName, snapshotID, options)
+}
+
 // RestorePath replaces one workspace-relative file or directory from a save
 // point without moving the workspace history or whole-workspace content source.
 func (r *Restorer) RestorePath(worktreeName string, snapshotID model.SnapshotID, path string) error {
@@ -82,8 +119,16 @@ func (r *Restorer) RestorePathLocked(worktreeName string, snapshotID model.Snaps
 	return r.restorePath(worktreeName, snapshotID, path)
 }
 
+func (r *Restorer) RestorePathLockedWithOptions(worktreeName string, snapshotID model.SnapshotID, path string, options RunOptions) error {
+	return r.restorePathWithOptions(worktreeName, snapshotID, path, options)
+}
+
 // restore performs the actual restore operation.
 func (r *Restorer) restore(worktreeName string, snapshotID model.SnapshotID) error {
+	return r.restoreWithOptions(worktreeName, snapshotID, RunOptions{})
+}
+
+func (r *Restorer) restoreWithOptions(worktreeName string, snapshotID model.SnapshotID, options RunOptions) error {
 	if worktreeName == "" {
 		return fmt.Errorf("worktree name is required")
 	}
@@ -130,7 +175,10 @@ func (r *Restorer) restore(worktreeName string, snapshotID model.SnapshotID) err
 	}
 
 	// Create backup directory for rollback while keeping payloadPath itself in place.
-	backupPath := boundary.Root + ".restore-backup-" + uuidutil.NewV4()[:8]
+	backupPath := options.BackupPath
+	if backupPath == "" {
+		backupPath = newRestoreBackupPath(boundary.Root)
+	}
 	snapshotDir, err := repo.SnapshotPathForRead(r.repoRoot, snapshotID)
 	if err != nil {
 		return fmt.Errorf("snapshot path: %w", err)
@@ -176,7 +224,7 @@ func (r *Restorer) restore(worktreeName string, snapshotID model.SnapshotID) err
 		if rollbackErr := rollbackRestoredPayload(boundary, backupPath, len(desc.PartialPaths) > 0, partialChanges); rollbackErr != nil {
 			return retainBackup(backupPath, fmt.Errorf("update head: %w (rollback failed: %v)", err, rollbackErr))
 		}
-		return retainBackup(backupPath, fmt.Errorf("update head: %w (payload rolled back)", err))
+		return retainBackupRolledBack(backupPath, fmt.Errorf("update head: %w (payload rolled back)", err))
 	}
 
 	// Step 4: Cleanup backup synchronously after metadata has been updated.
@@ -191,13 +239,17 @@ func (r *Restorer) restore(worktreeName string, snapshotID model.SnapshotID) err
 	if err := r.auditLogger.Append(model.EventTypeRestore, worktreeName, snapshotID, map[string]any{
 		"detached": isDetached,
 	}); err != nil {
-		return fmt.Errorf("write audit log: %w", err)
+		fmt.Fprintf(os.Stderr, "warning: restored files but could not write audit log: %v\n", err)
 	}
 
 	return nil
 }
 
 func (r *Restorer) restorePath(worktreeName string, snapshotID model.SnapshotID, rawPath string) error {
+	return r.restorePathWithOptions(worktreeName, snapshotID, rawPath, RunOptions{})
+}
+
+func (r *Restorer) restorePathWithOptions(worktreeName string, snapshotID model.SnapshotID, rawPath string, options RunOptions) error {
 	if worktreeName == "" {
 		return fmt.Errorf("worktree name is required")
 	}
@@ -243,7 +295,10 @@ func (r *Restorer) restorePath(worktreeName string, snapshotID model.SnapshotID,
 		return fmt.Errorf("audit log not appendable: %w", err)
 	}
 
-	backupPath := boundary.Root + ".restore-backup-" + uuidutil.NewV4()[:8]
+	backupPath := options.BackupPath
+	if backupPath == "" {
+		backupPath = newRestoreBackupPath(boundary.Root)
+	}
 	snapshotDir, err := repo.SnapshotPathForRead(r.repoRoot, snapshotID)
 	if err != nil {
 		return fmt.Errorf("snapshot path: %w", err)
@@ -272,16 +327,16 @@ func (r *Restorer) restorePath(worktreeName string, snapshotID model.SnapshotID,
 		return fmt.Errorf("restore path %s: %w", relPath, err)
 	}
 
-	if err := recordPathRestoreSource(r.repoRoot, worktreeName, relPath, snapshotID); err != nil {
+	if err := restoreRecordPathSource(r.repoRoot, worktreeName, relPath, snapshotID); err != nil {
 		if recorded, recordErr := pathSourceMatches(r.repoRoot, worktreeName, relPath, snapshotID); recordErr == nil && recorded {
-			return retainBackup(backupPath, fmt.Errorf("record path source: %w (metadata records restored path; payload left restored)", err))
+			return retainBackupWithPathChanges(backupPath, changes, fmt.Errorf("record path source: %w (metadata records restored path; payload left restored)", err))
 		} else if recordErr != nil {
 			err = fmt.Errorf("%w (inspect path source after failure: %v)", err, recordErr)
 		}
 		if rollbackErr := rollbackPartialRestore(boundary.Root, backupPath, changes); rollbackErr != nil {
-			return retainBackup(backupPath, fmt.Errorf("record path source: %w (rollback failed: %v)", err, rollbackErr))
+			return retainBackupWithPathChanges(backupPath, changes, fmt.Errorf("record path source: %w (rollback failed: %v)", err, rollbackErr))
 		}
-		return cleanupBackupAfterRollback(backupPath, fmt.Errorf("record path source: %w", err))
+		return retainBackupRolledBackWithPathChanges(backupPath, changes, fmt.Errorf("record path source: %w (payload rolled back)", err))
 	}
 
 	if err := os.RemoveAll(backupPath); err != nil {
@@ -291,9 +346,13 @@ func (r *Restorer) restorePath(worktreeName string, snapshotID model.SnapshotID,
 		"path":            relPath,
 		"history_changed": false,
 	}); err != nil {
-		return fmt.Errorf("write audit log: %w", err)
+		fmt.Fprintf(os.Stderr, "warning: restored files but could not write audit log: %v\n", err)
 	}
 	return nil
+}
+
+func newRestoreBackupPath(payloadRoot string) string {
+	return payloadRoot + ".restore-backup-" + uuidutil.NewV4()[:8]
 }
 
 func verifySnapshotResultError(result *verify.Result, fallback string) error {
@@ -737,21 +796,59 @@ func moveRenamed(err error) bool {
 	return errors.As(err, &moveErr) && moveErr.renamed
 }
 
-type backupRetainedError struct {
-	backupPath string
-	err        error
+type IncompleteError struct {
+	BackupPath        string
+	PayloadRolledBack bool
+	PathEntries       []PathBackupEntry
+	err               error
 }
 
-func (e *backupRetainedError) Error() string {
-	return fmt.Sprintf("%v; backup retained at %s", e.err, e.backupPath)
+type PathBackupEntry struct {
+	Path        string
+	HadOriginal bool
 }
 
-func (e *backupRetainedError) Unwrap() error {
+func (e *IncompleteError) Error() string {
+	return fmt.Sprintf("%v; backup retained at %s", e.err, e.BackupPath)
+}
+
+func (e *IncompleteError) Unwrap() error {
 	return e.err
 }
 
+func AsIncompleteError(err error) (*IncompleteError, bool) {
+	var incomplete *IncompleteError
+	if errors.As(err, &incomplete) {
+		return incomplete, true
+	}
+	return nil, false
+}
+
 func retainBackup(backupPath string, err error) error {
-	return &backupRetainedError{backupPath: backupPath, err: err}
+	return &IncompleteError{BackupPath: backupPath, err: err}
+}
+
+func retainBackupRolledBack(backupPath string, err error) error {
+	return &IncompleteError{BackupPath: backupPath, PayloadRolledBack: true, err: err}
+}
+
+func retainBackupWithPathChanges(backupPath string, changes []partialChange, err error) error {
+	return &IncompleteError{BackupPath: backupPath, PathEntries: pathBackupEntriesFromChanges(changes), err: err}
+}
+
+func retainBackupRolledBackWithPathChanges(backupPath string, changes []partialChange, err error) error {
+	return &IncompleteError{BackupPath: backupPath, PayloadRolledBack: true, PathEntries: pathBackupEntriesFromChanges(changes), err: err}
+}
+
+func pathBackupEntriesFromChanges(changes []partialChange) []PathBackupEntry {
+	if len(changes) == 0 {
+		return nil
+	}
+	entries := make([]PathBackupEntry, 0, len(changes))
+	for _, change := range changes {
+		entries = append(entries, PathBackupEntry{Path: change.rel, HadOriginal: change.hadOriginal})
+	}
+	return entries
 }
 
 // RestoreToLatest restores a worktree to its latest snapshot (exits detached state).

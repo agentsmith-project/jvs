@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/agentsmith-project/jvs/internal/audit"
+	"github.com/agentsmith-project/jvs/internal/recovery"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/internal/sourcepin"
@@ -581,6 +582,19 @@ func (c *Collector) computeProtectedSet() ([]model.SnapshotID, int, error) {
 	}
 	for _, id := range pinnedSources {
 		protected[id] = true
+	}
+
+	// 5. Active restore recovery plans are visible recovery state and protect
+	// their source save point even if no supplemental pin exists.
+	recoveryPlans, err := recovery.NewManager(c.repoRoot).List()
+	if err != nil {
+		return nil, 0, err
+	}
+	for _, plan := range recoveryPlans {
+		if plan.Status != recovery.StatusActive {
+			continue
+		}
+		protected[plan.SourceSavePoint] = true
 	}
 
 	var result []model.SnapshotID

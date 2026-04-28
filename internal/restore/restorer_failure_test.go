@@ -260,6 +260,41 @@ func TestRestoreFullUpdateHeadFailureRollsBackPayloadAndRetainsBackupPath(t *tes
 	assertWorktreeConfig(t, repoPath, laterDesc.SnapshotID, laterDesc.SnapshotID)
 }
 
+func TestRestoreAuditAppendFailureAfterPayloadSuccessReturnsSuccess(t *testing.T) {
+	repoPath := setupFailureTestRepo(t)
+	mainPath := filepath.Join(repoPath, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("source"), 0644))
+
+	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
+	firstDesc, err := creator.CreateSavePoint("main", "first", nil)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("newer"), 0644))
+	laterDesc, err := creator.CreateSavePoint("main", "later", nil)
+	require.NoError(t, err)
+
+	restoreHooks := SetHooksForTest(Hooks{
+		UpdateHead: func(wtMgr *worktree.Manager, worktreeName string, snapshotID model.SnapshotID) error {
+			if err := wtMgr.UpdateHead(worktreeName, snapshotID); err != nil {
+				return err
+			}
+			auditPath := filepath.Join(repoPath, ".jvs", "audit", "audit.jsonl")
+			if err := os.Remove(auditPath); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			return os.Mkdir(auditPath, 0755)
+		},
+	})
+	t.Cleanup(restoreHooks)
+
+	err = NewRestorer(repoPath, model.EngineCopy).Restore("main", firstDesc.SnapshotID)
+	require.NoError(t, err)
+	content, readErr := os.ReadFile(filepath.Join(mainPath, "file.txt"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "source", string(content))
+	requireNoBackupDir(t, mainPath)
+	assertWorktreeConfig(t, repoPath, firstDesc.SnapshotID, laterDesc.SnapshotID)
+}
+
 func TestRestorePartialUpdateHeadFailureRollsBackTouchedPathsOnly(t *testing.T) {
 	repoPath := setupFailureTestRepo(t)
 	mainPath := filepath.Join(repoPath, "main")

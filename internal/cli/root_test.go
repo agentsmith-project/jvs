@@ -626,6 +626,7 @@ func createTestRootCmd() *cobra.Command {
 	cmd.AddCommand(worktreeCmd)
 	cmd.AddCommand(historyCmd)
 	cmd.AddCommand(restoreCmd)
+	cmd.AddCommand(recoveryCmd)
 	cmd.AddCommand(infoCmd)
 	cmd.AddCommand(doctorCmd)
 	cmd.AddCommand(verifyCmd)
