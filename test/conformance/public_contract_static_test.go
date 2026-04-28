@@ -302,6 +302,21 @@ func TestDocs_TraceabilityNormativeDocsAreReleaseBlocking(t *testing.T) {
 	}
 }
 
+func TestDocs_TraceabilityNormativeDocsParseBareBlocks(t *testing.T) {
+	docs := traceabilityNormativeDocs(t)
+	for _, want := range []string{
+		"docs/02_CLI_SPEC.md",
+		"docs/12_RELEASE_POLICY.md",
+	} {
+		if !stringSliceContains(docs, want) {
+			t.Fatalf("traceability normative docs must include %s from bare Normative docs blocks, got %v", want, docs)
+		}
+	}
+	if stringSliceContains(docs, "docs/21_SAVE_POINT_WORKSPACE_SEMANTICS.md") {
+		t.Fatalf("supporting non-release-facing reference must not be counted as a traceability normative doc: %v", docs)
+	}
+}
+
 func TestDocs_TraceabilityNormativeDocsUseV0ReleaseVocabulary(t *testing.T) {
 	for _, doc := range traceabilityNormativeDocs(t) {
 		t.Run(doc, func(t *testing.T) {
@@ -1353,7 +1368,6 @@ func TestDocs_V042GAReleaseEvidenceRecordsPublishedRelease(t *testing.T) {
 		t.Fatalf("latest changelog entry must be the published v0.4.2 GA release heading %q", heading)
 	}
 	for _, forbidden := range []string{
-		"GA candidate",
 		"not final",
 		"not tagged",
 		"not published",
@@ -1368,6 +1382,9 @@ func TestDocs_V042GAReleaseEvidenceRecordsPublishedRelease(t *testing.T) {
 		"draft=false",
 		"prerelease=false",
 		"Asset count: `12`",
+		"Tag source archive evidence class: `GA candidate readiness`",
+		"Final evidence location: GitHub Release page and post-release main ledger",
+		"Tag movement: `v0.4.2` was not moved",
 	} {
 		requireReleaseReadinessText(t, "published v0.4.2 changelog entry", changelogEntry, required)
 	}
@@ -1390,6 +1407,9 @@ func TestDocs_V042GAReleaseEvidenceRecordsPublishedRelease(t *testing.T) {
 		"cosign version: `v3.0.5`",
 		"https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@refs/tags/v0.4.2",
 		"https://token.actions.githubusercontent.com",
+		"Tag source archive evidence class: `GA candidate readiness`",
+		"Final evidence location: GitHub Release page and post-release main ledger",
+		"Tag movement: `v0.4.2` was not moved",
 	} {
 		requireReleaseReadinessText(t, "published v0.4.2 release evidence", entry, required)
 	}
@@ -1410,7 +1430,6 @@ func TestDocs_V042GAReleaseEvidenceRecordsPublishedRelease(t *testing.T) {
 		requireReleaseReadinessText(t, "published v0.4.2 release evidence assets", entry, asset)
 	}
 	for _, forbidden := range []string{
-		"GA candidate",
 		"not final",
 		"not tagged",
 		"not published",
@@ -1420,13 +1439,140 @@ func TestDocs_V042GAReleaseEvidenceRecordsPublishedRelease(t *testing.T) {
 	}
 }
 
+func TestDocs_ReleaseEvidenceDisclosesSourceArchivePublicationBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "release policy", body: readRepoFile(t, "docs/12_RELEASE_POLICY.md")},
+		{name: "release evidence ledger", body: readRepoFile(t, "docs/RELEASE_EVIDENCE.md")},
+		{name: "release changelog", body: firstChangelogEntry(readRepoFile(t, "docs/99_CHANGELOG.md"))},
+		{name: "release docs index", body: readRepoFile(t, "docs/release/README.md")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, required := range []string{
+				"source archive",
+				"tag snapshot",
+				"publication final evidence",
+				"GitHub Release page",
+				"post-release main ledger",
+			} {
+				requireReleaseReadinessText(t, tc.name, tc.body, required)
+			}
+		})
+	}
+}
+
+func TestDocs_V042FinalEvidenceDisclosesCandidateTagSourceArchive(t *testing.T) {
+	const finalHeading = "## v0.4.2 - 2026-04-28"
+	const tagSourceHeading = "## v0.4.2 - 2026-04-27"
+	const releaseURL = "https://github.com/agentsmith-project/jvs/releases/tag/v0.4.2"
+
+	tagSourceLedger := gitShowFileAtRef(t, "refs/tags/v0.4.2", "docs/RELEASE_EVIDENCE.md")
+	tagSourceEntry := releaseEvidenceEntry(t, tagSourceLedger, tagSourceHeading)
+	requireReleaseReadinessText(t, "v0.4.2 tag source archive", tagSourceEntry, "Evidence class: GA candidate readiness")
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "final release evidence ledger entry", body: releaseEvidenceEntry(t, readRepoFile(t, "docs/RELEASE_EVIDENCE.md"), finalHeading)},
+		{name: "final changelog entry", body: firstChangelogEntry(readRepoFile(t, "docs/99_CHANGELOG.md"))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, required := range []string{
+				"Tag source archive evidence class: `GA candidate readiness`",
+				"Final evidence location: GitHub Release page and post-release main ledger",
+				"Tag movement: `v0.4.2` was not moved",
+				releaseURL,
+			} {
+				requireReleaseReadinessText(t, tc.name, tc.body, required)
+			}
+		})
+	}
+}
+
+func TestDocs_SavePointWorkspaceSemanticsIsSupportingNonReleaseFacingReference(t *testing.T) {
+	overview := readRepoFile(t, "docs/00_OVERVIEW.md")
+	overviewSupportingMarker := "Supporting non-release-facing redesign/reference:"
+	if !strings.Contains(overview, overviewSupportingMarker) {
+		t.Fatalf("docs/00_OVERVIEW.md must classify docs/21_SAVE_POINT_WORKSPACE_SEMANTICS.md under %q", overviewSupportingMarker)
+	}
+	overviewActiveSpecs := textBetweenMarkers(t, overview, "Current active specs:", overviewSupportingMarker)
+	if strings.Contains(overviewActiveSpecs, "`21_SAVE_POINT_WORKSPACE_SEMANTICS.md`") {
+		t.Fatalf("docs/21_SAVE_POINT_WORKSPACE_SEMANTICS.md is non-release-facing and must not be listed under Current active specs")
+	}
+	overviewSupporting := overview[strings.Index(overview, overviewSupportingMarker):]
+	for _, required := range []string{
+		"`21_SAVE_POINT_WORKSPACE_SEMANTICS.md`",
+		overviewSupportingMarker,
+	} {
+		requireReleaseReadinessText(t, "overview supporting non-release-facing docs", overviewSupporting, required)
+	}
+
+	policySection := markdownSectionByHeading(t,
+		"docs/12_RELEASE_POLICY.md",
+		readRepoFile(t, "docs/12_RELEASE_POLICY.md"),
+		"## Documentation Gates",
+	)
+	for _, required := range []string{
+		"`docs/21_SAVE_POINT_WORKSPACE_SEMANTICS.md`",
+		"supporting non-release-facing reference",
+	} {
+		requireReleaseReadinessText(t, "release policy documentation gates", policySection, required)
+	}
+
+	ledgerEntry := releaseEvidenceEntry(t,
+		readRepoFile(t, "docs/RELEASE_EVIDENCE.md"),
+		"## v0.4.2 - 2026-04-28",
+	)
+	for _, required := range []string{
+		"`docs/21_SAVE_POINT_WORKSPACE_SEMANTICS.md`",
+		"Supporting non-release-facing reference",
+	} {
+		requireReleaseReadinessText(t, "release evidence GA docs evidence", ledgerEntry, required)
+	}
+
+	matrixPromise := markdownSectionByHeading(t,
+		"docs/14_TRACEABILITY_MATRIX.md",
+		readRepoFile(t, "docs/14_TRACEABILITY_MATRIX.md"),
+		"## Promise 1: Real Folder Save Points",
+	)
+	normativeDocs := textBetweenMarkers(t, matrixPromise, "Normative docs:", "Evidence:")
+	if strings.Contains(normativeDocs, "`docs/21_SAVE_POINT_WORKSPACE_SEMANTICS.md`") {
+		t.Fatalf("docs/21_SAVE_POINT_WORKSPACE_SEMANTICS.md is non-release-facing and must not be listed as a normative release-facing doc")
+	}
+	for _, required := range []string{
+		"`docs/21_SAVE_POINT_WORKSPACE_SEMANTICS.md`",
+		"Supporting non-release-facing reference",
+	} {
+		requireReleaseReadinessText(t, "traceability promise 1", matrixPromise, required)
+	}
+}
+
 func TestDocs_ReleaseEvidenceDoesNotMixCandidateAndFinalSemantics(t *testing.T) {
 	latestHeading := latestChangelogHeading(t)
 	entry := releaseEvidenceEntry(t, readRepoFile(t, "docs/RELEASE_EVIDENCE.md"), latestHeading)
 	if releaseEvidenceClaimsFinalTaggedRelease(entry) {
-		if strings.Contains(strings.ToLower(entry), "candidate") ||
-			strings.Contains(strings.ToLower(entry), "pending final") ||
-			strings.Contains(strings.ToLower(entry), "not published") {
+		for _, forbidden := range []string{"pending final", "not published"} {
+			if strings.Contains(strings.ToLower(entry), forbidden) {
+				t.Fatalf("final tagged release evidence %q must not include unresolved %q language", latestHeading, forbidden)
+			}
+		}
+		if strings.Contains(strings.ToLower(entry), "candidate") {
+			for _, required := range []string{
+				"source archive",
+				"tag snapshot",
+				"publication final evidence",
+				"GitHub Release page",
+				"post-release main ledger",
+				"tag was not moved",
+			} {
+				requireReleaseReadinessText(t, "final tagged release source archive boundary "+latestHeading, entry, required)
+			}
+		}
+		if strings.Contains(strings.ToLower(entry), "candidate") &&
+			!strings.Contains(entry, "Tag source archive evidence class: `GA candidate readiness`") {
 			t.Fatalf("final tagged release evidence %q must not include candidate/pending language", latestHeading)
 		}
 		return
@@ -2748,8 +2894,7 @@ func traceabilityNormativeDocs(t *testing.T) []string {
 	inNormativeBlock := false
 	for _, line := range strings.Split(matrix, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "- ") && strings.HasSuffix(trimmed, ":") {
-			label := strings.ToLower(strings.TrimSuffix(strings.TrimPrefix(trimmed, "- "), ":"))
+		if label, ok := traceabilityBlockLabel(trimmed); ok {
 			inNormativeBlock = strings.HasPrefix(label, "normative")
 			continue
 		}
@@ -2768,6 +2913,20 @@ func traceabilityNormativeDocs(t *testing.T) []string {
 		}
 	}
 	return docs
+}
+
+func traceabilityBlockLabel(trimmedLine string) (string, bool) {
+	if strings.HasPrefix(trimmedLine, "- ") {
+		trimmedLine = strings.TrimSpace(strings.TrimPrefix(trimmedLine, "- "))
+	}
+	if !strings.HasSuffix(trimmedLine, ":") {
+		return "", false
+	}
+	label := strings.TrimSpace(strings.TrimSuffix(trimmedLine, ":"))
+	if label == "" || strings.Contains(label, "`") {
+		return "", false
+	}
+	return strings.ToLower(label), true
 }
 
 type markdownDocLink struct {
@@ -3286,9 +3445,34 @@ func gitTagCommit(t *testing.T, tag string) (string, bool) {
 	return commit, true
 }
 
+func gitShowFileAtRef(t *testing.T, ref, path string) string {
+	t.Helper()
+	cmd := exec.Command("git", "show", ref+":"+path)
+	cmd.Dir = repoFile(t)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git show %s:%s: %v", ref, path, err)
+	}
+	return string(out)
+}
+
 func releaseEvidenceEntry(t *testing.T, ledger, heading string) string {
 	t.Helper()
 	return markdownSectionByHeading(t, "docs/RELEASE_EVIDENCE.md", ledger, heading)
+}
+
+func textBetweenMarkers(t *testing.T, body, startMarker, endMarker string) string {
+	t.Helper()
+	start := strings.Index(body, startMarker)
+	if start < 0 {
+		t.Fatalf("body must contain start marker %q", startMarker)
+	}
+	rest := body[start+len(startMarker):]
+	end := strings.Index(rest, endMarker)
+	if end < 0 {
+		t.Fatalf("body block starting at %q must end before %q", startMarker, endMarker)
+	}
+	return rest[:end]
 }
 
 func firstChangelogEntry(changelog string) string {

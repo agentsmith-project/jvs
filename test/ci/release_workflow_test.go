@@ -385,6 +385,36 @@ func TestReleaseWorkflowNotesUseSigningGuideAndGASections(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowNotesIncludeCanonicalFinalEvidence(t *testing.T) {
+	root := repoRoot(t)
+	workflow := readWorkflow(t, root)
+	jobs := requireMappingValue(t, workflow, "jobs")
+	release := requireMappingValue(t, jobs, "release")
+	notes := requireStepNamed(t, release, "Generate release notes")
+	run := scalarValue(t, requireMappingValue(t, notes, "run"))
+	evidence := releaseNotesBlockBefore(t, run, "## Canonical final evidence", "## Breaking changes")
+
+	requireContains(t, run, `RELEASE_COMMIT="$(git rev-parse HEAD)"`)
+	for _, required := range []string{
+		"source archive",
+		"tag snapshot",
+		"publication final evidence",
+		"GitHub Release page",
+		"post-release main ledger",
+		"${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}",
+		"Tag: ${RELEASE_TAG}",
+		"${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}",
+		"Commit: ${RELEASE_COMMIT}",
+		"Asset count: 12",
+		"Release state: draft=false, prerelease=false",
+		"Signing identity: ${CERTIFICATE_IDENTITY}",
+		"tag was not moved",
+	} {
+		requireContains(t, evidence, required)
+	}
+	requireNotContains(t, evidence, "Commit: ${GITHUB_SHA}")
+}
+
 func TestActiveChangelogPromotesCleanupCommand(t *testing.T) {
 	root := repoRoot(t)
 	data, err := os.ReadFile(filepath.Join(root, "docs", "99_CHANGELOG.md"))

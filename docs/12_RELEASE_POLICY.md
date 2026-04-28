@@ -13,9 +13,13 @@ tests, and shipped artifacts describe the same user-visible behavior.
 - Any public command, flag, state vocabulary, ref semantics, or JSON field
   change requires an explicit changelog entry, release evidence, and
   conformance coverage.
-- Final tagged release evidence must replace candidate placeholders with exact
-  tag, commit, gate, coverage, representative repo, artifact, and signing
-  facts.
+- A tag source archive is the immutable tag snapshot. It can only contain facts
+  available when the tag was created, including source readiness or candidate
+  evidence, and must not be rewritten to add post-publication facts.
+- publication final evidence lives on the GitHub Release page and the
+  post-release main ledger on `main`. It records exact tag, commit, workflow
+  run, release state, gate, coverage, representative repo, artifact, checksum,
+  signing, smoke, and release URL facts after publication.
 
 ## Release Gates
 
@@ -52,10 +56,11 @@ release input.
 
 ## Documentation Gates
 
-- `docs/02_CLI_SPEC.md`, `docs/06_RESTORE_SPEC.md`,
-  `docs/21_SAVE_POINT_WORKSPACE_SEMANTICS.md`, command help, and
+- `docs/02_CLI_SPEC.md`, `docs/06_RESTORE_SPEC.md`, command help, and
   conformance assertions agree on public command names, flags, IDs, JSON
   fields, and state vocabulary.
+- `docs/21_SAVE_POINT_WORKSPACE_SEMANTICS.md` is a supporting non-release-facing reference
+  for clean redesign context, not a release-facing contract document.
 - Public docs use save point vocabulary: folder, workspace, save point, save,
   history, view, restore, unsaved changes, cleanup, and recovery plan.
 - Implementation storage names may appear only as storage or code facts. They
@@ -103,7 +108,8 @@ release input.
 - Runbook references for verification, diagnosis, restore recovery, migration,
   and cleanup layering.
 - Release evidence ledger (`docs/RELEASE_EVIDENCE.md`) that records the
-  evidence class for each entry.
+  evidence class for each entry and distinguishes source archive readiness
+  from publication final evidence.
 
 Candidate entries may record target release identity, required
 `make release-gate` status checks, docs-contract, ci-contract, test-race,
@@ -112,7 +118,11 @@ coverage threshold, representative repo requirements, runbook references,
 artifact rules, and signing workflow rules while marking final-only facts
 pending.
 
-Final tagged release entries must not contain candidate or pending language.
-They must record exact coverage result and threshold, final tag and tagged
-commit, release-gate result, representative repo results, published artifact
-and signing evidence, and final release URL.
+Final tagged release entries must not leave unresolved candidate or pending
+publication facts. If the tag source archive still records readiness or
+candidate evidence, the final entry must explicitly label that tag snapshot,
+state that the tag was not moved, and place publication final evidence in the
+GitHub Release page plus the post-release main ledger. Final entries must
+record exact coverage result and threshold, final tag and tagged commit,
+release-gate result, representative repo results, published artifact,
+checksum, smoke, and signing evidence, and final release URL.

@@ -32,7 +32,10 @@ Current active specs:
 
 - `02_CLI_SPEC.md`
 - `06_RESTORE_SPEC.md`
-- `21_SAVE_POINT_WORKSPACE_SEMANTICS.md`
 - `PRODUCT_PLAN.md`
 - `ARCHITECTURE.md`
 - `13_OPERATION_RUNBOOK.md`
+
+Supporting non-release-facing redesign/reference:
+
+- `21_SAVE_POINT_WORKSPACE_SEMANTICS.md`

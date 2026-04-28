@@ -6,7 +6,6 @@
 
 Normative docs:
 
-- `docs/21_SAVE_POINT_WORKSPACE_SEMANTICS.md`
 - `docs/02_CLI_SPEC.md`
 - `docs/PRODUCT_PLAN.md`
 - `docs/ARCHITECTURE.md`
@@ -15,6 +14,10 @@ Evidence:
 
 - init/status/save/history conformance
 - docs-contract help-surface checks
+
+Supporting non-release-facing reference:
+
+- `docs/21_SAVE_POINT_WORKSPACE_SEMANTICS.md`
 
 ## Promise 2: Restore Is Preview-First And Recoverable
 

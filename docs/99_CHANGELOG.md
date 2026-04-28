@@ -80,6 +80,14 @@ recovery plan, doctor, and cleanup.
 
 - See the [release evidence ledger](RELEASE_EVIDENCE.md#v042---2026-04-28)
   for the `v0.4.2` final GA release evidence record.
+- Source archive boundary: the `v0.4.2` source archive is the immutable tag snapshot
+  for the release and records readiness from tag time.
+- Tag source archive evidence class: `GA candidate readiness`
+- publication final evidence is recorded on the GitHub Release page and in the
+  post-release main ledger after the release exists.
+- Final evidence location: GitHub Release page and post-release main ledger.
+- Tag movement: `v0.4.2` was not moved; the tag was not moved to add
+  post-publication facts.
 - Final tag `v0.4.2` points at commit
   `c21b676dfb04d32f8cf3b9fa301e465f6886ca94`
   (`ci: publish release signatures as bundles`).

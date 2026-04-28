@@ -4,6 +4,17 @@ This ledger records compact release evidence for the active save point product
 contract. Earlier draft material is not carried forward as active release
 evidence for the published GA line.
 
+Evidence model:
+
+- Tag/source archive readiness: a source archive is the immutable tag snapshot
+  captured when the tag is created. It may contain readiness or candidate
+  evidence from that moment, and it must not be rewritten to add facts created
+  by release publication.
+- publication final evidence: the GitHub Release page plus the post-release
+  main ledger on `main`. This layer records publication facts such as workflow
+  run, release state, published assets, checksums, signing identity, smoke
+  results, and coverage after the release exists.
+
 Evidence classes:
 
 - GA candidate readiness: pre-tag evidence for a release candidate. It may
@@ -28,6 +39,15 @@ Raw logs and `coverage.out` are not stored here.
 - Commit message: `ci: publish release signatures as bundles`
 - Changelog heading date: `2026-04-28`
 - Baseline: save point public-contract convergence and GA docs alignment.
+- Source archive boundary: the `v0.4.2` source archive is the immutable tag snapshot
+  for the release and records readiness from tag time.
+- Tag source archive evidence class: `GA candidate readiness`
+- publication final evidence: GitHub Release page and post-release main ledger
+  record the workflow run, release state, assets, checksum validation, signing
+  identity, smoke, and coverage facts created after publication.
+- Final evidence location: GitHub Release page and post-release main ledger.
+- Tag movement: `v0.4.2` was not moved; the tag was not moved to add
+  post-publication facts.
 - CI run link rule:
   `https://github.com/agentsmith-project/jvs/actions/runs/<run_id>`
 - Canonical release URL rule:
@@ -105,11 +125,14 @@ tag-gated publication, by workflow run `25056873829`.
 
 ### GA docs evidence
 
-- GA docs: `docs/02_CLI_SPEC.md`, `docs/06_RESTORE_SPEC.md`,
-  `docs/12_RELEASE_POLICY.md`, `docs/13_OPERATION_RUNBOOK.md`,
-  `docs/18_MIGRATION_AND_BACKUP.md`, `docs/21_SAVE_POINT_WORKSPACE_SEMANTICS.md`,
+- GA release-facing docs: `docs/02_CLI_SPEC.md`,
+  `docs/06_RESTORE_SPEC.md`, `docs/12_RELEASE_POLICY.md`,
+  `docs/13_OPERATION_RUNBOOK.md`, `docs/18_MIGRATION_AND_BACKUP.md`,
   `docs/99_CHANGELOG.md`, `docs/PRODUCT_PLAN.md`, `docs/ARCHITECTURE.md`, and
   this ledger define the release readiness and evidence contract for `v0.4.2`.
+- Supporting non-release-facing reference:
+  `docs/21_SAVE_POINT_WORKSPACE_SEMANTICS.md` informs clean redesign context
+  but is not part of the v0 public contract or release-facing doc set.
 - Changelog scope: save point public CLI/docs convergence, restore
   preview/run/recovery, workspace new semantics, cleanup preview/run
   semantics, EMPTY folder first-save docs/acceptance alignment, user-story E2E

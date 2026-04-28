@@ -9,6 +9,9 @@ Active release entry points:
 - `../RELEASE_EVIDENCE.md` - candidate and final evidence ledger
 - `../SIGNING.md` - artifact signing and verification
 
-Candidate evidence is not final, not tagged, and not published. Final tagged
-release evidence must replace pending fields with exact tag, commit, gate,
-coverage, representative repo, restore drill, artifact, and signing facts.
+A source archive is the immutable tag snapshot. It may contain readiness or
+candidate evidence from tag time and is not moved to add publication facts.
+publication final evidence belongs on the GitHub Release page and in the
+post-release main ledger on `main`, where exact release URL, tag, workflow run,
+commit, release state, asset count, checksum, signing identity, smoke, and
+coverage facts are recorded.
