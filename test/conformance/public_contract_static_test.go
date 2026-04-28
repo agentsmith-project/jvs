@@ -23,6 +23,7 @@ var stalePublicReleaseVocabularyPattern = regexp.MustCompile(`\bv7\.(?:[0-9]+|x)
 var makefileCoverageThresholdPattern = regexp.MustCompile(`if\s*\(\$\$3\+0\s*<\s*([0-9]+)\)`)
 var releaseReadinessHeadingPattern = regexp.MustCompile(`(?m)^## v0\.[0-9]+\.[0-9]+ - [0-9]{4}-[0-9]{2}-[0-9]{2}$`)
 var releaseEvidenceHeadingPattern = regexp.MustCompile(`(?m)^## (v0\.[0-9]+\.[0-9]+) - ([0-9]{4}-[0-9]{2}-[0-9]{2})$`)
+var releaseEvidenceClassPattern = regexp.MustCompile("(?mi)^- Evidence class:\\s*`?([^`\\r\\n]+?)`?\\s*$")
 var releaseEvidenceCommitPattern = regexp.MustCompile("(?m)^- Final tagged commit: `([0-9a-f]{40})`$")
 var releaseEvidenceTagPattern = regexp.MustCompile("(?m)^- Tag: `(v0\\.[0-9]+\\.[0-9]+)`$")
 var releaseEvidenceStatusPassPattern = regexp.MustCompile(`(?mi)^- Status:\s*PASS\b`)
@@ -1465,30 +1466,117 @@ func TestDocs_ReleaseEvidenceDisclosesSourceArchivePublicationBoundary(t *testin
 
 func TestDocs_V042FinalEvidenceDisclosesCandidateTagSourceArchive(t *testing.T) {
 	const finalHeading = "## v0.4.2 - 2026-04-28"
-	const tagSourceHeading = "## v0.4.2 - 2026-04-27"
-	const releaseURL = "https://github.com/agentsmith-project/jvs/releases/tag/v0.4.2"
+	const tag = "v0.4.2"
 
-	tagSourceLedger := gitShowFileAtRef(t, "refs/tags/v0.4.2", "docs/RELEASE_EVIDENCE.md")
-	tagSourceEntry := releaseEvidenceEntry(t, tagSourceLedger, tagSourceHeading)
-	requireReleaseReadinessText(t, "v0.4.2 tag source archive", tagSourceEntry, "Evidence class: GA candidate readiness")
+	tagSourceLedger := gitShowFileAtRef(t, "refs/tags/"+tag, "docs/RELEASE_EVIDENCE.md")
+	tagSourceEntry := releaseEvidenceEntryForVersion(t, tagSourceLedger, tag)
+	tagSourceClass := releaseEvidenceClass(t, "v0.4.2 tag source archive", tagSourceEntry)
+	if !releaseEvidenceClassIsCandidateReadiness(tagSourceClass) {
+		t.Fatalf("v0.4.2 tag source archive must be candidate/readiness evidence, got %q", tagSourceClass)
+	}
 
-	for _, tc := range []struct {
-		name string
-		body string
-	}{
-		{name: "final release evidence ledger entry", body: releaseEvidenceEntry(t, readRepoFile(t, "docs/RELEASE_EVIDENCE.md"), finalHeading)},
-		{name: "final changelog entry", body: firstChangelogEntry(readRepoFile(t, "docs/99_CHANGELOG.md"))},
+	missing := candidateTagSourceArchiveDisclosureMissing(tag, tagSourceClass,
+		releaseEvidenceDisclosureTarget{
+			name: "final release evidence ledger entry",
+			body: releaseEvidenceEntry(t, readRepoFile(t, "docs/RELEASE_EVIDENCE.md"), finalHeading),
+		},
+		releaseEvidenceDisclosureTarget{
+			name: "final changelog entry",
+			body: firstChangelogEntry(readRepoFile(t, "docs/99_CHANGELOG.md")),
+		},
+	)
+	if len(missing) > 0 {
+		t.Fatalf("v0.4.2 final release docs must disclose candidate tag source archive:\n%s", strings.Join(missing, "\n"))
+	}
+}
+
+func TestDocs_LatestFinalReleaseDisclosesCandidateTagSourceArchive(t *testing.T) {
+	latestHeading := latestChangelogHeading(t)
+	ledger := readRepoFile(t, "docs/RELEASE_EVIDENCE.md")
+	finalEntry := releaseEvidenceEntry(t, ledger, latestHeading)
+	if !releaseEvidenceClaimsFinalTaggedRelease(finalEntry) {
+		t.Skipf("latest release evidence %q is not final tagged release evidence", latestHeading)
+	}
+
+	tagMatch := releaseEvidenceTagPattern.FindStringSubmatch(finalEntry)
+	if tagMatch == nil {
+		t.Fatalf("latest final release evidence %q must record a final Tag line", latestHeading)
+	}
+	tag := tagMatch[1]
+
+	tagSourceLedger := gitShowFileAtRef(t, "refs/tags/"+tag, "docs/RELEASE_EVIDENCE.md")
+	tagSourceEntry := releaseEvidenceEntryForVersion(t, tagSourceLedger, tag)
+	tagSourceClass := releaseEvidenceClass(t, tag+" tag source archive", tagSourceEntry)
+	if !releaseEvidenceClassIsCandidateReadiness(tagSourceClass) {
+		return
+	}
+
+	missing := candidateTagSourceArchiveDisclosureMissing(tag, tagSourceClass,
+		releaseEvidenceDisclosureTarget{
+			name: "latest final release evidence ledger entry",
+			body: finalEntry,
+		},
+		releaseEvidenceDisclosureTarget{
+			name: "latest final changelog entry",
+			body: firstChangelogEntry(readRepoFile(t, "docs/99_CHANGELOG.md")),
+		},
+	)
+	if len(missing) > 0 {
+		t.Fatalf("latest final release docs must disclose candidate tag source archive:\n%s", strings.Join(missing, "\n"))
+	}
+}
+
+func TestDocs_ReleaseEvidenceTagSourceDisclosureGateRequiresFinalDocs(t *testing.T) {
+	const tag = "v0.4.3"
+	const class = "GA candidate readiness"
+
+	missing := candidateTagSourceArchiveDisclosureMissing(tag, class,
+		releaseEvidenceDisclosureTarget{
+			name: "final release evidence ledger entry",
+			body: strings.Join([]string{
+				"## v0.4.3 - 2026-05-01",
+				"",
+				"### Release identity",
+				"",
+				"- Evidence class: Final release evidence",
+				"- Status: PASS",
+				"- Tag: `v0.4.3`",
+				"- Final tagged commit: `0123456789012345678901234567890123456789`",
+			}, "\n"),
+		},
+		releaseEvidenceDisclosureTarget{
+			name: "final changelog entry",
+			body: strings.Join([]string{
+				"## v0.4.3 - 2026-05-01",
+				"",
+				"### Release evidence",
+				"",
+				"- Final tag `v0.4.3` points at commit",
+				"  `0123456789012345678901234567890123456789`.",
+			}, "\n"),
+		},
+	)
+	if len(missing) == 0 {
+		t.Fatalf("candidate tag source archive disclosure gate must report missing final docs disclosures")
+	}
+
+	joined := strings.Join(missing, "\n")
+	for _, required := range []string{
+		"final release evidence ledger entry",
+		"final changelog entry",
+		"Tag source archive evidence class: `GA candidate readiness`",
+		"Final evidence location: GitHub Release page and post-release main ledger",
+		"https://github.com/agentsmith-project/jvs/releases/tag/v0.4.3",
+		"source archive boundary",
+		"immutable tag snapshot",
+		"publication final evidence",
+		"GitHub Release page",
+		"post-release main ledger",
+		"Tag movement: `v0.4.3` was not moved",
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			for _, required := range []string{
-				"Tag source archive evidence class: `GA candidate readiness`",
-				"Final evidence location: GitHub Release page and post-release main ledger",
-				"Tag movement: `v0.4.2` was not moved",
-				releaseURL,
-			} {
-				requireReleaseReadinessText(t, tc.name, tc.body, required)
-			}
-		})
+		if !strings.Contains(joined, required) {
+			t.Fatalf("candidate tag source archive disclosure gate diagnostics must include %q; got:\n%s", required, joined)
+		}
 	}
 }
 
@@ -3449,16 +3537,83 @@ func gitShowFileAtRef(t *testing.T, ref, path string) string {
 	t.Helper()
 	cmd := exec.Command("git", "show", ref+":"+path)
 	cmd.Dir = repoFile(t)
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("git show %s:%s: %v", ref, path, err)
+		t.Fatalf("git show %s:%s failed: %v\noutput:\n%s\nTag-aware release validation needs local tag objects and history; if this is a missing tag or shallow checkout, fetch tags/full history (for example actions/checkout fetch-depth: 0).", ref, path, err, strings.TrimSpace(string(out)))
 	}
 	return string(out)
+}
+
+type releaseEvidenceDisclosureTarget struct {
+	name string
+	body string
+}
+
+func candidateTagSourceArchiveDisclosureMissing(tag, class string, targets ...releaseEvidenceDisclosureTarget) []string {
+	var missing []string
+	exactRequirements := []string{
+		"Tag source archive evidence class: `" + class + "`",
+		"Final evidence location: GitHub Release page and post-release main ledger",
+		"Tag movement: `" + tag + "` was not moved",
+		canonicalReleaseURLForTag(tag),
+	}
+	caseInsensitiveRequirements := []string{
+		"source archive boundary",
+		"immutable tag snapshot",
+		"publication final evidence",
+		"GitHub Release page",
+		"post-release main ledger",
+	}
+
+	for _, target := range targets {
+		for _, required := range exactRequirements {
+			if !strings.Contains(target.body, required) {
+				missing = append(missing, target.name+" missing "+required)
+			}
+		}
+
+		lowerBody := strings.ToLower(target.body)
+		for _, required := range caseInsensitiveRequirements {
+			if !strings.Contains(lowerBody, strings.ToLower(required)) {
+				missing = append(missing, target.name+" missing "+required)
+			}
+		}
+	}
+	return missing
+}
+
+func canonicalReleaseURLForTag(tag string) string {
+	return "https://github.com/agentsmith-project/jvs/releases/tag/" + tag
 }
 
 func releaseEvidenceEntry(t *testing.T, ledger, heading string) string {
 	t.Helper()
 	return markdownSectionByHeading(t, "docs/RELEASE_EVIDENCE.md", ledger, heading)
+}
+
+func releaseEvidenceEntryForVersion(t *testing.T, ledger, version string) string {
+	t.Helper()
+	for _, match := range releaseEvidenceHeadingPattern.FindAllStringSubmatch(ledger, -1) {
+		if match[1] == version {
+			return releaseEvidenceEntry(t, ledger, "## "+match[1]+" - "+match[2])
+		}
+	}
+	t.Fatalf("docs/RELEASE_EVIDENCE.md missing release evidence entry for version %s", version)
+	return ""
+}
+
+func releaseEvidenceClass(t *testing.T, context, entry string) string {
+	t.Helper()
+	match := releaseEvidenceClassPattern.FindStringSubmatch(entry)
+	if match == nil {
+		t.Fatalf("%s must record an Evidence class line", context)
+	}
+	return strings.TrimSpace(match[1])
+}
+
+func releaseEvidenceClassIsCandidateReadiness(class string) bool {
+	lower := strings.ToLower(class)
+	return strings.Contains(lower, "candidate") || strings.Contains(lower, "readiness")
 }
 
 func textBetweenMarkers(t *testing.T, body, startMarker, endMarker string) string {
