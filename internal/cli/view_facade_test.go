@@ -108,6 +108,153 @@ func TestViewJSONUsesSavePointSchema(t *testing.T) {
 	assert.Equal(t, "v1", string(content))
 }
 
+func TestViewOpenCreatesPersistentPinAndCloseRemovesViewWithoutChangingWorkspace(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "file.txt"), []byte("v1"), 0644))
+	firstID := savePointIDFromCLI(t, "first")
+	before := captureViewMutationSnapshot(t, repoRoot)
+
+	stdout, err := executeCommand(createTestRootCmd(), "view", firstID)
+	require.NoError(t, err)
+	viewID := viewIDFromHumanOutput(t, stdout)
+	viewPath := viewPathFromHumanOutput(t, stdout)
+	require.DirExists(t, viewPath)
+	requireViewPin(t, repoRoot, viewID, model.SnapshotID(firstID))
+	assert.Equal(t, before.pins+1, documentedPinCount(t, repoRoot))
+
+	closeOut, err := executeCommand(createTestRootCmd(), "view", "close", viewID)
+	require.NoError(t, err)
+	assert.Contains(t, closeOut, "Closed read-only view.")
+	assert.Contains(t, closeOut, "View: "+viewID)
+	assert.Contains(t, closeOut, "Save point: "+firstID)
+	assert.Contains(t, closeOut, "View path removed: yes")
+	assert.Contains(t, closeOut, "No workspace or history changed.")
+	assertViewOutputOmitsLegacyVocabulary(t, closeOut)
+
+	assert.NoDirExists(t, viewRootForPath(t, viewPath))
+	assert.NoFileExists(t, viewPinPath(repoRoot, viewID))
+
+	againOut, err := executeCommand(createTestRootCmd(), "view", "close", viewID)
+	require.NoError(t, err)
+	assert.Contains(t, againOut, "Read-only view already closed.")
+	assert.Contains(t, againOut, "View path removed: yes")
+	before.assertUnchanged(t, repoRoot)
+}
+
+func TestViewCloseFromViewPathIsRepoScopedAndJSONUsesCloseSchema(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "file.txt"), []byte("v1"), 0644))
+	firstID := savePointIDFromCLI(t, "first")
+
+	stdout, err := executeCommand(createTestRootCmd(), "view", firstID)
+	require.NoError(t, err)
+	viewID := viewIDFromHumanOutput(t, stdout)
+	viewPath := viewPathFromHumanOutput(t, stdout)
+	require.NoError(t, os.Chdir(viewPath))
+
+	jsonOut, err := executeCommand(createTestRootCmd(), "--json", "view", "close", viewID)
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(repoRoot))
+
+	env, data := decodeFacadeDataMap(t, jsonOut)
+	require.True(t, env.OK, jsonOut)
+	assert.Equal(t, "view close", env.Command)
+	assert.Equal(t, "close", data["mode"])
+	assert.Equal(t, "closed", data["status"])
+	assert.Equal(t, viewID, data["view_id"])
+	assert.Equal(t, firstID, data["save_point"])
+	assert.Equal(t, true, data["view_path_removed"])
+	assert.Equal(t, true, data["no_workspace_or_history_changed"])
+	assertViewJSONOmitsLegacyFields(t, data)
+	assert.NoDirExists(t, viewRootForPath(t, viewPath))
+	assert.NoFileExists(t, viewPinPath(repoRoot, viewID))
+}
+
+func TestViewCloseRejectsInvalidIDWithPublicVocabulary(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+
+	stdout, err := executeCommand(createTestRootCmd(), "view", "close", "../bad")
+	require.Error(t, err)
+	require.Empty(t, stdout)
+	assert.Contains(t, err.Error(), "read-only view ID")
+	assert.Contains(t, err.Error(), "No files or history changed.")
+	assertViewOutputOmitsLegacyVocabulary(t, err.Error())
+	assert.NotContains(t, strings.ToLower(err.Error()), "pin")
+	assert.NotContains(t, strings.ToLower(err.Error()), "gc")
+	assert.NotContains(t, strings.ToLower(err.Error()), "internal")
+
+	jsonOut, stderr, exitCode := runContractSubprocess(t, repoRoot, "--json", "view", "close", "../bad")
+	require.NotZero(t, exitCode)
+	require.Empty(t, strings.TrimSpace(stderr))
+	env := decodeContractEnvelope(t, jsonOut)
+	require.False(t, env.OK, jsonOut)
+	require.NotNil(t, env.Error)
+	assert.Contains(t, env.Error.Message, "read-only view ID")
+	assert.Contains(t, env.Error.Message, "No files or history changed.")
+	assertViewOutputOmitsLegacyVocabulary(t, env.Error.Message)
+	assert.NotContains(t, strings.ToLower(env.Error.Message), "pin")
+	assert.NotContains(t, strings.ToLower(env.Error.Message), "gc")
+	assert.NotContains(t, strings.ToLower(env.Error.Message), "internal")
+}
+
+func TestViewCloseFailsClosedForNonViewDocumentedPin(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	savePointID := model.NewSnapshotID()
+	viewID := "view-" + string(model.NewSnapshotID())
+	writeDocumentedPinForViewTest(t, repoRoot, model.Pin{
+		PinID:      viewID,
+		SnapshotID: savePointID,
+		CreatedAt:  time.Now().UTC(),
+		PinnedAt:   time.Now().UTC(),
+		Reason:     "manual operator protection",
+	})
+
+	stdout, err := executeCommand(createTestRootCmd(), "view", "close", viewID)
+	require.Error(t, err)
+	require.Empty(t, stdout)
+	assert.Contains(t, err.Error(), "read-only view")
+	assert.Contains(t, err.Error(), "No files or history changed.")
+	assertViewOutputOmitsLegacyVocabulary(t, err.Error())
+	assert.FileExists(t, viewPinPath(repoRoot, viewID))
+}
+
+func TestSaveAndRestoreFromReadOnlyViewPathFailWithViewSpecificError(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "file.txt"), []byte("v1"), 0644))
+	firstID := savePointIDFromCLI(t, "first")
+	before := captureViewMutationSnapshot(t, repoRoot)
+
+	stdout, err := executeCommand(createTestRootCmd(), "view", firstID)
+	require.NoError(t, err)
+	viewID := viewIDFromHumanOutput(t, stdout)
+	viewPath := viewPathFromHumanOutput(t, stdout)
+	require.NoError(t, os.Chdir(viewPath))
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "save", args: []string{"save", "-m", "from view"}},
+		{name: "restore", args: []string{"restore", firstID}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, err := executeCommand(createTestRootCmd(), tc.args...)
+			require.Error(t, err)
+			require.Empty(t, stdout)
+			assert.Contains(t, err.Error(), "This path is a read-only view of save point "+firstID)
+			assert.Contains(t, err.Error(), "not a workspace")
+			assert.Contains(t, err.Error(), "No files or history were changed.")
+			assertViewOutputOmitsLegacyVocabulary(t, err.Error())
+		})
+	}
+
+	closeOut, err := executeCommand(createTestRootCmd(), "view", "close", viewID)
+	require.NoError(t, err)
+	assert.Contains(t, closeOut, "Closed read-only view.")
+	require.NoError(t, os.Chdir(repoRoot))
+	before.assertUnchanged(t, repoRoot)
+}
+
 func TestViewRejectsNonIDRefsWithSavePointVocabulary(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "file.txt"), []byte("v1"), 0644))
@@ -373,6 +520,19 @@ func viewPathFromHumanOutput(t *testing.T, stdout string) string {
 	return ""
 }
 
+func viewIDFromHumanOutput(t *testing.T, stdout string) string {
+	t.Helper()
+	for _, line := range strings.Split(stdout, "\n") {
+		if strings.HasPrefix(line, "View: ") {
+			id := strings.TrimSpace(strings.TrimPrefix(line, "View: "))
+			require.NotEmpty(t, id)
+			return id
+		}
+	}
+	t.Fatalf("view ID not found in output:\n%s", stdout)
+	return ""
+}
+
 func uniqueSavePointPrefix(target string, others ...string) string {
 	for i := 1; i <= len(target); i++ {
 		prefix := target[:i]
@@ -403,6 +563,7 @@ type viewMutationSnapshot struct {
 	catalog     int
 	descriptors int
 	viewDirs    int
+	pins        int
 }
 
 func captureViewMutationSnapshot(t *testing.T, repoRoot string) viewMutationSnapshot {
@@ -417,6 +578,7 @@ func captureViewMutationSnapshot(t *testing.T, repoRoot string) viewMutationSnap
 		catalog:     savePointCatalogCount(t, repoRoot),
 		descriptors: descriptorFileCount(t, repoRoot),
 		viewDirs:    viewDirCount(t, repoRoot),
+		pins:        documentedPinCount(t, repoRoot),
 	}
 }
 
@@ -431,6 +593,7 @@ func (s viewMutationSnapshot) assertUnchanged(t *testing.T, repoRoot string) {
 	assert.Equal(t, s.catalog, savePointCatalogCount(t, repoRoot))
 	assert.Equal(t, s.descriptors, descriptorFileCount(t, repoRoot))
 	assert.Equal(t, s.viewDirs, viewDirCount(t, repoRoot))
+	assert.Equal(t, s.pins, documentedPinCount(t, repoRoot))
 }
 
 func assertReadOnlyPath(t *testing.T, path string) {
@@ -493,6 +656,45 @@ func viewPayloadRoot(t *testing.T, viewPath, pathInside string) string {
 	}
 	require.Equal(t, "payload", filepath.Base(root))
 	return root
+}
+
+func viewPinPath(repoRoot, viewID string) string {
+	return filepath.Join(repoRoot, ".jvs", "gc", "pins", viewID+".json")
+}
+
+func requireViewPin(t *testing.T, repoRoot, viewID string, savePointID model.SnapshotID) {
+	t.Helper()
+	data, err := os.ReadFile(viewPinPath(repoRoot, viewID))
+	require.NoError(t, err)
+	var pin model.Pin
+	require.NoError(t, json.Unmarshal(data, &pin))
+	require.Equal(t, viewID, pin.PinID)
+	require.Equal(t, savePointID, pin.SnapshotID)
+	require.Contains(t, pin.Reason, "read-only view")
+}
+
+func writeDocumentedPinForViewTest(t *testing.T, repoRoot string, pin model.Pin) {
+	t.Helper()
+	data, err := json.MarshalIndent(pin, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Join(repoRoot, ".jvs", "gc", "pins"), 0755))
+	require.NoError(t, os.WriteFile(viewPinPath(repoRoot, pin.PinID), data, 0644))
+}
+
+func documentedPinCount(t testing.TB, repoRoot string) int {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(repoRoot, ".jvs", "gc", "pins"))
+	if os.IsNotExist(err) {
+		return 0
+	}
+	require.NoError(t, err)
+	count := 0
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
+			count++
+		}
+	}
+	return count
 }
 
 func savePointCatalogCount(t *testing.T, repoRoot string) int {

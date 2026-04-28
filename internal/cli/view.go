@@ -14,6 +14,7 @@ import (
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/internal/snapshotpayload"
+	"github.com/agentsmith-project/jvs/internal/sourcepin"
 	"github.com/agentsmith-project/jvs/internal/worktree"
 	"github.com/agentsmith-project/jvs/pkg/color"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
@@ -67,6 +68,32 @@ Examples:
 	},
 }
 
+var viewCloseCmd = &cobra.Command{
+	Use:   "close <view-id>",
+	Short: "Close a read-only view",
+	Args: func(cmd *cobra.Command, args []string) error {
+		if len(args) != 1 {
+			return fmt.Errorf("read-only view ID is required")
+		}
+		return nil
+	},
+	RunE: func(cmd *cobra.Command, args []string) error {
+		r, err := discoverRequiredRepo()
+		if err != nil {
+			return err
+		}
+		result, err := closeReadOnlySavePointView(r.Root, args[0])
+		if err != nil {
+			return viewCloseError(err)
+		}
+		if jsonOutput {
+			return outputJSON(result)
+		}
+		printViewCloseResult(result)
+		return nil
+	},
+}
+
 type publicViewResult struct {
 	Folder                      string `json:"folder"`
 	Workspace                   string `json:"workspace"`
@@ -76,6 +103,16 @@ type publicViewResult struct {
 	ViewPath                    string `json:"view_path"`
 	ReadOnly                    bool   `json:"read_only"`
 	NoWorkspaceOrHistoryChanged bool   `json:"no_workspace_or_history_changed"`
+}
+
+type publicViewCloseResult struct {
+	Mode                        string  `json:"mode"`
+	Status                      string  `json:"status"`
+	ViewID                      string  `json:"view_id"`
+	SavePoint                   *string `json:"save_point"`
+	ViewPath                    string  `json:"view_path"`
+	ViewPathRemoved             bool    `json:"view_path_removed"`
+	NoWorkspaceOrHistoryChanged bool    `json:"no_workspace_or_history_changed"`
 }
 
 func resolvePublicSavePointID(repoRoot, raw string) (model.SnapshotID, error) {
@@ -156,6 +193,24 @@ func openReadOnlySavePointView(repoRoot, workspaceName string, savePointID model
 		return publicViewResult{}, err
 	}
 
+	viewID := "view-" + string(model.NewSnapshotID())
+	pinHandle, err := sourcepin.NewManager(repoRoot).CreateWithID(savePointID, viewID, "active read-only view")
+	if err != nil {
+		return publicViewResult{}, err
+	}
+	releasePinOnError := true
+	defer func() {
+		if releasePinOnError {
+			if releaseErr := pinHandle.Release(); releaseErr != nil {
+				if err != nil {
+					err = fmt.Errorf("%w; additionally failed to release read-only view protection: %v", err, releaseErr)
+				} else {
+					err = fmt.Errorf("failed to release read-only view protection: %w", releaseErr)
+				}
+			}
+		}
+	}()
+
 	state, issue := snapshot.InspectPublishState(repoRoot, savePointID, snapshot.PublishStateOptions{
 		RequireReady:             true,
 		RequirePayload:           true,
@@ -166,7 +221,6 @@ func openReadOnlySavePointView(repoRoot, workspaceName string, savePointID model
 		return publicViewResult{}, snapshot.PublishStateIssueError(issue)
 	}
 
-	viewID := "view-" + string(model.NewSnapshotID())
 	viewRoot := filepath.Join(repoRoot, repo.JVSDirName, "views", viewID)
 	payloadRoot := filepath.Join(viewRoot, "payload")
 	sourceEstimate, err := snapshotpayload.EstimateMaterializationCapacity(state.SnapshotDir, snapshotpayload.OptionsFromDescriptor(state.Descriptor))
@@ -243,6 +297,7 @@ func openReadOnlySavePointView(repoRoot, workspaceName string, savePointID model
 		return publicViewResult{}, err
 	}
 	cleanupOnError = false
+	releasePinOnError = false
 
 	return publicViewResult{
 		Folder:                      folder,
@@ -254,6 +309,108 @@ func openReadOnlySavePointView(repoRoot, workspaceName string, savePointID model
 		ReadOnly:                    true,
 		NoWorkspaceOrHistoryChanged: true,
 	}, nil
+}
+
+func closeReadOnlySavePointView(repoRoot, rawViewID string) (publicViewCloseResult, error) {
+	viewID, err := normalizeViewID(rawViewID)
+	if err != nil {
+		return publicViewCloseResult{}, err
+	}
+	viewRoot := filepath.Join(repoRoot, repo.JVSDirName, "views", viewID)
+	viewPath := filepath.Join(viewRoot, "payload")
+
+	pin, pinPresent, err := readViewPin(repoRoot, viewID)
+	if err != nil {
+		return publicViewCloseResult{}, err
+	}
+	viewPathRemoved, viewPresent, err := removeViewRootForClose(viewRoot)
+	if err != nil {
+		return publicViewCloseResult{}, err
+	}
+	if pinPresent {
+		if err := sourcepin.NewManager(repoRoot).RemoveIfMatches(*pin); err != nil {
+			return publicViewCloseResult{}, fmt.Errorf("read-only view folder was removed, but the view close record could not be cleared safely")
+		}
+	}
+
+	status := "closed"
+	if !pinPresent && !viewPresent {
+		status = "already_closed"
+	}
+	var savePoint *string
+	if pin != nil {
+		value := string(pin.SnapshotID)
+		savePoint = &value
+	}
+	return publicViewCloseResult{
+		Mode:                        "close",
+		Status:                      status,
+		ViewID:                      viewID,
+		SavePoint:                   savePoint,
+		ViewPath:                    viewPath,
+		ViewPathRemoved:             viewPathRemoved,
+		NoWorkspaceOrHistoryChanged: true,
+	}, nil
+}
+
+func normalizeViewID(raw string) (string, error) {
+	viewID := strings.TrimSpace(raw)
+	if viewID == "" || viewID != raw {
+		return "", fmt.Errorf("read-only view ID must be a safe view ID")
+	}
+	if !strings.HasPrefix(viewID, "view-") {
+		return "", fmt.Errorf("read-only view ID must be a safe view ID")
+	}
+	if err := pathutil.ValidateName(viewID); err != nil {
+		return "", fmt.Errorf("read-only view ID must be a safe view ID")
+	}
+	return viewID, nil
+}
+
+func readViewPin(repoRoot, viewID string) (*model.Pin, bool, error) {
+	pin, err := sourcepin.NewManager(repoRoot).Read(viewID)
+	if err == nil {
+		if !isActiveReadOnlyViewPin(viewID, pin) {
+			return nil, false, fmt.Errorf("read-only view could not be confirmed safely")
+		}
+		return pin, true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
+	return nil, false, fmt.Errorf("read-only view could not be confirmed safely")
+}
+
+func isActiveReadOnlyViewPin(viewID string, pin *model.Pin) bool {
+	return pin != nil &&
+		pin.PinID == viewID &&
+		strings.HasPrefix(viewID, "view-") &&
+		pin.Reason == "active read-only view"
+}
+
+func removeViewRootForClose(viewRoot string) (removed bool, present bool, err error) {
+	info, err := os.Lstat(viewRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return true, false, nil
+		}
+		return false, false, fmt.Errorf("read-only view folder could not be checked")
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return false, true, fmt.Errorf("read-only view folder is not safe to close")
+	}
+	if err := restoreWriteBits(viewRoot); err != nil {
+		return false, true, fmt.Errorf("read-only view folder could not be prepared for removal")
+	}
+	if err := os.RemoveAll(viewRoot); err != nil {
+		return false, true, fmt.Errorf("read-only view folder could not be removed")
+	}
+	if _, err := os.Lstat(viewRoot); err == nil {
+		return false, true, fmt.Errorf("read-only view folder could not be removed")
+	} else if !os.IsNotExist(err) {
+		return false, true, fmt.Errorf("read-only view folder could not be checked")
+	}
+	return true, true, nil
 }
 
 func workspaceFolder(repoRoot, workspaceName string) (string, error) {
@@ -430,7 +587,43 @@ func printViewResult(result publicViewResult) {
 	fmt.Println("No workspace or history changed.")
 }
 
+func printViewCloseResult(result publicViewCloseResult) {
+	if result.Status == "already_closed" {
+		fmt.Println("Read-only view already closed.")
+	} else {
+		fmt.Println("Closed read-only view.")
+	}
+	fmt.Printf("View: %s\n", result.ViewID)
+	if result.SavePoint != nil {
+		fmt.Printf("Save point: %s\n", color.SnapshotID(*result.SavePoint))
+	}
+	if result.ViewPath != "" {
+		fmt.Printf("View path: %s\n", result.ViewPath)
+	}
+	if result.ViewPathRemoved {
+		fmt.Println("View path removed: yes")
+	} else {
+		fmt.Println("View path removed: no")
+	}
+	fmt.Println("No workspace or history changed.")
+}
+
 func viewPointError(err error) error {
+	if err == nil {
+		return nil
+	}
+	message := viewPointVocabulary(err.Error())
+	if !strings.Contains(message, "No files or history changed.") {
+		message += ". No files or history changed."
+	}
+	var jvsErr *errclass.JVSError
+	if errors.As(err, &jvsErr) {
+		return &errclass.JVSError{Code: jvsErr.Code, Message: message, Hint: viewPointVocabulary(jvsErr.Hint)}
+	}
+	return fmt.Errorf("%s", message)
+}
+
+func viewCloseError(err error) error {
 	if err == nil {
 		return nil
 	}
@@ -451,6 +644,9 @@ func viewPointVocabulary(value string) string {
 		"checkpoint", "save point",
 		"snapshots", "save points",
 		"snapshot", "save point",
+		"active source pins", "read-only view protections",
+		"active source pin", "read-only view protection",
+		"gc control data", "JVS control data",
 		"worktrees", "workspaces",
 		"worktree", "workspace",
 		"current", "source",
@@ -465,5 +661,6 @@ func viewPointVocabulary(value string) string {
 }
 
 func init() {
+	viewCmd.AddCommand(viewCloseCmd)
 	rootCmd.AddCommand(viewCmd)
 }

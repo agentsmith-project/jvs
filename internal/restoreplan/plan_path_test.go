@@ -61,6 +61,26 @@ func TestCreatePathPlanAndValidatePathTarget(t *testing.T) {
 	assert.Contains(t, err.Error(), "folder changed since preview")
 }
 
+func TestCreatePlansReleaseOperationPins(t *testing.T) {
+	repoRoot := setupRestorePlanRepo(t)
+	mainPath := filepath.Join(repoRoot, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "app.txt"), []byte("v1"), 0644))
+	first, err := snapshot.NewCreator(repoRoot, model.EngineCopy).CreateSavePoint("main", "first", nil)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "app.txt"), []byte("v2"), 0644))
+	_, err = snapshot.NewCreator(repoRoot, model.EngineCopy).CreateSavePoint("main", "second", nil)
+	require.NoError(t, err)
+
+	before := restorePlanDocumentedPinCount(t, repoRoot)
+	_, err = restoreplan.Create(repoRoot, "main", first.SnapshotID, model.EngineCopy, restoreplan.Options{})
+	require.NoError(t, err)
+	require.Equal(t, before, restorePlanDocumentedPinCount(t, repoRoot))
+
+	_, err = restoreplan.CreatePath(repoRoot, "main", first.SnapshotID, "app.txt", model.EngineCopy, restoreplan.Options{})
+	require.NoError(t, err)
+	require.Equal(t, before, restorePlanDocumentedPinCount(t, repoRoot))
+}
+
 func TestValidateSourcePathRejectsMissingSourcePath(t *testing.T) {
 	repoRoot := setupRestorePlanRepo(t)
 	mainPath := filepath.Join(repoRoot, "main")
@@ -86,4 +106,20 @@ func setupRestorePlanRepo(t *testing.T) string {
 	_, err := repo.Init(dir, "test")
 	require.NoError(t, err)
 	return dir
+}
+
+func restorePlanDocumentedPinCount(t *testing.T, repoRoot string) int {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(repoRoot, ".jvs", "gc", "pins"))
+	if os.IsNotExist(err) {
+		return 0
+	}
+	require.NoError(t, err)
+	count := 0
+	for _, entry := range entries {
+		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".json" {
+			count++
+		}
+	}
+	return count
 }

@@ -93,6 +93,8 @@ func TestRootCommand_Help(t *testing.T) {
 	for _, word := range []string{
 		"fork",
 		"gc",
+		"pin",
+		"internal",
 		"clone",
 		"import",
 		"checkpoint",

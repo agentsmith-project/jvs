@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/agentsmith-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/internal/sourcepin"
 	"github.com/agentsmith-project/jvs/pkg/color"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
 )
@@ -86,6 +88,9 @@ func resolveWorkspaceScoped() (*cliDiscoveryContext, error) {
 		return nil, err
 	}
 	if ctx.Workspace == "" {
+		if viewErr := readOnlyViewWorkspaceError(ctx.Repo.Root); viewErr != nil {
+			return nil, viewErr
+		}
 		return nil, notInsideWorkspaceError()
 	}
 	workspace, err := resolveNamedWorkspace(ctx.Repo.Root, ctx.Workspace)
@@ -236,6 +241,61 @@ func workspaceFromPath(repoRoot, path string) (string, error) {
 		return "", nil
 	}
 	return workspace, nil
+}
+
+func readOnlyViewWorkspaceError(repoRoot string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil
+	}
+	viewID, ok := readOnlyViewIDFromPath(repoRoot, cwd)
+	if !ok {
+		return nil
+	}
+	message := "This path is a read-only view"
+	if pin, err := sourcepin.NewManager(repoRoot).Read(viewID); err == nil && pin != nil && pin.SnapshotID != "" {
+		message += " of save point " + string(pin.SnapshotID)
+	}
+	message += ", not a workspace. No files or history were changed."
+	return errclass.ErrNotWorkspace.
+		WithMessage(message).
+		WithHint("Run from a workspace folder, or close the view with jvs view close " + viewID + ".")
+}
+
+func readOnlyViewIDFromPath(repoRoot, path string) (string, bool) {
+	viewsRoot := filepath.Join(repoRoot, repo.JVSDirName, "views")
+	if viewID, ok := readOnlyViewIDFromContainedPath(viewsRoot, path); ok {
+		return viewID, true
+	}
+	viewsPhysical, err := filepath.EvalSymlinks(viewsRoot)
+	if err != nil {
+		return "", false
+	}
+	pathPhysical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", false
+	}
+	return readOnlyViewIDFromContainedPath(viewsPhysical, pathPhysical)
+}
+
+func readOnlyViewIDFromContainedPath(viewsRoot, path string) (string, bool) {
+	viewsAbs, err := filepath.Abs(viewsRoot)
+	if err != nil {
+		return "", false
+	}
+	pathAbs, err := filepath.Abs(path)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(filepath.Clean(viewsAbs), filepath.Clean(pathAbs))
+	if err != nil || rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	first := strings.Split(filepath.Clean(rel), string(filepath.Separator))[0]
+	if _, err := normalizeViewID(first); err != nil {
+		return "", false
+	}
+	return first, true
 }
 
 func resolveNamedWorkspace(repoRoot, name string) (string, error) {

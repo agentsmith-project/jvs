@@ -14,6 +14,7 @@ import (
 	"github.com/agentsmith-project/jvs/internal/audit"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
+	"github.com/agentsmith-project/jvs/internal/sourcepin"
 	"github.com/agentsmith-project/jvs/internal/worktree"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/agentsmith-project/jvs/pkg/fsutil"
@@ -570,6 +571,16 @@ func (c *Collector) computeProtectedSet() ([]model.SnapshotID, int, error) {
 				protected[model.SnapshotID(strings.TrimSuffix(name, ".json"))] = true
 			}
 		}
+	}
+
+	// 4. Documented active source pins. These are fail-closed: any unreadable
+	// or malformed pin prevents cleanup from planning deletion.
+	pinnedSources, err := sourcepin.NewManager(c.repoRoot).ProtectedSnapshotIDs()
+	if err != nil {
+		return nil, 0, err
+	}
+	for _, id := range pinnedSources {
+		protected[id] = true
 	}
 
 	var result []model.SnapshotID

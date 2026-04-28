@@ -192,7 +192,7 @@ func jsonErrorFromError(err error) *cliJSONError {
 }
 
 func publicCLIErrorMessageVocabulary(value string) string {
-	if activeCommandName == "view" {
+	if activeCommandName == "view" || strings.HasPrefix(activeCommandName, "view ") {
 		return viewPointVocabulary(value)
 	}
 	if activeCommandName == "save" {
