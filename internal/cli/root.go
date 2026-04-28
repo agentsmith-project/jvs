@@ -195,6 +195,9 @@ func publicCLIErrorMessageVocabulary(value string) string {
 	if activeCommandName == "view" {
 		return viewPointVocabulary(value)
 	}
+	if activeCommandName == "save" {
+		return publicSavePointVocabulary(value)
+	}
 	return publicCLIErrorVocabulary(value)
 }
 

@@ -5,7 +5,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/agentsmith-project/jvs/internal/capacitygate"
 	"github.com/agentsmith-project/jvs/internal/compression"
@@ -34,6 +37,13 @@ type cliPathCapacityMeter struct {
 	probes            []string
 }
 
+type cliSaveLockProbeMeter struct {
+	repoRoot            string
+	available           int64
+	once                sync.Once
+	acquiredDuringCheck atomic.Bool
+}
+
 func (m *cliFakeCapacityMeter) AvailableBytes(path string) (int64, error) {
 	m.checks++
 	return m.available, nil
@@ -41,6 +51,28 @@ func (m *cliFakeCapacityMeter) AvailableBytes(path string) (int64, error) {
 
 func (m *cliFakeCapacityMeter) DeviceID(path string) (string, error) {
 	return "test-fs", nil
+}
+
+func (m *cliSaveLockProbeMeter) AvailableBytes(path string) (int64, error) {
+	m.once.Do(func() {
+		result := make(chan bool, 1)
+		go func() {
+			acquired := false
+			err := repo.WithMutationLock(m.repoRoot, "save capacity lock probe", func() error {
+				acquired = true
+				return nil
+			})
+			result <- err == nil && acquired
+		}()
+		select {
+		case acquired := <-result:
+			if acquired {
+				m.acquiredDuringCheck.Store(true)
+			}
+		case <-time.After(250 * time.Millisecond):
+		}
+	})
+	return m.available, nil
 }
 
 func (m *cliPathCapacityMeter) AvailableBytes(path string) (int64, error) {
@@ -115,6 +147,197 @@ func TestViewCapacityFailDoesNotCreateViewOrMutate(t *testing.T) {
 	assert.Contains(t, env.Error.Message, "Not enough free space")
 	assert.Contains(t, env.Error.Message, "No view was opened.")
 	assertViewOutputOmitsLegacyVocabulary(t, env.Error.Message)
+	before.assertUnchanged(t, repoRoot)
+}
+
+func TestSaveCapacityFailFirstSaveDoesNotCreateSavePoint(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
+	installFailingCapacityGate(t)
+	before := captureViewMutationSnapshot(t, repoRoot)
+
+	stdout, err := executeCommand(createTestRootCmd(), "save", "-m", "first")
+	require.Error(t, err)
+	require.Empty(t, strings.TrimSpace(stdout))
+	assert.Contains(t, err.Error(), "Not enough free space")
+	assert.Contains(t, err.Error(), "No save point was created.")
+	assert.Contains(t, err.Error(), "History was not changed.")
+	assert.Contains(t, err.Error(), "No files were changed.")
+	assertNoOldSavePointVocabulary(t, err.Error())
+	assert.Equal(t, 0, savePointCatalogCount(t, repoRoot))
+	assert.Equal(t, 0, descriptorFileCount(t, repoRoot))
+	assert.Equal(t, 0, snapshotTempCount(t, repoRoot))
+	assert.Equal(t, 0, intentFileCount(t, repoRoot))
+	assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "v1")
+
+	cfg, err := repo.LoadWorktreeConfig(repoRoot, "main")
+	require.NoError(t, err)
+	require.Empty(t, cfg.HeadSnapshotID)
+	require.Empty(t, cfg.LatestSnapshotID)
+	before.assertUnchanged(t, repoRoot)
+}
+
+func TestSaveCapacityFailLaterSaveKeepsNewest(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
+	firstID := savePointIDFromCLI(t, "first")
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v2"), 0644))
+	installFailingCapacityGate(t)
+	before := captureViewMutationSnapshot(t, repoRoot)
+	descriptorCount := descriptorFileCount(t, repoRoot)
+	catalogCount := savePointCatalogCount(t, repoRoot)
+
+	stdout, err := executeCommand(createTestRootCmd(), "save", "-m", "second")
+	require.Error(t, err)
+	require.Empty(t, strings.TrimSpace(stdout))
+	assert.Contains(t, err.Error(), "Not enough free space")
+	assert.Contains(t, err.Error(), "No save point was created.")
+	assert.Equal(t, descriptorCount, descriptorFileCount(t, repoRoot))
+	assert.Equal(t, catalogCount, savePointCatalogCount(t, repoRoot))
+	assert.Equal(t, 0, snapshotTempCount(t, repoRoot))
+	assert.Equal(t, 0, intentFileCount(t, repoRoot))
+	assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "v2")
+
+	cfg, err := repo.LoadWorktreeConfig(repoRoot, "main")
+	require.NoError(t, err)
+	require.Equal(t, model.SnapshotID(firstID), cfg.HeadSnapshotID)
+	require.Equal(t, model.SnapshotID(firstID), cfg.LatestSnapshotID)
+	before.assertUnchanged(t, repoRoot)
+}
+
+func TestSaveCapacityFailJSONKeepsErrorCode(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
+	t.Setenv(testCapacityAvailableEnv, "0")
+
+	jsonOut, stderr, exitCode := runContractSubprocess(t, repoRoot, "--json", "save", "-m", "first")
+	require.NotZero(t, exitCode)
+	require.Empty(t, strings.TrimSpace(stderr))
+	env := decodeContractEnvelope(t, jsonOut)
+	require.False(t, env.OK, jsonOut)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, "E_NOT_ENOUGH_SPACE", env.Error.Code)
+	assert.Contains(t, env.Error.Message, "Not enough free space")
+	assert.Contains(t, env.Error.Message, "No save point was created.")
+	assertNoOldSavePointVocabulary(t, env.Error.Message)
+	assert.Equal(t, 0, savePointCatalogCount(t, repoRoot))
+	assert.Equal(t, 0, intentFileCount(t, repoRoot))
+}
+
+func TestSaveCapacityPreflightRunsInsideMutationLock(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
+	meter := &cliSaveLockProbeMeter{
+		repoRoot:  repoRoot,
+		available: 1 << 40,
+	}
+	restore := installCapacityGateHooks(capacitygate.Gate{
+		Meter:             meter,
+		SafetyMarginBytes: 0,
+	})
+	t.Cleanup(restore)
+
+	stdout, err := executeCommand(createTestRootCmd(), "save", "-m", "locked capacity")
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "Saved save point")
+	assert.False(t, meter.acquiredDuringCheck.Load(), "save capacity preflight must run while the mutation lock is already held")
+	assert.Equal(t, 1, savePointCatalogCount(t, repoRoot))
+}
+
+func TestSaveCapacityProbesControlAndPathSourceTempFilesystems(t *testing.T) {
+	repoRoot, firstID, secondID := setupActivePathSourceRepo(t)
+	before := captureViewMutationSnapshot(t, repoRoot)
+	tempRoot := useMissingTempDir(t)
+	meter := &cliPathCapacityMeter{
+		repoRoot: repoRoot,
+		tempRoot: tempRoot,
+		availableByDevice: map[string]int64{
+			"repo-fs": 1 << 40,
+			"temp-fs": 0,
+		},
+	}
+	restore := installCapacityGateHooks(capacitygate.Gate{
+		Meter:             meter,
+		SafetyMarginBytes: 0,
+	})
+	t.Cleanup(restore)
+
+	stdout, err := executeCommand(createTestRootCmd(), "save", "-m", "after path restore")
+	require.Error(t, err)
+	require.Empty(t, strings.TrimSpace(stdout))
+	assert.Contains(t, err.Error(), "Not enough free space")
+	assert.Contains(t, err.Error(), "No save point was created.")
+	assertProbeUnder(t, meter.probes, filepath.Join(repoRoot, ".jvs"))
+	assertProbeUnder(t, meter.probes, tempRoot)
+	assertNoTempPrefix(t, filepath.Dir(tempRoot), "jvs-path-source-reconcile-")
+
+	t.Setenv("TMPDIR", t.TempDir())
+	cfg, err := repo.LoadWorktreeConfig(repoRoot, "main")
+	require.NoError(t, err)
+	require.Equal(t, model.SnapshotID(secondID), cfg.HeadSnapshotID)
+	require.Equal(t, model.SnapshotID(secondID), cfg.LatestSnapshotID)
+	assertPublicPathSourcesFromConfig(t, cfg, "app.txt", firstID)
+	before.assertUnchanged(t, repoRoot)
+}
+
+func TestSaveCapacityFailAfterWholeRestoreKeepsRestoredState(t *testing.T) {
+	repoRoot, firstID, secondID := setupWholeRestoreImpactRepo(t)
+	previewOut, err := executeCommand(createTestRootCmd(), "restore", firstID)
+	require.NoError(t, err)
+	planID := restorePlanIDFromHumanOutput(t, previewOut)
+	_, err = executeCommand(createTestRootCmd(), "restore", "--run", planID)
+	require.NoError(t, err)
+	installFailingCapacityGate(t)
+	before := captureViewMutationSnapshot(t, repoRoot)
+	descriptorCount := descriptorFileCount(t, repoRoot)
+	catalogCount := savePointCatalogCount(t, repoRoot)
+
+	stdout, err := executeCommand(createTestRootCmd(), "save", "-m", "after restore")
+	require.Error(t, err)
+	require.Empty(t, strings.TrimSpace(stdout))
+	assert.Contains(t, err.Error(), "Not enough free space")
+	assert.Contains(t, err.Error(), "No save point was created.")
+	assert.Equal(t, descriptorCount, descriptorFileCount(t, repoRoot))
+	assert.Equal(t, catalogCount, savePointCatalogCount(t, repoRoot))
+	assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "v1")
+	assertFileContent(t, filepath.Join(repoRoot, "only-source.txt"), "source")
+	require.NoFileExists(t, filepath.Join(repoRoot, "workspace-only.txt"))
+
+	cfg, err := repo.LoadWorktreeConfig(repoRoot, "main")
+	require.NoError(t, err)
+	require.Equal(t, model.SnapshotID(firstID), cfg.HeadSnapshotID)
+	require.Equal(t, model.SnapshotID(secondID), cfg.LatestSnapshotID)
+	before.assertUnchanged(t, repoRoot)
+}
+
+func TestSaveCapacityFailAfterPathRestoreKeepsPathSourcesAndAvoidsTempBypass(t *testing.T) {
+	repoRoot, firstID, secondID := setupActivePathSourceRepo(t)
+	before := captureViewMutationSnapshot(t, repoRoot)
+	descriptorCount := descriptorFileCount(t, repoRoot)
+	catalogCount := savePointCatalogCount(t, repoRoot)
+	tempRoot := useMissingTempDir(t)
+	installFailingCapacityGate(t)
+
+	stdout, err := executeCommand(createTestRootCmd(), "save", "-m", "after path restore")
+	require.Error(t, err)
+	require.Empty(t, strings.TrimSpace(stdout))
+	assert.Contains(t, err.Error(), "Not enough free space")
+	assert.Contains(t, err.Error(), "No save point was created.")
+	assert.NotContains(t, err.Error(), "path source reconciliation")
+	assert.Equal(t, descriptorCount, descriptorFileCount(t, repoRoot))
+	assert.Equal(t, catalogCount, savePointCatalogCount(t, repoRoot))
+	assert.Equal(t, 0, snapshotTempCount(t, repoRoot))
+	assert.Equal(t, 0, intentFileCount(t, repoRoot))
+	assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "v1")
+	assertFileContent(t, filepath.Join(repoRoot, "outside.txt"), "outside v2")
+	assertNoTempPrefix(t, filepath.Dir(tempRoot), "jvs-path-source-reconcile-")
+
+	t.Setenv("TMPDIR", t.TempDir())
+	cfg, err := repo.LoadWorktreeConfig(repoRoot, "main")
+	require.NoError(t, err)
+	require.Equal(t, model.SnapshotID(secondID), cfg.HeadSnapshotID)
+	require.Equal(t, model.SnapshotID(secondID), cfg.LatestSnapshotID)
+	assertPublicPathSourcesFromConfig(t, cfg, "app.txt", firstID)
 	before.assertUnchanged(t, repoRoot)
 }
 
@@ -626,12 +849,15 @@ func installCapacityGateAvailable(t *testing.T, available int64) *cliFakeCapacit
 func installCapacityGateHooks(gate capacitygate.Gate) func() {
 	oldViewGate := viewCapacityGate
 	oldRunGate := restoreRunCapacityGate
+	oldSaveGate := saveCapacityGate
 	restorePlanGate := restoreplan.SetCapacityGateForTest(gate)
 	viewCapacityGate = gate
 	restoreRunCapacityGate = gate
+	saveCapacityGate = gate
 	return func() {
 		viewCapacityGate = oldViewGate
 		restoreRunCapacityGate = oldRunGate
+		saveCapacityGate = oldSaveGate
 		restorePlanGate()
 	}
 }
@@ -643,6 +869,32 @@ func restorePreviewTempCount(t *testing.T, repoRoot string) int {
 	count := 0
 	for _, entry := range entries {
 		if entry.IsDir() && strings.HasPrefix(entry.Name(), "restore-preview-") {
+			count++
+		}
+	}
+	return count
+}
+
+func snapshotTempCount(t *testing.T, repoRoot string) int {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(repoRoot, ".jvs", "snapshots"))
+	require.NoError(t, err)
+	count := 0
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".tmp") {
+			count++
+		}
+	}
+	return count
+}
+
+func intentFileCount(t *testing.T, repoRoot string) int {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(repoRoot, ".jvs", "intents"))
+	require.NoError(t, err)
+	count := 0
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
 			count++
 		}
 	}
@@ -759,6 +1011,17 @@ func assertNoTempPrefix(t *testing.T, parent, prefix string) {
 	for _, entry := range entries {
 		assert.False(t, strings.HasPrefix(entry.Name(), prefix), "unexpected temp entry %s", entry.Name())
 	}
+}
+
+func assertProbeUnder(t *testing.T, probes []string, prefix string) {
+	t.Helper()
+	slashPrefix := filepath.ToSlash(prefix)
+	for _, probe := range slashPaths(probes) {
+		if pathHasPrefix(probe, slashPrefix) {
+			return
+		}
+	}
+	assert.Failf(t, "missing capacity probe", "expected a probe under %s, got %v", slashPrefix, slashPaths(probes))
 }
 
 func slashPaths(paths []string) []string {

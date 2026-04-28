@@ -17,6 +17,47 @@ const (
 )
 
 var restoreRunCapacityGate = capacitygate.Default()
+var saveCapacityGate = capacitygate.Default()
+
+func checkSaveCapacity(repoRoot, workspaceName string) error {
+	folder, err := workspaceFolder(repoRoot, workspaceName)
+	if err != nil {
+		return err
+	}
+	mgr := worktree.NewManager(repoRoot)
+	cfg, err := mgr.Get(workspaceName)
+	if err != nil {
+		return err
+	}
+	boundary, err := repo.WorktreeManagedPayloadBoundary(repoRoot, workspaceName)
+	if err != nil {
+		return err
+	}
+	workspaceBytes, err := capacitygate.TreeSize(boundary.Root, boundary.ExcludesRelativePath)
+	if err != nil {
+		return err
+	}
+
+	components := []capacitygate.Component{
+		{Name: "save point payload", Path: filepath.Join(repoRoot, repo.JVSDirName, "snapshots", "save-capacity-probe.tmp"), Bytes: workspaceBytes},
+		{Name: "save point metadata", Path: filepath.Join(repoRoot, repo.JVSDirName), Bytes: metadataFloor},
+	}
+	if len(cfg.PathSources) > 0 {
+		components, err = appendPathSourceReconcileCapacityComponents(repoRoot, cfg, components)
+		if err != nil {
+			return err
+		}
+	}
+
+	_, err = saveCapacityGate.Check(capacitygate.Request{
+		Operation:       "save",
+		Folder:          folder,
+		Workspace:       workspaceName,
+		Components:      components,
+		FailureMessages: []string{"No save point was created.", "History was not changed.", "No files were changed."},
+	})
+	return err
+}
 
 func checkRestorePreviewPreDirtyCapacity(repoRoot, workspaceName string, sourceID model.SnapshotID, path string) error {
 	folder, err := workspaceFolder(repoRoot, workspaceName)

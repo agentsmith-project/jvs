@@ -1,13 +1,16 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/pkg/color"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
@@ -72,7 +75,16 @@ Examples:
 }
 
 func createSavePointDescriptor(repoRoot, workspaceName, message string) (*model.Descriptor, error) {
-	return snapshot.NewCreator(repoRoot, detectEngine(repoRoot)).CreateSavePoint(workspaceName, message, nil)
+	var desc *model.Descriptor
+	err := repo.WithMutationLock(repoRoot, "save", func() error {
+		if err := checkSaveCapacity(repoRoot, workspaceName); err != nil {
+			return err
+		}
+		var err error
+		desc, err = snapshot.NewCreator(repoRoot, detectEngine(repoRoot)).CreateSavePointLocked(workspaceName, message, nil)
+		return err
+	})
+	return desc, err
 }
 
 func savePointMessage(args []string) (string, error) {
@@ -93,7 +105,12 @@ func savePointError(err error) error {
 	if err == nil {
 		return nil
 	}
-	return fmt.Errorf("%s", publicSavePointVocabulary(err.Error()))
+	message := publicSavePointVocabulary(err.Error())
+	var jvsErr *errclass.JVSError
+	if errors.As(err, &jvsErr) {
+		return &errclass.JVSError{Code: jvsErr.Code, Message: message, Hint: publicSavePointVocabulary(jvsErr.Hint)}
+	}
+	return fmt.Errorf("%s", message)
 }
 
 func publicSavePointVocabulary(value string) string {
