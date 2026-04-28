@@ -40,6 +40,9 @@ Before any pre-release or v0 tag:
    chain validation.
 10. `jvs doctor --strict` integrity evidence is recorded for the same
     representative repo.
+11. Release-chain external tools used by CI, security scanning, and artifact
+    signing are installed from reviewed pinned versions; `@latest` is not a
+    valid release workflow dependency.
 
 CI enforces the same release gate for publishing paths. A `v*` tag push or
 manual `workflow_dispatch` release for an existing `v*` tag must pass the

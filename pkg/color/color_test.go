@@ -2,13 +2,13 @@ package color
 
 import (
 	"os"
-	"sync"
 	"testing"
+
+	"github.com/agentsmith-project/jvs/internal/terminal"
 )
 
 func TestEnabled(t *testing.T) {
-	origEnabled := state.enabled.Load()
-	origOverridden := state.overridden.Load()
+	resetColorStateForTest(t)
 
 	Enable()
 	if !Enabled() {
@@ -19,14 +19,10 @@ func TestEnabled(t *testing.T) {
 	if Enabled() {
 		t.Error("expected colors to be disabled")
 	}
-
-	state.enabled.Store(origEnabled)
-	state.overridden.Store(origOverridden)
 }
 
 func TestEnableDisable(t *testing.T) {
-	origEnabled := state.enabled.Load()
-	origOverridden := state.overridden.Load()
+	resetColorStateForTest(t)
 
 	Enable()
 	if !Enabled() {
@@ -37,12 +33,10 @@ func TestEnableDisable(t *testing.T) {
 	if Enabled() {
 		t.Error("expected colors to be disabled after Disable()")
 	}
-
-	state.enabled.Store(origEnabled)
-	state.overridden.Store(origOverridden)
 }
 
 func TestColorFuncs(t *testing.T) {
+	resetColorStateForTest(t)
 	Enable()
 
 	tests := []struct {
@@ -75,6 +69,7 @@ func TestColorFuncs(t *testing.T) {
 }
 
 func TestColorFuncsDisabled(t *testing.T) {
+	resetColorStateForTest(t)
 	Disable()
 
 	tests := []struct {
@@ -101,6 +96,7 @@ func TestColorFuncsDisabled(t *testing.T) {
 }
 
 func TestSpecializedFormatters(t *testing.T) {
+	resetColorStateForTest(t)
 	Enable()
 
 	tests := []struct {
@@ -131,6 +127,7 @@ func TestSpecializedFormatters(t *testing.T) {
 }
 
 func TestFormattedFunctions(t *testing.T) {
+	resetColorStateForTest(t)
 	Enable()
 
 	if result := Successf("test %d", 123); !containsString(result, Green) {
@@ -151,6 +148,7 @@ func TestFormattedFunctions(t *testing.T) {
 }
 
 func TestCode(t *testing.T) {
+	resetColorStateForTest(t)
 	Enable()
 
 	result := Code("jvs init")
@@ -170,37 +168,238 @@ func TestCode(t *testing.T) {
 }
 
 func TestInitRespectsNoColorEnv(t *testing.T) {
-	origNoColor, exists := os.LookupEnv("NO_COLOR")
-
-	os.Setenv("NO_COLOR", "1")
-	state.overridden.Store(false)
-	state.enabled.Store(true)
-	state.once = sync.Once{}
+	resetColorStateForTest(t)
+	t.Setenv("NO_COLOR", "1")
+	restoreTerminal := terminal.WithIsTerminalForTest(func(*os.File) bool { return true })
+	t.Cleanup(restoreTerminal)
 
 	Init(false)
 	if Enabled() {
 		t.Error("expected colors to be disabled when NO_COLOR is set")
 	}
-
-	if exists {
-		os.Setenv("NO_COLOR", origNoColor)
-	} else {
-		os.Unsetenv("NO_COLOR")
-	}
-	state.once = sync.Once{}
 }
 
 func TestInitRespectsNoColorFlag(t *testing.T) {
-	state.overridden.Store(false)
-	state.enabled.Store(true)
-	state.once = sync.Once{}
+	resetColorStateForTest(t)
+	restoreTerminal := terminal.WithIsTerminalForTest(func(*os.File) bool { return true })
+	t.Cleanup(restoreTerminal)
 
 	Init(true)
 	if Enabled() {
 		t.Error("expected colors to be disabled when noColorFlag is true")
 	}
+}
 
-	state.once = sync.Once{}
+func TestInitDisablesColorInCI(t *testing.T) {
+	resetColorStateForTest(t)
+	unsetEnvForTest(t, "NO_COLOR")
+	t.Setenv("CI", "true")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("TERM", "xterm-256color")
+	restoreTerminal := terminal.WithIsTerminalForTest(func(*os.File) bool { return true })
+	t.Cleanup(restoreTerminal)
+
+	Init(false)
+	if Enabled() {
+		t.Error("expected colors to be disabled in CI")
+	}
+}
+
+func TestInitRespectsTermDumb(t *testing.T) {
+	resetColorStateForTest(t)
+	unsetEnvForTest(t, "NO_COLOR")
+	unsetEnvForTest(t, "CI")
+	unsetEnvForTest(t, "GITHUB_ACTIONS")
+	t.Setenv("TERM", "dumb")
+
+	Init(false)
+	if Enabled() {
+		t.Error("expected colors to be disabled when TERM=dumb")
+	}
+}
+
+func TestInitDisablesColorWhenStdoutIsNotTerminal(t *testing.T) {
+	resetColorStateForTest(t)
+	unsetEnvForTest(t, "NO_COLOR")
+	unsetEnvForTest(t, "CI")
+	unsetEnvForTest(t, "GITHUB_ACTIONS")
+	t.Setenv("TERM", "xterm-256color")
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create pipe: %v", err)
+	}
+	os.Stdout = w
+	t.Cleanup(func() {
+		os.Stdout = oldStdout
+		_ = r.Close()
+		_ = w.Close()
+	})
+
+	Init(false)
+	if Enabled() {
+		t.Error("expected colors to be disabled when stdout is not a terminal")
+	}
+}
+
+func TestInitDisablesColorWhenStdoutIsDevNull(t *testing.T) {
+	resetColorStateForTest(t)
+	unsetEnvForTest(t, "NO_COLOR")
+	unsetEnvForTest(t, "CI")
+	unsetEnvForTest(t, "GITHUB_ACTIONS")
+	t.Setenv("TERM", "xterm-256color")
+
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open devnull: %v", err)
+	}
+	oldStdout := os.Stdout
+	os.Stdout = devNull
+	t.Cleanup(func() {
+		os.Stdout = oldStdout
+		_ = devNull.Close()
+	})
+
+	Init(false)
+	if Enabled() {
+		t.Error("expected colors to be disabled when stdout is /dev/null")
+	}
+}
+
+func TestInitNoColorFlagCanDisableAfterPriorInit(t *testing.T) {
+	resetColorStateForTest(t)
+	unsetEnvForTest(t, "NO_COLOR")
+	unsetEnvForTest(t, "CI")
+	unsetEnvForTest(t, "GITHUB_ACTIONS")
+	t.Setenv("TERM", "xterm-256color")
+	restoreTerminal := terminal.WithIsTerminalForTest(func(*os.File) bool { return true })
+	t.Cleanup(restoreTerminal)
+
+	Init(false)
+	if !Enabled() {
+		t.Fatal("expected colors to be enabled before --no-color")
+	}
+
+	Init(true)
+	if Enabled() {
+		t.Error("expected --no-color to disable colors after prior initialization")
+	}
+}
+
+func TestInitEnablesColorForInteractiveTerminal(t *testing.T) {
+	resetColorStateForTest(t)
+	unsetEnvForTest(t, "NO_COLOR")
+	unsetEnvForTest(t, "CI")
+	unsetEnvForTest(t, "GITHUB_ACTIONS")
+	t.Setenv("TERM", "xterm-256color")
+	restoreTerminal := terminal.WithIsTerminalForTest(func(*os.File) bool { return true })
+	t.Cleanup(restoreTerminal)
+
+	Init(false)
+	if !Enabled() {
+		t.Error("expected colors to be enabled for an interactive terminal")
+	}
+}
+
+func TestInitTracksStdoutAndStderrSeparately(t *testing.T) {
+	resetColorStateForTest(t)
+	unsetEnvForTest(t, "NO_COLOR")
+	unsetEnvForTest(t, "CI")
+	unsetEnvForTest(t, "GITHUB_ACTIONS")
+	t.Setenv("TERM", "xterm-256color")
+	restoreTerminal := terminal.WithIsTerminalForTest(func(file *os.File) bool {
+		return file == os.Stdout
+	})
+	t.Cleanup(restoreTerminal)
+
+	Init(false)
+	if !Enabled() {
+		t.Fatal("expected stdout colors to be enabled")
+	}
+	if EnabledFor(os.Stderr) {
+		t.Fatal("expected stderr colors to be disabled")
+	}
+	if got := ErrorFor(os.Stderr, "jvs:"); got != "jvs:" {
+		t.Fatalf("expected stderr formatter to stay plain, got %q", got)
+	}
+	if got := DimFor(os.Stderr, "  hint"); got != "  hint" {
+		t.Fatalf("expected stderr dim formatter to stay plain, got %q", got)
+	}
+}
+
+func TestEnabledForEvaluatesArbitraryFiles(t *testing.T) {
+	resetColorStateForTest(t)
+	unsetEnvForTest(t, "NO_COLOR")
+	unsetEnvForTest(t, "CI")
+	unsetEnvForTest(t, "GITHUB_ACTIONS")
+	t.Setenv("TERM", "xterm-256color")
+	interactiveR, interactiveW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create interactive pipe: %v", err)
+	}
+	plainR, plainW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create plain pipe: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = interactiveR.Close()
+		_ = interactiveW.Close()
+		_ = plainR.Close()
+		_ = plainW.Close()
+	})
+	restoreTerminal := terminal.WithIsTerminalForTest(func(file *os.File) bool {
+		return file == interactiveW
+	})
+	t.Cleanup(restoreTerminal)
+
+	Init(false)
+
+	if !EnabledFor(interactiveW) {
+		t.Fatal("expected colors to be enabled for the interactive file")
+	}
+	if EnabledFor(plainW) {
+		t.Fatal("expected colors to be disabled for a non-interactive file")
+	}
+	if got := CodeFor(interactiveW, "jvs init"); !containsString(got, Bold) {
+		t.Fatalf("expected CodeFor to colorize the interactive file, got %q", got)
+	}
+	if got := CodeFor(plainW, "jvs init"); got != "jvs init" {
+		t.Fatalf("expected CodeFor to keep the non-interactive file plain, got %q", got)
+	}
+}
+
+func resetColorStateForTest(t *testing.T) {
+	t.Helper()
+	origEnabled := state.enabled.Load()
+	origDisabled := state.disabled.Load()
+	origOverridden := state.overridden.Load()
+	origInitialized := state.initialized.Load()
+	t.Cleanup(func() {
+		state.enabled.Store(origEnabled)
+		state.disabled.Store(origDisabled)
+		state.overridden.Store(origOverridden)
+		state.initialized.Store(origInitialized)
+	})
+	state.enabled.Store(false)
+	state.disabled.Store(false)
+	state.overridden.Store(false)
+	state.initialized.Store(false)
+}
+
+func unsetEnvForTest(t *testing.T, key string) {
+	t.Helper()
+	original, exists := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatalf("unset %s: %v", key, err)
+	}
+	t.Cleanup(func() {
+		if exists {
+			_ = os.Setenv(key, original)
+			return
+		}
+		_ = os.Unsetenv(key)
+	})
 }
 
 // Helper function to check if string contains substring

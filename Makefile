@@ -1,5 +1,9 @@
 GOLANGCI_LINT_VERSION ?= v1.64.8
 GOLANGCI_LINT_PACKAGE := github.com/golangci/golangci-lint/cmd/golangci-lint
+GOSEC_VERSION ?= v2.26.1
+GOSEC_PACKAGE := github.com/securego/gosec/v2/cmd/gosec
+STATICCHECK_VERSION ?= v0.7.0
+STATICCHECK_PACKAGE := honnef.co/go/tools/cmd/staticcheck
 FUZZTIME ?= 100x
 FUZZMINIMIZETIME ?= 0
 FUZZPARALLEL ?= 1
@@ -112,12 +116,15 @@ verify: test lint
 security: sec
 
 sec:
-	@echo "Running security scans..."
-	go install github.com/securecodewarrior/gosec/v2@latest || true
-	gosec -verbose=text -fmt=json -out gosec-report.json ./... || true
-	go install honnef.co/go/tools/cmd/staticcheck@latest || true
-	staticcheck ./... || true
-	@echo "Security scan complete. See gosec-report.json for details."
+	@set -eu; \
+	echo "Running security scans..."; \
+	echo "Installing gosec $(GOSEC_VERSION)"; \
+	go install $(GOSEC_PACKAGE)@$(GOSEC_VERSION); \
+	"$$(go env GOPATH)/bin/gosec" -verbose=text -fmt=json -out gosec-report.json ./... || true; \
+	echo "Installing staticcheck $(STATICCHECK_VERSION)"; \
+	go install $(STATICCHECK_PACKAGE)@$(STATICCHECK_VERSION); \
+	"$$(go env GOPATH)/bin/staticcheck" ./... || true; \
+	echo "Security scan complete. See gosec-report.json for details."
 
 fuzz-list:
 	@set -eu; \

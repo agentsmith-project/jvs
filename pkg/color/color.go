@@ -6,58 +6,78 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"sync"
 	"sync/atomic"
+
+	"github.com/agentsmith-project/jvs/internal/terminal"
 )
 
 // colorState holds the global color configuration.
 var (
 	state struct {
-		enabled    atomic.Bool
-		overridden atomic.Bool
-		once       sync.Once
+		enabled     atomic.Bool
+		disabled    atomic.Bool
+		overridden  atomic.Bool
+		initialized atomic.Bool
 	}
 )
 
 // Init initializes the color system based on environment and flags.
 // It respects the NO_COLOR environment variable (https://no-color.org/)
-// and can be disabled programmatically. Does not override explicit
-// Enable()/Disable() calls.
+// and can be disabled programmatically. Color is enabled only for interactive
+// terminal output; CI and redirected output stay plain for deterministic logs.
+// Init does not override explicit Enable()/Disable() calls.
 func Init(noColorFlag bool) {
-	state.once.Do(func() {
-		if state.overridden.Load() {
-			return
-		}
-		disabled := false
-		if _, exists := os.LookupEnv("NO_COLOR"); exists {
-			disabled = true
-		}
-		if term := os.Getenv("TERM"); term == "dumb" {
-			disabled = true
-		}
-		if noColorFlag {
-			disabled = true
-		}
-		state.enabled.Store(!disabled)
-	})
+	if state.overridden.Load() {
+		return
+	}
+	disabled := noColorFlag
+	if _, exists := os.LookupEnv("NO_COLOR"); exists {
+		disabled = true
+	}
+	if !terminal.ControlOutputAllowed() {
+		disabled = true
+	}
+	state.disabled.Store(disabled)
+	state.initialized.Store(true)
 }
 
 // Enabled returns true if color output is enabled.
 func Enabled() bool {
-	Init(false)
-	return state.enabled.Load()
+	return EnabledFor(os.Stdout)
+}
+
+// EnabledFor returns true if color output is enabled for file.
+func EnabledFor(file *os.File) bool {
+	if !state.initialized.Load() {
+		Init(false)
+	}
+	if state.overridden.Load() {
+		return state.enabled.Load()
+	}
+	return shouldEnableColorFor(file, state.disabled.Load())
 }
 
 // Disable turns off color output.
 func Disable() {
 	state.overridden.Store(true)
 	state.enabled.Store(false)
+	state.disabled.Store(true)
+	state.initialized.Store(true)
 }
 
 // Enable turns on color output.
 func Enable() {
 	state.overridden.Store(true)
 	state.enabled.Store(true)
+	state.disabled.Store(false)
+	state.initialized.Store(true)
+}
+
+func shouldEnableColorFor(file *os.File, disabled bool) bool {
+	if disabled {
+		return false
+	}
+	return terminal.IsTerminal(file)
 }
 
 // ANSI color codes
@@ -100,6 +120,16 @@ func makeColorFunc(codes ...string) colorFunc {
 	}
 }
 
+func makeColorFuncFor(file *os.File, codes ...string) colorFunc {
+	return func(s string) string {
+		if !EnabledFor(file) {
+			return s
+		}
+		code := strings.Join(codes, "")
+		return code + s + Reset
+	}
+}
+
 // Pre-defined color functions
 var (
 	Redf     = makeColorFunc(Red)
@@ -129,6 +159,11 @@ func Successf(format string, args ...any) string {
 // Error formats an error message in red.
 func Error(s string) string {
 	return Redf(s)
+}
+
+// ErrorFor formats an error message in red for file.
+func ErrorFor(file *os.File, s string) string {
+	return makeColorFuncFor(file, Red)(s)
 }
 
 // Errorf formats an error message with printf-style arguments.
@@ -176,6 +211,11 @@ func Dim(s string) string {
 	return Dimf(s)
 }
 
+// DimFor formats dimmed text for file.
+func DimFor(file *os.File, s string) string {
+	return makeColorFuncFor(file, DimCode)(s)
+}
+
 // Highlight highlights important text in yellow.
 func Highlight(s string) string {
 	return Yellowf(s)
@@ -183,7 +223,12 @@ func Highlight(s string) string {
 
 // Code formats code/command strings in a distinct style (bold + dim).
 func Code(s string) string {
-	if !Enabled() {
+	return CodeFor(os.Stdout, s)
+}
+
+// CodeFor formats code/command strings for file.
+func CodeFor(file *os.File, s string) string {
+	if !EnabledFor(file) {
 		return s
 	}
 	return Bold + DimCode + s + Reset

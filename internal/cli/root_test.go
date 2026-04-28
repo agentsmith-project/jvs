@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/agentsmith-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/internal/terminal"
+	"github.com/agentsmith-project/jvs/pkg/color"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
@@ -33,6 +35,36 @@ func executeCommand(root *cobra.Command, args ...string) (stdout string, err err
 	var buf bytes.Buffer
 	io.Copy(&buf, r)
 	return buf.String(), err
+}
+
+func executeCommandWithErrorReport(root *cobra.Command, args ...string) (stdout string, stderr string, err error) {
+	resetCommandHelpFlags(root)
+	defer resetCommandHelpFlags(root)
+
+	oldStdout := os.Stdout
+	oldStderr := os.Stderr
+	stdoutR, stdoutW, _ := os.Pipe()
+	stderrR, stderrW, _ := os.Pipe()
+	os.Stdout = stdoutW
+	os.Stderr = stderrW
+
+	root.SetArgs(args)
+	primeOutputFlagsFromArgs(args)
+	cmd, err := root.ExecuteC()
+	if err != nil {
+		reportCommandErrorForCommand(cmd, err)
+	}
+
+	stdoutW.Close()
+	stderrW.Close()
+	os.Stdout = oldStdout
+	os.Stderr = oldStderr
+
+	var stdoutBuf bytes.Buffer
+	io.Copy(&stdoutBuf, stdoutR)
+	var stderrBuf bytes.Buffer
+	io.Copy(&stderrBuf, stderrR)
+	return stdoutBuf.String(), stderrBuf.String(), err
 }
 
 func resetCommandHelpFlags(cmd *cobra.Command) {
@@ -434,6 +466,77 @@ func TestCompletionCommandValidArgs(t *testing.T) {
 	assert.Contains(t, args, "powershell")
 }
 
+func TestHumanOutputPolicyDisablesANSIInCI(t *testing.T) {
+	unsetEnvForCLITest(t, "NO_COLOR")
+	t.Setenv("CI", "true")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("TERM", "xterm-256color")
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
+	saveID := savePointIDFromCLI(t, "baseline")
+
+	stdout, err := executeCommand(createTestRootCmd(), "status")
+	require.NoError(t, err)
+
+	assert.Contains(t, stdout, "Newest save point: "+saveID)
+	assertNoANSI(t, stdout)
+}
+
+func TestHumanErrorPolicyDisablesANSIWhenStderrIsNonTerminal(t *testing.T) {
+	unsetEnvForCLITest(t, "NO_COLOR")
+	unsetEnvForCLITest(t, "CI")
+	unsetEnvForCLITest(t, "GITHUB_ACTIONS")
+	t.Setenv("TERM", "xterm-256color")
+	setupTestDir(t)
+
+	stdout, stderr, err := executeCommandWithErrorReport(createTestRootCmd(), "status")
+	require.Error(t, err)
+
+	assert.Empty(t, stdout)
+	assert.Contains(t, stderr, "not a JVS repository")
+	assertNoANSI(t, stderr)
+}
+
+func TestJSONErrorNotInRepoHintIsPlainWhenStdoutAndStderrAreInteractive(t *testing.T) {
+	unsetEnvForCLITest(t, "NO_COLOR")
+	unsetEnvForCLITest(t, "CI")
+	unsetEnvForCLITest(t, "GITHUB_ACTIONS")
+	t.Setenv("TERM", "xterm-256color")
+	restoreTerminal := terminal.WithIsTerminalForTest(func(*os.File) bool { return true })
+	t.Cleanup(restoreTerminal)
+	t.Cleanup(func() { color.Init(true) })
+	color.Init(false)
+	setupTestDir(t)
+
+	stdout, stderr, err := executeCommandWithErrorReport(createTestRootCmd(), "--json", "status")
+	require.Error(t, err)
+
+	assert.Empty(t, stderr)
+	assertNoANSI(t, stdout)
+	env := decodeContractEnvelope(t, stdout)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, "Run jvs init <name> to create a new repository.", env.Error.Hint)
+	assertNoANSI(t, env.Error.Hint)
+}
+
+func TestNoColorAppliesToValidationErrorBeforePersistentPreRun(t *testing.T) {
+	unsetEnvForCLITest(t, "NO_COLOR")
+	unsetEnvForCLITest(t, "CI")
+	unsetEnvForCLITest(t, "GITHUB_ACTIONS")
+	t.Setenv("TERM", "xterm-256color")
+	restoreTerminal := terminal.WithIsTerminalForTest(func(*os.File) bool { return true })
+	t.Cleanup(restoreTerminal)
+	t.Cleanup(func() { color.Init(true) })
+	color.Init(false)
+
+	stdout, stderr, err := executeCommandWithErrorReport(createTestRootCmd(), "--no-color", "nosuch")
+	require.Error(t, err)
+
+	assert.Empty(t, stdout)
+	assert.Contains(t, stderr, `unknown command "nosuch"`)
+	assertNoANSI(t, stderr)
+}
+
 func findChildCommand(t *testing.T, cmd *cobra.Command, name string) *cobra.Command {
 	t.Helper()
 
@@ -466,11 +569,30 @@ func decodeRootJSONData(t *testing.T, stdout string, target any) contractEnvelop
 	return env
 }
 
+func assertNoANSI(t *testing.T, value string) {
+	t.Helper()
+	assert.NotRegexp(t, regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`), value)
+}
+
+func unsetEnvForCLITest(t *testing.T, key string) {
+	t.Helper()
+	original, exists := os.LookupEnv(key)
+	require.NoError(t, os.Unsetenv(key))
+	t.Cleanup(func() {
+		if exists {
+			require.NoError(t, os.Setenv(key, original))
+			return
+		}
+		require.NoError(t, os.Unsetenv(key))
+	})
+}
+
 func createTestRootCmd() *cobra.Command {
 	jsonOutput = false
 	debugOutput = false
 	noProgress = false
 	noColor = false
+	autoProgressEnabled = defaultAutoProgressEnabled
 	targetRepoPath = ""
 	targetWorkspaceName = ""
 	activeCommandName = ""

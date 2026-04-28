@@ -33,9 +33,11 @@ func TestProgressEnabled(t *testing.T) {
 	// Save original state
 	originalNoProgress := noProgress
 	originalJSONOutput := jsonOutput
+	originalAutoProgressEnabled := autoProgressEnabled
 	defer func() {
 		noProgress = originalNoProgress
 		jsonOutput = originalJSONOutput
+		autoProgressEnabled = originalAutoProgressEnabled
 	}()
 
 	tests := []struct {
@@ -54,10 +56,18 @@ func TestProgressEnabled(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			noProgress = tt.noProgress
 			jsonOutput = tt.jsonOutput
+			autoProgressEnabled = func() bool { return true }
 			result := progressEnabled()
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+
+	t.Run("Auto terminal policy disabled", func(t *testing.T) {
+		noProgress = false
+		jsonOutput = false
+		autoProgressEnabled = func() bool { return false }
+		assert.False(t, progressEnabled())
+	})
 }
 
 // TestOutputJSONBasicTests tests basic outputJSON behavior.

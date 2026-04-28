@@ -12,18 +12,21 @@ import (
 	"github.com/agentsmith-project/jvs/pkg/color"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/agentsmith-project/jvs/pkg/logging"
+	"github.com/agentsmith-project/jvs/pkg/progress"
 )
 
 var (
-	jsonOutput        bool
-	debugOutput       bool
-	noProgress        bool
-	noColor           bool
-	activeCommandName string
-	resolvedRepoRoot  string
-	resolvedWorkspace string
-	jsonErrorEmitted  bool
-	rootCmd           = &cobra.Command{
+	jsonOutput                 bool
+	debugOutput                bool
+	noProgress                 bool
+	noColor                    bool
+	activeCommandName          string
+	resolvedRepoRoot           string
+	resolvedWorkspace          string
+	jsonErrorEmitted           bool
+	defaultAutoProgressEnabled = func() bool { return progress.AutoEnabled(os.Stderr) }
+	autoProgressEnabled        = defaultAutoProgressEnabled
+	rootCmd                    = &cobra.Command{
 		Use:              "jvs",
 		Short:            "JVS - Juicy Versioned Workspaces",
 		Long:             publicRootLong,
@@ -111,7 +114,7 @@ func configurePublicRootHelpSurface(cmd *cobra.Command) {
 // Execute runs the root command.
 func Execute() {
 	configurePublicRootHelpSurface(rootCmd)
-	primeJSONOutputFromArgs(os.Args[1:])
+	primeOutputFlagsFromArgs(os.Args[1:])
 	cmd, err := rootCmd.ExecuteC()
 	if err != nil {
 		reportCommandErrorForCommand(cmd, err)
@@ -121,7 +124,7 @@ func Execute() {
 
 // progressEnabled returns whether progress bars should be shown.
 func progressEnabled() bool {
-	return !noProgress && !jsonOutput
+	return !noProgress && !jsonOutput && autoProgressEnabled()
 }
 
 // outputJSON prints v as JSON if --json flag is set, otherwise does nothing.
@@ -481,6 +484,7 @@ func isASCIIUpper(value byte) bool {
 }
 
 func reportCommandErrorForCommand(cmd *cobra.Command, err error) {
+	initializeOutputPolicy()
 	recordValidationCommand(cmd, err)
 	cliErr := commandError(err)
 	if jsonOutput {
@@ -536,6 +540,11 @@ func isGenericNotRepoMessage(message string) bool {
 	return message == "" || message == "not a JVS repository (or any parent)"
 }
 
+func primeOutputFlagsFromArgs(args []string) {
+	primeJSONOutputFromArgs(args)
+	primeNoColorFromArgs(args)
+}
+
 func primeJSONOutputFromArgs(args []string) {
 	for _, arg := range args {
 		if arg == "--" {
@@ -547,6 +556,21 @@ func primeJSONOutputFromArgs(args []string) {
 		case strings.HasPrefix(arg, "--json="):
 			value := strings.TrimPrefix(arg, "--json=")
 			jsonOutput = value == "1" || strings.EqualFold(value, "true")
+		}
+	}
+}
+
+func primeNoColorFromArgs(args []string) {
+	for _, arg := range args {
+		if arg == "--" {
+			return
+		}
+		switch {
+		case arg == "--no-color":
+			noColor = true
+		case strings.HasPrefix(arg, "--no-color="):
+			value := strings.TrimPrefix(arg, "--no-color=")
+			noColor = value == "1" || strings.EqualFold(value, "true")
 		}
 	}
 }
@@ -579,12 +603,16 @@ func cliPersistentPreRun(cmd *cobra.Command, args []string) {
 	beginCLICommand(cmd)
 
 	// Configure color output first (before any output)
-	color.Init(noColor)
+	initializeOutputPolicy()
 
 	// Configure logging based on debug flag
 	if debugOutput {
 		logging.SetGlobal(logging.NewLogger(logging.LevelDebug))
 	}
+}
+
+func initializeOutputPolicy() {
+	color.Init(noColor)
 }
 
 func beginCLICommand(cmd *cobra.Command) {

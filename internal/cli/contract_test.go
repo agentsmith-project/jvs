@@ -185,7 +185,7 @@ func TestCLIContractSubprocess(t *testing.T) {
 
 	cmd := createTestRootCmd()
 	cmd.SetArgs(args)
-	primeJSONOutputFromArgs(args)
+	primeOutputFlagsFromArgs(args)
 	executedCmd, err := cmd.ExecuteC()
 	if err != nil {
 		reportCommandErrorForCommand(executedCmd, err)

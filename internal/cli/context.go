@@ -357,11 +357,11 @@ func printHumanError(message, hint string) {
 
 	// Colorize the error prefix
 	prefix := "jvs: "
-	if color.Enabled() {
-		prefix = color.Error("jvs:") + " "
+	if color.EnabledFor(os.Stderr) {
+		prefix = color.ErrorFor(os.Stderr, "jvs:") + " "
 	}
 	fmt.Fprintln(os.Stderr, prefix+message)
 	if hint != "" {
-		fmt.Fprintln(os.Stderr, color.Dim("  hint: "+hint))
+		fmt.Fprintln(os.Stderr, color.DimFor(os.Stderr, "  hint: "+hint))
 	}
 }

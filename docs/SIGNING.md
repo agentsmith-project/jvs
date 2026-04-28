@@ -23,16 +23,19 @@ Each signed release includes:
 
 ### Installing cosign
 
-Install the `cosign` tool:
+Install the `cosign` tool. The release workflow signs artifacts with cosign
+`v3.0.5`; use that reviewed version when reproducing the documented
+verification path.
 
 ```bash
-# macOS/Linux (AMD64)
-curl -O -L "https://github.com/sigstore/cosign/releases/latest/download/cosign-$(uname -s)-$(uname -m)"
-chmod +x cosign
-sudo mv cosign /usr/local/bin/
+# Linux (AMD64)
+COSIGN_VERSION=v3.0.5
+curl -O -L "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64"
+chmod +x cosign-linux-amd64
+sudo mv cosign-linux-amd64 /usr/local/bin/cosign
 
 # Using go install
-go install github.com/sigstore/cosign/v2/cmd/cosign@latest
+go install github.com/sigstore/cosign/v3/cmd/cosign@v3.0.5
 ```
 
 ### Verifying a Binary

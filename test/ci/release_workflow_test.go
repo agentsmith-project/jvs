@@ -147,15 +147,15 @@ func TestWorkflowSetupGoUsesModuleVersion(t *testing.T) {
 	}
 }
 
-func TestWorkflowUsesPinnedLintTools(t *testing.T) {
+func TestWorkflowUsesPinnedReleaseChainTools(t *testing.T) {
 	root := repoRoot(t)
 	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
 	if err != nil {
 		t.Fatalf("read CI workflow: %v", err)
 	}
 	workflowText := string(data)
-	if strings.Contains(workflowText, "github.com/golangci/golangci-lint/cmd/golangci-lint@latest") {
-		t.Fatalf("CI workflow must not install golangci-lint with @latest")
+	if strings.Contains(workflowText, "@latest") {
+		t.Fatalf("CI workflow must not install release-chain tools with @latest")
 	}
 
 	workflow := readWorkflow(t, root)
@@ -165,6 +165,19 @@ func TestWorkflowUsesPinnedLintTools(t *testing.T) {
 		if !jobRuns(job, "make tools") {
 			t.Fatalf("%s job must install pinned tools through make tools", jobName)
 		}
+	}
+
+	security := requireMappingValue(t, jobs, "security")
+	if !jobRuns(security, "make security") {
+		t.Fatalf("security job must run pinned security tooling through make security")
+	}
+
+	release := requireMappingValue(t, jobs, "release")
+	cosign := requireStepUsing(t, release, "sigstore/cosign-installer@")
+	with := requireMappingValue(t, cosign, "with")
+	cosignRelease := scalarValue(t, requireMappingValue(t, with, "cosign-release"))
+	if cosignRelease != "v3.0.5" {
+		t.Fatalf("release workflow must pin cosign-release to v3.0.5, got %q", cosignRelease)
 	}
 }
 
@@ -432,6 +445,74 @@ func TestMakefilePinsGolangCILintTooling(t *testing.T) {
 	if !commandsContain(lintCommands, "go install $(GOLANGCI_LINT_PACKAGE)@$(GOLANGCI_LINT_VERSION)") {
 		t.Fatalf("lint target must install the pinned golangci-lint binary when no matching binary is available")
 	}
+}
+
+func TestMakefilePinsSecurityTooling(t *testing.T) {
+	root := repoRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	makefile := string(data)
+
+	if strings.Contains(makefile, "@latest") {
+		t.Fatalf("Makefile must not install release-chain tools with @latest")
+	}
+	for _, tt := range []struct {
+		versionVar string
+		version    string
+		packageVar string
+		pkg        string
+	}{
+		{
+			versionVar: "GOSEC_VERSION",
+			version:    "v2.26.1",
+			packageVar: "GOSEC_PACKAGE",
+			pkg:        "github.com/securego/gosec/v2/cmd/gosec",
+		},
+		{
+			versionVar: "STATICCHECK_VERSION",
+			version:    "v0.7.0",
+			packageVar: "STATICCHECK_PACKAGE",
+			pkg:        "honnef.co/go/tools/cmd/staticcheck",
+		},
+	} {
+		gotVersion, ok := makeVariableValue(makefile, tt.versionVar)
+		if !ok || gotVersion != tt.version {
+			t.Fatalf("Makefile must pin %s to %s, got %q", tt.versionVar, tt.version, gotVersion)
+		}
+		gotPackage, ok := makeVariableValue(makefile, tt.packageVar)
+		if !ok || gotPackage != tt.pkg {
+			t.Fatalf("Makefile must set %s to %s, got %q", tt.packageVar, tt.pkg, gotPackage)
+		}
+	}
+
+	securityCommands := makeTargetCommands(makefile, "sec")
+	for _, required := range []string{
+		"go install $(GOSEC_PACKAGE)@$(GOSEC_VERSION)",
+		"go install $(STATICCHECK_PACKAGE)@$(STATICCHECK_VERSION)",
+		`"$$(go env GOPATH)/bin/gosec"`,
+		`"$$(go env GOPATH)/bin/staticcheck"`,
+	} {
+		if !commandsContain(securityCommands, required) {
+			t.Fatalf("sec target must use pinned security tooling command containing %q", required)
+		}
+	}
+}
+
+func TestSigningDocsUseVersionedCosignInstall(t *testing.T) {
+	root := repoRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, "docs", "SIGNING.md"))
+	if err != nil {
+		t.Fatalf("read signing docs: %v", err)
+	}
+	signing := string(data)
+	for _, floating := range []string{"releases/latest", "@latest"} {
+		if strings.Contains(signing, floating) {
+			t.Fatalf("docs/SIGNING.md must use versioned cosign install examples, found %q", floating)
+		}
+	}
+	requireContains(t, signing, "v3.0.5")
 }
 
 func TestMakefileReleaseGateRunsCIContract(t *testing.T) {

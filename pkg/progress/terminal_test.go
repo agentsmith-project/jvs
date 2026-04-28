@@ -2,6 +2,7 @@ package progress
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 
@@ -140,6 +141,48 @@ func TestCountingTerminal_SetEnabled(t *testing.T) {
 
 	term.Increment()
 	assert.Equal(t, 0, buf.Len(), "no output when disabled")
+}
+
+func TestAutoEnabledDisablesNonTerminalWriters(t *testing.T) {
+	var buf bytes.Buffer
+	assert.False(t, AutoEnabled(&buf), "buffer output should not be treated as terminal progress")
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create pipe: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = r.Close()
+		_ = w.Close()
+	})
+	assert.False(t, AutoEnabled(w), "pipe output should not be treated as terminal progress")
+
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open devnull: %v", err)
+	}
+	t.Cleanup(func() { _ = devNull.Close() })
+	assert.False(t, AutoEnabled(devNull), "/dev/null should not be treated as terminal progress")
+}
+
+func TestAutoEnabledDisablesCI(t *testing.T) {
+	t.Setenv("CI", "true")
+	t.Setenv("TERM", "xterm-256color")
+
+	assert.False(t, AutoEnabled(os.Stderr), "CI output should not use terminal progress")
+}
+
+func TestAutoDisabledTerminalEmitsNoControlCharacters(t *testing.T) {
+	var buf bytes.Buffer
+	term := NewTerminal("test", 10, AutoEnabled(&buf))
+	term.writer = &buf
+
+	cb := term.Callback()
+	cb("test", 5, 10, "halfway")
+	term.Done("complete")
+
+	assert.NotContains(t, buf.String(), "\r")
+	assert.Empty(t, buf.String())
 }
 
 func TestTerminal_ProgressBarFormat(t *testing.T) {

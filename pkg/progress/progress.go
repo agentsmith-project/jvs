@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
+
+	"github.com/agentsmith-project/jvs/internal/terminal"
 )
 
 // Callback receives progress updates during long operations.
@@ -14,6 +16,15 @@ type Callback func(op string, current, total int, message string)
 
 // Noop is a no-op callback for default behavior.
 func Noop(op string, current, total int, message string) {}
+
+// AutoEnabled reports whether terminal progress output is appropriate.
+func AutoEnabled(writer io.Writer) bool {
+	file, ok := writer.(*os.File)
+	if !ok {
+		return false
+	}
+	return terminal.IsInteractive(file)
+}
 
 // Progress tracks operation progress.
 type Progress struct {
