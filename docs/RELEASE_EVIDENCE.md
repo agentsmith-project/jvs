@@ -111,9 +111,15 @@ pending final tag qualification and the tag-gated release workflow.
   `workflow_dispatch` paths before release publication.
 - Artifact publication: not published for this candidate; artifact counts,
   checksums, and download validation are pending final tag publication.
-- Signing workflow: final artifacts must include `.sig` and `.pem` sidecars
+- Signing workflow: final artifacts must include five platform binaries, five
+  matching binary `.bundle` files, `SHA256SUMS`, and `SHA256SUMS.bundle`
   produced by the tag-gated release workflow.
-- Signing command family: `cosign sign-blob --yes`
+- Signing command family:
+  `cosign sign-blob --yes --bundle=<artifact>.bundle <artifact>`
+- Pre-upload verification: the release job must run `test -s` for every
+  published artifact, `sha256sum --check --strict SHA256SUMS`, and
+  `cosign verify-blob <artifact> --bundle <artifact>.bundle` with the release
+  workflow certificate identity and OIDC issuer.
 - Certificate identity rule:
   `https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@<workflow-ref>`
 - OIDC issuer: `https://token.actions.githubusercontent.com`

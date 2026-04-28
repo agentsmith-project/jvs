@@ -1454,8 +1454,9 @@ func TestDocs_ReleaseReadinessSectionsConsistentWithPolicy(t *testing.T) {
 		"## Risk labels",
 		"## Migration notes",
 		"SHA256SUMS",
-		".sig",
-		".pem",
+		".bundle",
+		"SHA256SUMS.bundle",
+		"cosign verify-blob",
 	} {
 		if !strings.Contains(workflowNotes, required) {
 			t.Fatalf("generated release notes must include %q", required)
@@ -1464,7 +1465,7 @@ func TestDocs_ReleaseReadinessSectionsConsistentWithPolicy(t *testing.T) {
 
 	for _, required := range []string{
 		"remote push/pull",
-		"signing commands",
+		"in-JVS signing commands",
 		"compression contracts",
 		"merge/rebase",
 		"complex retention policy flags",
@@ -1486,6 +1487,13 @@ func TestDocs_ReleaseReadinessSectionsConsistentWithPolicy(t *testing.T) {
 	)
 	requireReleaseReadinessAbsentText(t, "latest changelog entry", changelogEntry, "partial checkpoint contracts")
 	requireReleaseReadinessAbsentText(t, "generated release notes", workflowNotes, "partial checkpoint contracts")
+	requireReleaseReadinessAbsentText(t, "latest changelog entry", changelogEntry, "v0 does not include signing commands")
+	requireReleaseReadinessAbsentText(t, "generated release notes", workflowNotes, "v0 does not include signing commands")
+	requireReleaseReadinessAbsentText(t, "generated release notes", workflowNotes, "SHA256SUMS.sig")
+	requireReleaseReadinessAbsentText(t, "generated release notes", workflowNotes, "jvs-linux-amd64.sig")
+	requireReleaseReadinessAbsentText(t, "generated release notes", workflowNotes, "jvs-linux-amd64.pem")
+	requireReleaseReadinessAbsentText(t, "generated release notes", workflowNotes, ".sig and .pem")
+	requireReleaseReadinessAbsentText(t, "generated release notes", workflowNotes, "--signature")
 
 	for _, required := range runtimeStateBoundaryTerms() {
 		requireReleaseReadinessText(t, "latest changelog entry runtime-state boundary", changelogEntry, required)

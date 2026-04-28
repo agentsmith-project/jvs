@@ -125,19 +125,18 @@ JVS relies on OS-level filesystem permissions for access control:
 - [Security Model Specification](docs/09_SECURITY_MODEL.md)
 - [Threat Model](docs/10_THREAT_MODEL.md)
 - [Conformance Test Plan](docs/11_CONFORMANCE_TEST_PLAN.md) (includes integrity tests)
-- [Release Signing and Verification](docs/SIGNING.md) (binary signature verification)
+- [Release Signing and Verification](docs/SIGNING.md) (binary bundle verification)
 
 ## Release Verification
 
 Release artifact signing verifies distribution binaries and checksums. It is
 separate from descriptor signing or in-JVS trust policy, which are not part of
 the stable v0 repository format. For an official release, download the binary
-and its matching `.sig` and `.pem` sidecars before using it:
+and its matching `.bundle` before using it:
 
 ```bash
 cosign verify-blob jvs-linux-amd64 \
-  --signature jvs-linux-amd64.sig \
-  --certificate jvs-linux-amd64.pem \
+  --bundle jvs-linux-amd64.bundle \
   --certificate-identity=https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@<workflow-ref> \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com
 ```
@@ -146,7 +145,7 @@ For tag-push releases, `<workflow-ref>` is usually `refs/tags/vX.Y.Z`. Manual
 `workflow_dispatch` releases may have a certificate identity bound to the
 workflow ref that launched the run while the artifacts are checked out from and
 published as the requested tag. See [docs/SIGNING.md](docs/SIGNING.md) for the
-full verification flow, including `SHA256SUMS.sig` and `SHA256SUMS.pem`.
+full verification flow, including `SHA256SUMS.bundle`.
 
 ---
 

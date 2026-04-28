@@ -312,6 +312,29 @@ func TestReleaseWorkflowNotesIncludeRuntimeStateBoundary(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowNotesBuildArtifactsListCosignV3Bundles(t *testing.T) {
+	root := repoRoot(t)
+	workflow := readWorkflow(t, root)
+	jobs := requireMappingValue(t, workflow, "jobs")
+	release := requireMappingValue(t, jobs, "release")
+	notes := requireStepNamed(t, release, "Generate release notes")
+	run := scalarValue(t, requireMappingValue(t, notes, "run"))
+	buildArtifacts := releaseNotesBlockBefore(t, run, "## Build Artifacts", "### Verification")
+
+	for _, binary := range expectedReleaseBinaries() {
+		requireContains(t, buildArtifacts, binary)
+	}
+	for _, required := range []string{
+		"### Binaries",
+		"5 binaries",
+		"matching `.bundle` files",
+		"`SHA256SUMS` - SHA-256 hashes for the published binaries",
+		"`SHA256SUMS.bundle` - cosign v3 bundle for `SHA256SUMS`",
+	} {
+		requireContains(t, buildArtifacts, required)
+	}
+}
+
 func TestReleaseWorkflowNotesUseSigningGuideAndGASections(t *testing.T) {
 	root := repoRoot(t)
 	workflow := readWorkflow(t, root)
@@ -323,10 +346,9 @@ func TestReleaseWorkflowNotesUseSigningGuideAndGASections(t *testing.T) {
 	for _, required := range []string{
 		"docs/SIGNING.md",
 		"cosign verify-blob jvs-linux-amd64",
-		"--signature jvs-linux-amd64.sig",
-		"--certificate jvs-linux-amd64.pem",
-		"SHA256SUMS.sig",
-		"SHA256SUMS.pem",
+		"--bundle jvs-linux-amd64.bundle",
+		"cosign verify-blob SHA256SUMS",
+		"--bundle SHA256SUMS.bundle",
 		`CERTIFICATE_IDENTITY="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/ci.yml@${GITHUB_REF}"`,
 		"--certificate-identity=${CERTIFICATE_IDENTITY}",
 		"--certificate-oidc-issuer=https://token.actions.githubusercontent.com",
@@ -335,7 +357,7 @@ func TestReleaseWorkflowNotesUseSigningGuideAndGASections(t *testing.T) {
 		"refs/tags",
 		"## Known limitations",
 		"remote push/pull",
-		"signing commands",
+		"in-JVS signing commands",
 		"public partial-save contracts",
 		"compression contracts",
 		"merge/rebase",
@@ -350,6 +372,11 @@ func TestReleaseWorkflowNotesUseSigningGuideAndGASections(t *testing.T) {
 		requireContains(t, run, required)
 	}
 	for _, legacy := range []string{
+		"--signature jvs-linux-amd64.sig",
+		"--certificate jvs-linux-amd64.pem",
+		"SHA256SUMS.sig",
+		"SHA256SUMS.pem",
+		".sig and .pem sidecars",
 		"partial checkpoint contracts",
 		"checkpoint payloads",
 		"jvs verify --all",
@@ -380,6 +407,33 @@ func TestActiveChangelogPromotesCleanupCommand(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowSignsCosignV3Bundles(t *testing.T) {
+	root := repoRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read CI workflow: %v", err)
+	}
+	workflowText := string(data)
+	for _, legacyFlag := range []string{"--output-signature", "--output-certificate"} {
+		requireNotContains(t, workflowText, legacyFlag)
+	}
+
+	workflow := readWorkflow(t, root)
+	jobs := requireMappingValue(t, workflow, "jobs")
+	release := requireMappingValue(t, jobs, "release")
+
+	signBinaries := requireStepNamed(t, release, "Sign binaries with cosign")
+	signBinariesRun := scalarValue(t, requireMappingValue(t, signBinaries, "run"))
+	for _, binary := range expectedReleaseBinaries() {
+		requireContains(t, signBinariesRun, binary)
+	}
+	requireContains(t, signBinariesRun, `cosign sign-blob --yes --bundle="${binary}.bundle" "${binary}"`)
+
+	signChecksums := requireStepNamed(t, release, "Sign checksums file")
+	signChecksumsRun := scalarValue(t, requireMappingValue(t, signChecksums, "run"))
+	requireContains(t, signChecksumsRun, `cosign sign-blob --yes --bundle="SHA256SUMS.bundle" "SHA256SUMS"`)
+}
+
 func TestReleaseWorkflowVerifiesArtifactsBeforeUpload(t *testing.T) {
 	root := repoRoot(t)
 	workflow := readWorkflow(t, root)
@@ -404,6 +458,28 @@ func TestReleaseWorkflowVerifiesArtifactsBeforeUpload(t *testing.T) {
 	requireSameStringSet(t, verifiedArtifacts, expectedReleaseArtifacts())
 	requireSameStringSet(t, uploadedArtifacts, verifiedArtifacts)
 	requireSha256sumStrictCheck(t, run)
+}
+
+func TestReleaseWorkflowVerifiesCosignBundlesBeforeUpload(t *testing.T) {
+	root := repoRoot(t)
+	workflow := readWorkflow(t, root)
+	jobs := requireMappingValue(t, workflow, "jobs")
+	release := requireMappingValue(t, jobs, "release")
+	verify := requireStepNamed(t, release, "Verify release artifacts")
+	run := scalarValue(t, requireMappingValue(t, verify, "run"))
+
+	requireContains(t, run, `CERTIFICATE_IDENTITY="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/ci.yml@${GITHUB_REF}"`)
+	for _, payload := range append(expectedReleaseBinaries(), "SHA256SUMS") {
+		requireContains(t, run, payload)
+	}
+	for _, required := range []string{
+		`cosign verify-blob "$payload"`,
+		`--bundle "${payload}.bundle"`,
+		`--certificate-identity="$CERTIFICATE_IDENTITY"`,
+		"--certificate-oidc-issuer=https://token.actions.githubusercontent.com",
+	} {
+		requireContains(t, run, required)
+	}
 }
 
 func TestReleaseArtifactsVerifiedWithTestSRejectsWeakeningTokens(t *testing.T) {
@@ -1450,6 +1526,20 @@ func stringSliceContains(values []string, want string) bool {
 	return false
 }
 
+func releaseNotesBlockBefore(t *testing.T, run, startMarker, endMarker string) string {
+	t.Helper()
+	start := strings.Index(run, startMarker)
+	if start < 0 {
+		t.Fatalf("release notes script must contain %q", startMarker)
+	}
+	rest := run[start:]
+	end := strings.Index(rest, endMarker)
+	if end < 0 {
+		t.Fatalf("release notes script block starting at %q must end before %q", startMarker, endMarker)
+	}
+	return rest[:end]
+}
+
 func requireContains(t *testing.T, got, want string) {
 	t.Helper()
 	if !strings.Contains(got, want) {
@@ -1513,11 +1603,11 @@ func expectedReleaseBuildTargets() []releaseBuildTarget {
 
 func expectedReleaseArtifacts() []string {
 	binaries := expectedReleaseBinaries()
-	artifacts := make([]string, 0, len(binaries)*3+3)
+	artifacts := make([]string, 0, len(binaries)*2+2)
 	for _, binary := range binaries {
-		artifacts = append(artifacts, binary, binary+".sig", binary+".pem")
+		artifacts = append(artifacts, binary, binary+".bundle")
 	}
-	return append(artifacts, "SHA256SUMS", "SHA256SUMS.sig", "SHA256SUMS.pem")
+	return append(artifacts, "SHA256SUMS", "SHA256SUMS.bundle")
 }
 
 func releaseBinariesChecksummedBySha256sum(t *testing.T, run string) []string {

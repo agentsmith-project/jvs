@@ -39,7 +39,7 @@ restore, recovery plan, doctor, and cleanup.
 ### Known limitations
 
 - v0 does not include remote push/pull.
-- v0 does not include signing commands.
+- v0 does not include in-JVS signing commands.
 - v0 does not include public partial-save contracts.
 - v0 does not include compression contracts.
 - v0 does not include merge/rebase.
@@ -87,5 +87,6 @@ restore, recovery plan, doctor, and cleanup.
 ### Release artifacts
 
 - No release artifacts have been published for this candidate entry. Final
-  binaries, `SHA256SUMS`, `.sig`, and `.pem` artifacts must be produced by the
-  tag-gated release workflow after `make release-gate` succeeds.
+  binaries, matching `.bundle` files, `SHA256SUMS`, and `SHA256SUMS.bundle`
+  must be produced by the tag-gated release workflow after `make release-gate`
+  succeeds.

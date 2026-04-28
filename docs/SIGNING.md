@@ -14,10 +14,11 @@ contract.
 Each signed release includes:
 
 1. **Binaries** - Pre-built executables for multiple platforms
-2. **Binary signatures** - `.sig` files containing signatures for each binary
-3. **Binary certificates** - `.pem` files containing X.509 certificates from the signing workflow
-4. **Checksums** - `SHA256SUMS` containing SHA-256 hashes for the published `jvs-*` artifacts
-5. **Checksums signature** - `SHA256SUMS.sig` and `SHA256SUMS.pem` for the checksums file
+2. **Binary bundles** - `.bundle` files containing cosign v3 verification
+   material for each binary
+3. **Checksums** - `SHA256SUMS` containing SHA-256 hashes for the published
+   `jvs-*` binaries
+4. **Checksums bundle** - `SHA256SUMS.bundle` for the checksums file
 
 ## Verification
 
@@ -40,19 +41,17 @@ go install github.com/sigstore/cosign/v3/cmd/cosign@v3.0.5
 
 ### Verifying a Binary
 
-To verify a downloaded binary, download the binary and its matching `.sig` and
-`.pem` sidecar files from the same release:
+To verify a downloaded binary, download the binary and its matching `.bundle`
+file from the same release:
 
 ```bash
-# Download the binary, signature, and certificate
+# Download the binary and bundle
 wget https://github.com/agentsmith-project/jvs/releases/download/vX.Y.Z/jvs-linux-amd64
-wget https://github.com/agentsmith-project/jvs/releases/download/vX.Y.Z/jvs-linux-amd64.sig
-wget https://github.com/agentsmith-project/jvs/releases/download/vX.Y.Z/jvs-linux-amd64.pem
+wget https://github.com/agentsmith-project/jvs/releases/download/vX.Y.Z/jvs-linux-amd64.bundle
 
 # Verify using cosign
 cosign verify-blob jvs-linux-amd64 \
-  --signature jvs-linux-amd64.sig \
-  --certificate jvs-linux-amd64.pem \
+  --bundle jvs-linux-amd64.bundle \
   --certificate-identity=https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@<workflow-ref> \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com
 ```
@@ -67,15 +66,13 @@ Verified OK
 To verify the SHA256SUMS file:
 
 ```bash
-# Download checksums and signature
+# Download checksums and bundle
 wget https://github.com/agentsmith-project/jvs/releases/download/vX.Y.Z/SHA256SUMS
-wget https://github.com/agentsmith-project/jvs/releases/download/vX.Y.Z/SHA256SUMS.sig
-wget https://github.com/agentsmith-project/jvs/releases/download/vX.Y.Z/SHA256SUMS.pem
+wget https://github.com/agentsmith-project/jvs/releases/download/vX.Y.Z/SHA256SUMS.bundle
 
 # Verify the checksums file
 cosign verify-blob SHA256SUMS \
-  --signature SHA256SUMS.sig \
-  --certificate SHA256SUMS.pem \
+  --bundle SHA256SUMS.bundle \
   --certificate-identity=https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@<workflow-ref> \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com
 ```
@@ -98,8 +95,7 @@ For tag-push releases, `<workflow-ref>` is the tag ref, for example
 `refs/tags/vX.Y.Z`. For manual `workflow_dispatch` releases, the release
 workflow checks out and publishes `refs/tags/<tag>`, but the signing
 certificate identity can remain the workflow ref that launched the run. Use the
-identity printed in the release notes or inspect the downloaded `.pem`
-certificate if you need to confirm the exact ref.
+identity printed in the release notes when verifying downloaded artifacts.
 
 This ensures the binary was built and signed by the official JVS CI workflow
 running on GitHub Actions.
@@ -117,8 +113,8 @@ but does not prove release authenticity:
 sha256sum -c --ignore-missing SHA256SUMS
 ```
 
-Treat a release artifact as unsigned if the matching `.sig` and `.pem` files are
-not present.
+Treat a release artifact as unsigned if the matching `.bundle` file is not
+present.
 
 ## Security Considerations
 

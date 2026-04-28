@@ -235,23 +235,30 @@ jobs:
             echo "## Build Artifacts"
             echo ""
             echo "### Binaries"
-            echo "- jvs-linux-amd64 - Linux x86_64"
-            echo "- jvs-linux-arm64 - Linux ARM64"
-            echo "- jvs-darwin-amd64 - macOS x86_64"
-            echo "- jvs-darwin-arm64 - macOS ARM64 (Apple Silicon)"
-            echo "- jvs-windows-amd64.exe - Windows x86_64"
-            echo "- SHA256SUMS - SHA-256 hashes for the published binaries"
+            echo "- 5 binaries:"
+            echo "  - jvs-linux-amd64 - Linux x86_64"
+            echo "  - jvs-linux-arm64 - Linux ARM64"
+            echo "  - jvs-darwin-amd64 - macOS x86_64"
+            echo "  - jvs-darwin-arm64 - macOS ARM64 (Apple Silicon)"
+            echo "  - jvs-windows-amd64.exe - Windows x86_64"
+            echo '- matching `.bundle` files for each binary'
+            echo '- `SHA256SUMS` - SHA-256 hashes for the published binaries'
+            echo '- `SHA256SUMS.bundle` - cosign v3 bundle for `SHA256SUMS`'
             echo ""
             echo "### Verification"
-            echo "All binaries are signed using Sigstore/cosign. Download the binary with its matching .sig and .pem sidecars; see docs/SIGNING.md for the full guide."
+            echo "All binaries and SHA256SUMS are signed using Sigstore/cosign v3 bundle files. Download each artifact with its matching .bundle; see docs/SIGNING.md for the full guide."
             echo ""
             echo "    cosign verify-blob jvs-linux-amd64 \\"
-            echo "      --signature jvs-linux-amd64.sig \\"
-            echo "      --certificate jvs-linux-amd64.pem \\"
+            echo "      --bundle jvs-linux-amd64.bundle \\"
             echo "      --certificate-identity=${CERTIFICATE_IDENTITY} \\"
             echo "      --certificate-oidc-issuer=https://token.actions.githubusercontent.com"
             echo ""
-            echo "Verify the checksum file with SHA256SUMS.sig and SHA256SUMS.pem, then run sha256sum -c --ignore-missing SHA256SUMS."
+            echo "    cosign verify-blob SHA256SUMS \\"
+            echo "      --bundle SHA256SUMS.bundle \\"
+            echo "      --certificate-identity=${CERTIFICATE_IDENTITY} \\"
+            echo "      --certificate-oidc-issuer=https://token.actions.githubusercontent.com"
+            echo ""
+            echo "After verifying SHA256SUMS, run sha256sum -c --ignore-missing SHA256SUMS."
             echo "- For tag-push releases, the signing certificate identity is the tag ref, for example refs/tags/${RELEASE_TAG}."
             echo "- For manual workflow_dispatch releases, artifacts are checked out from refs/tags/${RELEASE_TAG} and published as ${RELEASE_TAG}, but the signing certificate identity remains the workflow ref (${GITHUB_REF}) that launched the run."
             echo ""
@@ -275,8 +282,16 @@ jobs:
 
       - name: Sign binaries with cosign
         run: |
-          for binary in bin/jvs-*; do
-            cosign sign-blob --yes --output-signature="${binary}.sig" --output-certificate="${binary}.pem" "${binary}"
+          set -eu
+          cd bin
+          for binary in \
+            jvs-linux-amd64 \
+            jvs-linux-arm64 \
+            jvs-darwin-amd64 \
+            jvs-darwin-arm64 \
+            jvs-windows-amd64.exe
+          do
+            cosign sign-blob --yes --bundle="${binary}.bundle" "${binary}"
           done
 
       - name: Create checksums
@@ -292,58 +307,62 @@ jobs:
 
       - name: Sign checksums file
         run: |
-          cosign sign-blob --yes --output-signature="bin/SHA256SUMS.sig" --output-certificate="bin/SHA256SUMS.pem" "bin/SHA256SUMS"
+          set -eu
+          cd bin
+          cosign sign-blob --yes --bundle="SHA256SUMS.bundle" "SHA256SUMS"
 
       - name: Verify release artifacts
         run: |
           set -eu
           cd bin
+          CERTIFICATE_IDENTITY="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/ci.yml@${GITHUB_REF}"
           for artifact in \
             jvs-linux-amd64 \
-            jvs-linux-amd64.sig \
-            jvs-linux-amd64.pem \
+            jvs-linux-amd64.bundle \
             jvs-linux-arm64 \
-            jvs-linux-arm64.sig \
-            jvs-linux-arm64.pem \
+            jvs-linux-arm64.bundle \
             jvs-darwin-amd64 \
-            jvs-darwin-amd64.sig \
-            jvs-darwin-amd64.pem \
+            jvs-darwin-amd64.bundle \
             jvs-darwin-arm64 \
-            jvs-darwin-arm64.sig \
-            jvs-darwin-arm64.pem \
+            jvs-darwin-arm64.bundle \
             jvs-windows-amd64.exe \
-            jvs-windows-amd64.exe.sig \
-            jvs-windows-amd64.exe.pem \
+            jvs-windows-amd64.exe.bundle \
             SHA256SUMS \
-            SHA256SUMS.sig \
-            SHA256SUMS.pem
+            SHA256SUMS.bundle
           do
             test -s "$artifact"
           done
           sha256sum --check --strict SHA256SUMS
+          for payload in \
+            jvs-linux-amd64 \
+            jvs-linux-arm64 \
+            jvs-darwin-amd64 \
+            jvs-darwin-arm64 \
+            jvs-windows-amd64.exe \
+            SHA256SUMS
+          do
+            cosign verify-blob "$payload" \
+              --bundle "${payload}.bundle" \
+              --certificate-identity="$CERTIFICATE_IDENTITY" \
+              --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+          done
 
       - name: Upload artifacts to release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             bin/jvs-linux-amd64
-            bin/jvs-linux-amd64.sig
-            bin/jvs-linux-amd64.pem
+            bin/jvs-linux-amd64.bundle
             bin/jvs-linux-arm64
-            bin/jvs-linux-arm64.sig
-            bin/jvs-linux-arm64.pem
+            bin/jvs-linux-arm64.bundle
             bin/jvs-darwin-amd64
-            bin/jvs-darwin-amd64.sig
-            bin/jvs-darwin-amd64.pem
+            bin/jvs-darwin-amd64.bundle
             bin/jvs-darwin-arm64
-            bin/jvs-darwin-arm64.sig
-            bin/jvs-darwin-arm64.pem
+            bin/jvs-darwin-arm64.bundle
             bin/jvs-windows-amd64.exe
-            bin/jvs-windows-amd64.exe.sig
-            bin/jvs-windows-amd64.exe.pem
+            bin/jvs-windows-amd64.exe.bundle
             bin/SHA256SUMS
-            bin/SHA256SUMS.sig
-            bin/SHA256SUMS.pem
+            bin/SHA256SUMS.bundle
           body_path: release-notes.md
           tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
           draft: false
