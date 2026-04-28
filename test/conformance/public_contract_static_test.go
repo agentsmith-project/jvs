@@ -1941,6 +1941,7 @@ func documentedEngineConstants(section string) []string {
 func publicRuntimeRepairActionIDs() []string {
 	return []string{
 		"clean_locks",
+		"rebind_workspace_paths",
 		"clean_runtime_tmp",
 		"clean_runtime_operations",
 	}

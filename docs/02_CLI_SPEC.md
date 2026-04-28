@@ -355,11 +355,17 @@ Required JSON `data` fields:
 ### `jvs doctor [--strict] [--repair-runtime] [--repair-list] [--json]`
 
 Check repository health. `--strict` includes full save point integrity
-verification. `--repair-runtime` is limited to safe runtime cleanup.
+verification. `--repair-runtime` is limited to safe runtime cleanup and
+destination-local workspace folder path rebinding after filesystem migration.
+If a copied external workspace still points at a source folder, strict doctor
+reports an unhealthy workspace path binding until `--repair-runtime` can prove
+and store the destination sibling binding. A skipped or failed rebind therefore
+leaves `doctor --strict --repair-runtime` unhealthy.
 
 Public automatic repair actions:
 
 - `clean_locks`
+- `rebind_workspace_paths`
 - `clean_runtime_tmp`
 - `clean_runtime_operations`
 

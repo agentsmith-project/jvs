@@ -81,9 +81,13 @@ UX.
 
 - `jvs doctor --strict` validates repository health.
 - `jvs doctor --repair-list` lists only public runtime repair IDs:
-  `clean_locks`, `clean_runtime_tmp`, and `clean_runtime_operations`.
+  `clean_locks`, `rebind_workspace_paths`, `clean_runtime_tmp`, and
+  `clean_runtime_operations`.
 - `jvs doctor --strict --repair-runtime` does not rewrite durable save point
   history, workspace provenance, or audit history.
+- Physical-copy migration tests cover destination-local workspace path rebinding
+  while source paths are both offline and still mounted, including external
+  workspace siblings that are safely rebound, missing, or content-mismatched.
 
 ### Cleanup Layering
 

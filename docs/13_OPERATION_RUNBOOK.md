@@ -29,6 +29,8 @@ history.
 2. Run `jvs doctor --repair-list` and confirm only public runtime repairs are
    available:
    - `clean_locks`: removes stale repository mutation locks
+   - `rebind_workspace_paths`: rebinds safe workspace folder paths after a
+     filesystem migration
    - `clean_runtime_tmp`: removes stale JVS runtime temporary files
    - `clean_runtime_operations`: removes abandoned operation records
 3. Run `jvs doctor --strict --repair-runtime`.

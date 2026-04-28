@@ -48,8 +48,13 @@ terms.
 - Restore run binds to a preview plan and revalidates expected target state.
 - Interrupted restore creates or preserves a recovery plan.
 - Active recovery plans block new restore runs in the same workspace.
-- Runtime repair is limited to `clean_locks`, `clean_runtime_tmp`, and
-  `clean_runtime_operations`.
+- Runtime repair is limited to `clean_locks`, `rebind_workspace_paths`,
+  `clean_runtime_tmp`, and `clean_runtime_operations`.
+- Workspace path rebinding uses registry and boundary validation. Adopted
+  `main` binds to the current repository folder; external workspaces rebind
+  only when destination-local content can be proven to match the recorded
+  content source. If that proof is missing, strict doctor keeps the workspace
+  path binding unhealthy instead of trusting an online source folder.
 
 ## Non-Goals
 

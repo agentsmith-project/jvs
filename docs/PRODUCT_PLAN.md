@@ -191,11 +191,15 @@ state, lineage/provenance consistency, integrity, and audit-chain health.
 Public automatic repair is intentionally narrow:
 
 - `clean_locks`
+- `rebind_workspace_paths`
 - `clean_runtime_tmp`
 - `clean_runtime_operations`
 
 Doctor must not rewrite durable save point history, workspace provenance, or
 audit history as an automatic repair.
+After a physical copy or storage migration, adopted `main` is rebound to the
+current folder. External workspace folders rebind only with destination-local
+content evidence.
 
 ## Cleanup
 

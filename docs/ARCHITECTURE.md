@@ -201,7 +201,8 @@ The repository/project coordinates:
 
 The repository must keep runtime state separate from durable published state.
 Runtime lock files, operation records, and cleanup runtime plan files are
-non-portable across backup/migration.
+non-portable across backup/migration. Workspace folder real-path bindings are
+destination-local runtime bindings and are repaired at the destination.
 
 ## Engine Model
 
@@ -236,6 +237,7 @@ Doctor checks repository health and reports stable findings.
 Automatic repair is limited to runtime state:
 
 - `clean_locks`
+- `rebind_workspace_paths`
 - `clean_runtime_tmp`
 - `clean_runtime_operations`
 

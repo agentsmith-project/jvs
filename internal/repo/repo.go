@@ -648,6 +648,22 @@ func ValidateWorktreeRealPathRegistry(repoRoot string) error {
 	return validateWorktreePathCandidates(repoRoot, candidates)
 }
 
+// ValidateWorktreeRealPathForRepair validates a replacement real path and
+// returns the canonical physical path that should be stored.
+func ValidateWorktreeRealPathForRepair(repoRoot, name, realPath string) (string, error) {
+	if err := pathutil.ValidateName(name); err != nil {
+		return "", err
+	}
+	candidate, err := configuredWorktreePathCandidate(repoRoot, name, realPath)
+	if err != nil {
+		return "", err
+	}
+	if err := validateWorktreeRegistryWithRepairCandidate(repoRoot, candidate); err != nil {
+		return "", err
+	}
+	return candidate.physicalPath, nil
+}
+
 type worktreePathCandidate struct {
 	name         string
 	path         string
@@ -765,6 +781,18 @@ func validateWorktreeRegistryWithCandidate(repoRoot string, candidate worktreePa
 	return validateWorktreePathCandidates(repoRoot, candidates)
 }
 
+func validateWorktreeRegistryWithRepairCandidate(repoRoot string, candidate worktreePathCandidate) error {
+	candidates, err := registeredWorktreePathCandidatesForRepair(repoRoot, candidate.name)
+	if err != nil {
+		if errors.Is(err, errWorktreeRegistryMissing) {
+			return nil
+		}
+		return err
+	}
+	candidates = append(candidates, candidate)
+	return validateWorktreePathCandidates(repoRoot, candidates)
+}
+
 func registeredWorktreePathCandidates(repoRoot string) ([]worktreePathCandidate, error) {
 	worktreesDir, err := WorktreesDirPath(repoRoot)
 	if err != nil {
@@ -799,6 +827,53 @@ func registeredWorktreePathCandidates(repoRoot string) ([]worktreePathCandidate,
 		}
 		candidate, err := worktreePathCandidateFromConfig(repoRoot, name, cfg, true)
 		if err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, candidate)
+	}
+	return candidates, nil
+}
+
+func registeredWorktreePathCandidatesForRepair(repoRoot, replacedName string) ([]worktreePathCandidate, error) {
+	worktreesDir, err := WorktreesDirPath(repoRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%w: %v", errWorktreeRegistryMissing, err)
+		}
+		return nil, fmt.Errorf("resolve workspaces directory: %w", err)
+	}
+	entries, err := os.ReadDir(worktreesDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%w: %v", errWorktreeRegistryMissing, err)
+		}
+		return nil, fmt.Errorf("read workspaces directory: %w", err)
+	}
+
+	candidates := make([]worktreePathCandidate, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("worktree metadata entry is symlink: %s", entry.Name())
+		}
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if err := pathutil.ValidateName(name); err != nil {
+			return nil, fmt.Errorf("worktree metadata entry %s: %w", name, err)
+		}
+		if name == replacedName {
+			continue
+		}
+		cfg, err := LoadWorktreeConfig(repoRoot, name)
+		if err != nil {
+			return nil, fmt.Errorf("load worktree %s: %w", name, err)
+		}
+		candidate, err := worktreePathCandidateFromConfig(repoRoot, name, cfg, true)
+		if err != nil {
+			if cfg.RealPath != "" && errors.Is(err, os.ErrNotExist) {
+				continue
+			}
 			return nil, err
 		}
 		candidates = append(candidates, candidate)

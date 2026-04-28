@@ -32,6 +32,7 @@ Runtime state is non-portable and must not be migrated as authoritative state:
 - active `.jvs/locks/` repository mutation locks
 - active `.jvs/intents/` operation records
 - active `.jvs/gc/*.json` internal cleanup runtime plans
+- destination-local workspace folder path bindings
 
 Destination MUST rebuild runtime state:
 
@@ -42,7 +43,13 @@ jvs doctor --strict --repair-runtime
 Mutation locks are host/process-specific; a lock copied from another host is
 treated as held and can block destination writes until repaired. Active cleanup
 runtime plans are repository-bound runtime state; create a new cleanup preview
-after migration instead of reusing copied plans.
+after migration instead of reusing copied plans. Workspace folder path bindings
+that still point at the source volume are destination-local: adopted `main`
+binds to the current folder, and external workspace folders rebind only when
+the destination sibling can be proven safe. If an external workspace sibling is
+missing, a symlink, or has content that does not match the recorded content
+source, `doctor --strict --repair-runtime` remains unhealthy and reports the
+workspace path binding until the destination sibling is synced correctly.
 
 ## Migration Flow
 
@@ -62,6 +69,9 @@ after migration instead of reusing copied plans.
    jvs doctor --strict
    jvs history --json | jq '.data.save_points[:10]'
    ```
+   A non-zero doctor result means some runtime state could not be rebuilt
+   safely; fix the reported binding or runtime issue before using the copied
+   repository.
 4. Run the restore drill from `docs/13_OPERATION_RUNBOOK.md`.
 
 ## What To Sync

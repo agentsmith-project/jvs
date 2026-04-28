@@ -86,6 +86,7 @@ type Doctor struct {
 
 const (
 	RepairCleanLocks             = "clean_locks"
+	RepairRebindWorkspacePaths   = "rebind_workspace_paths"
 	RepairCleanRuntimeTmp        = "clean_runtime_tmp"
 	RepairCleanRuntimeOperations = "clean_runtime_operations"
 )
@@ -96,6 +97,7 @@ const (
 	ErrorCodeFormatVersionUnsupported    = "E_FORMAT_VERSION_UNSUPPORTED"
 	ErrorCodeWorktreeListFailed          = "E_WORKTREE_LIST_FAILED"
 	ErrorCodeWorktreePayloadInvalid      = "E_WORKTREE_PAYLOAD_INVALID"
+	ErrorCodeWorktreePathBindingInvalid  = "E_WORKTREE_PATH_BINDING_INVALID"
 	ErrorCodeWorktreePayloadMissing      = "E_WORKTREE_PAYLOAD_MISSING"
 	ErrorCodeWorktreeHeadMissing         = "E_WORKTREE_HEAD_MISSING"
 	ErrorCodeWorktreeHeadInvalid         = "E_WORKTREE_HEAD_INVALID"
@@ -129,6 +131,18 @@ var repairRegistry = []repairActionDef{
 		Implemented: true,
 		run: func(d *Doctor) RepairResult {
 			return d.repairCleanLocks()
+		},
+	},
+	{
+		RepairAction: RepairAction{
+			ID:          RepairRebindWorkspacePaths,
+			Description: "Rebind workspace folder paths after filesystem migration",
+			AutoSafe:    true,
+		},
+		RuntimeSafe: true,
+		Implemented: true,
+		run: func(d *Doctor) RepairResult {
+			return d.repairRebindWorkspacePaths()
 		},
 	},
 	{
@@ -286,6 +300,194 @@ func (d *Doctor) repairCleanLocks() RepairResult {
 		Success: true,
 		Message: "cleaned 0 stale repository locks",
 	}
+}
+
+func (d *Doctor) repairRebindWorkspacePaths() RepairResult {
+	mgr := worktree.NewManager(d.repoRoot)
+	list, err := mgr.List()
+	if err != nil {
+		return RepairResult{Action: RepairRebindWorkspacePaths, Success: false, Message: err.Error()}
+	}
+
+	rebound := 0
+	skipped := 0
+	failed := 0
+	var reasons []string
+	for _, cfg := range list {
+		if cfg == nil || strings.TrimSpace(cfg.RealPath) == "" {
+			continue
+		}
+		candidate, needsRebind, ok, reason := d.workspaceRebindPlan(cfg)
+		if !needsRebind {
+			continue
+		}
+		if !ok {
+			skipped++
+			reasons = append(reasons, fmt.Sprintf("%s: %s", cfg.Name, reason))
+			continue
+		}
+		if err := mgr.RebindRealPath(cfg.Name, candidate); err != nil {
+			failed++
+			reasons = append(reasons, fmt.Sprintf("%s: %v", cfg.Name, err))
+			continue
+		}
+		rebound++
+	}
+
+	success := skipped == 0 && failed == 0
+	message := fmt.Sprintf("rebound %d workspace path bindings", rebound)
+	if skipped > 0 {
+		message = fmt.Sprintf("%s; skipped %d without safe destination evidence", message, skipped)
+	}
+	if failed > 0 {
+		message = fmt.Sprintf("%s; failed to rebind %d", message, failed)
+	}
+	if len(reasons) > 0 {
+		message = fmt.Sprintf("%s (%s)", message, summarizeRepairReasons(reasons))
+	}
+	return RepairResult{
+		Action:  RepairRebindWorkspacePaths,
+		Success: success,
+		Message: message,
+		Cleaned: rebound,
+	}
+}
+
+func (d *Doctor) workspaceRebindPlan(cfg *model.WorktreeConfig) (candidate string, needsRebind bool, ok bool, reason string) {
+	if cfg.Name == "main" {
+		return d.mainWorkspaceRebindPlan(cfg)
+	}
+	return d.externalWorkspaceRebindPlan(cfg)
+}
+
+func (d *Doctor) mainWorkspaceRebindPlan(cfg *model.WorktreeConfig) (string, bool, bool, string) {
+	if strings.TrimSpace(cfg.RealPath) == "" || !filepath.IsAbs(cfg.RealPath) {
+		return "", false, false, ""
+	}
+	if pathsReferToSameLocation(cfg.RealPath, d.repoRoot) {
+		return "", false, true, ""
+	}
+	return d.repoRoot, true, true, ""
+}
+
+func (d *Doctor) externalWorkspaceRebindPlan(cfg *model.WorktreeConfig) (string, bool, bool, string) {
+	if strings.TrimSpace(cfg.RealPath) == "" || !filepath.IsAbs(cfg.RealPath) {
+		return "", false, false, ""
+	}
+	candidate := filepath.Join(filepath.Dir(d.repoRoot), cfg.Name)
+	if d.externalWorkspaceBindingIsDestinationLocal(cfg, candidate) {
+		return "", false, true, ""
+	}
+	candidate, ok, reason := d.externalWorkspaceRebindCandidate(cfg, candidate)
+	return candidate, true, ok, reason
+}
+
+func (d *Doctor) externalWorkspaceBindingIsDestinationLocal(cfg *model.WorktreeConfig, candidate string) bool {
+	if cfg == nil || strings.TrimSpace(cfg.RealPath) == "" || !filepath.IsAbs(cfg.RealPath) {
+		return false
+	}
+	configured, ok := cleanAbsPathForCompare(cfg.RealPath)
+	if !ok {
+		return false
+	}
+	local, ok := cleanAbsPathForCompare(candidate)
+	if !ok {
+		return false
+	}
+
+	info, err := os.Lstat(local)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return configured == local
+		}
+		return false
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	if configured == local {
+		return true
+	}
+	if !info.IsDir() {
+		return false
+	}
+	return pathsReferToSameLocation(configured, local)
+}
+
+func (d *Doctor) externalWorkspaceRebindCandidate(cfg *model.WorktreeConfig, candidate string) (string, bool, string) {
+	if filepath.Base(filepath.Clean(cfg.RealPath)) != cfg.Name {
+		return "", false, "configured folder name does not match workspace name"
+	}
+	info, err := os.Lstat(candidate)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, "destination sibling folder is missing"
+		}
+		return "", false, fmt.Sprintf("inspect destination sibling folder: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", false, "destination sibling folder is a symlink"
+	}
+	if !info.IsDir() {
+		return "", false, "destination sibling path is not a directory"
+	}
+	if ok, reason := d.externalWorkspaceCandidateMatchesRecordedSource(cfg, candidate); !ok {
+		return "", false, reason
+	}
+	return candidate, true, ""
+}
+
+func (d *Doctor) externalWorkspaceCandidateMatchesRecordedSource(cfg *model.WorktreeConfig, candidate string) (bool, string) {
+	if cfg.HeadSnapshotID == "" {
+		return false, "workspace has no recorded content source"
+	}
+	if len(cfg.PathSources) > 0 {
+		return false, "workspace has restored path sources"
+	}
+	desc, err := snapshot.LoadDescriptor(d.repoRoot, cfg.HeadSnapshotID)
+	if err != nil {
+		return false, fmt.Sprintf("load content source save point: %v", err)
+	}
+	if len(desc.PartialPaths) > 0 {
+		return false, "content source is a partial save point"
+	}
+	hash, err := integrity.ComputePayloadRootHash(candidate)
+	if err != nil {
+		return false, fmt.Sprintf("hash destination sibling folder: %v", err)
+	}
+	if hash != desc.PayloadRootHash {
+		return false, "destination sibling content does not match recorded content source"
+	}
+	return true, ""
+}
+
+func pathsReferToSameLocation(left, right string) bool {
+	leftAbs, leftOK := cleanAbsPathForCompare(left)
+	rightAbs, rightOK := cleanAbsPathForCompare(right)
+	if !leftOK || !rightOK {
+		return false
+	}
+	if leftAbs == rightAbs {
+		return true
+	}
+
+	leftPhysical, leftErr := filepath.EvalSymlinks(leftAbs)
+	rightPhysical, rightErr := filepath.EvalSymlinks(rightAbs)
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	return filepath.Clean(leftPhysical) == filepath.Clean(rightPhysical)
+}
+
+func cleanAbsPathForCompare(path string) (string, bool) {
+	if strings.TrimSpace(path) == "" || !filepath.IsAbs(path) {
+		return "", false
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", false
+	}
+	return filepath.Clean(abs), true
 }
 
 func (d *Doctor) repairCleanTmp() RepairResult {
@@ -836,6 +1038,8 @@ func (d *Doctor) checkWorktrees(result *Result) {
 	}
 
 	for _, cfg := range list {
+		d.checkWorkspaceLocalBinding(result, cfg)
+
 		// Check payload directory exists
 		payloadPath, err := wtMgr.Path(cfg.Name)
 		if err != nil {
@@ -881,6 +1085,48 @@ func (d *Doctor) checkWorktrees(result *Result) {
 			}
 		}
 	}
+}
+
+func (d *Doctor) checkWorkspaceLocalBinding(result *Result, cfg *model.WorktreeConfig) {
+	if cfg == nil || strings.TrimSpace(cfg.RealPath) == "" {
+		return
+	}
+	if cfg.Name == "main" {
+		d.checkMainWorkspaceLocalBinding(result, cfg)
+		return
+	}
+	d.checkExternalWorkspaceLocalBinding(result, cfg)
+}
+
+func (d *Doctor) checkMainWorkspaceLocalBinding(result *Result, cfg *model.WorktreeConfig) {
+	_, needsRebind, _, _ := d.mainWorkspaceRebindPlan(cfg)
+	if !needsRebind {
+		return
+	}
+	result.Findings = append(result.Findings, Finding{
+		Category:    "worktree",
+		Description: fmt.Sprintf("worktree '%s' payload path is bound to a different repository folder; run doctor --repair-runtime", cfg.Name),
+		Severity:    "error",
+		ErrorCode:   ErrorCodeWorktreePayloadInvalid,
+		Path:        cfg.RealPath,
+	})
+}
+
+func (d *Doctor) checkExternalWorkspaceLocalBinding(result *Result, cfg *model.WorktreeConfig) {
+	if !filepath.IsAbs(cfg.RealPath) {
+		return
+	}
+	candidate := filepath.Join(filepath.Dir(d.repoRoot), cfg.Name)
+	if d.externalWorkspaceBindingIsDestinationLocal(cfg, candidate) {
+		return
+	}
+	result.Findings = append(result.Findings, Finding{
+		Category:    "worktree",
+		Description: fmt.Sprintf("worktree '%s' path binding is not destination-local; run doctor --repair-runtime", cfg.Name),
+		Severity:    "error",
+		ErrorCode:   ErrorCodeWorktreePathBindingInvalid,
+		Path:        cfg.RealPath,
+	})
 }
 
 func (d *Doctor) checkWorktreeSnapshotRef(result *Result, worktreeName, field string, id model.SnapshotID) bool {

@@ -672,6 +672,27 @@ func (m *Manager) SetLatest(name string, snapshotID model.SnapshotID) error {
 	return writeWorktreeConfig(m.repoRoot, name, cfg)
 }
 
+// RebindRealPath updates the workspace's destination-local real path after the
+// caller has determined that the new binding is safe.
+func (m *Manager) RebindRealPath(name, realPath string) error {
+	if err := pathutil.ValidateName(name); err != nil {
+		return err
+	}
+	canonical, err := repo.ValidateWorktreeRealPathForRepair(m.repoRoot, name, realPath)
+	if err != nil {
+		return err
+	}
+	cfg, err := repo.LoadWorktreeConfig(m.repoRoot, name)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	if cfg.Name != name {
+		return fmt.Errorf("config name mismatch for %s: %q", name, cfg.Name)
+	}
+	cfg.RealPath = canonical
+	return writeWorktreeConfig(m.repoRoot, name, cfg)
+}
+
 // Fork creates a new worktree from a snapshot with content cloned.
 // The new worktree will be at HEAD state (can create snapshots immediately).
 func (m *Manager) Fork(snapshotID model.SnapshotID, name string, cloneFunc func(src, dst string) error) (*model.WorktreeConfig, error) {
