@@ -44,8 +44,20 @@ type snapshotPublishPaths struct {
 }
 
 type descriptorLineageFunc func(model.SnapshotID, *model.WorktreeConfig) model.WorkspaceSaveLineage
+type SnapshotPayloadStagedHook func(model.SnapshotID, string) error
 
 var ErrDescriptorNotFound = errors.New("descriptor not found")
+var afterSnapshotPayloadStagedHook SnapshotPayloadStagedHook
+
+// SetAfterSnapshotPayloadStagedHookForTest installs a hook used by tests to
+// deterministically simulate a workspace write after payload staging.
+func SetAfterSnapshotPayloadStagedHookForTest(hook SnapshotPayloadStagedHook) func() {
+	previous := afterSnapshotPayloadStagedHook
+	afterSnapshotPayloadStagedHook = hook
+	return func() {
+		afterSnapshotPayloadStagedHook = previous
+	}
+}
 
 func IsDescriptorNotFound(err error) bool {
 	return errors.Is(err, ErrDescriptorNotFound) || errors.Is(err, os.ErrNotExist)
@@ -133,7 +145,7 @@ func (c *Creator) createSavePoint(worktreeName, note string, tags []string) (*mo
 	if err != nil {
 		return nil, fmt.Errorf("get worktree: %w", err)
 	}
-	return c.createPartialWithDescriptorParentAndLineage(worktreeName, note, tags, nil, cfg.LatestSnapshotID, true, savePointLineage)
+	return c.createPartialWithDescriptorParentAndLineage(worktreeName, note, tags, nil, cfg.LatestSnapshotID, true, true, savePointLineage)
 }
 
 func (c *Creator) createWithParent(worktreeName, note string, tags []string, parentID model.SnapshotID) (*model.Descriptor, error) {
@@ -153,10 +165,10 @@ func (c *Creator) createPartial(worktreeName, note string, tags []string, paths 
 }
 
 func (c *Creator) createPartialWithDescriptorParent(worktreeName, note string, tags []string, paths []string, parentOverride model.SnapshotID, overrideParent bool) (*model.Descriptor, error) {
-	return c.createPartialWithDescriptorParentAndLineage(worktreeName, note, tags, paths, parentOverride, overrideParent, nil)
+	return c.createPartialWithDescriptorParentAndLineage(worktreeName, note, tags, paths, parentOverride, overrideParent, false, nil)
 }
 
-func (c *Creator) createPartialWithDescriptorParentAndLineage(worktreeName, note string, tags []string, paths []string, parentOverride model.SnapshotID, overrideParent bool, lineageFn descriptorLineageFunc) (*model.Descriptor, error) {
+func (c *Creator) createPartialWithDescriptorParentAndLineage(worktreeName, note string, tags []string, paths []string, parentOverride model.SnapshotID, overrideParent bool, validateSaveEvidence bool, lineageFn descriptorLineageFunc) (*model.Descriptor, error) {
 	// Step 1: Validate worktree exists
 	wtMgr := worktree.NewManager(c.repoRoot)
 	cfg, err := wtMgr.Get(worktreeName)
@@ -202,6 +214,13 @@ func (c *Creator) createPartialWithDescriptorParentAndLineage(worktreeName, note
 	if err := c.auditLogger.EnsureAppendable(); err != nil {
 		return nil, fmt.Errorf("audit log not appendable: %w", err)
 	}
+	var saveEvidence model.HashValue
+	if validateSaveEvidence && len(partialPaths) == 0 {
+		saveEvidence, err = computeSaveWorkspaceEvidence(boundary)
+		if err != nil {
+			return nil, fmt.Errorf("read workspace before saving: %w", err)
+		}
+	}
 
 	// Step 3: Create intent record (for crash recovery)
 	intentPath, err := c.writeCreateIntent(snapshotID, worktreeName)
@@ -215,7 +234,7 @@ func (c *Creator) createPartialWithDescriptorParentAndLineage(worktreeName, note
 		lineage = &nextLineage
 	}
 
-	desc, err := c.stageSnapshot(&descriptorCfg, boundary, publishPaths, snapshotID, worktreeName, note, tags, partialPaths, lineage)
+	desc, err := c.stageSnapshot(&descriptorCfg, boundary, publishPaths, snapshotID, worktreeName, note, tags, partialPaths, lineage, saveEvidence)
 	if err != nil {
 		return nil, err
 	}
@@ -315,6 +334,7 @@ func (c *Creator) stageSnapshot(
 	tags []string,
 	partialPaths []string,
 	lineage *model.WorkspaceSaveLineage,
+	saveEvidence model.HashValue,
 ) (*model.Descriptor, error) {
 	cleanupTmp := func() {
 		os.RemoveAll(publishPaths.tmpDir)
@@ -325,12 +345,22 @@ func (c *Creator) stageSnapshot(
 		cleanupTmp()
 		return nil, err
 	}
+	if afterSnapshotPayloadStagedHook != nil {
+		if err := afterSnapshotPayloadStagedHook(snapshotID, publishPaths.tmpDir); err != nil {
+			cleanupTmp()
+			return nil, fmt.Errorf("after snapshot payload staged hook: %w", err)
+		}
+	}
 
 	// Step 6: Compute payload root hash before any storage-only compression.
 	payloadHash, err := integrity.ComputePayloadRootHash(publishPaths.tmpDir)
 	if err != nil {
 		cleanupTmp()
 		return nil, fmt.Errorf("compute payload hash: %w", err)
+	}
+	if saveEvidence != "" && payloadHash != saveEvidence {
+		cleanupTmp()
+		return nil, saveEvidenceChangedError()
 	}
 
 	// Step 7: Create descriptor
@@ -364,8 +394,27 @@ func (c *Creator) stageSnapshot(
 		cleanupTmp()
 		return nil, fmt.Errorf("fsync snapshot tree: %w", err)
 	}
+	if saveEvidence != "" {
+		currentEvidence, err := computeSaveWorkspaceEvidence(boundary)
+		if err != nil {
+			cleanupTmp()
+			return nil, saveEvidenceChangedError()
+		}
+		if currentEvidence != saveEvidence {
+			cleanupTmp()
+			return nil, saveEvidenceChangedError()
+		}
+	}
 
 	return desc, nil
+}
+
+func computeSaveWorkspaceEvidence(boundary repo.WorktreePayloadBoundary) (model.HashValue, error) {
+	return integrity.ComputePayloadRootHashWithExclusions(boundary.Root, boundary.ExcludesRelativePath)
+}
+
+func saveEvidenceChangedError() error {
+	return errors.New("workspace files changed while saving. No save point was created. Run jvs save again.")
 }
 
 func (c *Creator) cloneSnapshotPayload(boundary repo.WorktreePayloadBoundary, snapshotTmpDir string, partialPaths []string) (*engine.CloneResult, error) {
