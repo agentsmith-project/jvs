@@ -14,10 +14,6 @@ func detectEngine(repoRoot string) model.EngineType {
 	return resolveEffectiveEngine(repoRoot)
 }
 
-func detectEngineNoWrite(repoRoot string) model.EngineType {
-	return resolveEffectiveEngineWithProbe(repoRoot, false)
-}
-
 func newCloneEngine(repoRoot string) engine.Engine {
 	return engine.NewEngine(detectEngine(repoRoot))
 }

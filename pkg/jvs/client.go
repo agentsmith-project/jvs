@@ -27,51 +27,73 @@ type Client struct {
 // InitOptions configures repository initialization.
 type InitOptions struct {
 	Name       string           // Repository name (validated: alphanumeric, hyphens, underscores)
-	EngineType model.EngineType // Snapshot engine; empty string triggers auto-detection
+	EngineType model.EngineType // Save point materialization engine; empty string triggers auto-detection
 }
 
-// SnapshotOptions configures snapshot creation.
-type SnapshotOptions struct {
-	WorktreeName string   // Target worktree; defaults to "main"
-	Note         string   // Human-readable description
-	Tags         []string // Organization tags
-	PartialPaths []string // Specific paths to snapshot; nil/empty means full snapshot
+// SavePointID identifies a save point in the public library facade.
+type SavePointID string
+
+// String returns the save point ID as a string.
+func (id SavePointID) String() string {
+	return string(id)
 }
 
-// RestoreOptions configures snapshot restore.
+func (id SavePointID) modelID() model.SnapshotID {
+	return model.SnapshotID(id)
+}
+
+// SaveOptions configures save point creation.
+type SaveOptions struct {
+	WorkspaceName string   // Target workspace; defaults to "main"
+	Message       string   // Human-readable description
+	Tags          []string // Organization tags
+}
+
+// SavePoint is the public library view of a saved workspace state.
+type SavePoint struct {
+	SavePointID        SavePointID          `json:"save_point_id"`
+	WorkspaceName      string               `json:"workspace_name"`
+	CreatedAt          time.Time            `json:"created_at"`
+	Message            string               `json:"message,omitempty"`
+	Tags               []string             `json:"tags,omitempty"`
+	Engine             model.EngineType     `json:"engine"`
+	PayloadRootHash    model.HashValue      `json:"payload_root_hash"`
+	DescriptorChecksum model.HashValue      `json:"descriptor_checksum"`
+	IntegrityState     model.IntegrityState `json:"integrity_state"`
+}
+
+// RestoreOptions configures workspace restore.
 type RestoreOptions struct {
-	WorktreeName string // Target worktree; defaults to "main"
-	Target       string // Snapshot ID, tag name, or "HEAD" for latest
+	WorkspaceName string // Target workspace; defaults to "main"
+	Target        string // Save point ID prefix or tag name
 }
 
-// GCOptions configures garbage collection.
-type GCOptions struct {
-	DryRun bool
+// CleanupOptions configures cleanup preview.
+type CleanupOptions struct{}
+
+// CleanupPlan is the public library view of a cleanup plan.
+type CleanupPlan struct {
+	PlanID                   string        `json:"plan_id"`
+	CreatedAt                time.Time     `json:"created_at"`
+	ProtectedSavePoints      []SavePointID `json:"protected_save_points"`
+	ProtectedByHistory       int           `json:"protected_by_history"`
+	CandidateCount           int           `json:"candidate_count"`
+	ReclaimableSavePoints    []SavePointID `json:"reclaimable_save_points"`
+	ReclaimableBytesEstimate int64         `json:"reclaimable_bytes_estimate"`
 }
 
-// GCPlan is the public library view of a garbage collection plan.
-type GCPlan struct {
-	PlanID                 string             `json:"plan_id"`
-	CreatedAt              time.Time          `json:"created_at"`
-	ProtectedCheckpoints   []model.SnapshotID `json:"protected_checkpoints"`
-	ProtectedByLineage     int                `json:"protected_by_lineage"`
-	CandidateCount         int                `json:"candidate_count"`
-	ToDelete               []model.SnapshotID `json:"to_delete"`
-	DeletableBytesEstimate int64              `json:"deletable_bytes_estimate"`
-}
-
-func (o *SnapshotOptions) worktree() string {
-	if o.WorktreeName == "" {
+func (o *SaveOptions) workspace() string {
+	if o.WorkspaceName == "" {
 		return "main"
 	}
-	return o.WorktreeName
+	return o.WorkspaceName
 }
 
-func (o *RestoreOptions) worktree() string {
-	if o.WorktreeName == "" {
+func (o *RestoreOptions) workspace() string {
+	if o.WorkspaceName == "" {
 		return "main"
 	}
-	return o.WorktreeName
+	return o.WorkspaceName
 }
 
 // Init initializes a new JVS repository at the given path.
@@ -125,53 +147,53 @@ func OpenOrInit(path string, opts InitOptions) (*Client, error) {
 	return Init(path, opts)
 }
 
-// Snapshot creates a new snapshot of the worktree.
-// The worktree must not be in detached state.
-func (c *Client) Snapshot(ctx context.Context, opts SnapshotOptions) (*model.Descriptor, error) {
+// Save creates a new save point for the workspace.
+// The workspace must not be in detached state.
+func (c *Client) Save(ctx context.Context, opts SaveOptions) (*SavePoint, error) {
 	if err := checkContext(ctx); err != nil {
 		return nil, err
 	}
 
-	wt := opts.worktree()
+	workspaceName := opts.workspace()
 	wtMgr := worktree.NewManager(c.repoRoot)
-	cfg, err := wtMgr.Get(wt)
+	cfg, err := wtMgr.Get(workspaceName)
 	if err != nil {
-		return nil, fmt.Errorf("get worktree: %w", err)
+		return nil, fmt.Errorf("get workspace: %w", err)
 	}
 	if cfg.IsDetached() {
-		return nil, fmt.Errorf("cannot create snapshot in detached state")
+		return nil, fmt.Errorf("cannot save in detached state")
 	}
 	if err := checkContext(ctx); err != nil {
 		return nil, err
 	}
 
 	creator := snapshot.NewCreator(c.repoRoot, c.engineType)
-	if len(opts.PartialPaths) > 0 {
-		return creator.CreatePartial(wt, opts.Note, opts.Tags, opts.PartialPaths)
+	desc, err := creator.Create(workspaceName, opts.Message, opts.Tags)
+	if err != nil {
+		return nil, err
 	}
-	return creator.Create(wt, opts.Note, opts.Tags)
+	return publicSavePoint(desc), nil
 }
 
-// Restore restores a worktree to a specific snapshot identified by opts.Target.
-// Target can be a snapshot ID prefix, tag name, or "HEAD" for the latest.
+// Restore restores a workspace to a specific save point identified by opts.Target.
+// Target can be a save point ID prefix or tag name.
 func (c *Client) Restore(ctx context.Context, opts RestoreOptions) error {
 	if err := checkContext(ctx); err != nil {
 		return err
 	}
 
-	wt := opts.worktree()
-
-	if opts.Target == "HEAD" || opts.Target == "" {
-		return c.RestoreLatest(ctx, wt)
+	workspaceName := opts.workspace()
+	target := strings.TrimSpace(opts.Target)
+	if target == "" {
+		return fmt.Errorf("restore target is required")
 	}
 
-	// Try as snapshot ID first (exact or prefix match)
-	desc, err := snapshot.FindOne(c.repoRoot, opts.Target)
+	// Internal storage still resolves by descriptor ID first, then tag.
+	desc, err := snapshot.FindOne(c.repoRoot, target)
 	if err != nil {
-		// Try as tag
-		desc, err = snapshot.FindByTag(c.repoRoot, opts.Target)
+		desc, err = snapshot.FindByTag(c.repoRoot, target)
 		if err != nil {
-			return fmt.Errorf("resolve target %q: %w", opts.Target, err)
+			return fmt.Errorf("resolve target %q: %w", target, err)
 		}
 	}
 	if err := checkContext(ctx); err != nil {
@@ -179,21 +201,21 @@ func (c *Client) Restore(ctx context.Context, opts RestoreOptions) error {
 	}
 
 	restorer := restore.NewRestorer(c.repoRoot, c.engineType)
-	return restorer.Restore(wt, desc.SnapshotID)
+	return restorer.Restore(workspaceName, desc.SnapshotID)
 }
 
-// RestoreLatest restores a worktree to its most recent snapshot.
-// Returns nil if the worktree has no snapshots (nothing to restore).
-func (c *Client) RestoreLatest(ctx context.Context, worktreeName string) error {
+// RestoreLatest restores a workspace to its most recent save point.
+// Returns nil if the workspace has no save points.
+func (c *Client) RestoreLatest(ctx context.Context, workspaceName string) error {
 	if err := checkContext(ctx); err != nil {
 		return err
 	}
 
-	if worktreeName == "" {
-		worktreeName = "main"
+	if workspaceName == "" {
+		workspaceName = "main"
 	}
 
-	has, err := c.HasSnapshots(ctx, worktreeName)
+	has, err := c.HasSavePoints(ctx, workspaceName)
 	if err != nil {
 		return err
 	}
@@ -205,21 +227,21 @@ func (c *Client) RestoreLatest(ctx context.Context, worktreeName string) error {
 	}
 
 	restorer := restore.NewRestorer(c.repoRoot, c.engineType)
-	return restorer.RestoreToLatest(worktreeName)
+	return restorer.RestoreToLatest(workspaceName)
 }
 
-// History returns snapshot descriptors for a worktree, sorted newest first.
-// Pass limit <= 0 for all snapshots.
-func (c *Client) History(ctx context.Context, worktreeName string, limit int) ([]*model.Descriptor, error) {
+// History returns save points for a workspace, sorted newest first.
+// Pass limit <= 0 for all save points.
+func (c *Client) History(ctx context.Context, workspaceName string, limit int) ([]*SavePoint, error) {
 	if err := checkContext(ctx); err != nil {
 		return nil, err
 	}
 
-	if worktreeName == "" {
-		worktreeName = "main"
+	if workspaceName == "" {
+		workspaceName = "main"
 	}
 
-	opts := snapshot.FilterOptions{WorktreeName: worktreeName}
+	opts := snapshot.FilterOptions{WorktreeName: workspaceName}
 	results, err := snapshot.Find(c.repoRoot, opts)
 	if err != nil {
 		return nil, err
@@ -228,73 +250,81 @@ func (c *Client) History(ctx context.Context, worktreeName string, limit int) ([
 	if limit > 0 && len(results) > limit {
 		results = results[:limit]
 	}
-	return results, nil
+
+	savePoints := make([]*SavePoint, 0, len(results))
+	for _, desc := range results {
+		savePoints = append(savePoints, publicSavePoint(desc))
+	}
+	return savePoints, nil
 }
 
-// LatestSnapshot returns the most recent snapshot descriptor for a worktree.
-// Returns nil, nil if no snapshots exist.
-func (c *Client) LatestSnapshot(ctx context.Context, worktreeName string) (*model.Descriptor, error) {
+// LatestSavePoint returns the most recent save point for a workspace.
+// Returns nil, nil if no save points exist.
+func (c *Client) LatestSavePoint(ctx context.Context, workspaceName string) (*SavePoint, error) {
 	if err := checkContext(ctx); err != nil {
 		return nil, err
 	}
 
-	if worktreeName == "" {
-		worktreeName = "main"
+	if workspaceName == "" {
+		workspaceName = "main"
 	}
 
 	wtMgr := worktree.NewManager(c.repoRoot)
-	cfg, err := wtMgr.Get(worktreeName)
+	cfg, err := wtMgr.Get(workspaceName)
 	if err != nil {
-		return nil, fmt.Errorf("get worktree: %w", err)
+		return nil, fmt.Errorf("get workspace: %w", err)
 	}
 
 	if cfg.LatestSnapshotID == "" {
 		return nil, nil
 	}
 
-	return snapshot.LoadDescriptor(c.repoRoot, cfg.LatestSnapshotID)
+	desc, err := snapshot.LoadDescriptor(c.repoRoot, cfg.LatestSnapshotID)
+	if err != nil {
+		return nil, err
+	}
+	return publicSavePoint(desc), nil
 }
 
-// HasSnapshots returns true if the worktree has at least one snapshot.
-func (c *Client) HasSnapshots(ctx context.Context, worktreeName string) (bool, error) {
+// HasSavePoints returns true if the workspace has at least one save point.
+func (c *Client) HasSavePoints(ctx context.Context, workspaceName string) (bool, error) {
 	if err := checkContext(ctx); err != nil {
 		return false, err
 	}
 
-	if worktreeName == "" {
-		worktreeName = "main"
+	if workspaceName == "" {
+		workspaceName = "main"
 	}
 
 	wtMgr := worktree.NewManager(c.repoRoot)
-	cfg, err := wtMgr.Get(worktreeName)
+	cfg, err := wtMgr.Get(workspaceName)
 	if err != nil {
-		return false, fmt.Errorf("get worktree: %w", err)
+		return false, fmt.Errorf("get workspace: %w", err)
 	}
 
 	return cfg.LatestSnapshotID != "", nil
 }
 
-// Verify checks a snapshot's integrity (descriptor checksum + optional payload hash).
-func (c *Client) Verify(ctx context.Context, snapshotID model.SnapshotID) error {
+// Verify checks a save point's integrity.
+func (c *Client) Verify(ctx context.Context, savePointID SavePointID) error {
 	if err := checkContext(ctx); err != nil {
 		return err
 	}
-	result, err := verify.NewVerifier(c.repoRoot).VerifySnapshot(snapshotID, true)
+	result, err := verify.NewVerifier(c.repoRoot).VerifySnapshot(savePointID.modelID(), true)
 	if err != nil {
 		return err
 	}
 	if result.TamperDetected {
 		if result.Error != "" {
-			return fmt.Errorf("verify snapshot: %s", result.Error)
+			return fmt.Errorf("verify save point: %s", result.Error)
 		}
-		return fmt.Errorf("verify snapshot: tamper detected")
+		return fmt.Errorf("verify save point: tamper detected")
 	}
 	return nil
 }
 
-// GC creates and optionally executes a garbage collection plan.
-// If DryRun is true, returns the plan without deleting anything.
-func (c *Client) GC(ctx context.Context, opts GCOptions) (*GCPlan, error) {
+// PreviewCleanup creates a cleanup plan without deleting anything.
+func (c *Client) PreviewCleanup(ctx context.Context, _ CleanupOptions) (*CleanupPlan, error) {
 	if err := checkContext(ctx); err != nil {
 		return nil, err
 	}
@@ -303,26 +333,13 @@ func (c *Client) GC(ctx context.Context, opts GCOptions) (*GCPlan, error) {
 
 	plan, err := collector.Plan()
 	if err != nil {
-		return nil, fmt.Errorf("gc plan: %w", err)
+		return nil, fmt.Errorf("cleanup plan: %w", err)
 	}
-	publicPlan := publicGCPlan(plan)
-
-	if opts.DryRun {
-		return publicPlan, nil
-	}
-	if err := checkContext(ctx); err != nil {
-		return publicPlan, err
-	}
-
-	if err := collector.Run(plan.PlanID); err != nil {
-		return publicPlan, fmt.Errorf("gc run: %w", err)
-	}
-
-	return publicPlan, nil
+	return publicCleanupPlan(plan), nil
 }
 
-// RunGC executes a previously created GC plan by ID.
-func (c *Client) RunGC(ctx context.Context, planID string) error {
+// RunCleanup executes a previously created cleanup plan by ID.
+func (c *Client) RunCleanup(ctx context.Context, planID string) error {
 	if err := checkContext(ctx); err != nil {
 		return err
 	}
@@ -340,18 +357,18 @@ func (c *Client) RepoID() string {
 	return c.repoID
 }
 
-// EngineType returns the snapshot engine in use.
+// EngineType returns the save point materialization engine in use.
 func (c *Client) EngineType() model.EngineType {
 	return c.engineType
 }
 
-// WorktreePayloadPath returns the filesystem path to a worktree's payload directory.
+// WorkspacePath returns the filesystem path to a workspace payload directory.
 // This is the path that should be mounted into agent pods as /workspace.
-func (c *Client) WorktreePayloadPath(worktreeName string) string {
-	if worktreeName == "" {
-		worktreeName = "main"
+func (c *Client) WorkspacePath(workspaceName string) string {
+	if workspaceName == "" {
+		workspaceName = "main"
 	}
-	path, err := worktree.NewManager(c.repoRoot).Path(worktreeName)
+	path, err := worktree.NewManager(c.repoRoot).Path(workspaceName)
 	if err != nil {
 		return ""
 	}
@@ -374,18 +391,46 @@ func checkContext(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func publicGCPlan(plan *model.GCPlan) *GCPlan {
+func publicSavePoint(desc *model.Descriptor) *SavePoint {
+	if desc == nil {
+		return nil
+	}
+	return &SavePoint{
+		SavePointID:        SavePointID(desc.SnapshotID),
+		WorkspaceName:      desc.WorktreeName,
+		CreatedAt:          desc.CreatedAt,
+		Message:            desc.Note,
+		Tags:               append([]string(nil), desc.Tags...),
+		Engine:             desc.Engine,
+		PayloadRootHash:    desc.PayloadRootHash,
+		DescriptorChecksum: desc.DescriptorChecksum,
+		IntegrityState:     desc.IntegrityState,
+	}
+}
+
+func publicSavePointIDs(ids []model.SnapshotID) []SavePointID {
+	if len(ids) == 0 {
+		return nil
+	}
+	savePointIDs := make([]SavePointID, 0, len(ids))
+	for _, id := range ids {
+		savePointIDs = append(savePointIDs, SavePointID(id))
+	}
+	return savePointIDs
+}
+
+func publicCleanupPlan(plan *model.GCPlan) *CleanupPlan {
 	if plan == nil {
 		return nil
 	}
-	return &GCPlan{
-		PlanID:                 plan.PlanID,
-		CreatedAt:              plan.CreatedAt,
-		ProtectedCheckpoints:   append([]model.SnapshotID(nil), plan.ProtectedSet...),
-		ProtectedByLineage:     plan.ProtectedByLineage,
-		CandidateCount:         plan.CandidateCount,
-		ToDelete:               append([]model.SnapshotID(nil), plan.ToDelete...),
-		DeletableBytesEstimate: plan.DeletableBytesEstimate,
+	return &CleanupPlan{
+		PlanID:                   plan.PlanID,
+		CreatedAt:                plan.CreatedAt,
+		ProtectedSavePoints:      publicSavePointIDs(plan.ProtectedSet),
+		ProtectedByHistory:       plan.ProtectedByLineage,
+		CandidateCount:           plan.CandidateCount,
+		ReclaimableSavePoints:    publicSavePointIDs(plan.ToDelete),
+		ReclaimableBytesEstimate: plan.DeletableBytesEstimate,
 	}
 }
 

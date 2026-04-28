@@ -1,99 +1,62 @@
-# Checkpoint Scope & Lineage Spec (v0)
+# Save Point Scope And Provenance Spec
 
-This spec defines checkpoint scope, internal descriptor lineage, and the
-integrity responsibilities shared by `jvs verify` and `jvs doctor --strict`.
-Public vocabulary is checkpoint/workspace/current/latest. On-disk descriptor
-compatibility details are documented in the internal schema section below.
+**Status:** release-facing save point scope and provenance contract
 
-## Checkpoint ID generation (MUST)
+The repository filename is retained for manifest stability only. Public docs,
+help, examples, JSON, and release notes use `save point`.
 
-Format: `<timestamp_ms>-<random_hex8>`
+## Save Point Identity
 
-- `<timestamp_ms>`: Unix epoch milliseconds at checkpoint creation, zero-padded to 13 digits.
-- `<random_hex8>`: 8 lowercase hex characters from cryptographic random source.
-- Example: `1708300800000-a3f7c1b2`
+A save point ID is the public identifier for saved content. Public commands
+that accept `<save>` must require a full save point ID or a unique ID prefix.
 
-Properties:
+Labels, messages, and tags are not restore/view targets.
 
-- Lexicographic sort approximates creation order.
-- Collision probability is negligible (32-bit random within same millisecond).
-- Short display IDs are the first 8 characters of the full ID.
-- Checkpoint IDs MUST be treated as opaque strings by consumers; ordering is
-  advisory only.
+## Save Point Scope
 
-## Scope (MUST)
+A save point captures only managed files from one workspace folder.
 
-A checkpoint captures only the targeted workspace payload root:
+Excluded from scope:
 
-- inside `repo/main/` -> source `repo/main/`
-- inside `repo/worktrees/<name>/` -> source that workspace root
+- JVS control data
+- other workspace folders
+- ignored/unmanaged files
+- runtime operation records
+- recovery plans
+- cleanup plans
 
-Payload roots contain pure user data (no control-plane artifacts), so no exclusion logic is required.
+Published save point payloads are implementation-owned storage. Storage paths
+and field names are not public vocabulary.
 
-Checkpoint payloads MUST NOT include:
+## Descriptor Fields
 
-- `.jvs/` directory
-- other workspace payload roots
+Descriptors are immutable creation records. Public-facing fields must map to
+save point terms:
 
-## Storage and immutability (MUST)
-
-Published checkpoint payloads live at:
-`repo/.jvs/snapshots/<checkpoint-id>/`
-
-After READY publication:
-
-- payload is immutable
-- descriptor is immutable
-- detected mutation marks the checkpoint `corrupt`
-
-## Internal descriptor schema (MUST)
-
-Path:
-`repo/.jvs/descriptors/<checkpoint-id>.json`
-
-Required fields:
-
-- `snapshot_id` (public `checkpoint_id`)
-- `worktree_name` (public `workspace`)
-- `parent_id` (or null)
+- `save_point_id`
+- `workspace`
 - `created_at`
-- `note` (optional)
-- `tags` (optional array)
-- `engine`
-- `descriptor_checksum`
-- `payload_root_hash`
-- `integrity_state` (`verified|unverified|corrupt`)
+- `message`
+- `started_from_save_point`
+- restored provenance when applicable
+- restored path provenance when applicable
 
-## Descriptor checksum coverage (MUST)
+## History And Provenance
 
-`descriptor_checksum` is computed over all descriptor fields **except**:
+Workspace history is linear per workspace save flow. Restore does not move or
+rewrite history. `workspace new --from <save>` records the source save point
+but does not inherit the source workspace history.
 
-- `descriptor_checksum` itself
-- `integrity_state`
+Provenance fields have distinct meanings:
 
-Computation:
+- previous save point in the same workspace history
+- source save point used to create a workspace
+- whole-workspace source restored before saving
+- path-level source restored before saving
 
-1. Serialize covered fields as canonical JSON (sorted keys, no whitespace, UTF-8, no trailing zeros in numbers).
-2. Compute SHA-256 of the serialized bytes.
+Cleanup and UI must not collapse these into a branch/merge mental model.
 
-## Lineage rules
+## Integrity Responsibilities
 
-- Lineage is per workspace via `parent_id` chain.
-- `jvs fork` from an older checkpoint starts a new workspace lineage branch.
-- merge/rebase remains out of scope for v0.x.
-
-## Lineage integrity checks (MUST)
-
-`jvs doctor --strict` MUST detect:
-
-- missing parent descriptor
-- parent cycles
-- workspace `current`/`latest` pointer mismatch
-- descriptor checksum mismatch
-- payload hash mismatch
-
-`jvs verify [checkpoint-id]` and `jvs verify --all` remain checkpoint-scoped:
-they MUST validate descriptor checksum and payload root hash, but audit-chain
-and workspace-lineage health belong to `jvs doctor --strict`.
-
-All doctor findings MUST include machine-readable severity.
+Descriptor checksums and payload root hashes protect save point integrity.
+`jvs doctor --strict` is the public health command.

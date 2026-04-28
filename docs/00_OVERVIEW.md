@@ -1,32 +1,38 @@
 # Overview
 
-**Document set:** JVS v0 (JuiceFS-first, checkpoint-first)
-**Date:** 2026-02-22
+**Document set:** active save point contract
 
-## Core idea
-JVS versions workspaces by full checkpoints of a single workspace payload root.
+JVS saves real folders as save points. A user starts from a normal filesystem
+folder, saves managed files, reviews history, opens read-only views, and
+restores selected content when needed.
 
-## Frozen design decisions
-1. No remote replication features in JVS; JuiceFS handles transport.
-2. Main payload root is `repo/main/`.
-3. Checkpoint publish is READY-based and auditable.
-4. Restore is always inplace; use `jvs fork` to create branches.
-5. Verification default is strong: checksum + payload hash. Signature/trust chain deferred to v1.x.
-6. Runtime state (active `.jvs/locks/`, `.jvs/intents/`, and active
-   `.jvs/gc/*.json`) is non-portable and rebuilt after migration.
+Primary public path:
 
-## Product promise
-- Current differs from latest model for safe history navigation
-- Verifiable and tamper-evident history
-- Filesystem-native scale on JuiceFS
+```bash
+jvs init
+jvs save -m "baseline"
+jvs history
+jvs view <save> [path]
+jvs restore <save>
+```
 
-## v0.x scope limitations
-The following Constitution features are architecturally planned but deferred from v0.x implementation:
-- **Descriptor signing and trust policy** (Constitution §7.4 justification): v0.x integrity relies on descriptor checksum + payload root hash. Signing adds protection against coordinated checksum+descriptor rewrite by an attacker with filesystem write access; this threat is accepted as residual risk in v0.x.
+Core guarantees:
 
-Descriptor schema reserves optional fields for future signature support to ensure forward compatibility.
+1. Workspaces are real folders, not virtualized folders.
+2. JVS control data is never saved as workspace payload.
+3. A save point is immutable once published.
+4. Restore is preview-first and does not rewrite save point history.
+5. Interrupted restore is closed by recovery status/resume/rollback.
+6. Cleanup is review-first and must protect live workspace needs, active
+   views, active operations, and active recovery plans.
+7. Internal storage names do not define product vocabulary, commands,
+   selectors, examples, or user mental models.
 
-## Non-goals
-- Git parity and text merge semantics
-- in-JVS authn/authz control plane
-- Distributed locking or fencing mechanisms (JVS is local-first)
+Current active specs:
+
+- `02_CLI_SPEC.md`
+- `06_RESTORE_SPEC.md`
+- `21_SAVE_POINT_WORKSPACE_SEMANTICS.md`
+- `PRODUCT_PLAN.md`
+- `ARCHITECTURE.md`
+- `13_OPERATION_RUNBOOK.md`

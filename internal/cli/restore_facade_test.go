@@ -24,6 +24,29 @@ func TestRestoreHelpUsesSavePointVocabulary(t *testing.T) {
 	assertRestoreOutputOmitsLegacyVocabulary(t, stdout)
 }
 
+func TestRestoreRejectsRemovedLegacySafetyFlagsWithoutMutation(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
+	firstID := savePointIDFromCLI(t, "first")
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("local edit"), 0644))
+	before := captureViewMutationSnapshot(t, repoRoot)
+
+	for _, flag := range []string{"--include-working", "--discard-dirty"} {
+		t.Run(flag, func(t *testing.T) {
+			stdout, err := executeCommand(createTestRootCmd(), "restore", firstID, flag)
+			require.Error(t, err)
+			require.Empty(t, stdout)
+			assert.Contains(t, err.Error(), "unknown flag: "+flag)
+			assert.NotContains(t, err.Error(), "options are fixed by the preview plan")
+			assert.NotContains(t, err.Error(), "--save-first")
+			assert.NotContains(t, err.Error(), "--discard-unsaved")
+			assert.NotContains(t, err.Error(), "deprecated")
+			assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "local edit")
+			before.assertUnchanged(t, repoRoot)
+		})
+	}
+}
+
 func TestRestoreHumanOutputUsesSavePointStatusFacts(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	firstID, secondID := createTwoSavePoints(t, repoRoot)
@@ -132,8 +155,7 @@ func TestRestoreRejectsOldRefsAndFuzzyInputsWithoutMutation(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("tagged"), 0644))
 	const tag = "restore-release"
-	_, err := executeCommand(createTestRootCmd(), "snapshot", "tagged legacy ref", "--tag", tag)
-	require.NoError(t, err)
+	_ = savePointIDFromCLI(t, "tagged legacy ref")
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("newest"), 0644))
 	_ = savePointIDFromCLI(t, "newest")
 	before := captureViewMutationSnapshot(t, repoRoot)

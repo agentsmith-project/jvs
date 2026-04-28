@@ -121,8 +121,6 @@ func publicSavePointVocabulary(value string) string {
 		return value
 	}
 	replacer := strings.NewReplacer(
-		"cannot checkpoint while current differs from latest; run jvs fork <name> or jvs restore latest",
-		"cannot save while this workspace is not at its newest save point",
 		"current differs from latest",
 		"is not at the newest save point",
 		"checkpointing",
@@ -148,7 +146,7 @@ func publicSavePointVocabulary(value string) string {
 		"head",
 		"selected save point",
 		"fork",
-		"new workspace",
+		"workspace new",
 		"commit",
 		"save",
 	)

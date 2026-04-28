@@ -16,7 +16,7 @@ func TestDoctorRepairRuntimeCleansStaleRepoLock(t *testing.T) {
 	repoPath, cleanup := initTestRepo(t)
 	defer cleanup()
 
-	writeConformanceRepoLockOwner(t, repoPath, staleConformanceSameHostOwner(t, "crashed checkpoint"))
+	writeConformanceRepoLockOwner(t, repoPath, staleConformanceSameHostOwner(t, "crashed save"))
 
 	stdout, stderr, code := runJVSInRepo(t, repoPath, "doctor", "--repair-runtime")
 	if code != 0 {
@@ -29,13 +29,12 @@ func TestDoctorRepairRuntimeCleansStaleRepoLock(t *testing.T) {
 		t.Fatalf("stale repo lock was not removed: %v", err)
 	}
 
-	mainPath := filepath.Join(repoPath, "main")
-	if err := os.WriteFile(filepath.Join(mainPath, "after.txt"), []byte("mutation works"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(repoPath, "after.txt"), []byte("mutation works"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	stdout, stderr, code = runJVSInRepo(t, repoPath, "checkpoint", "after stale lock recovery")
+	stdout, stderr, code = runJVSInRepo(t, repoPath, "save", "-m", "after stale lock recovery")
 	if code != 0 {
-		t.Fatalf("checkpoint after stale lock repair failed: stdout=%s stderr=%s", stdout, stderr)
+		t.Fatalf("save after stale lock repair failed: stdout=%s stderr=%s", stdout, stderr)
 	}
 }
 

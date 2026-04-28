@@ -1,86 +1,111 @@
-# Migration & Backup (v0)
+# Migration & Backup
 
-JVS does not provide remote replication. Use JuiceFS replication tools.
+JVS does not provide remote replication. Use filesystem or JuiceFS replication
+tools and preserve the save point control plane carefully.
 
-## Recommended method
-Use `juicefs sync` for repository migration.
+## Recommended Method
 
-## Pre-migration gates (MUST)
-1. freeze writers and stop agent jobs
-2. ensure no active operations
-3. run:
-```bash
-jvs doctor --strict
-jvs verify --all
-```
-4. create final checkpoints for critical workspaces
+Use `juicefs sync` or an equivalent storage-level sync for repository
+migration. Treat active runtime state as non-portable.
 
-## Runtime-state policy (MUST)
+## Pre-Migration Gates
+
+1. Freeze writers and stop agent jobs.
+2. Ensure no active restore recovery plans:
+   ```bash
+   jvs recovery status
+   ```
+3. Run:
+   ```bash
+   jvs doctor --strict
+   ```
+4. Create final save points for critical workspaces:
+   ```bash
+   jvs save -m "pre-migration"
+   ```
+5. Record the newest save point IDs with `jvs history --json`.
+
+## Runtime-State Policy
+
 Runtime state is non-portable and must not be migrated as authoritative state:
+
 - active `.jvs/locks/` repository mutation locks
 - active `.jvs/intents/` operation records
-- active `.jvs/gc/*.json` plans
+- active `.jvs/gc/*.json` internal cleanup runtime plans
 
 Destination MUST rebuild runtime state:
+
 ```bash
 jvs doctor --strict --repair-runtime
 ```
 
-`jvs clone --scope full` excludes this runtime state and recreates clean
-runtime directories at the destination. A physical copy or storage sync must do
-the same. Mutation locks are host/process-specific; a lock copied from another
-host is treated as held and can block destination writes until repaired.
+Mutation locks are host/process-specific; a lock copied from another host is
+treated as held and can block destination writes until repaired. Active cleanup
+runtime plans are repository-bound runtime state; create a new cleanup preview
+after migration instead of reusing copied plans.
 
-## Release-facing migration notes
-Existing v0 repositories do not need an on-disk migration for the Phase 4 GA
-readiness update. After upgrading, run `jvs doctor --strict` and
-`jvs verify --all` on a representative repo. After a physical backup or storage
-migration, also run `jvs doctor --strict --repair-runtime` at the destination
-before verification so copied or missing runtime state is rebuilt.
+## Migration Flow
 
-## Historical/internal terminology
-Public terminology is checkpoint and workspace. `.jvs/snapshots` and
-`.jvs/worktrees` are compatibility storage names; GA does not require an on-disk rename.
+1. Mount source and destination volumes.
+2. Sync repository data excluding runtime state:
+   ```bash
+   juicefs sync /mnt/src/myrepo/ /mnt/dst/myrepo/ \
+     --exclude '.jvs/locks/**' \
+     --exclude '.jvs/intents/**' \
+     --exclude '.jvs/gc/*.json' \
+     --update --threads 16
+   ```
+3. Validate destination:
+   ```bash
+   cd /mnt/dst/myrepo
+   jvs doctor --strict --repair-runtime
+   jvs doctor --strict
+   jvs history --json | jq '.data.save_points[:10]'
+   ```
+4. Run the restore drill from `docs/13_OPERATION_RUNBOOK.md`.
 
-## Migration flow
-1. mount source and destination volumes
-2. sync repository excluding runtime state
-```bash
-juicefs sync /mnt/src/myrepo/ /mnt/dst/myrepo/ \
-  --exclude '.jvs/locks/**' \
-  --exclude '.jvs/intents/**' \
-  --exclude '.jvs/gc/*.json' \
-  --update --threads 16
-```
-3. validate destination
-```bash
-cd /mnt/dst/myrepo/main
-jvs doctor --strict --repair-runtime
-jvs verify --all
-jvs checkpoint list --json | jq '.data[:10]'
-```
+## What To Sync
 
-## What to sync
-Portable checkpoint state:
+Portable save point state:
+
 - `.jvs/format_version`
-- `.jvs/worktrees/`
-- `.jvs/snapshots/`
 - `.jvs/descriptors/`
 - `.jvs/audit/`
-- `.jvs/gc/tombstones/`
+- `.jvs/snapshots/` as the internal storage directory for save point payloads
+- `.jvs/worktrees/` as the internal storage directory for workspace metadata
+- `.jvs/gc/tombstones/` if present
 
-Active GC plans are repository-bound runtime state. Full repository clone and
-the recommended sync exclusions leave them behind. Repository mutation locks
-and active operation records are also non-portable and must be rebuilt rather
-than copied. If a GC plan is copied out-of-band, it will fail safe with
-`E_GC_PLAN_MISMATCH`; create a new plan after migration.
+Payload state:
 
-Optional payload state:
-- `main/`
-- selected workspace payload directories
+- the adopted main folder contents
+- selected additional workspace folders
 
-## Restore drill (SHOULD)
-1. restore backup to fresh volume
-2. run strict doctor + verify
-3. restore at least one older checkpoint into a new workspace
-4. record drill result in operations log
+Do not copy `.jvs/locks/`, `.jvs/intents/`, or `.jvs/gc/*.json` as
+authoritative state.
+
+## Backup Restore Drill
+
+1. Restore backup to a fresh volume.
+2. Run `jvs doctor --strict --repair-runtime`.
+3. Run `jvs doctor --strict`.
+4. Confirm history is readable:
+   ```bash
+   jvs history
+   ```
+5. Create a new workspace from an older save point:
+   ```bash
+   jvs workspace new restore-drill --from <older-save>
+   ```
+6. In the new workspace, run `jvs status` and confirm:
+   - `Started from save point` is the source save point
+   - `Newest save point: none`
+   - `Unsaved changes: no`
+7. Preview and run a path restore in the drill workspace.
+8. Record the source save point, new workspace name, restore plan ID, and final
+   status in the operations log.
+
+## Historical/Internal Terminology
+
+Public migration language is save point and workspace. `.jvs/snapshots` and
+`.jvs/worktrees` are internal storage names; they are not a rollback to older
+public terminology and provide no user-facing behavior.

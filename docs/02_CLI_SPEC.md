@@ -1,24 +1,69 @@
-# CLI Spec (v0)
+# CLI Spec
 
-This spec defines the stable public JVS command surface for the current v0
-line. The public vocabulary is repo, workspace, checkpoint, `current`,
-`latest`, and `dirty`.
+**Status:** active save point public contract
+
+This spec defines the user-facing JVS command surface. The public model is a
+real folder with save points.
+
+## Public Vocabulary
+
+Use these terms in public help, examples, release notes, and operator-facing
+procedures.
+
+| Term | Meaning |
+| --- | --- |
+| `folder` | The real filesystem directory where the user works. |
+| `workspace` | The JVS name for a managed real folder. `main` is the default. |
+| `save point` | An immutable saved copy of the managed files in one workspace. |
+| `save` | Create a new save point from the active workspace. |
+| `history` | List save points and find candidates by path or message. |
+| `view` | Open a read-only view of a save point or a path inside it. |
+| `restore` | Copy managed files from a save point into a workspace. |
+| `unsaved changes` | Managed files differ from the known save point/source state, or JVS cannot prove they match. |
+| `cleanup` | Product term for deleting unprotected save point storage after preview and review. |
+| `recovery plan` | Durable plan that lets an interrupted restore be inspected, resumed, or rolled back. |
+
+## Root Help Surface
+
+The visible root help starts with the low-mental-overhead path:
+
+```text
+jvs init
+jvs save -m "baseline"
+jvs history
+jvs view <save> [path]
+jvs restore <save>
+```
+
+Visible public commands:
+
+```text
+completion
+doctor
+history
+init
+recovery
+restore
+save
+status
+view
+workspace new
+```
+
+Commands outside this visible surface are not part of this public contract.
+They must not appear in public help, examples, or release-facing workflows.
 
 ## Conventions
 
-- path-scoped setup commands (`init`, `import`, `clone`, and `capability`) are
-  repo-free. They operate on explicit path arguments and do not require CWD to
-  be inside a JVS repo.
-- Repo-scoped and workspace-scoped commands require CWD to be inside a JVS
-  repo and resolve that repo from the current path.
-- For repo-scoped and workspace-scoped commands, `--repo` is an assertion, not
-  an alternate discovery root. It must resolve to the current repo or to a path
-  inside the current repo.
-- Global flags: `--repo <repo-root>`, `--workspace <name>`, `--json`,
-  `--debug`, `--no-progress`, and `--no-color`.
+- Global flags: `--repo <path>`, `--workspace <name>`, `--json`, `--debug`,
+  `--no-progress`, and `--no-color`.
 - Non-zero exit means failure.
 - `--json` emits exactly one JSON object to stdout.
 - JVS does not mutate the caller's shell CWD.
+- Commands that read or materialize a save point must resolve the source to one
+  concrete save point ID before acting.
+- Commands that overwrite managed files must refuse unsaved changes by default
+  unless the user chooses an explicit safety option.
 
 ## JSON Envelope
 
@@ -29,257 +74,313 @@ JSON output uses this envelope:
   "schema_version": 1,
   "command": "status",
   "ok": true,
-  "repo_root": "/abs/repo",
+  "repo_root": "/abs/folder",
   "workspace": "main",
   "data": {},
   "error": null
 }
 ```
 
-On error, `ok` is false, `data` is null, and `error` contains:
+On error, `ok` is false, `data` is null, and `error` contains a stable code,
+message, and optional hint.
 
-```json
-{
-  "code": "E_NOT_REPO",
-  "message": "not a JVS repository",
-  "hint": "run `jvs init <repo-path>`"
-}
-```
+## Save Point IDs
 
-## Refs and Workspace State
+Public commands that accept `<save>` require one concrete save point:
 
-Checkpoint refs accepted by workspace commands:
+- a full save point ID
+- a unique save point ID prefix
 
-- `current`: the checkpoint currently materialized in the targeted workspace.
-- `latest`: the newest checkpoint on the workspace's active line.
-- A full checkpoint ID.
-- A unique checkpoint ID prefix.
-- An exact tag that resolves to one checkpoint.
+Labels, messages, and tags are not restore or view targets in the save point
+contract. Search and filtering commands may return candidates, but the user or
+automation must choose an explicit save point ID before a mutating operation.
 
-`dirty` is reserved for uncheckpointed workspace contents and is not a
-checkpoint ref. Notes/messages are not refs.
+## Setup
 
-## Setup Commands
+### `jvs init [folder] [--json]`
 
-### `jvs init <repo-path> [--json]`
+Adopt an existing folder. When no folder is provided, the shell working folder
+is used. Existing files stay in place; JVS stores control data in `.jvs/` and
+registers the folder as workspace `main`.
 
-Create a new repo with `.jvs/` metadata and an empty `main` workspace at the
-explicit path. This is a path-scoped setup command and is repo-free.
+Human output must show:
 
-### `jvs import <existing-dir> <repo-path> [--json]`
+- `Folder`
+- `Workspace: main`
+- that files were not moved or copied
+- `Newest save point: none`
+- `Unsaved changes: yes`
+- the next suggested save command
 
-Create a new repo from an existing directory of user files and create an
-initial checkpoint tagged `import`. The source must not contain `.jvs/`
-metadata and must not overlap the destination repo. This is a path-scoped
-setup command and is repo-free.
+Required JSON `data` fields include:
 
-### `jvs clone <source-repo> <dest-repo> [--scope full|current] [--json]`
+- `folder`
+- `workspace`
+- `repo_root`
+- `format_version`
+- `repo_id`
+- `newest_save_point`
+- `unsaved_changes`
+- setup engine probe fields such as `effective_engine` and `warnings`
 
-Copy a local JVS repo to a new destination. This is a path-scoped setup
-command and is repo-free. It is a local filesystem operation, not a remote
-protocol.
-
-`--scope current` copies the live source workspace contents into the
-destination repo's `main` workspace, creates exactly one initial checkpoint
-tagged `clone`, and makes that checkpoint both `current` and `latest`. It does
-not preserve source history or other workspaces.
-
-`--scope full` creates a new repo identity while preserving user-visible
-checkpoints, workspaces, and refs from the source repo. It must exclude active
-runtime operation state, including mutation lock directories, operation
-records, and active GC plans, and rebuild clean runtime directories in the
-destination.
-
-### `jvs capability <target-path> [--write-probe] [--json]`
-
-Probe JuiceFS clone, reflink, and copy support for a target path. This is a
-path-scoped setup command and is repo-free. Without `--write-probe`, the
-reflink result may be conservative.
-
-### Setup JSON
-
-Setup commands that support `--json` must expose stable engine and filesystem
-messaging:
-
-- `capabilities`: the target or destination capability report.
-- `effective_engine`: the engine expected for subsequent materialization in a
-  created repo, or the recommended engine for `capability`.
-- `warnings`: user-visible filesystem or engine caveats; empty when there are
-  none.
-- `transfer_engine`: for `import` and `clone`, the engine or transfer strategy
-  used to copy source data.
-- `degraded_reasons`: for `import` and `clone`, machine-readable reasons a
-  requested optimized transfer fell back or preserved less metadata.
-- `optimized_transfer`: for `clone --scope full`, true only when the full clone
-  used an optimized filesystem transfer rather than portable recursive copy.
-
-## Repo Commands
-
-### `jvs info [--json]`
-
-Show repo metadata and engine summary.
-
-Required `data` semantics:
-
-- repo root
-- repo ID
-- format version
-- selected engine summary
-- workspace count
-- checkpoint count
-
-## Utility Commands
-
-### `jvs completion <bash|zsh|fish|powershell>`
-
-Generate a shell completion script for the requested shell. This command does
-not require a repo or workspace and does not define JSON output.
-
-## Workspace Commands
-
-`workspace list`, `workspace rename`, and `workspace remove` are repo-scoped.
-`workspace path <name>` is repo-scoped. `workspace path` without `<name>` is
-workspace-scoped and resolves the current workspace from CWD or
-`--workspace`.
+## Status
 
 ### `jvs status [--json]`
 
-Show the targeted workspace state.
+Show the active folder, workspace, newest save point, file source, restored
+paths, and whether the folder has unsaved changes.
 
-Required `data` fields:
+Required JSON `data` fields:
 
-- `current`
-- `latest`
-- `dirty`
-- `at_latest`
+- `folder`
 - `workspace`
-- `repo`
-- `engine`
-- `recovery_hints`
+- `newest_save_point`
+- `history_head`
+- `content_source`
+- `started_from_save_point` when applicable
+- `unsaved_changes`
+- `files_state`
+- `path_sources` when applicable
 
-### `jvs workspace list [--json]`
+Human output must prefer public status words such as `Newest save point`,
+`Files match save point`, `Files changed since save point`, `Files were last
+restored from`, `Started from save point`, and `Unsaved changes`.
 
-List registered workspaces in the resolved repo.
+## Save And History
 
-### `jvs workspace path [<name>]`
+### `jvs save [-m message] [--json]`
 
-Print the canonical path for a workspace. Without `<name>`, the current
-workspace is used.
-
-### `jvs workspace rename <old> <new> [--json]`
-
-Rename a workspace in the resolved repo.
-
-### `jvs workspace remove <name> [--force] [--json]`
-
-Remove a workspace payload and metadata. Checkpoints remain available until
-GC removes unprotected data. `--force` is required when the
-workspace current checkpoint differs from latest.
-
-## Checkpoint Commands
-
-### `jvs checkpoint [note] [--tag <tag>]... [--file <path>] [--json]`
-
-Create a checkpoint from the current workspace. `--tag` may be repeated. Use
-`--file` or `-F` to read the note from a file.
+Create a save point for the active workspace. A message is required, either as
+`-m/--message` or as the positional message accepted by the implementation.
 
 Rules:
 
-- A checkpoint may advance only when the workspace current checkpoint is also
-  latest.
-- Tags must not be `current`, `latest`, or `dirty`.
-- Public v0 docs do not define partial checkpoint or compression contracts.
+- The save captures the workspace managed files, excluding JVS control data and
+  ignored/unmanaged files.
+- Save must hold the workspace mutation lock.
+- Capacity and staging checks must fail before publishing a partial save point.
+- If the workspace was created with `workspace new --from`, the first save has
+  no inherited history parent and records `started_from_save_point`.
+- If files were restored before saving, the new save records whole-workspace or
+  path provenance so later status and cleanup protection can explain it.
 
-### `jvs checkpoint list [--json]`
+Required JSON `data` fields:
 
-List checkpoints. When run inside a workspace, human output marks entries that
-are `current` or `latest`.
+- `save_point_id`
+- `workspace`
+- `message`
+- `created_at`
+- `newest_save_point`
+- `started_from_save_point` when applicable
+- `restored_from` when applicable
+- `restored_paths` when applicable
+- `unsaved_changes`
 
-### `jvs diff <from> <to> [--stat] [--json]`
+### `jvs history [--path <path>] [-n <limit>] [--grep <text>] [--tag <tag>] [--all] [--json]`
 
-Compare two checkpoints. Refs can be `current`, `latest`, full checkpoint IDs,
-unique ID prefixes, or exact tags.
+Show save points for the active workspace. `--path` searches for save points
+that contain a workspace-relative path and returns candidates without changing
+files. `--grep` and `--tag` are discovery filters only; neither messages nor
+tags become restore/view targets.
 
-Required `data` semantics:
+Required JSON `data` fields:
 
-- source checkpoint ID
-- target checkpoint ID
-- source and target checkpoint times
-- added paths
-- removed paths
-- modified paths
-- added, removed, and modified totals
+- `workspace`
+- `save_points`
+- `newest_save_point`
+- `started_from_save_point` when applicable
 
-## Restore and Fork Commands
+For `history --path`, required JSON `data` fields:
 
-### `jvs restore <ref|current|latest> [--discard-dirty|--include-working] [--json]`
+- `folder`
+- `workspace`
+- `path`
+- `candidates`
+- `next_commands`
 
-Replace the live workspace contents with the requested checkpoint.
+`history --path` is a discovery flow. It must not restore or view anything by
+itself.
 
-Dirty safety:
+## View
 
-- Restore refuses to overwrite dirty work by default.
-- `--include-working` creates a checkpoint of dirty work before restoring.
-- `--discard-dirty` discards dirty work and restores the target checkpoint.
-- The two dirty flags are mutually exclusive.
+### `jvs view <save-point> [path]`
 
-### `jvs fork [<ref> <name>|<name>] [--from <ref>] [--discard-dirty|--include-working] [--json]`
+Open a read-only view of a save point, or a path inside it. The real folder,
+workspace, and history are not changed.
 
-Create another workspace from a checkpoint.
+Rules:
+
+- The source must resolve to a full or unique save point ID.
+- The view path is read-only.
+- Active views/source reads protect their source save point from cleanup while
+  the operation is active.
+
+### `jvs view close <view-id|path>`
+
+Close a read-only view and release the associated active view protection.
+
+## Restore
+
+### `jvs restore [save-point] [--path <path>] [--save-first|--discard-unsaved] [--json]`
+
+Create a restore preview plan. Preview is the default. It does not change
+files and does not change workspace history.
 
 Forms:
 
-- `jvs fork <name>` creates `<name>` from `current`.
-- `jvs fork <ref> <name>` creates `<name>` from `<ref>`.
-- `jvs fork --from <ref> <name>` is the explicit form.
+- `jvs restore <save>` previews whole-workspace restore from a save point.
+- `jvs restore <save> --path <path>` previews single-path restore.
+- `jvs restore --path <path>` lists candidate save points for that path.
 
-Fork uses the same dirty-safety flags as restore.
+Safety options:
 
-## Verification, Doctor, and Retention
+- `--save-first` creates a save point for unsaved changes before restore run.
+- `--discard-unsaved` discards unsaved changes for the operation.
+- The two options are mutually exclusive.
 
-### `jvs verify [<checkpoint-id>] [--all] [--json]`
+Required preview JSON `data` fields:
 
-Verify descriptor checksum and payload root hash. With no argument or with
-`--all`, verify all checkpoints.
+- `mode: "preview"`
+- `plan_id`
+- `scope`
+- `folder`
+- `workspace`
+- `source_save_point`
+- `path` for path restores
+- `newest_save_point`
+- `history_head`
+- `expected_newest_save_point`
+- `expected_folder_evidence` or `expected_path_evidence`
+- `managed_files`
+- `options`
+- `history_changed: false`
+- `files_changed: false`
+- `run_command`
 
-Required `data` fields for each result:
+### `jvs restore --run <plan-id> [--json]`
 
-- `checksum_valid`
-- `payload_hash_valid`
-- `tamper_detected`
+Execute a previously created restore preview plan. Run must reload the plan and
+revalidate the expected target state before writing files. Runtime options are
+fixed by the preview plan; changing `--save-first`, `--discard-unsaved`, or
+`--path` requires a new preview.
+
+Required run JSON fields for whole-workspace restore:
+
+- `mode: "run"`
+- `plan_id`
+- `folder`
+- `workspace`
+- `restored_save_point`
+- `source_save_point`
+- `newest_save_point`
+- `history_head`
+- `content_source`
+- `unsaved_changes`
+- `files_state`
+- `history_changed: false`
+- `files_changed: true`
+
+Required run JSON fields for path restore:
+
+- `mode: "run"`
+- `plan_id`
+- `folder`
+- `workspace`
+- `restored_path`
+- `from_save_point`
+- `source_save_point`
+- `newest_save_point`
+- `history_head`
+- `content_source`
+- `path_source_recorded`
+- `path_sources`
+- `unsaved_changes`
+- `files_state`
+- `history_changed: false`
+- `files_changed: true`
+
+## Restore Recovery
+
+### `jvs recovery status [recovery-plan] [--json]`
+
+List active recovery plans or show one plan. A recovery plan records the
+restore plan, workspace, folder, source save point, optional path, last error,
+backup availability, and recommended next command.
+
+### `jvs recovery resume <recovery-plan> [--json]`
+
+Resume an interrupted restore. On success, history remains unchanged, the
+recovery backup is removed, and cleanup protection held by the recovery plan is
+released.
+
+### `jvs recovery rollback <recovery-plan> [--json]`
+
+Return the workspace to the saved pre-restore state when that can be verified.
+On success, history is restored to the pre-restore metadata state, recovery
+backup state is resolved, and recovery cleanup protection is released.
+
+## Workspace Creation
+
+### `jvs workspace new <name> --from <save> [--json]`
+
+Create another real workspace from a save point.
+
+Rules:
+
+- `--from` is required and must resolve to one save point ID.
+- The new workspace starts with managed files copied from the source save
+  point.
+- The source workspace is not changed.
+- The new workspace does not inherit the source history.
+- `Newest save point` for the new workspace is `none` until its first save.
+- The first save in the new workspace records `started_from_save_point`.
+
+Required JSON `data` fields:
+
+- `mode: "new"`
+- `status`
+- `workspace`
+- `folder`
+- `started_from_save_point`
+- `content_source`
+- `newest_save_point`
+- `history_head`
+- `original_workspace_unchanged`
+- `unsaved_changes`
+
+## Doctor
 
 ### `jvs doctor [--strict] [--repair-runtime] [--repair-list] [--json]`
 
 Check repository health. `--strict` includes full integrity verification.
-`--repair-runtime` runs safe automatic runtime cleanup. `--repair-list` prints
-available repair actions.
+`--repair-runtime` is limited to safe runtime cleanup.
 
-### `jvs gc plan [--json]`
+Public automatic repair actions:
 
-Compute cleanup candidates without deleting them. v0 GC protects live workspace
-lineage and active operation records; it does not expose public pin or retention
-policy fields.
+- `clean_locks`
+- `clean_runtime_tmp`
+- `clean_runtime_operations`
 
-Required `data` fields:
+Doctor must not rewrite durable save point history, workspace provenance, or
+audit history as an automatic repair.
 
-- `plan_id`
-- `created_at`: plan creation timestamp
-- `protected_checkpoints`: checkpoint IDs protected by v0 GC safety rules
-- `candidate_count`
-- `protected_by_lineage`
-- `to_delete`: checkpoint IDs that would be deleted by `gc run`
-- `deletable_bytes_estimate`
+## Cleanup Layering
 
-`protected_checkpoints` is informational and contains the public checkpoint IDs
-that v0 GC kept because they are reachable from live workspace roots or active
-operation records. It is not a pin, tag-retention, or retention-policy surface.
+`cleanup` is the public product term. Cleanup must remain two-stage: preview
+first, then run a reviewed plan. A cleanup run must revalidate its plan before
+deleting anything and must protect live workspace needs, active views, active
+source reads, active operations, and active recovery plans.
 
-### `jvs gc run --plan-id <id>`
+## Implementation Boundary
 
-Run an accepted cleanup plan.
+Implementation packages, storage paths, and metadata field names are not public
+CLI vocabulary. Public help, examples, JSON facades, and release notes must use
+folder, workspace, save point, history, view, restore, doctor, recovery, and
+cleanup terminology.
 
-## v0 Boundaries
+## Boundaries
 
-The stable v0 CLI does not include remote push/pull, signing or trust commands,
-partial checkpoint contracts, compression contracts, merge/rebase, or complex
-retention policy flags.
+The public contract does not include remote push/pull, signing or trust
+commands, merge/rebase, label-as-ref restore, tag-as-ref restore, public
+partial-save contracts, public compression contracts, or complex retention
+policy flags.

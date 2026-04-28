@@ -6,156 +6,121 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-// TestWorktreePathCommand tests the worktree path command.
-func TestWorktreePathCommand(t *testing.T) {
-	dir := t.TempDir()
-	originalWd, _ := os.Getwd()
-	defer os.Chdir(originalWd)
+// TestWorkspacePathCommand tests the public workspace path command.
+func TestWorkspacePathCommand(t *testing.T) {
+	repoPath, mainPath := setupCoverageRepo(t, "wspathrepo")
 
-	assert.NoError(t, os.Chdir(dir))
-	repoPath := initLegacyRepoForCLITest(t, "wtpathrepo")
-
-	// Change to repo directory
-	assert.NoError(t, os.Chdir(repoPath))
-
-	t.Run("Worktree path with name", func(t *testing.T) {
-		cmd2 := createTestRootCmd()
-		stdout, err := executeCommand(cmd2, "worktree", "path", "main")
+	t.Run("Workspace path with name", func(t *testing.T) {
+		stdout, err := executeCommand(createTestRootCmd(), "workspace", "path", "main")
 		assert.NoError(t, err)
-		assert.Contains(t, stdout, "main")
+		assert.Contains(t, stdout, mainPath)
 	})
 
-	// Change to main worktree and test path without args
-	mainPath := filepath.Join(repoPath, "main")
-	assert.NoError(t, os.Chdir(mainPath))
+	assert.NoError(t, os.WriteFile("path-base.txt", []byte("path"), 0644))
+	savePointID := createRootTestSavePoint(t, "path base")
+	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "path-feature", "--from", savePointID)
+	require.NoError(t, err, stdout)
 
-	t.Run("Worktree path from inside worktree", func(t *testing.T) {
-		cmd3 := createTestRootCmd()
-		stdout, err := executeCommand(cmd3, "worktree", "path")
+	featurePath := filepath.Join(repoPath, "worktrees", "path-feature")
+	assert.NoError(t, os.Chdir(featurePath))
+
+	t.Run("Workspace path from inside workspace", func(t *testing.T) {
+		stdout, err := executeCommand(createTestRootCmd(), "workspace", "path")
 		assert.NoError(t, err)
-		assert.NotEmpty(t, stdout)
+		assert.Contains(t, stdout, featurePath)
 	})
 }
 
-// TestWorktreeRenameCommand tests the worktree rename command.
-func TestWorktreeRenameCommand(t *testing.T) {
-	dir := t.TempDir()
-	originalWd, _ := os.Getwd()
-	defer os.Chdir(originalWd)
+// TestWorkspaceRenameCommand tests the public workspace rename command.
+func TestWorkspaceRenameCommand(t *testing.T) {
+	setupCoverageRepo(t, "wsrename")
+	assert.NoError(t, os.WriteFile("rename-base.txt", []byte("rename"), 0644))
+	savePointID := createRootTestSavePoint(t, "rename base")
 
-	assert.NoError(t, os.Chdir(dir))
-	repoPath := initLegacyRepoForCLITest(t, "wtrename")
+	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "oldname", "--from", savePointID)
+	require.NoError(t, err, stdout)
 
-	// Change to repo directory
-	assert.NoError(t, os.Chdir(repoPath))
-
-	// Create a worktree first
-	cmd2 := createTestRootCmd()
-	_, err := executeCommand(cmd2, "worktree", "create", "oldname")
-	assert.NoError(t, err)
-
-	t.Run("Rename worktree", func(t *testing.T) {
-		cmd3 := createTestRootCmd()
-		stdout, err := executeCommand(cmd3, "worktree", "rename", "oldname", "newname")
+	t.Run("Rename workspace", func(t *testing.T) {
+		stdout, err := executeCommand(createTestRootCmd(), "workspace", "rename", "oldname", "newname")
 		assert.NoError(t, err)
-		assert.Contains(t, stdout, "Renamed")
+		assert.Contains(t, stdout, "Renamed workspace")
 	})
 
 	t.Run("Rename with JSON output", func(t *testing.T) {
-		cmd4 := createTestRootCmd()
-		_, err = executeCommand(cmd4, "worktree", "create", "oldname2")
-		assert.NoError(t, err)
+		stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "oldname2", "--from", savePointID)
+		require.NoError(t, err, stdout)
 
-		// Note: rename doesn't output JSON even with --json flag
-		cmd5 := createTestRootCmd()
-		stdout, err := executeCommand(cmd5, "worktree", "rename", "oldname2", "newname2")
+		stdout, err = executeCommand(createTestRootCmd(), "--json", "workspace", "rename", "oldname2", "newname2")
 		assert.NoError(t, err)
-		assert.NotEmpty(t, stdout)
+		assert.Contains(t, stdout, `"workspace": "newname2"`)
+		assert.Contains(t, stdout, `"status": "renamed"`)
 	})
 }
 
-// TestWorktreeForkCommand tests the worktree fork command.
-func TestWorktreeForkCommand(t *testing.T) {
-	dir := t.TempDir()
-	originalWd, _ := os.Getwd()
-	defer os.Chdir(originalWd)
+// TestWorkspaceNewCommand tests creating public workspaces from a save point.
+func TestWorkspaceNewCommand(t *testing.T) {
+	setupCoverageRepo(t, "wsnewrepo")
+	assert.NoError(t, os.WriteFile("newfile.txt", []byte("content"), 0644))
+	savePointID := createRootTestSavePoint(t, "workspace base")
 
-	assert.NoError(t, os.Chdir(dir))
-	repoPath := initLegacyRepoForCLITest(t, "wtforkrepo")
-
-	// Change into main worktree
-	mainPath := filepath.Join(repoPath, "main")
-	assert.NoError(t, os.Chdir(mainPath))
-
-	// Create a snapshot
-	assert.NoError(t, os.WriteFile("forkfile.txt", []byte("fork content"), 0644))
-	cmd2 := createTestRootCmd()
-	_, err := executeCommand(cmd2, "snapshot", "fork base")
-	assert.NoError(t, err)
-
-	t.Run("Fork from current position (auto-name)", func(t *testing.T) {
-		cmd3 := createTestRootCmd()
-		stdout, err := executeCommand(cmd3, "worktree", "fork")
+	t.Run("New workspace from save point", func(t *testing.T) {
+		stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "custom-workspace", "--from", savePointID)
 		assert.NoError(t, err)
-		assert.Contains(t, stdout, "Created worktree")
+		assert.Contains(t, stdout, "custom-workspace")
+		assert.Contains(t, stdout, "Started from save point")
 	})
 
-	t.Run("Fork with custom name", func(t *testing.T) {
-		cmd4 := createTestRootCmd()
-		stdout, err := executeCommand(cmd4, "worktree", "fork", "custom-fork")
+	t.Run("New workspace with JSON output", func(t *testing.T) {
+		stdout, err := executeCommand(createTestRootCmd(), "--json", "workspace", "new", "json-workspace", "--from", savePointID)
 		assert.NoError(t, err)
-		assert.Contains(t, stdout, "custom-fork")
-	})
-
-	t.Run("Fork with JSON output", func(t *testing.T) {
-		cmd5 := createTestRootCmd()
-		stdout, err := executeCommand(cmd5, "worktree", "fork", "json-fork", "--json")
-		assert.NoError(t, err)
-		assert.NotEmpty(t, stdout)
+		assert.Contains(t, stdout, `"workspace": "json-workspace"`)
+		assert.Contains(t, stdout, `"started_from_save_point": "`)
+		assert.NotContains(t, stdout, "snapshot_id")
 	})
 }
 
-// TestWorktreeListCommand tests the worktree list command.
-func TestWorktreeListCommand(t *testing.T) {
-	dir := t.TempDir()
-	originalWd, _ := os.Getwd()
-	defer os.Chdir(originalWd)
+// TestWorkspaceListCommand tests the public workspace list command.
+func TestWorkspaceListCommand(t *testing.T) {
+	setupCoverageRepo(t, "wslistrepo")
+	assert.NoError(t, os.WriteFile("list-base.txt", []byte("list"), 0644))
+	savePointID := createRootTestSavePoint(t, "list base")
+	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "list-feature", "--from", savePointID)
+	require.NoError(t, err, stdout)
 
-	assert.NoError(t, os.Chdir(dir))
-	repoPath := initLegacyRepoForCLITest(t, "wtlistrepo")
-
-	// Change to repo directory
-	assert.NoError(t, os.Chdir(repoPath))
-
-	t.Run("List worktrees", func(t *testing.T) {
-		cmd2 := createTestRootCmd()
-		stdout, err := executeCommand(cmd2, "worktree", "list")
+	t.Run("List workspaces", func(t *testing.T) {
+		stdout, err := executeCommand(createTestRootCmd(), "workspace", "list")
 		assert.NoError(t, err)
 		assert.Contains(t, stdout, "main")
+		assert.Contains(t, stdout, "list-feature")
 	})
 
-	t.Run("List worktrees with JSON", func(t *testing.T) {
-		cmd3 := createTestRootCmd()
-		stdout, err := executeCommand(cmd3, "worktree", "list", "--json")
+	t.Run("List workspaces with JSON", func(t *testing.T) {
+		stdout, err := executeCommand(createTestRootCmd(), "--json", "workspace", "list")
 		assert.NoError(t, err)
-		assert.Contains(t, stdout, "[")
+		assert.Contains(t, stdout, `"workspace": "main"`)
+		assert.Contains(t, stdout, `"workspace": "list-feature"`)
+		assert.NotContains(t, stdout, "snapshot_id")
 	})
 }
 
 // TestInitCommandJSON tests init command with JSON output.
 func TestInitCommandJSON(t *testing.T) {
 	dir := t.TempDir()
-	originalWd, _ := os.Getwd()
-	defer os.Chdir(originalWd)
+	originalWd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, os.Chdir(originalWd))
+		createTestRootCmd()
+	})
 
 	assert.NoError(t, os.Chdir(dir))
 
 	t.Run("Init with JSON output", func(t *testing.T) {
 		assert.NoError(t, os.Mkdir("jsonrepo", 0755))
-		cmd := createTestRootCmd()
-		stdout, err := executeCommand(cmd, "init", "jsonrepo", "--json")
+		stdout, err := executeCommand(createTestRootCmd(), "--json", "init", "jsonrepo")
 		assert.NoError(t, err)
 		assert.Contains(t, stdout, "repo_root")
 		assert.Contains(t, stdout, "repo_id")
@@ -164,27 +129,18 @@ func TestInitCommandJSON(t *testing.T) {
 	})
 }
 
-// TestWorktreeCreateForce tests worktree remove with force flag.
-func TestWorktreeCreateForce(t *testing.T) {
-	dir := t.TempDir()
-	originalWd, _ := os.Getwd()
-	defer os.Chdir(originalWd)
+// TestWorkspaceRemoveForce tests public workspace remove with force flag.
+func TestWorkspaceRemoveForce(t *testing.T) {
+	setupCoverageRepo(t, "wsforceremove")
+	assert.NoError(t, os.WriteFile("remove-base.txt", []byte("remove"), 0644))
+	savePointID := createRootTestSavePoint(t, "remove base")
 
-	assert.NoError(t, os.Chdir(dir))
-	repoPath := initLegacyRepoForCLITest(t, "wtforceremove")
+	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "toberemoved", "--from", savePointID)
+	require.NoError(t, err, stdout)
 
-	// Change to repo directory
-	assert.NoError(t, os.Chdir(repoPath))
-
-	// Create a worktree
-	cmd2 := createTestRootCmd()
-	_, err := executeCommand(cmd2, "worktree", "create", "toberemoved")
-	assert.NoError(t, err)
-
-	t.Run("Remove worktree", func(t *testing.T) {
-		cmd3 := createTestRootCmd()
-		stdout, err := executeCommand(cmd3, "worktree", "remove", "toberemoved")
+	t.Run("Remove workspace", func(t *testing.T) {
+		stdout, err := executeCommand(createTestRootCmd(), "workspace", "remove", "--force", "toberemoved")
 		assert.NoError(t, err)
-		assert.Contains(t, stdout, "Removed")
+		assert.Contains(t, stdout, "Removed workspace")
 	})
 }

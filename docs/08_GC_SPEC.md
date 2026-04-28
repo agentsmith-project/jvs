@@ -1,85 +1,66 @@
-# GC Spec (v0)
+# Cleanup Spec
 
-## Goal
-Control checkpoint storage growth without breaking recoverability.
+**Status:** active save point cleanup semantics
 
-v0 GC is deliberately small: it exposes only a two-stage workflow:
+The repository filename is retained for manifest stability only. Public docs,
+help, examples, JSON, and release notes use `cleanup`.
 
-```bash
-jvs gc plan
-jvs gc run --plan-id <id>
+Public product language is cleanup. Cleanup is review-first deletion of
+unprotected save point storage. It is not a normal user path for creating,
+viewing, or restoring work.
+
+## Public Cleanup Contract
+
+Cleanup is two-stage:
+
+```text
+cleanup preview -> cleanup run
 ```
 
-There are no public pin commands, retention flags, tag-retention rules, partial
-cleanup modes, or compression-specific cleanup modes in v0.
+Rules:
 
-## Objects
-- checkpoint payload: `.jvs/snapshots/<id>/`
-- descriptor: `.jvs/descriptors/<id>.json`
-- plan: deletion proposal written under `.jvs/gc/`
-- tombstone: pending or completed delete marker under `.jvs/gc/tombstones/`
+- Preview never deletes.
+- Run binds to a reviewed plan.
+- Run revalidates repository identity, plan identity, source state, and
+  protection rules before deleting.
+- Cleanup protects live workspace needs, active views, active source reads,
+  active operations, and active recovery plans.
+- Labels do not protect save points.
+- Kept save points and direct explanatory sources are protected when the public
+  keep contract is promoted.
+- Deleted save points require tombstone/audit information so later view or
+  restore attempts can produce a `deleted-save` style error.
 
-Active GC plans are runtime state. A plan is bound to the repository identity
-that created it and must not be treated as portable migration state. Full
-repository clone excludes active plan files under `.jvs/gc/*.json`.
+## Protected Save Points
 
-## Protection Rules (MUST)
-Non-deletable checkpoints:
-- current, latest, and base checkpoints of all live workspaces
-- ancestors reachable from those live workspace roots
-- checkpoints referenced by active operation records in `.jvs/intents/`
+At minimum cleanup protects save points needed by:
 
-Removed workspaces no longer protect their former checkpoint lineage. Such
-orphaned checkpoints can appear in `to_delete` immediately after planning.
+- live workspace history/content state
+- `started_from_save_point`
+- whole-workspace restore provenance
+- restored path provenance
+- active read/materialization operations
+- active read-only views
+- active restore recovery plans
+- kept save points when keep is available
 
-## `jvs gc plan` (MUST)
-- accepts no positional arguments
-- computes candidates without deleting data
-- writes a plan with:
-  - schema version
-  - `plan_id`
-  - creating `repo_id`
-  - candidate checkpoint IDs
-  - protected lineage count
-  - estimated reclaimable bytes from payload plus descriptor files
-- fails without writing a plan when the audit log cannot be safely extended
-- appends a `gc_plan` audit event after writing a successful plan
-- human output starts with `Plan ID: <id>`
-- JSON `data` includes:
-  - `plan_id`
-  - `created_at`
-  - `protected_checkpoints`
-  - `candidate_count`
-  - `protected_by_lineage`
-  - `to_delete`
-  - `deletable_bytes_estimate`
+## Plan Evidence
 
-`protected_checkpoints` contains the public checkpoint IDs kept by v0 GC safety
-rules: live workspace roots, their ancestors, and checkpoints referenced by
-active operation records. It is not a pin list and does not imply any public
-retention policy.
+Cleanup plan evidence must use save point terminology:
 
-Public v0 JSON must not expose pin, retention, or future policy fields.
+- `plan_id`
+- `created_at`
+- `protected_save_points`
+- `candidate_count`
+- `reclaimable_save_points`
+- `reclaimable_bytes_estimate`
+- `protections`
 
-## `jvs gc run --plan-id <id>` Two-Phase Protocol (MUST)
-`gc run` accepts no positional arguments.
+Any implementation storage fields with different names are internal storage
+details and must not be used as product vocabulary.
 
-### Phase A: mark
-1. load the requested plan
-2. verify plan schema, `plan_id`, and repository identity
-3. revalidate candidate set equality; else fail `E_GC_PLAN_MISMATCH`
-4. write tombstones with `gc_state=marked`
+## Runtime And Migration Boundary
 
-### Phase B: commit
-5. delete checkpoint payload and descriptor files for each pending tombstone
-6. write commit record with `gc_state=committed`
-7. append batch audit event
-
-## Failure Handling
-- missing, stale, repository-mismatched, or self-mismatched plans fail with
-  `E_GC_PLAN_MISMATCH`
-- if commit fails mid-batch, stop immediately
-- set failed tombstones `gc_state=failed` with reason
-- rerun continues from failed markers safely
-- already deleted items are idempotent, not corruption
-- failed runs MUST return an error and MUST NOT delete the saved plan
+Cleanup runtime plan files are not portable backup or migration authority.
+Physical sync procedures must exclude runtime cleanup state and create a fresh
+cleanup preview after migration.

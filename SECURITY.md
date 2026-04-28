@@ -35,16 +35,16 @@ Instead, please report vulnerabilities responsibly by:
 
 ## Security Model Overview
 
-JVS is designed with a **checkpoint-first, filesystem-native** security architecture:
+JVS is designed with a **save-point-first, filesystem-native** security architecture:
 
 ### Integrity Protection (Two-Layer Model)
 
-1. **Descriptor Checksum**: Each checkpoint descriptor includes a SHA-256 checksum covering all descriptor fields
-2. **Payload Root Hash**: Each checkpoint includes a SHA-256 hash of the complete payload directory tree
+1. **Descriptor Checksum**: Each save point descriptor includes a SHA-256 checksum covering all descriptor fields
+2. **Payload Root Hash**: Each save point includes a SHA-256 hash of the complete payload directory tree
 
 Verification requires both layers to pass:
 ```bash
-jvs verify --all  # Strong verification (checksum + payload hash)
+jvs doctor --strict  # Strong repository health and integrity check
 ```
 
 ### Audit Trail
@@ -88,13 +88,13 @@ JVS relies on OS-level filesystem permissions for access control:
 
 3. **JuiceFS Dependency**: Ensure JuiceFS mount points are properly secured. Refer to [JuiceFS security documentation](https://juicefs.com/docs/community/security/) for best practices.
 
-4. **Path Traversal Protection**: JVS validates all workspace and checkpoint names to prevent path escape attacks. Rejects `..`, `/`, `\`, and absolute paths.
+4. **Path Traversal Protection**: JVS validates all workspace and save point names to prevent path escape attacks. Rejects `..`, `/`, `\`, and absolute paths.
 
-5. **Crash Safety**: Checkpoint publish uses a 12-step atomic protocol with `.READY` file as publish gate. Crashes before `.READY` are ignored; crashes after `.READY` may leave partial checkpoints (detectable via `jvs doctor`).
+5. **Crash Safety**: Save point publish uses an atomic protocol with `.READY` file as publish gate. Crashes before `.READY` are ignored; crashes after `.READY` may leave partial save points (detectable via `jvs doctor`).
 
 ## Security Best Practices for Users
 
-1. **Run `jvs verify --all`** after any suspicious system activity
+1. **Run `jvs doctor --strict`** after any suspicious system activity
 2. **Run `jvs doctor --strict`** periodically to check repository health
 3. **Backup/sync repository metadata safely** with `juicefs sync` only when
    active runtime state is explicitly excluded: `.jvs/locks/` via

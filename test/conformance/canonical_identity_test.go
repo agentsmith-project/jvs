@@ -34,11 +34,9 @@ func TestDocs_CanonicalIdentityRequiredInReleaseFacingDocs(t *testing.T) {
 		{
 			doc: "README.md",
 			required: []string{
-				canonicalRepositoryURL() + "/releases/latest",
 				"https://img.shields.io/github/v/release/" + canonicalRepositorySlug,
-				canonicalRepositoryURL() + "/releases/latest/download/jvs-linux-amd64",
 				"git clone " + canonicalRepositoryURL() + ".git",
-				"go install " + canonicalGoModulePath() + "/cmd/jvs@latest",
+				"go install " + canonicalGoModulePath() + "/cmd/jvs@<VERSION>",
 			},
 		},
 		{
@@ -53,51 +51,6 @@ func TestDocs_CanonicalIdentityRequiredInReleaseFacingDocs(t *testing.T) {
 			doc: "docs/API_DOCUMENTATION.md",
 			required: []string{
 				`"` + canonicalGoModulePath() + `/pkg/jvs"`,
-			},
-		},
-		{
-			doc: "docs/EXAMPLES.md",
-			required: []string{
-				"go install " + canonicalGoModulePath() + "/cmd/jvs@latest",
-			},
-		},
-		{
-			doc: "docs/QUICKSTART.md",
-			required: []string{
-				"git clone " + canonicalRepositoryURL() + ".git",
-			},
-		},
-		{
-			doc: "docs/FAQ.md",
-			required: []string{
-				"git clone " + canonicalRepositoryURL() + ".git",
-				"go install " + canonicalGoModulePath() + "/cmd/jvs@latest",
-				canonicalRepositoryURL() + "/issues",
-				canonicalRepositoryURL() + "/discussions",
-			},
-		},
-		{
-			doc: "docs/TROUBLESHOOTING.md",
-			required: []string{
-				canonicalRepositoryURL() + "/issues",
-			},
-		},
-		{
-			doc: "docs/agent_sandbox_quickstart.md",
-			required: []string{
-				canonicalRepositoryURL() + "/discussions",
-			},
-		},
-		{
-			doc: "docs/etl_pipeline_quickstart.md",
-			required: []string{
-				canonicalRepositoryURL() + "/discussions",
-			},
-		},
-		{
-			doc: "docs/game_dev_quickstart.md",
-			required: []string{
-				canonicalRepositoryURL() + "/discussions",
 			},
 		},
 		{

@@ -4,6 +4,7 @@ package capacitygate
 
 import (
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -223,7 +224,11 @@ func (StatfsMeter) AvailableBytes(path string) (int64, error) {
 	if err := unix.Statfs(probe, &st); err != nil {
 		return 0, err
 	}
-	return int64(st.Bavail) * int64(st.Bsize), nil
+	available, err := availableBytesFromStatfs(st.Bavail, st.Bsize)
+	if err != nil {
+		return 0, fmt.Errorf("statfs available bytes for %s: %w", probe, err)
+	}
+	return available, nil
 }
 
 func (StatfsMeter) DeviceID(path string) (string, error) {
@@ -289,6 +294,25 @@ func saturatingAdd(a, b int64) int64 {
 		return maxInt64
 	}
 	return a + b
+}
+
+func availableBytesFromStatfs(availableBlocks uint64, blockSize int64) (int64, error) {
+	if blockSize < 0 {
+		return 0, fmt.Errorf("invalid statfs block size %d", blockSize)
+	}
+	if blockSize == 0 || availableBlocks == 0 {
+		return 0, nil
+	}
+	var blocks big.Int
+	blocks.SetUint64(availableBlocks)
+	var size big.Int
+	size.SetInt64(blockSize)
+	var product big.Int
+	product.Mul(&blocks, &size)
+	if !product.IsInt64() {
+		return 0, fmt.Errorf("available space exceeds int64: blocks=%d block_size=%d", availableBlocks, blockSize)
+	}
+	return product.Int64(), nil
 }
 
 const maxInt64 = int64(^uint64(0) >> 1)

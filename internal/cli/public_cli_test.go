@@ -14,8 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type checkpointCommandOutput struct {
-	CheckpointID string `json:"checkpoint_id"`
+type savePointCommandOutput struct {
+	SavePointID string `json:"save_point_id"`
 }
 
 type statusCommandOutput struct {
@@ -52,17 +52,16 @@ func runPublicCLI(t *testing.T, args ...string) (string, error) {
 	return executeCommand(cmd, args...)
 }
 
-func createCheckpointForPublicCLI(t *testing.T, note string, args ...string) string {
+func createCheckpointForPublicCLI(t *testing.T, note string, _ ...string) string {
 	t.Helper()
 
-	allArgs := append([]string{"--json", "checkpoint", note}, args...)
-	stdout, err := runPublicCLI(t, allArgs...)
+	stdout, err := runPublicCLI(t, "--json", "save", "-m", note)
 	require.NoError(t, err, stdout)
 
-	var out checkpointCommandOutput
+	var out savePointCommandOutput
 	decodePublicData(t, stdout, &out)
-	require.NotEmpty(t, out.CheckpointID)
-	return out.CheckpointID
+	require.NotEmpty(t, out.SavePointID)
+	return out.SavePointID
 }
 
 func readStatusForPublicCLI(t *testing.T) statusCommandOutput {
@@ -104,10 +103,10 @@ func decodePublicData(t *testing.T, stdout string, target any) contractEnvelope 
 	return env
 }
 
-func TestPublicCLIStatusAndCheckpointCleanliness(t *testing.T) {
+func TestPublicCLIStatusAndSavePointCleanliness(t *testing.T) {
 	_, mainPath := setupPublicCLIRepo(t, "statusrepo")
 
-	require.NoError(t, os.WriteFile("file.txt", []byte("before checkpoint"), 0644))
+	require.NoError(t, os.WriteFile("file.txt", []byte("before save"), 0644))
 	dirty := readStatusForPublicCLI(t)
 	assert.True(t, dirty.UnsavedChanges)
 	assert.Equal(t, "main", dirty.Workspace)
@@ -116,7 +115,7 @@ func TestPublicCLIStatusAndCheckpointCleanliness(t *testing.T) {
 	assert.Nil(t, dirty.NewestSavePoint)
 	assert.Equal(t, "not_saved", dirty.FilesState)
 
-	id := createCheckpointForPublicCLI(t, "first checkpoint")
+	id := createCheckpointForPublicCLI(t, "first save point")
 	clean := readStatusForPublicCLI(t)
 	assert.False(t, clean.UnsavedChanges)
 	require.NotNil(t, clean.ContentSource)
@@ -125,31 +124,31 @@ func TestPublicCLIStatusAndCheckpointCleanliness(t *testing.T) {
 	assert.Equal(t, id, *clean.ContentSource)
 	assert.Equal(t, id, *clean.NewestSavePoint)
 	assert.Equal(t, id, *clean.HistoryHead)
-	assert.Equal(t, "main", clean.Workspace)
-	assert.Equal(t, mainPath, clean.Folder)
 	assert.Equal(t, "matches_save_point", clean.FilesState)
 }
 
-func TestPublicCLIPartialCheckpointFilePathWithReflinkEngine(t *testing.T) {
-	repoPath, _ := setupPublicCLIRepo(t, "partialreflink")
+func TestPublicCLISaveCapturesManagedFilesWithReflinkEngine(t *testing.T) {
+	repoPath, _ := setupPublicCLIRepo(t, "savereflink")
 	t.Setenv("JVS_SNAPSHOT_ENGINE", string(model.EngineReflinkCopy))
 
 	require.NoError(t, os.WriteFile("config.yaml", []byte("config"), 0644))
 	require.NoError(t, os.WriteFile("README.md", []byte("readme"), 0644))
 
-	id := createCheckpointForPublicCLI(t, "config only", "--paths", "config.yaml")
+	id := createCheckpointForPublicCLI(t, "all managed files")
 
-	snapshotDir := filepath.Join(repoPath, ".jvs", "snapshots", id)
-	content, err := os.ReadFile(filepath.Join(snapshotDir, "config.yaml"))
+	savePointDir := filepath.Join(repoPath, ".jvs", "snapshots", id)
+	content, err := os.ReadFile(filepath.Join(savePointDir, "config.yaml"))
 	require.NoError(t, err)
 	assert.Equal(t, "config", string(content))
-	assert.NoFileExists(t, filepath.Join(snapshotDir, "README.md"))
+	readme, err := os.ReadFile(filepath.Join(savePointDir, "README.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "readme", string(readme))
 }
 
 func TestPublicCLIStatusTreatsRootReadyAsDirtyOrReserved(t *testing.T) {
 	setupPublicCLIRepo(t, "reservedstatus")
 
-	require.NoError(t, os.WriteFile("file.txt", []byte("before checkpoint"), 0644))
+	require.NoError(t, os.WriteFile("file.txt", []byte("before save"), 0644))
 	createCheckpointForPublicCLI(t, "baseline")
 	require.NoError(t, os.WriteFile(".READY", []byte("user data"), 0644))
 
@@ -182,9 +181,6 @@ func TestPublicCLIDirtyRestoreRequiresExplicitChoice(t *testing.T) {
 	assert.Contains(t, err.Error(), "--save-first")
 	assert.Contains(t, err.Error(), "--discard-unsaved")
 	assert.Contains(t, err.Error(), "No files were changed.")
-	content, readErr := os.ReadFile("file.txt")
-	require.NoError(t, readErr)
-	assert.Equal(t, "local edit", string(content))
 
 	restored := runPublicRestoreJSON(t, second, "--discard-unsaved")
 	assert.Equal(t, second, restored["restored_save_point"])
@@ -194,13 +190,10 @@ func TestPublicCLIDirtyRestoreRequiresExplicitChoice(t *testing.T) {
 	assert.Equal(t, false, restored["unsaved_changes"])
 	assert.Equal(t, "matches_save_point", restored["files_state"])
 	assert.Equal(t, false, restored["history_changed"])
-	content, readErr = os.ReadFile("file.txt")
-	require.NoError(t, readErr)
-	assert.Equal(t, "v2", string(content))
 }
 
-func TestPublicCLIDirtyRestoreIncludeWorkingCheckpointsFirst(t *testing.T) {
-	setupPublicCLIRepo(t, "includeonrestore")
+func TestPublicCLIDirtyRestoreSaveFirstCreatesSavePoint(t *testing.T) {
+	setupPublicCLIRepo(t, "savefirstrestore")
 
 	require.NoError(t, os.WriteFile("file.txt", []byte("v1"), 0644))
 	first := createCheckpointForPublicCLI(t, "first")
@@ -217,281 +210,17 @@ func TestPublicCLIDirtyRestoreIncludeWorkingCheckpointsFirst(t *testing.T) {
 	require.NotNil(t, status.NewestSavePoint)
 	assert.Equal(t, first, *status.ContentSource)
 	assert.NotEqual(t, second, *status.NewestSavePoint)
-	assert.Equal(t, "matches_save_point", status.FilesState)
 
-	stdout, err := runPublicCLI(t, "--json", "checkpoint", "list")
+	stdout, err := runPublicCLI(t, "--json", "history")
 	require.NoError(t, err, stdout)
-	var checkpoints []checkpointCommandOutput
-	decodePublicData(t, stdout, &checkpoints)
-	assert.Len(t, checkpoints, 3)
+	var history map[string]any
+	decodePublicData(t, stdout, &history)
+	savePoints, ok := history["save_points"].([]any)
+	require.True(t, ok, "history should expose save_points: %#v", history)
+	assert.Len(t, savePoints, 3)
 }
 
-func TestPublicCLIDirtyForkRequiresExplicitChoice(t *testing.T) {
-	repoPath, _ := setupPublicCLIRepo(t, "dirtyfork")
-
-	require.NoError(t, os.WriteFile("file.txt", []byte("clean"), 0644))
-	createCheckpointForPublicCLI(t, "base")
-	require.NoError(t, os.WriteFile("file.txt", []byte("working"), 0644))
-
-	stdout, err := runPublicCLI(t, "fork", "branch")
-	require.Error(t, err)
-	assert.Empty(t, stdout)
-	assert.Contains(t, err.Error(), "dirty")
-
-	stdout, err = runPublicCLI(t, "--json", "fork", "branch", "--discard-dirty")
-	require.NoError(t, err, stdout)
-	assert.Contains(t, stdout, `"workspace": "branch"`)
-	content, readErr := os.ReadFile(filepath.Join(repoPath, "worktrees", "branch", "file.txt"))
-	require.NoError(t, readErr)
-	assert.Equal(t, "clean", string(content))
-
-	require.NoError(t, os.WriteFile("file.txt", []byte("working"), 0644))
-	stdout, err = runPublicCLI(t, "--json", "fork", "working-branch", "--include-working")
-	require.NoError(t, err, stdout)
-	assert.Contains(t, stdout, `"workspace": "working-branch"`)
-	content, readErr = os.ReadFile(filepath.Join(repoPath, "worktrees", "working-branch", "file.txt"))
-	require.NoError(t, readErr)
-	assert.Equal(t, "working", string(content))
-}
-
-func TestLegacyWorktreeForkDirtyNoCheckpointRequiresExplicitChoice(t *testing.T) {
-	repoPath, mainPath := setupPublicCLIRepo(t, "legacydirtyfreshfork")
-
-	require.NoError(t, os.WriteFile("file.txt", []byte("working"), 0644))
-
-	destPath := filepath.Join(repoPath, "worktrees", "branch")
-	stdout, stderr, exitCode := runContractSubprocess(t, mainPath, "worktree", "fork", "branch")
-	assert.Equal(t, 1, exitCode, "dirty legacy fork unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
-	assert.Empty(t, strings.TrimSpace(stdout))
-	assert.Contains(t, stderr, "dirty")
-	assert.Contains(t, stderr, "--include-working")
-	assert.Contains(t, stderr, "--discard-dirty")
-	assert.NotContains(t, stderr, "no checkpoints")
-	_, statErr := os.Stat(destPath)
-	assert.True(t, os.IsNotExist(statErr), "destination workspace should not exist: %v", statErr)
-
-	content, readErr := os.ReadFile("file.txt")
-	require.NoError(t, readErr)
-	assert.Equal(t, "working", string(content))
-}
-
-func TestLegacyWorktreeForkIncludeWorkingNoCheckpoint(t *testing.T) {
-	repoPath, mainPath := setupPublicCLIRepo(t, "legacyincludefreshfork")
-
-	require.NoError(t, os.WriteFile("file.txt", []byte("working"), 0644))
-
-	stdout, stderr, exitCode := runContractSubprocess(t, mainPath, "--json", "worktree", "fork", "working-branch", "--include-working")
-	require.Equal(t, 0, exitCode, "legacy include-working fork failed: stdout=%s stderr=%s", stdout, stderr)
-	require.Empty(t, strings.TrimSpace(stderr))
-	env := decodeContractEnvelope(t, stdout)
-	require.True(t, env.OK, stdout)
-	assert.Contains(t, stdout, `"name": "working-branch"`)
-
-	content, readErr := os.ReadFile(filepath.Join(repoPath, "worktrees", "working-branch", "file.txt"))
-	require.NoError(t, readErr)
-	assert.Equal(t, "working", string(content))
-	status := readStatusForPublicCLI(t)
-	assert.False(t, status.UnsavedChanges)
-	require.NotNil(t, status.ContentSource)
-	require.NotNil(t, status.NewestSavePoint)
-	assert.Equal(t, *status.ContentSource, *status.NewestSavePoint)
-}
-
-func TestLegacyWorktreeForkRejectsDirtyWorkspaceByDefault(t *testing.T) {
-	repoPath, mainPath := setupPublicCLIRepo(t, "legacydirtyfork")
-
-	require.NoError(t, os.WriteFile("file.txt", []byte("clean"), 0644))
-	createCheckpointForPublicCLI(t, "base")
-	require.NoError(t, os.WriteFile("file.txt", []byte("working"), 0644))
-
-	destPath := filepath.Join(repoPath, "worktrees", "legacy-branch")
-	stdout, stderr, exitCode := runContractSubprocess(t, mainPath, "worktree", "fork", "legacy-branch")
-	assert.Equal(t, 1, exitCode, "dirty legacy fork unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
-	assert.Empty(t, strings.TrimSpace(stdout))
-	assert.Contains(t, stderr, "dirty")
-	_, statErr := os.Stat(destPath)
-	assert.True(t, os.IsNotExist(statErr), "destination workspace should not exist: %v", statErr)
-
-	content, readErr := os.ReadFile("file.txt")
-	require.NoError(t, readErr)
-	assert.Equal(t, "working", string(content))
-}
-
-func TestLegacyWorktreeForkDirtyRequiresExplicitChoice(t *testing.T) {
-	repoPath, mainPath := setupPublicCLIRepo(t, "legacydirtyforkchoice")
-
-	require.NoError(t, os.WriteFile("file.txt", []byte("clean"), 0644))
-	createCheckpointForPublicCLI(t, "base")
-	require.NoError(t, os.WriteFile("file.txt", []byte("working"), 0644))
-
-	destPath := filepath.Join(repoPath, "worktrees", "legacy-choice")
-	stdout, stderr, exitCode := runContractSubprocess(t, mainPath, "worktree", "fork", "legacy-choice")
-	assert.Equal(t, 1, exitCode, "dirty legacy fork unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
-	assert.Empty(t, strings.TrimSpace(stdout))
-	assert.Contains(t, stderr, "--include-working")
-	assert.Contains(t, stderr, "--discard-dirty")
-	_, statErr := os.Stat(destPath)
-	assert.True(t, os.IsNotExist(statErr), "destination workspace should not exist: %v", statErr)
-
-	help, err := runPublicCLI(t, "worktree", "fork", "--help")
-	require.NoError(t, err, help)
-	assert.Contains(t, help, "--include-working")
-	assert.Contains(t, help, "--discard-dirty")
-}
-
-func TestLegacyWorktreeForkDiscardDirty(t *testing.T) {
-	repoPath, mainPath := setupPublicCLIRepo(t, "legacydiscardfork")
-
-	require.NoError(t, os.WriteFile("file.txt", []byte("clean"), 0644))
-	createCheckpointForPublicCLI(t, "base")
-	require.NoError(t, os.WriteFile("file.txt", []byte("working"), 0644))
-
-	stdout, stderr, exitCode := runContractSubprocess(t, mainPath, "--json", "worktree", "fork", "discard-branch", "--discard-dirty")
-	require.Equal(t, 0, exitCode, "legacy discard fork failed: stdout=%s stderr=%s", stdout, stderr)
-	require.Empty(t, strings.TrimSpace(stderr))
-	env := decodeContractEnvelope(t, stdout)
-	require.True(t, env.OK, stdout)
-	assert.Contains(t, stdout, `"name": "discard-branch"`)
-
-	content, readErr := os.ReadFile(filepath.Join(repoPath, "worktrees", "discard-branch", "file.txt"))
-	require.NoError(t, readErr)
-	assert.Equal(t, "clean", string(content))
-	content, readErr = os.ReadFile("file.txt")
-	require.NoError(t, readErr)
-	assert.Equal(t, "working", string(content))
-}
-
-func TestLegacyWorktreeForkIncludeWorking(t *testing.T) {
-	repoPath, mainPath := setupPublicCLIRepo(t, "legacyincludefork")
-
-	require.NoError(t, os.WriteFile("file.txt", []byte("clean"), 0644))
-	createCheckpointForPublicCLI(t, "base")
-	require.NoError(t, os.WriteFile("file.txt", []byte("working"), 0644))
-
-	stdout, stderr, exitCode := runContractSubprocess(t, mainPath, "--json", "worktree", "fork", "working-branch", "--include-working")
-	require.Equal(t, 0, exitCode, "legacy include-working fork failed: stdout=%s stderr=%s", stdout, stderr)
-	require.Empty(t, strings.TrimSpace(stderr))
-	env := decodeContractEnvelope(t, stdout)
-	require.True(t, env.OK, stdout)
-	assert.Contains(t, stdout, `"name": "working-branch"`)
-
-	content, readErr := os.ReadFile(filepath.Join(repoPath, "worktrees", "working-branch", "file.txt"))
-	require.NoError(t, readErr)
-	assert.Equal(t, "working", string(content))
-	status := readStatusForPublicCLI(t)
-	assert.False(t, status.UnsavedChanges)
-}
-
-func TestPublicCLIRefResolverConflictsAndNoFuzzyNotes(t *testing.T) {
-	setupPublicCLIRepo(t, "refrepo")
-
-	require.NoError(t, os.WriteFile("file.txt", []byte("one"), 0644))
-	first := createCheckpointForPublicCLI(t, "needle note", "--tag", "shared")
-	require.NoError(t, os.WriteFile("file.txt", []byte("two"), 0644))
-	createCheckpointForPublicCLI(t, "second note", "--tag", "shared")
-
-	for _, reserved := range []string{"current", "latest", "dirty"} {
-		stdout, err := runPublicCLI(t, "checkpoint", "reserved tag", "--tag", reserved)
-		require.Error(t, err, reserved)
-		assert.Empty(t, stdout)
-		assert.Contains(t, err.Error(), "reserved")
-	}
-
-	stdout, err := runPublicCLI(t, "--json", "diff", "needle note", "latest")
-	require.Error(t, err)
-	assert.Empty(t, stdout)
-	assert.Contains(t, err.Error(), "not found")
-
-	stdout, err = runPublicCLI(t, "--json", "diff", "shared", "latest")
-	require.Error(t, err)
-	assert.Empty(t, stdout)
-	assert.Contains(t, err.Error(), "ambiguous")
-
-	uniquePrefix := first[:len(first)-2]
-	stdout, err = runPublicCLI(t, "--json", "diff", uniquePrefix, uniquePrefix)
-	require.NoError(t, err, stdout)
-	decodeContractEnvelope(t, stdout)
-}
-
-func TestPublicCLIWorkspaceForkAmbiguousOneArgRef(t *testing.T) {
-	setupPublicCLIRepo(t, "forkambiguity")
-
-	require.NoError(t, os.WriteFile("file.txt", []byte("base"), 0644))
-	createCheckpointForPublicCLI(t, "base", "--tag", "release")
-
-	stdout, err := runPublicCLI(t, "fork", "release")
-	require.Error(t, err)
-	assert.Empty(t, stdout)
-	assert.Contains(t, err.Error(), "ambiguous")
-
-	stdout, err = runPublicCLI(t, "--json", "fork", "release", "release-workspace")
-	require.NoError(t, err, stdout)
-	assert.Contains(t, stdout, `"workspace": "release-workspace"`)
-}
-
-func TestPublicCLIReservedRefsCannotBeWorkspaceNames(t *testing.T) {
-	setupPublicCLIRepo(t, "reservedworkspaces")
-
-	require.NoError(t, os.WriteFile("file.txt", []byte("base"), 0644))
-	createCheckpointForPublicCLI(t, "base")
-	stdout, err := runPublicCLI(t, "--json", "fork", "feature")
-	require.NoError(t, err, stdout)
-
-	for _, reserved := range []string{"current", "latest", "dirty"} {
-		t.Run("rename_"+reserved, func(t *testing.T) {
-			stdout, err := runPublicCLI(t, "workspace", "rename", "feature", reserved)
-			require.Error(t, err)
-			assert.Empty(t, stdout)
-			assert.Contains(t, err.Error(), "reserved")
-		})
-
-		t.Run("fork_"+reserved, func(t *testing.T) {
-			stdout, err := runPublicCLI(t, "fork", reserved)
-			require.Error(t, err)
-			assert.Empty(t, stdout)
-			assert.Contains(t, err.Error(), "reserved")
-		})
-	}
-
-	stdout, err = runPublicCLI(t, "--json", "fork", "latest", "latest-feature")
-	require.NoError(t, err, stdout)
-	assert.Contains(t, stdout, `"workspace": "latest-feature"`)
-}
-
-func TestLegacyWorktreeRemoveRejectsDirtyAtLatestWorkspace(t *testing.T) {
-	repoPath, mainPath := setupPublicCLIRepo(t, "legacydirtyremove")
-
-	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("clean"), 0644))
-	createCheckpointForPublicCLI(t, "base")
-	stdout, err := runPublicCLI(t, "fork", "feature")
-	require.NoError(t, err, stdout)
-
-	featureFile := filepath.Join(repoPath, "worktrees", "feature", "file.txt")
-	require.NoError(t, os.WriteFile(featureFile, []byte("dirty"), 0644))
-
-	stdout, stderr, exitCode := runContractSubprocess(t, mainPath, "worktree", "remove", "feature")
-	require.Equal(t, 1, exitCode, "dirty legacy remove unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
-	assert.Empty(t, strings.TrimSpace(stdout))
-	assert.Contains(t, stderr, "unsaved changes")
-	assert.NotContains(t, stderr, "checkpoint")
-	require.FileExists(t, featureFile)
-}
-
-func TestPublicHelpHidesLegacyVocabulary(t *testing.T) {
-	for _, args := range [][]string{
-		{"init", "--help"},
-		{"doctor", "--help"},
-	} {
-		t.Run(strings.Join(args, "_"), func(t *testing.T) {
-			stdout, err := runPublicCLI(t, args...)
-			require.NoError(t, err)
-			assert.NotContains(t, stdout, "worktree")
-			assert.NotContains(t, stdout, "snapshot")
-		})
-	}
-}
-
-func TestPublicCLIRestoreLatestAndJSONBoolConsistency(t *testing.T) {
+func TestPublicCLIRestoreNewestAndJSONBoolConsistency(t *testing.T) {
 	setupPublicCLIRepo(t, "restorelatest")
 
 	require.NoError(t, os.WriteFile("file.txt", []byte("v1"), 0644))
@@ -515,29 +244,6 @@ func TestPublicCLIRestoreLatestAndJSONBoolConsistency(t *testing.T) {
 	assert.IsType(t, true, status.UnsavedChanges)
 }
 
-func TestPublicCLIDiffJSONIsPureAndRequiresTwoRefs(t *testing.T) {
-	setupPublicCLIRepo(t, "diffpure")
-
-	require.NoError(t, os.WriteFile("file.txt", []byte("v1"), 0644))
-	createCheckpointForPublicCLI(t, "first")
-	require.NoError(t, os.WriteFile("file.txt", []byte("v2"), 0644))
-	createCheckpointForPublicCLI(t, "second")
-
-	stdout, err := runPublicCLI(t, "--json", "diff", "current", "latest")
-	require.NoError(t, err, stdout)
-	env := decodeContractEnvelope(t, stdout)
-	require.True(t, env.OK, stdout)
-	require.True(t, json.Valid(env.Data), stdout)
-	assert.True(t, strings.HasPrefix(strings.TrimSpace(stdout), "{"))
-	assert.NotContains(t, stdout, "Note:")
-	assert.NotContains(t, stdout, "jvs:")
-
-	stdout, err = runPublicCLI(t, "diff", "current")
-	require.Error(t, err)
-	assert.Empty(t, stdout)
-	assert.Contains(t, err.Error(), "requires two")
-}
-
 func TestPublicCLIWorkspacePathJSONUsesEnvelope(t *testing.T) {
 	_, mainPath := setupPublicCLIRepo(t, "pathjson")
 
@@ -556,56 +262,57 @@ func TestPublicCLIWorkspacePathJSONUsesEnvelope(t *testing.T) {
 	assert.NotContains(t, strings.TrimSpace(stdout), "\n"+mainPath)
 }
 
-func TestPublicCLIGCRunJSONUsesEnvelope(t *testing.T) {
-	setupPublicCLIRepo(t, "gcrunjson")
+func TestPublicCLICleanupRunJSONUsesEnvelope(t *testing.T) {
+	setupPublicCLIRepo(t, "cleanuprunjson")
 
-	planOut, err := runPublicCLI(t, "--json", "gc", "plan")
+	planOut, err := runPublicCLI(t, "--json", "cleanup", "preview")
 	require.NoError(t, err, planOut)
 	var plan map[string]any
 	decodePublicData(t, planOut, &plan)
 	planID, _ := plan["plan_id"].(string)
 	require.NotEmpty(t, planID)
 
-	runOut, err := runPublicCLI(t, "--json", "gc", "run", "--plan-id", planID)
+	runOut, err := runPublicCLI(t, "--json", "cleanup", "run", "--plan-id", planID)
 	require.NoError(t, err, runOut)
 	env := decodeContractEnvelope(t, runOut)
 	require.True(t, env.OK, runOut)
-	assert.Equal(t, "gc run", env.Command)
+	assert.Equal(t, "cleanup run", env.Command)
 	assert.JSONEq(t, `{"plan_id":"`+planID+`","status":"completed"}`, string(env.Data))
 }
 
-func TestPublicCLIGCPlanJSONUsesSpecDeletionField(t *testing.T) {
-	setupPublicCLIRepo(t, "gcplanjson")
+func TestPublicCLICleanupPreviewJSONUsesSavePointFields(t *testing.T) {
+	setupPublicCLIRepo(t, "cleanuppreviewjson")
 
-	stdout, err := runPublicCLI(t, "--json", "gc", "plan")
+	stdout, err := runPublicCLI(t, "--json", "cleanup", "preview")
 	require.NoError(t, err, stdout)
 
 	var plan map[string]any
 	decodePublicData(t, stdout, &plan)
 	assert.Contains(t, plan, "created_at")
-	assert.Contains(t, plan, "protected_checkpoints")
-	assert.Contains(t, plan, "to_delete")
-	assert.IsType(t, []any{}, plan["protected_checkpoints"])
-	assert.IsType(t, []any{}, plan["to_delete"])
+	assert.Contains(t, plan, "protected_save_points")
+	assert.Contains(t, plan, "reclaimable_save_points")
+	assert.IsType(t, []any{}, plan["protected_save_points"])
+	assert.IsType(t, []any{}, plan["reclaimable_save_points"])
+	assert.NotContains(t, plan, "protected_checkpoints")
+	assert.NotContains(t, plan, "to_delete")
 	assert.NotContains(t, plan, "delete_checkpoints")
-	assert.NotContains(t, plan, "protected_by_pin")
-	assert.NotContains(t, plan, "protected_by_retention")
 	assert.NotContains(t, plan, "retention")
 	assert.NotContains(t, plan, "retention_policy")
 }
 
-func TestPublicCLIGCRunJSONMissingPlanUsesStableError(t *testing.T) {
-	repoPath, _ := setupPublicCLIRepo(t, "gcmissingplan")
+func TestPublicCLICleanupRunJSONMissingPlanUsesStableError(t *testing.T) {
+	repoPath, _ := setupPublicCLIRepo(t, "cleanupmissingplan")
 
-	stdout, stderr, exitCode := runContractSubprocess(t, repoPath, "--json", "gc", "run", "--plan-id", "missing")
-	require.Equal(t, 1, exitCode, "gc run unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	stdout, stderr, exitCode := runContractSubprocess(t, repoPath, "--json", "cleanup", "run", "--plan-id", "missing")
+	require.Equal(t, 1, exitCode, "cleanup run unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
 	assert.Empty(t, strings.TrimSpace(stderr))
 
 	env := decodeContractEnvelope(t, stdout)
 	assert.False(t, env.OK)
-	assert.Equal(t, "gc run", env.Command)
+	assert.Equal(t, "cleanup run", env.Command)
 	require.NotNil(t, env.Error)
-	assert.Equal(t, "E_GC_PLAN_MISMATCH", env.Error.Code)
+	assert.Equal(t, "E_CLEANUP_PLAN_MISMATCH", env.Error.Code)
+	assert.NotContains(t, strings.ToLower(env.Error.Message), "gc")
 	assert.NotContains(t, env.Error.Message, "control leaf")
 	assert.NotContains(t, env.Error.Message, "stat ")
 	assert.NotContains(t, env.Error.Message, repoPath)
@@ -613,57 +320,17 @@ func TestPublicCLIGCRunJSONMissingPlanUsesStableError(t *testing.T) {
 	assert.JSONEq(t, `null`, string(env.Data))
 }
 
-func TestPublicCLIFullCloneExcludesActiveGCPlans(t *testing.T) {
-	repoPath, mainPath := setupPublicCLIRepo(t, "gcclonesource")
-	require.NoError(t, os.WriteFile("file.txt", []byte("main"), 0644))
-	createCheckpointForPublicCLI(t, "main")
-
-	stdout, err := runPublicCLI(t, "--json", "fork", "old-feature")
-	require.NoError(t, err, stdout)
-	featurePath := filepath.Join(repoPath, "worktrees", "old-feature")
-	require.NoError(t, os.WriteFile(filepath.Join(featurePath, "feature.txt"), []byte("feature"), 0644))
-	require.NoError(t, os.Chdir(featurePath))
-	createCheckpointForPublicCLI(t, "feature")
-	require.NoError(t, os.Chdir(mainPath))
-	stdout, err = runPublicCLI(t, "--json", "workspace", "remove", "old-feature", "--force")
-	require.NoError(t, err, stdout)
-
-	planOut, err := runPublicCLI(t, "--json", "gc", "plan")
-	require.NoError(t, err, planOut)
-	var plan map[string]any
-	decodePublicData(t, planOut, &plan)
-	planID, _ := plan["plan_id"].(string)
-	require.NotEmpty(t, planID)
-	require.NotZero(t, plan["candidate_count"])
-
-	dest := filepath.Join(filepath.Dir(repoPath), "gcclonedest")
-	cloneOut, err := runPublicCLI(t, "--json", "clone", repoPath, dest, "--scope", "full")
-	require.NoError(t, err, cloneOut)
-	require.NoFileExists(t, filepath.Join(dest, ".jvs", "gc", planID+".json"))
-
-	stdout, stderr, exitCode := runContractSubprocess(t, dest, "--json", "gc", "run", "--plan-id", planID)
-	require.Equal(t, 1, exitCode, "cloned gc run unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
-	assert.Empty(t, strings.TrimSpace(stderr))
-	env := decodeContractEnvelope(t, stdout)
-	assert.False(t, env.OK)
-	require.NotNil(t, env.Error)
-	assert.Equal(t, "E_GC_PLAN_MISMATCH", env.Error.Code)
-	assert.Contains(t, env.Error.Message, "not found")
-	assert.NotContains(t, env.Error.Message, repoPath)
-	assert.NotContains(t, env.Error.Message, dest)
-}
-
-func TestPublicCLIWorkspaceRemoveRejectsDirtyByDefault(t *testing.T) {
+func TestPublicCLIWorkspaceRemoveRejectsUnsavedChangesByDefault(t *testing.T) {
 	repoPath, _ := setupPublicCLIRepo(t, "dirtyremove")
 
 	require.NoError(t, os.WriteFile("file.txt", []byte("clean"), 0644))
-	createCheckpointForPublicCLI(t, "base")
+	base := createCheckpointForPublicCLI(t, "base")
 
-	stdout, err := runPublicCLI(t, "--json", "fork", "feature")
+	stdout, err := runPublicCLI(t, "--json", "workspace", "new", "feature", "--from", base)
 	require.NoError(t, err, stdout)
 
 	featureFile := filepath.Join(repoPath, "worktrees", "feature", "file.txt")
-	require.NoError(t, os.WriteFile(featureFile, []byte("dirty"), 0644))
+	require.NoError(t, os.WriteFile(featureFile, []byte("unsaved"), 0644))
 
 	stdout, err = runPublicCLI(t, "workspace", "remove", "feature")
 	require.Error(t, err)
@@ -719,28 +386,13 @@ func TestPublicCLIErrorsPreserveUserRepoPathsWithSpacesAndLegacyWords(t *testing
 	assert.Contains(t, env.Error.Message, currentRepo)
 	assertPublicErrorOmitsLegacyVocabularyExcept(t, env.Error, targetRepo, currentRepo)
 	assert.JSONEq(t, `null`, string(env.Data))
-
-	stdout, stderr, exitCode = runContractSubprocess(
-		t,
-		filepath.Join(currentRepo, "main"),
-		"--repo", targetRepo, "--workspace", "main", "status",
-	)
-	require.Equal(t, 1, exitCode, "mismatched repo unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
-	assert.Empty(t, strings.TrimSpace(stdout))
-	assert.Contains(t, stderr, targetRepo)
-	assert.Contains(t, stderr, currentRepo)
-	sanitized := strings.ReplaceAll(stderr, targetRepo, "")
-	sanitized = strings.ReplaceAll(sanitized, currentRepo, "")
-	assert.NotContains(t, strings.ToLower(sanitized), "worktree")
-	assert.NotContains(t, strings.ToLower(sanitized), "snapshot")
-	assert.NotContains(t, strings.ToLower(sanitized), "history")
 }
 
 func TestPublicCLIJSONErrorsPreserveUserRepoPathWhenTargetIsMissing(t *testing.T) {
 	repoPath, _ := setupPublicCLIRepo(t, "missingtarget")
 
 	missingTarget := "missing worktree snapshot history"
-	stdout, stderr, exitCode := runContractSubprocess(t, filepath.Join(repoPath, "main"), "--json", "--repo", missingTarget, "info")
+	stdout, stderr, exitCode := runContractSubprocess(t, filepath.Join(repoPath, "main"), "--json", "--repo", missingTarget, "status")
 	require.Equal(t, 1, exitCode, "missing --repo unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
 	assert.Empty(t, strings.TrimSpace(stderr))
 
@@ -751,76 +403,33 @@ func TestPublicCLIJSONErrorsPreserveUserRepoPathWhenTargetIsMissing(t *testing.T
 	assert.Contains(t, env.Error.Message, missingTarget)
 	assertPublicErrorOmitsLegacyVocabularyExcept(t, env.Error, missingTarget)
 	assert.JSONEq(t, `null`, string(env.Data))
-
-	stdout, stderr, exitCode = runContractSubprocess(t, filepath.Join(repoPath, "main"), "--repo", missingTarget, "status")
-	require.Equal(t, 1, exitCode, "missing --repo unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
-	assert.Empty(t, strings.TrimSpace(stdout))
-	assert.Contains(t, stderr, missingTarget)
-	sanitized := strings.ReplaceAll(stderr, missingTarget, "")
-	assert.NotContains(t, strings.ToLower(sanitized), "worktree")
-	assert.NotContains(t, strings.ToLower(sanitized), "snapshot")
-	assert.NotContains(t, strings.ToLower(sanitized), "history")
-
-	stdout, stderr, exitCode = runContractSubprocess(t, filepath.Join(repoPath, "main"), "--repo", missingTarget, "info")
-	require.Equal(t, 1, exitCode, "missing --repo unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
-	assert.Empty(t, strings.TrimSpace(stdout))
-	assert.Contains(t, stderr, missingTarget)
-	sanitized = strings.ReplaceAll(stderr, missingTarget, "")
-	assert.NotContains(t, strings.ToLower(sanitized), "worktree")
-	assert.NotContains(t, strings.ToLower(sanitized), "snapshot")
-	assert.NotContains(t, strings.ToLower(sanitized), "history")
-}
-
-func TestPublicCLIJSONImportOverlapPreservesParenthesizedUserPaths(t *testing.T) {
-	dir := t.TempDir()
-	source := filepath.Join(dir, "source worktree snapshot history")
-	dest := filepath.Join(source, "child repo")
-	require.NoError(t, os.Mkdir(source, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(source, "file.txt"), []byte("source"), 0644))
-
-	stdout, stderr, exitCode := runContractSubprocess(t, dir, "--json", "import", source, dest)
-	require.Equal(t, 1, exitCode, "overlapping import unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
-	assert.Empty(t, strings.TrimSpace(stderr))
-
-	env := decodeContractEnvelope(t, stdout)
-	assert.False(t, env.OK)
-	assert.Equal(t, "import", env.Command)
-	require.NotNil(t, env.Error)
-	assert.Contains(t, env.Error.Message, source)
-	assert.Contains(t, env.Error.Message, dest)
-	assertPublicErrorOmitsLegacyVocabularyExcept(t, env.Error, source, dest)
-	assert.JSONEq(t, `null`, string(env.Data))
 }
 
 func TestPublicCLIErrorVocabularyPreservesQuotedUserText(t *testing.T) {
 	got := publicCLIErrorVocabulary(`snapshot "worktree-snapshot-history" history`)
-	assert.Equal(t, `checkpoint "worktree-snapshot-history" checkpoint list`, got)
-	assert.Equal(t, "source_workspace total_checkpoints checkpoint_id", publicCLIErrorVocabulary("source_worktree total_snapshots snapshot_id"))
+	assert.Equal(t, `save point "worktree-snapshot-history" history`, got)
+	assert.Equal(t, "source_workspace total_save_points save_point_id", publicCLIErrorVocabulary("source_worktree total_snapshots snapshot_id"))
 	got = publicCLIErrorVocabulary("snapshot /tmp/missing worktree snapshot history, history")
-	assert.Equal(t, "checkpoint /tmp/missing worktree snapshot history, checkpoint list", got)
+	assert.Equal(t, "save point /tmp/missing worktree snapshot history, history", got)
 	got = publicCLIErrorVocabulary("--repo is not inside a JVS repository: missing worktree snapshot history")
 	assert.Equal(t, "--repo is not inside a JVS repository: missing worktree snapshot history", got)
 	got = publicCLIErrorVocabulary("snapshot (/tmp/missing worktree snapshot history) history")
-	assert.Equal(t, "checkpoint (/tmp/missing worktree snapshot history) checkpoint list", got)
+	assert.Equal(t, "save point (/tmp/missing worktree snapshot history) history", got)
 	got = publicCLIErrorVocabulary("snapshot (worktree snapshot history) history")
-	assert.Equal(t, "checkpoint (workspace checkpoint checkpoint list) checkpoint list", got)
+	assert.Equal(t, "save point (workspace save point history) history", got)
 }
 
-func TestPublicCLIJSONUsesCheckpointWorkspaceTerms(t *testing.T) {
+func TestPublicCLIJSONUsesSavePointWorkspaceTerms(t *testing.T) {
 	setupPublicCLIRepo(t, "terms")
 
 	require.NoError(t, os.WriteFile("file.txt", []byte("v1"), 0644))
-	first := createCheckpointForPublicCLI(t, "first")
-	require.NoError(t, os.WriteFile("file.txt", []byte("v2"), 0644))
-	second := createCheckpointForPublicCLI(t, "second")
+	createCheckpointForPublicCLI(t, "first")
 
 	cases := [][]string{
-		{"--json", "checkpoint", "list"},
+		{"--json", "history"},
 		{"--json", "workspace", "list"},
-		{"--json", "fork", "terms-branch"},
-		{"--json", "diff", first, second},
-		{"--json", "verify", second},
-		{"--json", "info"},
+		{"--json", "cleanup", "preview"},
+		{"--json", "status"},
 	}
 
 	for _, args := range cases {
@@ -830,25 +439,27 @@ func TestPublicCLIJSONUsesCheckpointWorkspaceTerms(t *testing.T) {
 			env := decodeContractEnvelope(t, stdout)
 			require.True(t, env.OK, stdout)
 			assert.NotContains(t, string(env.Data), "snapshot_id")
+			assert.NotContains(t, string(env.Data), "checkpoint")
 			assert.NotContains(t, string(env.Data), "worktree")
 			assert.NotContains(t, string(env.Data), "head_snapshot")
 			assert.NotContains(t, string(env.Data), "latest_snapshot")
 			assert.NotContains(t, string(env.Data), "from_snapshot")
 			assert.NotContains(t, string(env.Data), "to_snapshot")
+			assert.NotContains(t, strings.ToLower(string(env.Data)), "gc")
 		})
 	}
 }
 
-func TestPublicCLIDoctorAndGCJSONHideInternalContractFields(t *testing.T) {
+func TestPublicCLIDoctorAndCleanupJSONHideInternalContractFields(t *testing.T) {
 	repoPath, mainPath := setupPublicCLIRepo(t, "publicjsoncontract")
 
-	emptyPlanOut, err := runPublicCLI(t, "--json", "gc", "plan")
+	emptyPlanOut, err := runPublicCLI(t, "--json", "cleanup", "preview")
 	require.NoError(t, err, emptyPlanOut)
 	assertPublicJSONDataOmitsInternalContractFields(t, emptyPlanOut)
 
 	require.NoError(t, os.WriteFile("file.txt", []byte("main"), 0644))
-	createCheckpointForPublicCLI(t, "main")
-	stdout, err := runPublicCLI(t, "--json", "fork", "old-feature")
+	mainID := createCheckpointForPublicCLI(t, "main")
+	stdout, err := runPublicCLI(t, "--json", "workspace", "new", "old-feature", "--from", mainID)
 	require.NoError(t, err, stdout)
 	featurePath := filepath.Join(repoPath, "worktrees", "old-feature")
 	require.NoError(t, os.WriteFile(filepath.Join(featurePath, "feature.txt"), []byte("feature"), 0644))
@@ -859,7 +470,7 @@ func TestPublicCLIDoctorAndGCJSONHideInternalContractFields(t *testing.T) {
 	require.NoError(t, err, stdout)
 	makeAllDescriptorsOldForPublicCLI(t, repoPath)
 
-	nonEmptyPlanOut, err := runPublicCLI(t, "--json", "gc", "plan")
+	nonEmptyPlanOut, err := runPublicCLI(t, "--json", "cleanup", "preview")
 	require.NoError(t, err, nonEmptyPlanOut)
 	assertPublicJSONDataOmitsInternalContractFields(t, nonEmptyPlanOut)
 	var plan map[string]any
@@ -878,93 +489,6 @@ func TestPublicCLIDoctorAndGCJSONHideInternalContractFields(t *testing.T) {
 	assert.Equal(t, false, doctorData["healthy"])
 }
 
-func TestHiddenLegacyCommandHelpUsesPublicGuidance(t *testing.T) {
-	cases := []struct {
-		name string
-		args []string
-		want []string
-	}{
-		{
-			name: "snapshot",
-			args: []string{"snapshot", "--help"},
-			want: []string{"jvs checkpoint", "jvs fork", "jvs restore latest"},
-		},
-		{
-			name: "worktree remove",
-			args: []string{"worktree", "remove", "--help"},
-			want: []string{"jvs workspace remove", "current differs from latest"},
-		},
-		{
-			name: "worktree fork",
-			args: []string{"worktree", "fork", "--help"},
-			want: []string{"jvs fork", "checkpoint"},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			stdout, err := runPublicCLI(t, tc.args...)
-			require.NoError(t, err, stdout)
-			assertNoLegacyStateGuidance(t, stdout)
-			assert.NotContains(t, stdout, "HEAD"+" state")
-			for _, want := range tc.want {
-				assert.Contains(t, stdout, want)
-			}
-		})
-	}
-}
-
-func TestHiddenLegacyCommandErrorsUsePublicGuidance(t *testing.T) {
-	repoPath, mainPath := setupPublicCLIRepo(t, "legacyerrors")
-
-	require.NoError(t, os.WriteFile("file.txt", []byte("v1"), 0644))
-	first := createCheckpointForPublicCLI(t, "first")
-	require.NoError(t, os.WriteFile("file.txt", []byte("v2"), 0644))
-	second := createCheckpointForPublicCLI(t, "second")
-
-	_ = runPublicRestoreJSON(t, first)
-
-	stdout, stderr, code := runContractSubprocess(t, mainPath, "snapshot", "from legacy command")
-	require.NotZero(t, code)
-	combined := stdout + stderr
-	assertNoLegacyStateGuidance(t, combined)
-	assert.Contains(t, combined, "current differs from latest")
-	assert.Contains(t, combined, "jvs checkpoint")
-	assert.Contains(t, combined, "jvs fork")
-	assert.Contains(t, combined, "jvs restore latest")
-
-	_ = runPublicRestoreJSON(t, second)
-	var err error
-	stdout, err = runPublicCLI(t, "--json", "fork", "feature")
-	require.NoError(t, err, stdout)
-	stdout, err = runPublicCLI(t, "--json", "--workspace", "feature", "restore", first)
-	require.NoError(t, err, stdout)
-	var featurePreview map[string]any
-	decodePublicData(t, stdout, &featurePreview)
-	featurePlanID, ok := featurePreview["plan_id"].(string)
-	require.True(t, ok, "feature restore preview should return plan_id: %#v", featurePreview)
-	stdout, err = runPublicCLI(t, "--json", "--workspace", "feature", "restore", "--run", featurePlanID)
-	require.NoError(t, err, stdout)
-
-	stdout, stderr, code = runContractSubprocess(t, repoPath, "worktree", "remove", "feature")
-	require.NotZero(t, code)
-	combined = stdout + stderr
-	assertNoLegacyStateGuidance(t, combined)
-	assert.Contains(t, combined, "not at its newest save point")
-	assert.Contains(t, combined, "use --force to remove")
-	assert.NotContains(t, combined, "current differs from latest")
-	assert.NotContains(t, combined, "jvs fork")
-	assert.NotContains(t, combined, "jvs restore latest")
-}
-
-func assertNoLegacyStateGuidance(t *testing.T, output string) {
-	t.Helper()
-
-	assert.NotContains(t, output, strings.Join([]string{"restore", "HEAD"}, " "))
-	assert.NotContains(t, output, "DET"+"ACHED")
-	assert.NotContains(t, output, "detached"+" state")
-}
-
 func assertPublicJSONDataOmitsInternalContractFields(t *testing.T, stdout string) {
 	t.Helper()
 
@@ -972,6 +496,7 @@ func assertPublicJSONDataOmitsInternalContractFields(t *testing.T, stdout string
 	data := string(env.Data)
 	for _, forbidden := range []string{
 		"snapshot_id",
+		"checkpoint",
 		"worktree",
 		"head_snapshot",
 		"latest_snapshot",

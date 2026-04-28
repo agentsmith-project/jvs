@@ -1,84 +1,157 @@
-# Restore Spec (v0)
+# Restore Spec
 
-## Overview
+**Status:** active save point public contract
 
-`jvs restore` materializes a checkpoint into the targeted workspace. Restore is
-in place: it replaces the live workspace contents and moves `current` to the
-requested checkpoint.
+`jvs restore` copies managed files from a save point into the active workspace.
+Restore does not rewrite save point history. The default operation is a preview
+plan; files change only after `jvs restore --run <plan-id>`.
 
-If `current` differs from `latest` after a historical restore, checkpoint
-creation is blocked to preserve linear workspace lineage. Use `jvs fork` to
-continue from that historical checkpoint in another workspace.
-
-## Command
+## Command Forms
 
 ```bash
-jvs restore <ref|current|latest> [--discard-dirty|--include-working] [--json]
+jvs restore <save>
+jvs restore <save> --path <workspace-relative-path>
+jvs restore --path <workspace-relative-path>
+jvs restore --run <plan-id>
 ```
 
-## Refs
+Optional safety flags for preview:
 
-`<ref>` may be:
-- `current`
-- `latest`
-- a full checkpoint ID
-- a unique checkpoint ID prefix
-- an exact tag that resolves to one checkpoint
+```bash
+--save-first
+--discard-unsaved
+--json
+```
 
-`dirty` is not a checkpoint ref. Notes/messages are not refs.
+`--save-first` and `--discard-unsaved` are mutually exclusive.
 
-## Dirty Safety
+## Save Point Resolution
 
-Restore refuses to overwrite dirty workspace contents by default.
+`<save>` must resolve to one concrete save point by full ID or unique ID
+prefix. Labels, messages, and tags are not restore targets in the save point
+contract.
 
-- `--include-working` creates a checkpoint for dirty work before restoring.
-- `--discard-dirty` discards dirty work and restores the target checkpoint.
-- `--include-working` and `--discard-dirty` are mutually exclusive.
+Use discovery commands first when the ID is not known:
 
-## Behavior
+```bash
+jvs history
+jvs history --path src/config.json
+jvs restore --path src/config.json
+```
 
-1. Resolve the requested ref to one checkpoint.
-2. Verify that the checkpoint descriptor exists and passes integrity checks.
-3. Apply dirty-safety handling.
-4. Atomically replace workspace contents with checkpoint contents.
-5. Update the workspace `current` checkpoint to the restored checkpoint.
-6. Leave `latest` as the newest checkpoint on the workspace line.
+Discovery output lists candidates and next commands. It never changes files.
 
-Restoring `latest` returns the workspace to its newest checkpoint.
+## Preview
 
-## Safety
+A restore preview:
 
-Restore is safe by default:
-- existing checkpoints are preserved
-- the lineage chain remains intact
-- v0 GC continues to protect checkpoints reachable from live workspace roots
+1. resolves the source save point
+2. registers active source protection while reading the source
+3. refuses relevant unsaved changes unless `--save-first` or
+   `--discard-unsaved` was selected
+4. checks source integrity and write capacity
+5. computes managed files to overwrite, delete, and create
+6. records expected target state evidence
+7. writes a plan and prints `jvs restore --run <plan-id>`
+
+Preview output must say that no files were changed and history will not change.
+For whole-workspace restore it records expected folder evidence. For path
+restore it records expected path evidence.
+
+## Run
+
+`jvs restore --run <plan-id>` executes the stored plan. Runtime options are
+fixed by the plan; changing source, path, `--save-first`, or
+`--discard-unsaved` requires a new preview.
+
+Run behavior:
+
+1. load the restore plan
+2. refuse if the workspace has an active recovery plan
+3. register active source protection
+4. revalidate the expected workspace/path evidence and newest save point
+5. check source integrity and write capacity again
+6. create a recovery plan and backup before replacing files
+7. replace the whole workspace or selected path
+8. update workspace file-source metadata
+9. leave save point history unchanged
+10. resolve the recovery plan after the final state is confirmed
+
+After whole-workspace restore, managed files match the source save point and
+the newest save point remains the same. The next `jvs save` creates a new save
+point after the workspace's newest save point and records restored provenance.
+
+After path restore, only the selected path is replaced. The next `jvs save`
+records restored path provenance.
+
+## Unsaved Changes
+
+Restore refuses to overwrite unsaved managed files by default.
+
+- `--save-first` creates a save point for unsaved changes before the run.
+- `--discard-unsaved` discards unsaved changes for the restore scope.
+- For path restore, the unsaved-change guard applies to the selected path.
+- If JVS cannot prove the target state is safe, it treats the scope as having
+  unsaved changes.
+
+## Recovery
+
+Restore creates a durable recovery plan before mutating files. If restore does
+not finish safely, the error names the recovery plan and points to:
+
+```bash
+jvs recovery status <recovery-plan>
+jvs recovery resume <recovery-plan>
+jvs recovery rollback <recovery-plan>
+```
+
+Recovery requirements:
+
+- An active recovery plan blocks new restore runs in the same workspace.
+- `recovery status` shows source save point, folder, workspace, optional path,
+  backup availability, last error, and recommended next command.
+- `recovery resume` retries or confirms the restore and leaves history
+  unchanged.
+- `recovery rollback` restores the saved pre-restore state when evidence
+  proves it is safe.
+- Source save points referenced by active recovery plans remain protected from
+  cleanup until the plan is resolved.
+
+## Safety Guarantees
+
+- Preview does not change files.
+- Run revalidates the target state before writing.
+- Managed files are replaced only inside the workspace boundary.
+- JVS control data and ignored/unmanaged files are not restored or deleted.
+- Save point history is not moved by restore.
+- A failed or interrupted restore must either leave files unchanged or produce
+  a recovery plan that closes the loop with resume or rollback.
 
 ## Examples
 
 ```bash
-# Restore to a specific checkpoint
+# Preview a whole-workspace restore.
 jvs restore 1771589366482-abc12345
 
-# Restore by exact tag
-jvs restore v1.0
+# Execute the reviewed plan.
+jvs restore --run 6f2c1e3a-0c6d-41db-a111-3ac881a7a901
 
-# Return to the latest checkpoint
-jvs restore latest
+# Find candidates for a missing path.
+jvs restore --path src/config.json
 
-# Continue from a historical checkpoint in another workspace
-jvs fork v1.0 hotfix-123
+# Preview a single-path restore.
+jvs restore 1771589366482-abc12345 --path src/config.json
+
+# Preserve unsaved work before the run.
+jvs restore 1771589366482-abc12345 --save-first
 ```
 
 ## Error Handling
 
 | Error | Cause | Resolution |
-|-------|-------|------------|
-| Checkpoint not found | Invalid ID, ambiguous prefix, or unresolved tag | Use `jvs checkpoint list` to find valid IDs |
-| Dirty workspace | Restore would overwrite uncheckpointed changes | Use `--include-working` or `--discard-dirty` intentionally |
-| Current differs from latest | Attempted `jvs checkpoint` after restoring an older checkpoint | Use `jvs restore latest` or create another workspace with `jvs fork` |
-
-## v0 Boundaries
-
-The stable v0 restore contract does not include note-prefix refs, interactive
-restore selection, or legacy restore flags such as `--inplace`, `--force`, and
-`--reason`.
+| --- | --- | --- |
+| Save point not found | Invalid ID or non-unique prefix | Use `jvs history` or `jvs history --path <path>` and choose one ID |
+| Unsaved changes | Restore would overwrite unsaved managed files | Save first, or preview again with `--save-first` or `--discard-unsaved` |
+| Target changed since preview | New save point or file evidence changed after preview | Run a new preview |
+| Active recovery plan | A previous restore is unresolved | Use `jvs recovery status`, then resume or rollback |
+| Recovery backup missing/unsafe | Rollback cannot prove the saved state | Escalate with the recovery plan and preserved evidence |

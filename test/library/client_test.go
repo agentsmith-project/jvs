@@ -3,9 +3,12 @@ package library_test
 import (
 	"context"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
-	"strings"
+	"reflect"
 	"testing"
 	"time"
 
@@ -30,7 +33,7 @@ func testRepoDir(t *testing.T) string {
 	return dir
 }
 
-func createLibraryWorktree(t *testing.T, client *jvs.Client, name string) string {
+func createLibraryWorkspace(t *testing.T, client *jvs.Client, name string) string {
 	t.Helper()
 
 	payloadPath := filepath.Join(client.RepoRoot(), "worktrees", name)
@@ -50,10 +53,10 @@ func createLibraryWorktree(t *testing.T, client *jvs.Client, name string) string
 	return payloadPath
 }
 
-func setSnapshotCreatedAt(t *testing.T, client *jvs.Client, snapshotID model.SnapshotID, createdAt time.Time) {
+func setSavePointCreatedAt(t *testing.T, client *jvs.Client, savePointID jvs.SavePointID, createdAt time.Time) {
 	t.Helper()
 
-	descriptorPath := filepath.Join(client.RepoRoot(), ".jvs", "descriptors", string(snapshotID)+".json")
+	descriptorPath := filepath.Join(client.RepoRoot(), ".jvs", "descriptors", string(savePointID)+".json")
 	data, err := os.ReadFile(descriptorPath)
 	require.NoError(t, err)
 
@@ -91,23 +94,101 @@ func syncLibraryReadyMarkerWithDescriptor(t *testing.T, repoRoot string, desc mo
 	}
 }
 
-func createOldOrphanSnapshot(t *testing.T, client *jvs.Client, age time.Duration) model.SnapshotID {
+func createOldOrphanSavePoint(t *testing.T, client *jvs.Client, age time.Duration) jvs.SavePointID {
 	t.Helper()
 
-	tempPath := createLibraryWorktree(t, client, "temp")
+	tempPath := createLibraryWorkspace(t, client, "temp")
 	require.NoError(t, os.WriteFile(filepath.Join(tempPath, "file.txt"), []byte("temp"), 0644))
 
-	desc, err := client.Snapshot(context.Background(), jvs.SnapshotOptions{
-		WorktreeName: "temp",
-		Note:         "temporary worktree snapshot",
+	desc, err := client.Save(context.Background(), jvs.SaveOptions{
+		WorkspaceName: "temp",
+		Message:       "temporary workspace save point",
 	})
 	require.NoError(t, err)
 
 	require.NoError(t, os.RemoveAll(filepath.Join(client.RepoRoot(), ".jvs", "worktrees", "temp")))
 	require.NoError(t, os.RemoveAll(tempPath))
 
-	setSnapshotCreatedAt(t, client, desc.SnapshotID, time.Now().Add(-age))
-	return desc.SnapshotID
+	setSavePointCreatedAt(t, client, desc.SavePointID, time.Now().Add(-age))
+	return desc.SavePointID
+}
+
+func TestPublicFacadeUsesSaveCleanupNames(t *testing.T) {
+	clientType := reflect.TypeOf(&jvs.Client{})
+	for _, name := range []string{
+		"Save",
+		"LatestSavePoint",
+		"HasSavePoints",
+		"PreviewCleanup",
+		"RunCleanup",
+		"WorkspacePath",
+	} {
+		_, ok := clientType.MethodByName(name)
+		assert.Truef(t, ok, "expected public Client.%s", name)
+	}
+
+	var _ jvs.SaveOptions
+	var _ jvs.CleanupOptions
+	var _ jvs.CleanupPlan
+}
+
+func TestPublicFacadeDoesNotExposeOldSaveCleanupNames(t *testing.T) {
+	clientType := reflect.TypeOf(&jvs.Client{})
+	for _, name := range []string{
+		"Snapshot",
+		"LatestSnapshot",
+		"HasSnapshots",
+		"GC",
+		"RunGC",
+		"WorktreePayloadPath",
+	} {
+		_, ok := clientType.MethodByName(name)
+		assert.Falsef(t, ok, "old public Client.%s must not remain", name)
+	}
+
+	forbiddenTypes := map[string]struct{}{
+		"SnapshotOptions": {},
+		"GCOptions":       {},
+		"GCPlan":          {},
+	}
+	forbiddenMethods := map[string]struct{}{
+		"Snapshot":            {},
+		"LatestSnapshot":      {},
+		"HasSnapshots":        {},
+		"GC":                  {},
+		"RunGC":               {},
+		"WorktreePayloadPath": {},
+	}
+
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, filepath.Join("..", "..", "pkg", "jvs"), nil, 0)
+	require.NoError(t, err)
+	pkg, ok := pkgs["jvs"]
+	require.True(t, ok, "pkg/jvs should parse as package jvs")
+
+	for _, file := range pkg.Files {
+		for _, decl := range file.Decls {
+			switch decl := decl.(type) {
+			case *ast.GenDecl:
+				for _, spec := range decl.Specs {
+					typeSpec, ok := spec.(*ast.TypeSpec)
+					if !ok {
+						continue
+					}
+					if _, forbidden := forbiddenTypes[typeSpec.Name.Name]; forbidden {
+						t.Fatalf("old public type %s must not remain in pkg/jvs", typeSpec.Name.Name)
+					}
+				}
+			case *ast.FuncDecl:
+				if decl.Recv == nil {
+					continue
+				}
+				if _, forbidden := forbiddenMethods[decl.Name.Name]; forbidden {
+					t.Fatalf("old public Client.%s must not remain in pkg/jvs", decl.Name.Name)
+				}
+			}
+		}
+	}
 }
 
 func TestInit_CreatesNewRepo(t *testing.T) {
@@ -169,53 +250,52 @@ func TestOpenOrInit_OpensParentRepoFromMainWorktree(t *testing.T) {
 	assert.NoDirExists(t, filepath.Join(dir, "main", ".jvs"))
 }
 
-func TestHasSnapshots_FalseOnEmptyRepo(t *testing.T) {
+func TestHasSavePoints_FalseOnEmptyRepo(t *testing.T) {
 	dir := testRepoDir(t)
 	client, err := jvs.Init(dir, jvs.InitOptions{Name: "test-repo"})
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	has, err := client.HasSnapshots(ctx, "main")
+	has, err := client.HasSavePoints(ctx, "main")
 	require.NoError(t, err)
 	assert.False(t, has)
 }
 
-func TestSnapshot_CreateAndVerify(t *testing.T) {
+func TestSave_CreateAndVerify(t *testing.T) {
 	dir := testRepoDir(t)
 	client, err := jvs.Init(dir, jvs.InitOptions{Name: "test-repo"})
 	require.NoError(t, err)
 
 	// Write a file to the workspace
-	mainDir := client.WorktreePayloadPath("main")
+	mainDir := client.WorkspacePath("main")
 	require.NoError(t, os.WriteFile(filepath.Join(mainDir, "hello.txt"), []byte("world"), 0644))
 
 	ctx := context.Background()
-	desc, err := client.Snapshot(ctx, jvs.SnapshotOptions{
-		Note: "first snapshot",
-		Tags: []string{"v1", "test"},
+	desc, err := client.Save(ctx, jvs.SaveOptions{
+		Message: "first save point",
+		Tags:    []string{"v1", "test"},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, desc)
 
-	assert.NotEmpty(t, desc.SnapshotID)
-	assert.Equal(t, "first snapshot", desc.Note)
+	assert.NotEmpty(t, desc.SavePointID)
+	assert.Equal(t, "first save point", desc.Message)
 	assert.Equal(t, []string{"v1", "test"}, desc.Tags)
 	assert.Equal(t, model.IntegrityVerified, desc.IntegrityState)
 
-	has, err := client.HasSnapshots(ctx, "main")
+	has, err := client.HasSavePoints(ctx, "main")
 	require.NoError(t, err)
 	assert.True(t, has)
 
-	// Verify integrity
-	require.NoError(t, client.Verify(ctx, desc.SnapshotID))
+	require.NoError(t, client.Verify(ctx, desc.SavePointID))
 }
 
-func TestVerify_CompressedSnapshotUsesLogicalPayload(t *testing.T) {
+func TestVerify_CompressedInternalSavePointUsesLogicalPayload(t *testing.T) {
 	dir := testRepoDir(t)
 	client, err := jvs.Init(dir, jvs.InitOptions{Name: "test-repo"})
 	require.NoError(t, err)
 
-	mainDir := client.WorktreePayloadPath("main")
+	mainDir := client.WorkspacePath("main")
 	require.NoError(t, os.WriteFile(filepath.Join(mainDir, "data.txt"), []byte("compressed data"), 0644))
 
 	creator := snapshot.NewCreator(client.RepoRoot(), model.EngineCopy)
@@ -224,43 +304,43 @@ func TestVerify_CompressedSnapshotUsesLogicalPayload(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, desc.Compression)
 
-	require.NoError(t, client.Verify(context.Background(), desc.SnapshotID))
+	require.NoError(t, client.Verify(context.Background(), jvs.SavePointID(desc.SnapshotID)))
 }
 
-func TestSnapshot_FailsInDetachedState(t *testing.T) {
+func TestSave_FailsInDetachedState(t *testing.T) {
 	dir := testRepoDir(t)
 	client, err := jvs.Init(dir, jvs.InitOptions{Name: "test-repo"})
 	require.NoError(t, err)
 
-	mainDir := client.WorktreePayloadPath("main")
+	mainDir := client.WorkspacePath("main")
 	ctx := context.Background()
 
 	require.NoError(t, os.WriteFile(filepath.Join(mainDir, "data.txt"), []byte("first"), 0644))
-	first, err := client.Snapshot(ctx, jvs.SnapshotOptions{Note: "first"})
+	first, err := client.Save(ctx, jvs.SaveOptions{Message: "first"})
 	require.NoError(t, err)
 
 	require.NoError(t, os.WriteFile(filepath.Join(mainDir, "data.txt"), []byte("second"), 0644))
-	_, err = client.Snapshot(ctx, jvs.SnapshotOptions{Note: "second"})
+	_, err = client.Save(ctx, jvs.SaveOptions{Message: "second"})
 	require.NoError(t, err)
 
-	require.NoError(t, client.Restore(ctx, jvs.RestoreOptions{Target: string(first.SnapshotID)}))
+	require.NoError(t, client.Restore(ctx, jvs.RestoreOptions{Target: string(first.SavePointID)}))
 
-	_, err = client.Snapshot(ctx, jvs.SnapshotOptions{Note: "detached snapshot"})
+	_, err = client.Save(ctx, jvs.SaveOptions{Message: "detached save point"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "detached")
 }
 
-func TestSnapshot_RestoreLatest(t *testing.T) {
+func TestSave_RestoreLatest(t *testing.T) {
 	dir := testRepoDir(t)
 	client, err := jvs.Init(dir, jvs.InitOptions{Name: "test-repo"})
 	require.NoError(t, err)
 
-	mainDir := client.WorktreePayloadPath("main")
+	mainDir := client.WorkspacePath("main")
 	ctx := context.Background()
 
-	// Write file and snapshot
+	// Write file and save
 	require.NoError(t, os.WriteFile(filepath.Join(mainDir, "data.txt"), []byte("original"), 0644))
-	_, err = client.Snapshot(ctx, jvs.SnapshotOptions{Note: "original state"})
+	_, err = client.Save(ctx, jvs.SaveOptions{Message: "original state"})
 	require.NoError(t, err)
 
 	// Modify the file
@@ -295,19 +375,19 @@ func TestHistory_OrderAndLimit(t *testing.T) {
 	client, err := jvs.Init(dir, jvs.InitOptions{Name: "test-repo"})
 	require.NoError(t, err)
 
-	mainDir := client.WorktreePayloadPath("main")
+	mainDir := client.WorkspacePath("main")
 	ctx := context.Background()
 
-	// Create 3 snapshots
+	// Create 3 save points
 	for i := 0; i < 3; i++ {
 		require.NoError(t, os.WriteFile(
 			filepath.Join(mainDir, "counter.txt"),
 			[]byte{byte('0' + i)},
 			0644,
 		))
-		_, err := client.Snapshot(ctx, jvs.SnapshotOptions{
-			Note: "snapshot " + string(rune('A'+i)),
-			Tags: []string{"test"},
+		_, err := client.Save(ctx, jvs.SaveOptions{
+			Message: "save point " + string(rune('A'+i)),
+			Tags:    []string{"test"},
 		})
 		require.NoError(t, err)
 	}
@@ -317,8 +397,8 @@ func TestHistory_OrderAndLimit(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, history, 3)
 	// Newest first
-	assert.Equal(t, "snapshot C", history[0].Note)
-	assert.Equal(t, "snapshot A", history[2].Note)
+	assert.Equal(t, "save point C", history[0].Message)
+	assert.Equal(t, "save point A", history[2].Message)
 
 	// Get limited history
 	limited, err := client.History(ctx, "main", 2)
@@ -326,28 +406,28 @@ func TestHistory_OrderAndLimit(t *testing.T) {
 	assert.Len(t, limited, 2)
 }
 
-func TestLatestSnapshot(t *testing.T) {
+func TestLatestSavePoint(t *testing.T) {
 	dir := testRepoDir(t)
 	client, err := jvs.Init(dir, jvs.InitOptions{Name: "test-repo"})
 	require.NoError(t, err)
 
-	mainDir := client.WorktreePayloadPath("main")
+	mainDir := client.WorkspacePath("main")
 	ctx := context.Background()
 
-	// No snapshots yet
-	latest, err := client.LatestSnapshot(ctx, "main")
+	// No save points yet
+	latest, err := client.LatestSavePoint(ctx, "main")
 	require.NoError(t, err)
 	assert.Nil(t, latest)
 
-	// Create a snapshot
+	// Create a save point
 	require.NoError(t, os.WriteFile(filepath.Join(mainDir, "file.txt"), []byte("data"), 0644))
-	desc, err := client.Snapshot(ctx, jvs.SnapshotOptions{Note: "first"})
+	desc, err := client.Save(ctx, jvs.SaveOptions{Message: "first"})
 	require.NoError(t, err)
 
-	latest, err = client.LatestSnapshot(ctx, "main")
+	latest, err = client.LatestSavePoint(ctx, "main")
 	require.NoError(t, err)
 	require.NotNil(t, latest)
-	assert.Equal(t, desc.SnapshotID, latest.SnapshotID)
+	assert.Equal(t, desc.SavePointID, latest.SavePointID)
 }
 
 func TestRestore_ByTarget(t *testing.T) {
@@ -355,21 +435,21 @@ func TestRestore_ByTarget(t *testing.T) {
 	client, err := jvs.Init(dir, jvs.InitOptions{Name: "test-repo"})
 	require.NoError(t, err)
 
-	mainDir := client.WorktreePayloadPath("main")
+	mainDir := client.WorkspacePath("main")
 	ctx := context.Background()
 
-	// Create two snapshots with different content
+	// Create two save points with different content
 	require.NoError(t, os.WriteFile(filepath.Join(mainDir, "file.txt"), []byte("v1"), 0644))
-	desc1, err := client.Snapshot(ctx, jvs.SnapshotOptions{Note: "version-1", Tags: []string{"v1"}})
+	desc1, err := client.Save(ctx, jvs.SaveOptions{Message: "version-1", Tags: []string{"v1"}})
 	require.NoError(t, err)
 
 	require.NoError(t, os.WriteFile(filepath.Join(mainDir, "file.txt"), []byte("v2"), 0644))
-	_, err = client.Snapshot(ctx, jvs.SnapshotOptions{Note: "version-2", Tags: []string{"v2"}})
+	_, err = client.Save(ctx, jvs.SaveOptions{Message: "version-2", Tags: []string{"v2"}})
 	require.NoError(t, err)
 
-	// Restore by snapshot ID prefix
+	// Restore by save point ID prefix
 	require.NoError(t, client.Restore(ctx, jvs.RestoreOptions{
-		Target: string(desc1.SnapshotID),
+		Target: string(desc1.SavePointID),
 	}))
 	data, err := os.ReadFile(filepath.Join(mainDir, "file.txt"))
 	require.NoError(t, err)
@@ -381,55 +461,58 @@ func TestRestore_ByTarget(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "v2", string(data))
 
-	// Restore HEAD
-	require.NoError(t, client.Restore(ctx, jvs.RestoreOptions{Target: "HEAD"}))
-	data, err = os.ReadFile(filepath.Join(mainDir, "file.txt"))
-	require.NoError(t, err)
-	assert.Equal(t, "v2", string(data))
 }
 
-func TestGC_DryRun(t *testing.T) {
+func TestPreviewCleanup(t *testing.T) {
 	dir := testRepoDir(t)
 	client, err := jvs.Init(dir, jvs.InitOptions{Name: "test-repo"})
 	require.NoError(t, err)
 
-	mainDir := client.WorktreePayloadPath("main")
+	mainDir := client.WorkspacePath("main")
 	ctx := context.Background()
 
-	// Create a snapshot
+	// Create a save point
 	require.NoError(t, os.WriteFile(filepath.Join(mainDir, "file.txt"), []byte("data"), 0644))
-	_, err = client.Snapshot(ctx, jvs.SnapshotOptions{Note: "keep me"})
+	_, err = client.Save(ctx, jvs.SaveOptions{Message: "keep me"})
 	require.NoError(t, err)
 
-	plan, err := client.GC(ctx, jvs.GCOptions{DryRun: true})
+	plan, err := client.PreviewCleanup(ctx, jvs.CleanupOptions{})
 	require.NoError(t, err)
 	require.NotNil(t, plan)
-	// Current checkpoint is protected.
-	require.NotEmpty(t, plan.ProtectedCheckpoints)
-	assert.Contains(t, plan.ProtectedCheckpoints, plan.ProtectedCheckpoints[0])
+	require.NotEmpty(t, plan.ProtectedSavePoints)
+	assert.Contains(t, plan.ProtectedSavePoints, plan.ProtectedSavePoints[0])
 }
 
-func TestGC_DryRunPublicJSONHidesV0InternalGCFields(t *testing.T) {
+func TestPreviewCleanupPublicJSONUsesSavePointFields(t *testing.T) {
 	dir := testRepoDir(t)
 	client, err := jvs.Init(dir, jvs.InitOptions{Name: "test-repo"})
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	orphanID := createOldOrphanSnapshot(t, client, 48*time.Hour)
+	orphanID := createOldOrphanSavePoint(t, client, 48*time.Hour)
 
-	plan, err := client.GC(ctx, jvs.GCOptions{DryRun: true})
+	plan, err := client.PreviewCleanup(ctx, jvs.CleanupOptions{})
 	require.NoError(t, err)
-	assert.Contains(t, plan.ToDelete, orphanID)
+	assert.Contains(t, plan.ReclaimableSavePoints, orphanID)
 
 	data, err := json.Marshal(plan)
 	require.NoError(t, err)
 	encoded := string(data)
-	assert.Contains(t, encoded, "protected_checkpoints")
+	assert.Contains(t, encoded, "protected_save_points")
+	assert.Contains(t, encoded, "protected_by_history")
+	assert.Contains(t, encoded, "reclaimable_save_points")
+	assert.Contains(t, encoded, "reclaimable_bytes_estimate")
 	assert.NotContains(t, encoded, "protected_set")
+	assert.NotContains(t, encoded, "protected_by_lineage")
 	assert.NotContains(t, encoded, "protected_by_pin")
 	assert.NotContains(t, encoded, "protected_by_retention")
 	assert.NotContains(t, encoded, "retention_policy")
-	assert.False(t, strings.Contains(encoded, "keep_min_"))
+	assert.NotContains(t, encoded, "to_delete")
+	assert.NotContains(t, encoded, "deletable_bytes_estimate")
+	assert.NotContains(t, encoded, "checkpoint")
+	assert.NotContains(t, encoded, "snapshot")
+	assert.NotContains(t, encoded, "gc")
+	assert.NotContains(t, encoded, "keep_min_")
 }
 
 func TestClientOperations_ReturnContextErrorWhenCanceled(t *testing.T) {
@@ -440,10 +523,10 @@ func TestClientOperations_ReturnContextErrorWhenCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err = client.Snapshot(ctx, jvs.SnapshotOptions{Note: "canceled"})
+	_, err = client.Save(ctx, jvs.SaveOptions{Message: "canceled"})
 	require.ErrorIs(t, err, context.Canceled)
 
-	err = client.Restore(ctx, jvs.RestoreOptions{Target: "HEAD"})
+	err = client.Restore(ctx, jvs.RestoreOptions{Target: "missing-save-point"})
 	require.ErrorIs(t, err, context.Canceled)
 
 	err = client.RestoreLatest(ctx, "main")
@@ -452,32 +535,32 @@ func TestClientOperations_ReturnContextErrorWhenCanceled(t *testing.T) {
 	_, err = client.History(ctx, "main", 0)
 	require.ErrorIs(t, err, context.Canceled)
 
-	_, err = client.LatestSnapshot(ctx, "main")
+	_, err = client.LatestSavePoint(ctx, "main")
 	require.ErrorIs(t, err, context.Canceled)
 
-	_, err = client.HasSnapshots(ctx, "main")
+	_, err = client.HasSavePoints(ctx, "main")
 	require.ErrorIs(t, err, context.Canceled)
 
-	err = client.Verify(ctx, model.SnapshotID("missing"))
+	err = client.Verify(ctx, jvs.SavePointID("missing"))
 	require.ErrorIs(t, err, context.Canceled)
 
-	_, err = client.GC(ctx, jvs.GCOptions{DryRun: true})
+	_, err = client.PreviewCleanup(ctx, jvs.CleanupOptions{})
 	require.ErrorIs(t, err, context.Canceled)
 
-	err = client.RunGC(ctx, "missing-plan")
+	err = client.RunCleanup(ctx, "missing-plan")
 	require.ErrorIs(t, err, context.Canceled)
 }
 
-func TestWorktreePayloadPath(t *testing.T) {
+func TestWorkspacePath(t *testing.T) {
 	dir := testRepoDir(t)
 	client, err := jvs.Init(dir, jvs.InitOptions{Name: "test-repo"})
 	require.NoError(t, err)
 
-	mainPath := client.WorktreePayloadPath("main")
+	mainPath := client.WorkspacePath("main")
 	assert.Equal(t, filepath.Join(dir, "main"), mainPath)
 
 	// Empty defaults to main
-	defaultPath := client.WorktreePayloadPath("")
+	defaultPath := client.WorkspacePath("")
 	assert.Equal(t, mainPath, defaultPath)
 
 	outside := t.TempDir()
@@ -485,7 +568,7 @@ func TestWorktreePayloadPath(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(dir, "worktrees")); err != nil {
 		t.Skipf("symlinks not supported: %v", err)
 	}
-	assert.Empty(t, client.WorktreePayloadPath("unsafe"))
+	assert.Empty(t, client.WorkspacePath("unsafe"))
 }
 
 func TestDetectEngine(t *testing.T) {
@@ -510,7 +593,7 @@ func TestValidateEngine_InvalidPath(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestFullLifecycle_CreateSnapshotRestoreCleanup(t *testing.T) {
+func TestFullLifecycle_SaveRestoreCleanup(t *testing.T) {
 	dir := testRepoDir(t)
 	ctx := context.Background()
 
@@ -518,17 +601,17 @@ func TestFullLifecycle_CreateSnapshotRestoreCleanup(t *testing.T) {
 	client, err := jvs.OpenOrInit(dir, jvs.InitOptions{Name: "agent-workspace"})
 	require.NoError(t, err)
 
-	mainDir := client.WorktreePayloadPath("main")
+	mainDir := client.WorkspacePath("main")
 
 	// 2. Simulate agent writing files
 	require.NoError(t, os.WriteFile(filepath.Join(mainDir, "config.json"), []byte(`{"model":"gpt-4"}`), 0644))
 	require.NoError(t, os.MkdirAll(filepath.Join(mainDir, "data"), 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(mainDir, "data", "results.csv"), []byte("a,b,c\n1,2,3\n"), 0644))
 
-	// 3. Snapshot (pod shutdown)
-	desc, err := client.Snapshot(ctx, jvs.SnapshotOptions{
-		Note: "auto: pod shutdown",
-		Tags: []string{"auto", "shutdown"},
+	// 3. Save (pod shutdown)
+	desc, err := client.Save(ctx, jvs.SaveOptions{
+		Message: "auto: pod shutdown",
+		Tags:    []string{"auto", "shutdown"},
 	})
 	require.NoError(t, err)
 
@@ -537,7 +620,7 @@ func TestFullLifecycle_CreateSnapshotRestoreCleanup(t *testing.T) {
 	require.NoError(t, os.RemoveAll(filepath.Join(mainDir, "data")))
 
 	// 5. Restore (pod startup)
-	has, err := client.HasSnapshots(ctx, "main")
+	has, err := client.HasSavePoints(ctx, "main")
 	require.NoError(t, err)
 	assert.True(t, has)
 
@@ -552,11 +635,11 @@ func TestFullLifecycle_CreateSnapshotRestoreCleanup(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "a,b,c\n1,2,3\n", string(data))
 
-	// 7. Verify snapshot integrity
-	require.NoError(t, client.Verify(ctx, desc.SnapshotID))
+	// 7. Verify save point integrity
+	require.NoError(t, client.Verify(ctx, desc.SavePointID))
 
-	// 8. GC (dry run)
-	plan, err := client.GC(ctx, jvs.GCOptions{DryRun: true})
+	// 8. Preview cleanup
+	plan, err := client.PreviewCleanup(ctx, jvs.CleanupOptions{})
 	require.NoError(t, err)
-	assert.Equal(t, 0, plan.CandidateCount) // only 1 snapshot, protected as HEAD
+	assert.Equal(t, 0, plan.CandidateCount) // only 1 save point, currently protected
 }

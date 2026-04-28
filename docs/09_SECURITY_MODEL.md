@@ -1,79 +1,60 @@
-# Security Model (v0)
+# Security Model
 
-## Scope
-Defines trust, integrity, and operational security requirements for JVS repositories.
+**Status:** active save point security model
 
-## Security objectives
-- detect descriptor and payload corruption or tampering via checksums and hashes
-- preserve auditable operation history via tamper-evident audit trail
+JVS provides local integrity and tamper-evidence for save point storage. It
+does not provide remote trust, signer identity, key management, or server-side
+authorization in the public contract.
 
-## Supported algorithms (MUST)
+## Protected Assets
 
-### Hash algorithms
-- `sha256` (default): SHA-256 for `descriptor_checksum` and `payload_root_hash`.
-- Future additions MUST be registered in this spec before use.
+- save point descriptors
+- save point payload storage
+- workspace metadata and provenance
+- recovery plans and restore backups
+- audit records
+- runtime locks and operation records
 
-Algorithm identifiers in descriptors MUST match values defined here exactly.
+## Trust Boundary
 
-## Integrity model (MUST)
-1. descriptor checksum layer
-2. payload root hash layer
+JVS assumes the local filesystem and operator account are the trust boundary.
+An attacker with arbitrary write access to the repository can corrupt or
+rewrite state. JVS detects many classes of corruption, but it is not a
+cryptographic transparency log or remote attestation system.
 
-Checkpoint integrity requires both layers to pass.
+## Integrity Checks
 
-## Verification policy
-- `jvs verify` defaults to strong verification (checksum + payload hash).
-- `jvs verify --all` applies checkpoint-scoped checks to every checkpoint and returns per-checkpoint results.
-- Repository-health checks, including audit chain validation, are performed by `jvs doctor --strict`.
+Save point integrity uses:
 
-## Audit requirements
-Every mutating operation MUST append audit record with:
-- actor identity
-- operation type
-- target checkpoint/workspace
-- reason for dangerous operations
+- descriptor checksum
+- payload root hash
+- publish-ready markers
+- audit chain checks
 
-## Audit log format (MUST)
+`jvs doctor --strict` is the public health command.
 
-### Storage
-Path: `.jvs/audit/audit.jsonl`
+## Audit Chain
 
-Format: JSON Lines (one JSON object per line, append-only).
+Audit records link each record to the previous record hash. Strict doctor uses
+the audit chain to detect truncation or manual edits.
 
-### Internal Record Schema (MUST)
-Each audit record MUST contain:
-- `event_id`: unique event identifier (UUID v4)
-- `timestamp`: ISO 8601 with timezone
-- `operation`: operation type (`snapshot`, `restore`, `gc_run`, `ref_create`, `ref_delete`, `worktree_create`, `worktree_remove`, `worktree_rename`, `doctor_repair`)
-- `actor`: actor identity string
-- `target`: affected checkpoint/workspace ID
-- `reason`: mandatory for dangerous operations, nullable otherwise
-- `prev_hash`: SHA-256 hash of the previous audit record (empty string for first record)
-- `record_hash`: SHA-256 hash of this record (all fields except `record_hash` itself, serialized as canonical JSON)
+Internal audit records may contain storage-oriented operation names. Public
+output must use save point, workspace, restore, recovery, doctor, and cleanup
+terms.
 
-Canonical JSON rules for `record_hash` computation:
-- keys sorted lexicographically by Unicode code point
-- no whitespace between tokens
-- UTF-8 encoding
-- strings escaped per RFC 8259
-- numbers: no leading zeros, no trailing zeros in fractions, no positive sign
-- null values serialized as `null`
+## Runtime Safety
 
-### Integrity chain (MUST)
-- Each record includes `prev_hash` linking to the prior record, forming a hash chain.
-- `jvs doctor --strict` MUST validate the audit hash chain and report `E_AUDIT_CHAIN_BROKEN` on mismatch.
-- `jvs verify --all` MUST remain checkpoint-scoped and preserve its per-checkpoint result contract.
+- Mutating operations hold repository/workspace locks as appropriate.
+- Restore run binds to a preview plan and revalidates expected target state.
+- Interrupted restore creates or preserves a recovery plan.
+- Active recovery plans block new restore runs in the same workspace.
+- Runtime repair is limited to `clean_locks`, `clean_runtime_tmp`, and
+  `clean_runtime_operations`.
 
-### Rotation (SHOULD)
-- When `audit.jsonl` exceeds 100 MB, rotate to `audit-<timestamp>.jsonl`.
-- Rotated files are portable audit state and included in migration.
-- Rotation appends a final chain-closing record to the old file and a chain-opening record to the new file with `prev_hash` referencing the old file's last `record_hash`.
+## Non-Goals
 
-## v0.x accepted risks
-- An attacker with filesystem write access can rewrite a descriptor and its checksum consistently without detection. Descriptor signing (planned for v1.x) will close this gap.
-- This risk is acceptable for v0.x local single-user and agent workflows.
-
-## Non-goals
-- encryption-at-rest policy management
-- in-JVS authn/authz framework
-- Descriptor signing and trust policy (deferred to v1.x)
+- signing commands
+- signer trust policy
+- remote push/pull authentication
+- server-side authorization
+- automatic durable history rewrite or audit repair

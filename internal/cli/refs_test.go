@@ -1,124 +1,119 @@
 package cli
 
 import (
-	"errors"
-	"fmt"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
-	"github.com/agentsmith-project/jvs/internal/repo"
-	"github.com/agentsmith-project/jvs/internal/snapshot"
-	"github.com/agentsmith-project/jvs/pkg/errclass"
-	"github.com/agentsmith-project/jvs/pkg/model"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestResolveCheckpointRefDescriptorCorruptionIsNotNotFound(t *testing.T) {
+func TestRefsSavePointIDPrefixWorksWithViewAndRestore(t *testing.T) {
+	isolateContractCLIState(t)
+	repoRoot := setupCurrentContractRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
+	firstID := savePointForContract(t, "first")
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v2"), 0644))
+	secondID := savePointForContract(t, "second")
+	firstPrefix := uniqueIDPrefixForRefsTest(t, firstID, secondID)
+
+	viewOut, err := executeCommand(createTestRootCmd(), "--json", "view", firstPrefix, "app.txt")
+	require.NoError(t, err, viewOut)
+	viewEnv := decodeContractEnvelope(t, viewOut)
+	require.True(t, viewEnv.OK, viewOut)
+	assert.Equal(t, "view", viewEnv.Command)
+	var viewData map[string]any
+	require.NoError(t, json.Unmarshal(viewEnv.Data, &viewData), viewOut)
+	assert.Equal(t, firstID, viewData["save_point"])
+	assert.Equal(t, "app.txt", viewData["path_inside_save_point"])
+	viewPath, ok := viewData["view_path"].(string)
+	require.True(t, ok, "view should expose view_path: %#v", viewData)
+	viewContent, err := os.ReadFile(viewPath)
+	require.NoError(t, err)
+	assert.Equal(t, "v1", string(viewContent))
+	viewID, ok := viewData["view_id"].(string)
+	require.True(t, ok, "view should expose view_id: %#v", viewData)
+	closeOut, err := executeCommand(createTestRootCmd(), "--json", "view", "close", viewID)
+	require.NoError(t, err, closeOut)
+
+	restoreOut, err := executeCommand(createTestRootCmd(), "--json", "restore", firstPrefix)
+	require.NoError(t, err, restoreOut)
+	restoreEnv := decodeContractEnvelope(t, restoreOut)
+	require.True(t, restoreEnv.OK, restoreOut)
+	assert.Equal(t, "restore", restoreEnv.Command)
+	var restorePreview map[string]any
+	require.NoError(t, json.Unmarshal(restoreEnv.Data, &restorePreview), restoreOut)
+	planID, ok := restorePreview["plan_id"].(string)
+	require.True(t, ok, "restore preview should expose plan_id: %#v", restorePreview)
+	require.NotEmpty(t, planID)
+
+	runOut, err := executeCommand(createTestRootCmd(), "--json", "restore", "--run", planID)
+	require.NoError(t, err, runOut)
+	runEnv := decodeContractEnvelope(t, runOut)
+	require.True(t, runEnv.OK, runOut)
+	assert.Equal(t, "restore", runEnv.Command)
+	content, err := os.ReadFile(filepath.Join(repoRoot, "app.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "v1", string(content))
+}
+
+func TestRemovedLegacyPublicCommandsAreUnknownJSON(t *testing.T) {
+	isolateContractCLIState(t)
 	for _, tc := range []struct {
 		name string
-		ref  func(model.SnapshotID) string
-		tags []string
+		args []string
 	}{
-		{
-			name: "full_checkpoint_id",
-			ref:  func(id model.SnapshotID) string { return string(id) },
-		},
-		{
-			name: "short_checkpoint_id",
-			ref:  func(id model.SnapshotID) string { return string(id)[:8] },
-		},
-		{
-			name: "tag_alias",
-			ref:  func(model.SnapshotID) string { return "broken-tag" },
-			tags: []string{"broken-tag"},
-		},
+		{name: "checkpoint", args: []string{"checkpoint", "list"}},
+		{name: "snapshot", args: []string{"snapshot", "list"}},
+		{name: "fork", args: []string{"fork", "feature"}},
+		{name: "worktree", args: []string{"worktree", "list"}},
+		{name: "gc", args: []string{"gc", "plan"}},
+		{name: "verify", args: []string{"verify", "--all"}},
+		{name: "capability", args: []string{"capability", "."}},
+		{name: "info", args: []string{"info"}},
+		{name: "diff", args: []string{"diff", "one", "two"}},
+		{name: "import", args: []string{"import", "src", "dst"}},
+		{name: "clone", args: []string{"clone", "src", "dst"}},
+		{name: "config", args: []string{"config", "get"}},
+		{name: "conformance", args: []string{"conformance"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			repoRoot := setupRefResolutionRepo(t)
-			id := createRefResolutionCheckpoint(t, repoRoot, "corrupt descriptor target", tc.tags)
-			corruptRefResolutionDescriptor(t, repoRoot, id)
+			args := append([]string{"--json"}, tc.args...)
+			stdout, stderr, exitCode := runContractSubprocess(t, t.TempDir(), args...)
+			require.Equal(t, 1, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+			assert.Empty(t, strings.TrimSpace(stderr))
 
-			_, err := resolveCheckpointRef(repoRoot, "main", tc.ref(id))
-			require.Error(t, err)
-			require.True(t, errors.Is(err, errclass.ErrDescriptorCorrupt), "got %v", err)
-			require.False(t, errors.Is(err, errRefNotFound), "got %v", err)
+			env := decodeContractEnvelope(t, stdout)
+			assert.False(t, env.OK)
+			assert.Equal(t, tc.name, env.Command)
+			assert.Nil(t, env.RepoRoot)
+			assert.Nil(t, env.Workspace)
+			assert.JSONEq(t, `null`, string(env.Data))
+			require.NotNil(t, env.Error)
+			assert.Equal(t, "E_USAGE", env.Error.Code)
+			assert.Contains(t, env.Error.Message, `unknown command "`+tc.name+`"`)
 		})
 	}
 }
 
-func TestResolveCheckpointRefTagAliasFailsClosedWithUnreadableDescriptor(t *testing.T) {
-	repoRoot := setupRefResolutionRepo(t)
-	createRefResolutionCheckpoint(t, repoRoot, "release target", []string{"release"})
-	broken := createRefResolutionCheckpoint(t, repoRoot, "unreadable descriptor", []string{"other"})
-	corruptRefResolutionDescriptor(t, repoRoot, broken)
-
-	_, err := resolveCheckpointRef(repoRoot, "main", "release")
-	require.Error(t, err)
-	require.True(t, errors.Is(err, errclass.ErrDescriptorCorrupt), "got %v", err)
-}
-
-func TestResolveCheckpointRefInWorkspaceTagAliasFailsClosedWithUnreadableDescriptor(t *testing.T) {
-	repoRoot := setupRefResolutionRepo(t)
-	createRefResolutionCheckpoint(t, repoRoot, "release target", []string{"release"})
-	broken := createRefResolutionCheckpoint(t, repoRoot, "unreadable descriptor", []string{"other"})
-	corruptRefResolutionDescriptor(t, repoRoot, broken)
-
-	_, err := resolveCheckpointRefInWorkspace(repoRoot, "main", "release")
-	require.Error(t, err)
-	require.True(t, errors.Is(err, errclass.ErrDescriptorCorrupt), "got %v", err)
-}
-
-func TestCheckpointListMalformedReadyJSONUsesPublishStateCode(t *testing.T) {
-	repoRoot := setupRefResolutionRepo(t)
-	id := createRefResolutionCheckpoint(t, repoRoot, "malformed ready", nil)
-	readyPath := filepath.Join(repoRoot, ".jvs", "snapshots", string(id), ".READY")
-	require.NoError(t, os.WriteFile(readyPath, []byte("{not json"), 0644))
-
-	stdout, stderr, code := runContractSubprocess(t, filepath.Join(repoRoot, "main"), "--json", "checkpoint", "list")
-	require.NotZero(t, code, stdout)
-	require.Empty(t, stderr)
-
-	env := decodeContractEnvelope(t, stdout)
-	require.False(t, env.OK, stdout)
-	require.NotNil(t, env.Error, stdout)
-	require.Equal(t, "E_READY_INVALID", env.Error.Code)
-}
-
-func TestResolveCheckpointRefMissingFullIDStaysRefNotFound(t *testing.T) {
-	repoRoot := setupRefResolutionRepo(t)
-
-	_, err := resolveCheckpointRef(repoRoot, "main", "1708300800000-deadbeef")
-	require.Error(t, err)
-	require.True(t, errors.Is(err, errRefNotFound), "got %v", err)
-	require.False(t, errors.Is(err, errclass.ErrDescriptorCorrupt), "got %v", err)
-}
-
-func TestCheckpointRefNotFoundUsesTypedError(t *testing.T) {
-	require.True(t, checkpointRefNotFound(fmt.Errorf("wrapped: %w", errRefNotFound.WithMessage("missing checkpoint"))))
-	require.False(t, checkpointRefNotFound(errclass.ErrDescriptorCorrupt.WithMessage("descriptor not found on disk")))
-}
-
-func setupRefResolutionRepo(t *testing.T) string {
+func uniqueIDPrefixForRefsTest(t *testing.T, id string, otherIDs ...string) string {
 	t.Helper()
-	repoRoot := filepath.Join(t.TempDir(), "repo")
-	_, err := repo.Init(repoRoot, "repo")
-	require.NoError(t, err)
-	return repoRoot
-}
 
-func createRefResolutionCheckpoint(t *testing.T, repoRoot, note string, tags []string) model.SnapshotID {
-	t.Helper()
-	payloadPath := filepath.Join(repoRoot, "main", "data.txt")
-	require.NoError(t, os.WriteFile(payloadPath, []byte(note), 0644))
-
-	desc, err := snapshot.NewCreator(repoRoot, model.EngineCopy).Create("main", note, tags)
-	require.NoError(t, err)
-	return desc.SnapshotID
-}
-
-func corruptRefResolutionDescriptor(t *testing.T, repoRoot string, id model.SnapshotID) {
-	t.Helper()
-	path := filepath.Join(repoRoot, ".jvs", "descriptors", string(id)+".json")
-	require.NoError(t, os.WriteFile(path, []byte("{not valid json"), 0644))
+	for length := 1; length < len(id); length++ {
+		prefix := id[:length]
+		unique := true
+		for _, otherID := range otherIDs {
+			if strings.HasPrefix(otherID, prefix) {
+				unique = false
+				break
+			}
+		}
+		if unique {
+			return prefix
+		}
+	}
+	return id
 }

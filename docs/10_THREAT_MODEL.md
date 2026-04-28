@@ -1,38 +1,45 @@
-# Threat Model (v0)
+# Threat Model
+
+**Status:** active save point threat model
 
 ## Assets
-- checkpoint payloads
-- descriptors and lineage metadata
-- audit trail
-- descriptor checksums and payload hashes
 
-## Adversary assumptions
-- can read and write files in repository path with compromised local account
-- cannot break strong cryptography
-- can attempt concurrent write operations
+- save point payloads
+- save point descriptors
+- workspace metadata and provenance
+- restore preview plans
+- recovery plans and restore backups
+- audit records
+- runtime operation state
 
-## Key threats and controls
-1. Concurrent writes causing data races
-   Control: JVS v0 relies on filesystem-level mutual exclusion; users are responsible for coordinating concurrent access.
-2. Descriptor and checksum both rewritten
-   Control: descriptor checksum + payload root hash detect independent tampering. Coordinated rewrite is a v0.x accepted risk (see 09_SECURITY_MODEL.md).
-3. Path traversal on workspace operations
-   Control: strict name validation + canonical path boundary checks.
-4. Crash during checkpoint publish
-   Control: tmp+READY protocol + fsync durability sequence.
-5. Runtime-state poisoning after migration
-   Control: exclude active `.jvs/locks/`, `.jvs/intents/`, and
-   `.jvs/gc/*.json`; rebuild runtime state at destination.
+## Threats
 
-## Residual risks
-- filesystem or kernel bugs bypassing expected durability semantics
-- coordinated descriptor + checksum rewrite by attacker with filesystem write access (mitigated by signing in v1.x)
+1. Concurrent writes during save or restore.
+2. Crash during save publish or restore run.
+3. Manual edits to descriptors, payloads, or audit records.
+4. Runtime state copied across hosts during backup/migration.
+5. Cleanup deleting a source save point still needed by live workspaces, active
+   views, active operations, or recovery plans.
+6. A user treating labels/messages/tags as restore targets or retention
+   protection.
 
-## Risk labeling
-Release notes and release-readiness docs MUST use these v0 risk labels:
-- `integrity`: descriptor checksum and payload hash detect independent
-  corruption; coordinated descriptor-plus-checksum rewrite is a v0 residual
-  risk.
-- `migration`: active `.jvs/locks/`, `.jvs/intents/`, and `.jvs/gc/*.json`
-  runtime state is non-portable and must be rebuilt at the destination with
-  `jvs doctor --strict --repair-runtime`.
+## Controls
+
+- Workspace/repository mutation guards around mutating operations.
+- Save staging-before-publish.
+- Restore preview/run plan binding and expected target evidence.
+- Recovery status/resume/rollback for interrupted restore.
+- Descriptor checksum, payload hash, and audit chain validation.
+- Runtime repair limited to safe runtime cleanup actions.
+- Migration docs exclude `.jvs/locks/`, `.jvs/intents/`, and active
+  `.jvs/gc/*.json` plans.
+- Cleanup protects active sources and recovery plans.
+
+## Residual Risks
+
+- A local attacker with full write access can rewrite coordinated descriptor,
+  payload, and checksum state.
+- JVS does not provide signer trust, remote attestation, or server-side access
+  control in the public contract.
+- Operators must coordinate external writers and resolve active recovery plans
+  before continuing destructive workflows.

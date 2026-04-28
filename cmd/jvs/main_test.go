@@ -155,12 +155,14 @@ func TestBinaryExecutionIntegration(t *testing.T) {
 	_, err = os.Stat(filepath.Join(repoPath, "main"))
 	assert.ErrorIs(t, err, os.ErrNotExist)
 
-	// Test info command
-	cmd = exec.Command(binPath, "info")
+	// Test status command
+	cmd = exec.Command(binPath, "status")
 	cmd.Dir = repoPath
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err)
-	assert.Contains(t, string(out), "Repository")
+	assert.Contains(t, string(out), "Folder:")
+	assert.Contains(t, string(out), "Workspace: main")
+	assert.Contains(t, string(out), "Newest save point: none")
 }
 
 // TestBinaryJSONOutput tests JSON output format.
@@ -186,12 +188,14 @@ func TestBinaryJSONOutput(t *testing.T) {
 	require.Contains(t, string(out), "JVS is ready for this folder.")
 
 	// Test JSON output
-	cmd = exec.Command(binPath, "--json", "info")
+	cmd = exec.Command(binPath, "--json", "status")
 	cmd.Dir = filepath.Join(tmpDir, "test")
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err)
 	assert.Contains(t, string(out), "{")
+	assert.Contains(t, string(out), `"command": "status"`)
 	assert.Contains(t, string(out), "repo_root")
+	assert.Contains(t, string(out), "files_state")
 }
 
 // TestBinaryErrorHandling tests error messages.
@@ -209,16 +213,16 @@ func TestBinaryErrorHandling(t *testing.T) {
 	output, err := buildCmd.CombinedOutput()
 	require.NoError(t, err, "build failed: %s", string(output))
 
-	// Run info outside of repo (should fail)
-	cmd := exec.Command(binPath, "info")
+	// Run a repo-scoped command outside of repo (should fail)
+	cmd := exec.Command(binPath, "status")
 	cmd.Dir = tmpDir
 	out, err := cmd.CombinedOutput()
 	assert.Error(t, err)
 	assert.Contains(t, strings.ToLower(string(out)), "not a jvs repository")
 }
 
-// TestBinarySnapshotFlow tests a complete snapshot workflow.
-func TestBinarySnapshotFlow(t *testing.T) {
+// TestBinarySaveHistoryFlow tests a complete save point workflow.
+func TestBinarySaveHistoryFlow(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -245,17 +249,22 @@ func TestBinarySnapshotFlow(t *testing.T) {
 	err = os.WriteFile(testFile, []byte("hello world"), 0644)
 	require.NoError(t, err)
 
-	// Create checkpoint
-	cmd = exec.Command(binPath, "checkpoint", "test checkpoint")
+	// Create save point
+	cmd = exec.Command(binPath, "save", "-m", "test save point")
 	cmd.Dir = repoPath
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err)
-	assert.Contains(t, string(out), "checkpoint")
+	assert.Contains(t, string(out), "Saved save point")
+	assert.Contains(t, string(out), "Message: test save point")
+	assert.Contains(t, string(out), "Newest save point:")
 
-	// Check checkpoint list
-	cmd = exec.Command(binPath, "checkpoint", "list")
+	// Check save point history
+	cmd = exec.Command(binPath, "history")
 	cmd.Dir = repoPath
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err)
-	assert.Contains(t, string(out), "checkpoint")
+	assert.Contains(t, string(out), "Save points")
+	assert.Contains(t, string(out), "test save point")
+	assert.NotContains(t, strings.ToLower(string(out)), "checkpoint")
+	assert.NotContains(t, strings.ToLower(string(out)), "snapshot")
 }

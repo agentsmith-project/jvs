@@ -1,104 +1,115 @@
-# Release Policy (pre-release / v0)
+# Release Policy
 
 ## Scope
 
-This policy governs pre-release and v0 tags. A release is valid only when the
-public CLI contract, documentation, tests, and shipped artifacts describe the
-same behavior.
+This policy governs pre-release and v0 tags while the public UX converges on
+the save point contract. A release is valid only when CLI help, public docs,
+tests, and shipped artifacts describe the same user-visible behavior.
 
 ## Versioning
 
-- Pre-release tags may change behavior while the v0 contract is still being
-  hardened, but every change must be reflected in the CLI spec and tests before
-  tagging.
-- v0 patch tags are for compatible fixes, documentation corrections, and
-  additive clarifications that do not break documented commands or JSON fields.
-- Any incompatible public command, flag, ref, state, or JSON change requires an
-  explicit release note and updated conformance coverage.
+- Pre-release tags may make breaking public UX changes while the contract is
+  still being hardened.
+- Any public command, flag, state vocabulary, ref semantics, or JSON field
+  change requires an explicit changelog entry, release evidence, and
+  conformance coverage.
+- Final tagged release evidence must replace candidate placeholders with exact
+  tag, commit, gate, coverage, representative repo, artifact, and signing
+  facts.
 
 ## Release Gates
 
 Before any pre-release or v0 tag:
 
 1. `make release-gate` passes.
-2. Conformance tests pass for the v0 public CLI contract.
-3. Regression tests pass for previously fixed bugs and destructive-operation
-   safety.
-4. Fuzz targets pass for public parsers, names, tags, refs, and structured
+2. Public CLI help smoke tests pass for the visible save point surface:
+   `init`, `save`, `history`, `view`, `restore`, `workspace new`, `status`,
+   `recovery`, and `doctor`.
+3. Restore preview/run/recovery tests pass for whole-workspace and path
+   restore.
+4. Workspace creation tests prove `workspace new --from <save>` starts a new
+   history with `newest_save_point: null` and records
+   `started_from_save_point`.
+5. Regression tests pass for previously fixed destructive-operation safety
+   bugs.
+6. Fuzz targets pass for public parsers, names, save point IDs, and structured
    metadata.
-5. Lint and build pass without ignored failures.
-6. Coverage meets the repository threshold enforced by `make test-cover`.
-7. `jvs doctor --strict` passes on a representative repo, including audit
+7. Lint and build pass without ignored failures.
+8. Coverage meets the repository threshold enforced by `make test-cover`.
+9. `jvs doctor --strict` passes on a representative repo, including audit
    chain validation.
-8. `jvs verify --all` passes on the same representative repo, covering
-   checkpoint descriptor and payload integrity.
+10. `jvs doctor --strict` integrity evidence is recorded for the same
+    representative repo.
 
 CI enforces the same release gate for publishing paths. A `v*` tag push or
 manual `workflow_dispatch` release for an existing `v*` tag must pass the
-`release-gate` job, which runs `make release-gate`, before the release job can
-publish artifacts.
-Manual releases validate and check out `refs/tags/<tag>` and publish that exact
-tag name; a same-named branch or other ambiguous ref is not a release input.
-PR and normal branch pushes may keep faster checks, but they must not publish
-release artifacts.
+`release-gate` job before artifacts are published. Manual releases validate
+and check out `refs/tags/<tag>`; a same-named branch or ambiguous ref is not a
+release input.
 
 ## Documentation Gates
 
-- `README.md`, `docs/QUICKSTART.md`, `docs/02_CLI_SPEC.md`, and the
-  conformance plan agree on public command names, flags, refs, JSON fields,
-  and state vocabulary.
-- Public docs use the v0 vocabulary: repo, workspace, checkpoint, `current`,
-  `latest`, and `dirty`.
-- Old or private public-facing terms must not leak into user docs, help text,
-  examples, release notes, or conformance assertions.
+- `docs/02_CLI_SPEC.md`, `docs/06_RESTORE_SPEC.md`,
+  `docs/21_SAVE_POINT_WORKSPACE_SEMANTICS.md`, command help, and
+  conformance assertions agree on public command names, flags, IDs, JSON
+  fields, and state vocabulary.
+- Public docs use save point vocabulary: folder, workspace, save point, save,
+  history, view, restore, unsaved changes, cleanup, and recovery plan.
+- Implementation storage names may appear only as storage or code facts. They
+  must not define public commands, selectors, examples, or workflow concepts.
 - Unsupported future capabilities such as remote push or pull, signing
-  commands, partial checkpoint contracts, compression contracts, merge/rebase,
-  and complex retention policy flags are called out only as v0 boundaries.
+  commands, merge/rebase, label-as-ref restore, public partial-save contracts,
+  public compression contracts, and complex retention policy flags are called
+  out only as boundaries.
 
 ## Contract Gates
 
 - JSON commands emit exactly one object with the documented envelope.
 - Error responses include stable machine-readable codes and useful messages.
-- Dirty guards are verified for operations that overwrite or remove workspace
-  contents.
-- `current`, `latest`, and `dirty` semantics are tested across restore, fork,
-  checkpoint, diff, and status flows.
-- Repo and workspace resolution is tested from repo roots, workspace roots,
-  nested workspace paths, explicit `--repo` assertions, and `--workspace`
-  selections.
-- `--repo` is tested as an assertion for commands that operate on an existing
-  repo.
-- `init`, `import`, `clone`, and `capability` are covered as repo-free,
-  path-scoped setup commands because they define how users enter the system.
-- Setup JSON is tested for stable capability, effective engine, transfer
-  engine, warnings, degraded reasons, and full-clone optimized transfer
-  fields.
+- Unsaved-change guards are verified for operations that overwrite or remove
+  managed files.
+- Restore is preview-first. Run binds to a plan ID and revalidates expected
+  target state.
+- Restore failures produce either no file changes or an active recovery plan
+  with status/resume/rollback.
+- `workspace new --from <save>` does not inherit source history.
+- Cleanup documentation describes preview-first, reviewed deletion of
+  unprotected save point storage.
+- Repo and workspace targeting is tested from folders, nested paths, explicit
+  `--repo` assertions, and `--workspace` selections.
 
 ## Breaking Change Process
 
 - Document the rationale and affected user-visible behavior.
-- Update `docs/02_CLI_SPEC.md` and any affected tutorials before tagging.
+- Update `docs/02_CLI_SPEC.md`, `docs/06_RESTORE_SPEC.md`, and affected
+  release/ops docs before tagging.
 - Add or adjust conformance tests before implementation is considered done.
 - Describe migration impact, recovery expectations, known limitations, and
   risk labels in the release notes.
+- Avoid fallback wording that makes non-public implementation details sound
+  like the public contract.
 
 ## Required Release Artifacts
 
-- Updated spec set and tutorials.
+- Updated spec set and tutorials that match visible help.
 - Conformance and regression summaries.
 - Coverage result from the release gate.
-- Changelog entry with date, tag, highlights, breaking changes, known
-  limitations, risk labels, and migration notes.
-- Runbook references for verification, diagnosis, and recovery.
-- Release evidence ledger (`docs/RELEASE_EVIDENCE.md`) that persistently
-  records the evidence class for each entry. Candidate entries may record the
-  target release identity, required `make release-gate` status checks,
-  docs-contract, ci-contract, test-race, test-cover, lint, build,
-  conformance, library, regression, fuzz-tests, fuzz, coverage threshold,
-  representative repo `jvs doctor --strict` / `jvs verify --all` evidence
-  requirements, GA docs evidence, artifact and signing workflow rules, CI run
-  link rule, and runbook references while marking final-only facts pending.
-  Final tagged release entries must replace pending fields with the exact
-  coverage result and threshold, final tag and tagged commit, release-gate
-  result, representative repo results, and published artifact/signing
-  evidence.
+- Changelog entry with date, tag or candidate target, highlights, breaking
+  changes, known limitations, risk labels, migration notes, and release
+  artifacts.
+- Runbook references for verification, diagnosis, restore recovery, migration,
+  and cleanup layering.
+- Release evidence ledger (`docs/RELEASE_EVIDENCE.md`) that records the
+  evidence class for each entry.
+
+Candidate entries may record target release identity, required
+`make release-gate` status checks, docs-contract, ci-contract, test-race,
+test-cover, lint, build, conformance, library, regression, fuzz-tests, fuzz,
+coverage threshold, representative repo requirements, runbook references,
+artifact rules, and signing workflow rules while marking final-only facts
+pending.
+
+Final tagged release entries must not contain candidate or pending language.
+They must record exact coverage result and threshold, final tag and tagged
+commit, release-gate result, representative repo results, published artifact
+and signing evidence, and final release URL.

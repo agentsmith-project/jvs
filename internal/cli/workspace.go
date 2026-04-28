@@ -16,15 +16,28 @@ import (
 var (
 	workspaceRemoveForce bool
 	workspaceNewFromRef  string
-	forkFromRef          string
-	forkDiscardDirty     bool
-	forkIncludeWorking   bool
 )
 
 var workspaceCmd = &cobra.Command{
 	Use:   "workspace",
 	Short: "Manage workspaces",
 }
+
+const workspacePublicUsageTemplate = `Usage:
+  {{.CommandPath}} [command]
+
+Available Commands:
+{{- range .Commands}}{{if .IsAvailableCommand}}
+ {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}
+
+Flags:
+{{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}
+
+Global Flags:
+{{.InheritedFlags.FlagUsages | trimTrailingWhitespaces}}
+
+Use "{{.CommandPath}} [command] --help" for more information about a command.
+`
 
 var workspaceNewCmd = &cobra.Command{
 	Use:   "new <name> --from <save>",
@@ -272,138 +285,14 @@ func workspaceRemoveCurrentDiffersError(name string) error {
 	return fmt.Errorf("workspace %q is not at its newest save point; use --force to remove", name)
 }
 
-var forkCmd = &cobra.Command{
-	Use:   "fork [<ref> <name>|<name>]",
-	Short: "Create a workspace from a save point",
-	Args:  cobra.MaximumNArgs(2),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		r, workspaceName, err := discoverRequiredWorktree()
-		if err != nil {
-			return err
-		}
-
-		targetRef, name, defaultCurrent, err := parseForkArgs(r.Root, workspaceName, args)
-		if err != nil {
-			return err
-		}
-
-		var targetID model.SnapshotID
-		if forkIncludeWorking && !defaultCurrent {
-			targetID, err = resolveCheckpointRef(r.Root, workspaceName, targetRef)
-			if err != nil {
-				return err
-			}
-		}
-
-		if err := rejectDirtyWorkspace(r.Root, workspaceName, "fork", forkDiscardDirty, forkIncludeWorking); err != nil {
-			return err
-		}
-
-		if forkIncludeWorking {
-			desc, err := createCheckpointDescriptor(r.Root, workspaceName, checkpointCreateOptions{
-				Note: "include working before fork",
-			})
-			if err != nil {
-				return err
-			}
-			if defaultCurrent {
-				targetID = desc.SnapshotID
-			}
-		}
-
-		if targetID == "" {
-			targetID, err = resolveCheckpointRef(r.Root, workspaceName, targetRef)
-			if err != nil {
-				return err
-			}
-		}
-
-		if name == "" {
-			name = fmt.Sprintf("workspace-%s", targetID.ShortID())
-		}
-
-		if err := verifySnapshotStrong(r.Root, targetID); err != nil {
-			return fmt.Errorf("verify checkpoint: %w", err)
-		}
-
-		mgr := worktree.NewManager(r.Root)
-		eng := newCloneEngine(r.Root)
-		cfg, err := mgr.Fork(targetID, name, func(src, dst string) error {
-			_, err := engine.CloneToNew(eng, src, dst)
-			return err
-		})
-		if err != nil {
-			return err
-		}
-
-		if jsonOutput {
-			return outputJSON(publicWorkspace(cfg))
-		}
-
-		path, err := mgr.Path(name)
-		if err != nil {
-			return err
-		}
-		fmt.Printf("Created workspace '%s' from checkpoint %s\n", color.Success(name), color.SnapshotID(targetID.String()))
-		fmt.Printf("Path: %s\n", color.Dim(path))
-		return nil
-	},
-}
-
-func parseForkArgs(repoRoot, workspaceName string, args []string) (targetRef string, name string, defaultCurrent bool, err error) {
-	if forkFromRef != "" {
-		if len(args) != 1 {
-			return "", "", false, fmt.Errorf("fork --from requires exactly one workspace name")
-		}
-		if err := validatePublicWorkspaceName(args[0]); err != nil {
-			return "", "", false, err
-		}
-		return forkFromRef, args[0], false, nil
-	}
-
-	switch len(args) {
-	case 0:
-		return "current", "", true, nil
-	case 1:
-		if err := validatePublicWorkspaceName(args[0]); err != nil {
-			return "", "", false, err
-		}
-		if _, err := resolveCheckpointRef(repoRoot, workspaceName, args[0]); err == nil {
-			return "", "", false, fmt.Errorf("ambiguous fork argument %q: provide a workspace name, or use 'jvs fork %s <name>'", args[0], args[0])
-		} else if !checkpointRefNotFound(err) {
-			return "", "", false, err
-		}
-		return "current", args[0], true, nil
-	case 2:
-		if err := validatePublicWorkspaceName(args[1]); err != nil {
-			return "", "", false, err
-		}
-		return args[0], args[1], false, nil
-	default:
-		return "", "", false, fmt.Errorf("too many arguments")
-	}
-}
-
-func checkpointRefNotFound(err error) bool {
-	return errors.Is(err, errRefNotFound)
-}
-
 func init() {
+	workspaceCmd.SetUsageTemplate(workspacePublicUsageTemplate)
 	workspaceNewCmd.Flags().StringVar(&workspaceNewFromRef, "from", "", "save point ID to copy into the new workspace")
 	workspaceRemoveCmd.Flags().BoolVarP(&workspaceRemoveForce, "force", "f", false, "force removal when folder files differ from the newest save point")
-	workspaceListCmd.Hidden = true
-	workspacePathCmd.Hidden = true
-	workspaceRenameCmd.Hidden = true
-	workspaceRemoveCmd.Hidden = true
 	workspaceCmd.AddCommand(workspaceNewCmd)
 	workspaceCmd.AddCommand(workspaceListCmd)
 	workspaceCmd.AddCommand(workspacePathCmd)
 	workspaceCmd.AddCommand(workspaceRenameCmd)
 	workspaceCmd.AddCommand(workspaceRemoveCmd)
 	rootCmd.AddCommand(workspaceCmd)
-
-	forkCmd.Flags().StringVar(&forkFromRef, "from", "", "checkpoint ref to fork from")
-	forkCmd.Flags().BoolVar(&forkDiscardDirty, "discard-dirty", false, "discard dirty workspace changes for this operation")
-	forkCmd.Flags().BoolVar(&forkIncludeWorking, "include-working", false, "checkpoint dirty workspace changes before this operation")
-	rootCmd.AddCommand(forkCmd)
 }

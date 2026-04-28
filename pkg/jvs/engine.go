@@ -8,7 +8,7 @@ import (
 	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
-// DetectEngine returns the best available snapshot engine for the given path.
+// DetectEngine returns the best available save point materialization engine for the given path.
 // Detection priority: juicefs-clone > reflink-copy > copy.
 // The path should be the repository root or intended repository location.
 func DetectEngine(path string) model.EngineType {

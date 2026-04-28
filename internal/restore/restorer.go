@@ -613,10 +613,6 @@ func headMatchesSnapshot(wtMgr *worktree.Manager, worktreeName string, snapshotI
 	return cfg.HeadSnapshotID == snapshotID, nil
 }
 
-func clearDirectory(root string) error {
-	return clearManagedDirectory(repo.WorktreePayloadBoundary{Root: root})
-}
-
 func clearManagedDirectory(boundary repo.WorktreePayloadBoundary) error {
 	root := boundary.Root
 	if err := validateRealDir(root); err != nil {

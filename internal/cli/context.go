@@ -32,15 +32,6 @@ func requireRepo() *repo.Repo {
 	return r
 }
 
-// requireWorktree discovers the repo and worktree from CWD, or exits with error.
-func requireWorktree() (*repo.Repo, string) {
-	r, wtName, err := discoverRequiredWorktree()
-	if err != nil {
-		exitWithCLIError(err)
-	}
-	return r, wtName
-}
-
 func discoverRequiredRepo() (*repo.Repo, error) {
 	ctx, err := resolveRepoScoped()
 	if err != nil {

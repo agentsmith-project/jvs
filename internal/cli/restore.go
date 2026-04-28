@@ -204,9 +204,7 @@ func changedRestoreRunBehaviorFlags(cmd *cobra.Command) []string {
 		publicName string
 	}{
 		{name: "save-first", publicName: "--save-first"},
-		{name: "include-working", publicName: "--save-first"},
 		{name: "discard-unsaved", publicName: "--discard-unsaved"},
-		{name: "discard-dirty", publicName: "--discard-unsaved"},
 		{name: "interactive", publicName: "run-time restore options"},
 	}
 	var changed []string
@@ -224,19 +222,44 @@ func changedRestoreRunBehaviorFlags(cmd *cobra.Command) []string {
 	return changed
 }
 
+type restoreRunResult struct {
+	Scope         string
+	ProtectedPath string
+	FilesChanged  bool
+	Whole         publicRestoreResult
+	Path          publicRestorePathResult
+}
+
+type restoreRunScopeOps struct {
+	SaveFirstMessage string
+	ValidateTarget   func() error
+	ValidateSource   func(model.EngineType) error
+	ApplyRestore     func(*recovery.Plan, model.EngineType) error
+	RecordResult     func() error
+}
+
 func runRestorePlan(repoRoot, workspaceName, planID string) error {
-	var result publicRestoreResult
-	var pathResult publicRestorePathResult
-	resultScope := restoreplan.ScopeWhole
-	protectedRunPath := ""
+	result, err := executeRestorePlanRun(repoRoot, workspaceName, planID)
+	if err != nil {
+		err = restoreRunErrorWithMutationState(err, result)
+		if result.ProtectedPath != "" {
+			return restorePathErrorWithFilesChanged(err, result.FilesChanged, result.ProtectedPath)
+		}
+		return restorePointError(err)
+	}
+	return outputRestoreRunResult(result)
+}
+
+func executeRestorePlanRun(repoRoot, workspaceName, planID string) (restoreRunResult, error) {
+	result := restoreRunResult{Scope: restoreplan.ScopeWhole}
 	err := repo.WithMutationLock(repoRoot, "restore run", func() error {
 		plan, err := restoreplan.Load(repoRoot, planID)
 		if err != nil {
 			return err
 		}
-		resultScope = plan.EffectiveScope()
-		if resultScope == restoreplan.ScopePath {
-			protectedRunPath = plan.Path
+		result.Scope = plan.EffectiveScope()
+		if result.Scope == restoreplan.ScopePath {
+			result.ProtectedPath = plan.Path
 		}
 		activeRecovery, err := recovery.NewManager(repoRoot).ActiveForWorkspace(workspaceName)
 		if err != nil {
@@ -246,122 +269,166 @@ func runRestorePlan(repoRoot, workspaceName, planID string) error {
 			return activeRecoveryBlocksRestoreError(activeRecovery[0])
 		}
 		return withActiveOperationSourcePin(repoRoot, plan.SourceSavePoint, "restore run", func() error {
-			switch resultScope {
-			case restoreplan.ScopeWhole:
-				if err := restoreplan.ValidateTarget(repoRoot, workspaceName, plan); err != nil {
-					return err
-				}
-				sourceState, err := restoreplan.InspectSourceReadOnly(repoRoot, plan.SourceSavePoint)
-				if err != nil {
-					return err
-				}
-				if err := checkRestoreRunCapacity(repoRoot, workspaceName, plan, sourceState.SnapshotDir, sourceState.Descriptor); err != nil {
-					return err
-				}
-				if err := restoreplan.ValidateSource(repoRoot, workspaceName, plan, detectEngine(repoRoot)); err != nil {
-					return err
-				}
-				if plan.Options.SaveFirst {
-					if _, err := snapshot.NewCreator(repoRoot, detectEngine(repoRoot)).CreateSavePointLocked(workspaceName, "save before restore", nil); err != nil {
-						return err
-					}
-				}
-				recoveryPlan, err := recovery.NewManager(repoRoot).CreateActiveForRestore(plan, restoreRecoveryBackupPath(plan.Folder))
-				if err != nil {
-					return err
-				}
-				if err := restore.NewRestorer(repoRoot, detectEngine(repoRoot)).RestoreLockedWithOptions(workspaceName, plan.SourceSavePoint, restore.RunOptions{BackupPath: recoveryPlan.Backup.Path}); err != nil {
-					if _, ok := restore.AsIncompleteError(err); ok {
-						return keepRecoveryPlanActiveAfterRestoreFailure(repoRoot, recoveryPlan, err)
-					}
-					if resolveErr := recovery.NewManager(repoRoot).MarkResolved(recoveryPlan.PlanID); resolveErr != nil {
-						return fmt.Errorf("%w; additionally failed to resolve recovery plan: %v", err, resolveErr)
-					}
-					return err
-				}
-				if err := markRecoveryRestoreApplied(repoRoot, recoveryPlan); err != nil {
-					return err
-				}
-				if err := recovery.NewManager(repoRoot).MarkResolved(recoveryPlan.PlanID); err != nil {
-					return err
-				}
-				result, err = publicRestoreStatus(repoRoot, workspaceName, plan.SourceSavePoint)
-				if err != nil {
-					return err
-				}
-				result.Mode = "run"
-				result.PlanID = plan.PlanID
-				result.SourceSavePoint = string(plan.SourceSavePoint)
-				result.FilesChanged = true
-				return nil
-			case restoreplan.ScopePath:
-				if err := restoreplan.ValidatePathTarget(repoRoot, workspaceName, plan); err != nil {
-					return err
-				}
-				sourceState, err := restoreplan.InspectSourceReadOnly(repoRoot, plan.SourceSavePoint)
-				if err != nil {
-					return err
-				}
-				if err := checkRestoreRunCapacity(repoRoot, workspaceName, plan, sourceState.SnapshotDir, sourceState.Descriptor); err != nil {
-					return err
-				}
-				if err := restoreplan.ValidateSourcePath(repoRoot, workspaceName, plan, detectEngine(repoRoot)); err != nil {
-					return err
-				}
-				if plan.Options.SaveFirst {
-					if _, err := snapshot.NewCreator(repoRoot, detectEngine(repoRoot)).CreateSavePointLocked(workspaceName, "save before restore path", nil); err != nil {
-						return err
-					}
-				}
-				recoveryPlan, err := recovery.NewManager(repoRoot).CreateActiveForRestore(plan, restoreRecoveryBackupPath(plan.Folder))
-				if err != nil {
-					return err
-				}
-				if err := restore.NewRestorer(repoRoot, detectEngine(repoRoot)).RestorePathLockedWithOptions(workspaceName, plan.SourceSavePoint, plan.Path, restore.RunOptions{BackupPath: recoveryPlan.Backup.Path}); err != nil {
-					if _, ok := restore.AsIncompleteError(err); ok {
-						return keepRecoveryPlanActiveAfterRestoreFailure(repoRoot, recoveryPlan, err)
-					}
-					if resolveErr := recovery.NewManager(repoRoot).MarkResolved(recoveryPlan.PlanID); resolveErr != nil {
-						return fmt.Errorf("%w; additionally failed to resolve recovery plan: %v", err, resolveErr)
-					}
-					return err
-				}
-				if err := markRecoveryRestoreApplied(repoRoot, recoveryPlan); err != nil {
-					return err
-				}
-				if err := recovery.NewManager(repoRoot).MarkResolved(recoveryPlan.PlanID); err != nil {
-					return err
-				}
-				pathResult, err = publicRestorePathStatus(repoRoot, workspaceName, plan.Path, plan.SourceSavePoint)
-				if err != nil {
-					return err
-				}
-				pathResult.Mode = "run"
-				pathResult.PlanID = plan.PlanID
-				return nil
-			default:
-				return fmt.Errorf("restore plan scope is not supported")
-			}
+			return runLoadedRestorePlan(repoRoot, workspaceName, plan, &result)
 		})
 	})
+	return result, err
+}
+
+func runLoadedRestorePlan(repoRoot, workspaceName string, plan *restoreplan.Plan, result *restoreRunResult) error {
+	ops, err := restoreRunOpsForScope(repoRoot, workspaceName, plan, result)
 	if err != nil {
-		if protectedRunPath != "" {
-			return restorePathError(err, protectedRunPath)
-		}
-		return restorePointError(err)
+		return err
 	}
-	if jsonOutput {
-		if resultScope == restoreplan.ScopePath {
-			return outputJSON(pathResult)
-		}
-		return outputJSON(result)
+	if err := ops.ValidateTarget(); err != nil {
+		return err
 	}
-	if resultScope == restoreplan.ScopePath {
-		printRestorePathResult(pathResult)
+	sourceState, err := restoreplan.InspectSourceReadOnly(repoRoot, plan.SourceSavePoint)
+	if err != nil {
+		return err
+	}
+	if err := checkRestoreRunCapacity(repoRoot, workspaceName, plan, sourceState.SnapshotDir, sourceState.Descriptor); err != nil {
+		return err
+	}
+	engineType := detectEngine(repoRoot)
+	if err := ops.ValidateSource(engineType); err != nil {
+		return err
+	}
+	if err := createRestoreSafetySave(repoRoot, workspaceName, engineType, plan.Options.SaveFirst, ops.SaveFirstMessage); err != nil {
+		return err
+	}
+	recoveryPlan, err := recovery.NewManager(repoRoot).CreateActiveForRestore(plan, restoreRecoveryBackupPath(plan.Folder))
+	if err != nil {
+		return err
+	}
+	if err := ops.ApplyRestore(recoveryPlan, engineType); err != nil {
+		result.FilesChanged = restoreApplyErrorChangedFiles(err)
+		return handleRestoreApplyError(repoRoot, recoveryPlan, err)
+	}
+	result.FilesChanged = true
+	if err := resolveAppliedRestoreRecovery(repoRoot, recoveryPlan); err != nil {
+		return err
+	}
+	return ops.RecordResult()
+}
+
+func restoreRunOpsForScope(repoRoot, workspaceName string, plan *restoreplan.Plan, result *restoreRunResult) (restoreRunScopeOps, error) {
+	switch result.Scope {
+	case restoreplan.ScopeWhole:
+		return restoreRunScopeOps{
+			SaveFirstMessage: "save before restore",
+			ValidateTarget: func() error {
+				return restoreplan.ValidateTarget(repoRoot, workspaceName, plan)
+			},
+			ValidateSource: func(engineType model.EngineType) error {
+				return restoreplan.ValidateSource(repoRoot, workspaceName, plan, engineType)
+			},
+			ApplyRestore: func(recoveryPlan *recovery.Plan, engineType model.EngineType) error {
+				return restore.NewRestorer(repoRoot, engineType).RestoreLockedWithOptions(workspaceName, plan.SourceSavePoint, restore.RunOptions{BackupPath: recoveryPlan.Backup.Path})
+			},
+			RecordResult: func() error {
+				status, err := publicRestoreStatus(repoRoot, workspaceName, plan.SourceSavePoint)
+				if err != nil {
+					return err
+				}
+				status.Mode = "run"
+				status.PlanID = plan.PlanID
+				status.SourceSavePoint = string(plan.SourceSavePoint)
+				status.FilesChanged = true
+				result.Whole = status
+				return nil
+			},
+		}, nil
+	case restoreplan.ScopePath:
+		return restoreRunScopeOps{
+			SaveFirstMessage: "save before restore path",
+			ValidateTarget: func() error {
+				return restoreplan.ValidatePathTarget(repoRoot, workspaceName, plan)
+			},
+			ValidateSource: func(engineType model.EngineType) error {
+				return restoreplan.ValidateSourcePath(repoRoot, workspaceName, plan, engineType)
+			},
+			ApplyRestore: func(recoveryPlan *recovery.Plan, engineType model.EngineType) error {
+				return restore.NewRestorer(repoRoot, engineType).RestorePathLockedWithOptions(workspaceName, plan.SourceSavePoint, plan.Path, restore.RunOptions{BackupPath: recoveryPlan.Backup.Path})
+			},
+			RecordResult: func() error {
+				status, err := publicRestorePathStatus(repoRoot, workspaceName, plan.Path, plan.SourceSavePoint)
+				if err != nil {
+					return err
+				}
+				status.Mode = "run"
+				status.PlanID = plan.PlanID
+				result.Path = status
+				return nil
+			},
+		}, nil
+	default:
+		return restoreRunScopeOps{}, fmt.Errorf("restore plan scope is not supported")
+	}
+}
+
+func createRestoreSafetySave(repoRoot, workspaceName string, engineType model.EngineType, saveFirst bool, message string) error {
+	if !saveFirst {
 		return nil
 	}
-	printRestoreResult(result)
+	_, err := snapshot.NewCreator(repoRoot, engineType).CreateSavePointLocked(workspaceName, message, nil)
+	return err
+}
+
+func handleRestoreApplyError(repoRoot string, recoveryPlan *recovery.Plan, restoreErr error) error {
+	if _, ok := restore.AsIncompleteError(restoreErr); ok {
+		return keepRecoveryPlanActiveAfterRestoreFailure(repoRoot, recoveryPlan, restoreErr)
+	}
+	if resolveErr := recovery.NewManager(repoRoot).MarkResolved(recoveryPlan.PlanID); resolveErr != nil {
+		return fmt.Errorf("%w; additionally failed to resolve recovery plan: %v", restoreErr, resolveErr)
+	}
+	return restoreErr
+}
+
+func resolveAppliedRestoreRecovery(repoRoot string, recoveryPlan *recovery.Plan) error {
+	if err := markRecoveryRestoreApplied(repoRoot, recoveryPlan); err != nil {
+		return err
+	}
+	return recovery.NewManager(repoRoot).MarkResolved(recoveryPlan.PlanID)
+}
+
+func outputRestoreRunResult(result restoreRunResult) error {
+	if jsonOutput {
+		if result.Scope == restoreplan.ScopePath {
+			return outputJSON(result.Path)
+		}
+		return outputJSON(result.Whole)
+	}
+	if result.Scope == restoreplan.ScopePath {
+		printRestorePathResult(result.Path)
+		return nil
+	}
+	printRestoreResult(result.Whole)
 	return nil
+}
+
+func restoreApplyErrorChangedFiles(err error) bool {
+	incomplete, ok := restore.AsIncompleteError(err)
+	return ok && !incomplete.PayloadRolledBack
+}
+
+type restoreRunFilesChangedError struct {
+	err error
+}
+
+func (e *restoreRunFilesChangedError) Error() string {
+	return fmt.Sprintf("%v. Files were changed; run jvs recovery status before continuing", e.err)
+}
+
+func (e *restoreRunFilesChangedError) Unwrap() error {
+	return e.err
+}
+
+func restoreRunErrorWithMutationState(err error, result restoreRunResult) error {
+	if err == nil || !result.FilesChanged {
+		return err
+	}
+	return &restoreRunFilesChangedError{err: err}
 }
 
 func runRestorePath(cmd *cobra.Command, args []string, repoRoot, workspaceName string) error {
@@ -540,25 +607,6 @@ func genericRestorePathCommand(path string) string {
 	return fmt.Sprintf("jvs restore <save> --path %s", shellQuoteArg(path))
 }
 
-func ensureRestorePathSourceExists(repoRoot, workspaceName string, savePointID model.SnapshotID, path string) error {
-	desc, err := snapshot.LoadDescriptor(repoRoot, savePointID)
-	if err != nil {
-		return fmt.Errorf("load save point: %w", err)
-	}
-	boundary, err := repo.WorktreeManagedPayloadBoundary(repoRoot, workspaceName)
-	if err != nil {
-		return fmt.Errorf("workspace managed boundary: %w", err)
-	}
-	exists, err := savePointContainsHistoryPath(repoRoot, desc, path, boundary)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return fmt.Errorf("path does not exist in save point: %s", path)
-	}
-	return nil
-}
-
 func publicRestorePathStatus(repoRoot, workspaceName, path string, sourceID model.SnapshotID) (publicRestorePathResult, error) {
 	status, err := buildWorkspaceStatus(repoRoot, workspaceName)
 	if err != nil {
@@ -730,11 +778,15 @@ func restorePointError(err error) error {
 }
 
 func restorePathError(err error, protectedValues ...string) error {
+	return restorePathErrorWithFilesChanged(err, false, protectedValues...)
+}
+
+func restorePathErrorWithFilesChanged(err error, filesChanged bool, protectedValues ...string) error {
 	if err == nil {
 		return nil
 	}
 	message := restorePathVocabulary(err.Error(), protectedValues...)
-	if !strings.Contains(message, "No files were changed.") {
+	if !filesChanged && !strings.Contains(message, "No files were changed.") {
 		message += ". No files were changed."
 	}
 	var jvsErr *errclass.JVSError
@@ -830,8 +882,6 @@ func isProtectedValueDelimiter(b byte) bool {
 
 func restorePointVocabulary(value string) string {
 	replacer := strings.NewReplacer(
-		"--discard-dirty", "--discard-unsaved",
-		"--include-working", "--save-first",
 		"dirty changes", "unsaved changes",
 		"dirty", "unsaved",
 		"checkpoints", "save points",
@@ -858,10 +908,6 @@ func init() {
 	restoreCmd.Flags().Lookup("interactive").Hidden = true
 	restoreCmd.Flags().BoolVar(&restoreDiscardDirty, "discard-unsaved", false, "discard unsaved folder changes for this operation")
 	restoreCmd.Flags().BoolVar(&restoreIncludeWorking, "save-first", false, "create a save point for unsaved changes before restore")
-	restoreCmd.Flags().BoolVar(&restoreDiscardDirty, "discard-dirty", false, "discard dirty workspace changes for this operation")
-	restoreCmd.Flags().Lookup("discard-dirty").Hidden = true
-	restoreCmd.Flags().BoolVar(&restoreIncludeWorking, "include-working", false, "checkpoint dirty workspace changes before this operation")
-	restoreCmd.Flags().Lookup("include-working").Hidden = true
 	restoreCmd.Flags().StringVar(&restorePath, "path", "", "restore only this workspace-relative path")
 	restoreCmd.Flags().StringVar(&restoreRunPlanID, "run", "", "execute a restore preview plan")
 	rootCmd.AddCommand(restoreCmd)

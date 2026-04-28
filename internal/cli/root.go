@@ -45,6 +45,7 @@ Start with:
   jvs restore <save>`
 
 var publicRootCommandNames = map[string]bool{
+	"cleanup":    true,
 	"completion": true,
 	"doctor":     true,
 	"help":       true,
@@ -391,17 +392,17 @@ func publicCLIErrorVocabularySpan(value string) string {
 func publicCLIErrorVocabularyToken(token string) (string, bool) {
 	switch token {
 	case "head_snapshot_id", "head_snapshot":
-		return "current_checkpoint", true
+		return "content_source", true
 	case "latest_snapshot_id", "latest_snapshot":
-		return "latest_checkpoint", true
+		return "newest_save_point", true
 	case "base_snapshot_id", "base_snapshot":
-		return "base_checkpoint", true
+		return "started_from_save_point", true
 	case "from_snapshot":
-		return "from_checkpoint", true
+		return "from_save_point", true
 	case "to_snapshot":
-		return "to_checkpoint", true
+		return "to_save_point", true
 	case "snapshot_id":
-		return "checkpoint_id", true
+		return "save_point_id", true
 	case "worktree_id":
 		return "workspace_id", true
 	}
@@ -438,16 +439,20 @@ func publicCLIErrorIdentifierVocabularyToken(token string) (string, bool) {
 
 func publicCLIErrorSimpleVocabularyToken(token string) (string, bool) {
 	switch strings.ToLower(token) {
-	case "history":
-		return "checkpoint list", true
+	case "checkpoint":
+		return "save point", true
+	case "checkpoints":
+		return "save points", true
 	case "snapshot":
-		return "checkpoint", true
+		return "save point", true
 	case "snapshots":
-		return "checkpoints", true
+		return "save points", true
 	case "worktree":
 		return "workspace", true
 	case "worktrees":
 		return "workspaces", true
+	case "gc":
+		return "cleanup", true
 	default:
 		return "", false
 	}

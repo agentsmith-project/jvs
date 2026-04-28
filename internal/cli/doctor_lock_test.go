@@ -12,10 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDoctorRepairRuntimeCleansStaleRepoLockAndAllowsCheckpoint(t *testing.T) {
+func TestDoctorRepairRuntimeCleansStaleRepoLockAndAllowsSave(t *testing.T) {
 	repoPath, _ := setupPublicCLIRepo(t, "stale-lock-recovery")
 
-	writeCLIRepoLockOwner(t, repoPath, staleCLISameHostOwner(t, "crashed checkpoint"))
+	writeCLIRepoLockOwner(t, repoPath, staleCLISameHostOwner(t, "crashed save"))
 
 	stdout, err := runPublicCLI(t, "doctor", "--repair-runtime")
 	require.NoError(t, err, stdout)
@@ -23,9 +23,9 @@ func TestDoctorRepairRuntimeCleansStaleRepoLockAndAllowsCheckpoint(t *testing.T)
 	assert.NoDirExists(t, filepath.Join(repoPath, ".jvs", "locks", "repo.lock"))
 
 	require.NoError(t, os.WriteFile("after.txt", []byte("mutation works"), 0644))
-	stdout, err = runPublicCLI(t, "checkpoint", "after stale lock recovery")
+	stdout, err = runPublicCLI(t, "save", "-m", "after stale lock recovery")
 	require.NoError(t, err, stdout)
-	assert.Contains(t, stdout, "Created checkpoint")
+	assert.Contains(t, stdout, "Saved save point")
 }
 
 func staleCLISameHostOwner(t *testing.T, operation string) map[string]any {

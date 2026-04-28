@@ -24,17 +24,6 @@ type workspaceStatus struct {
 	PathSources          []publicRestoredPathSource `json:"path_sources,omitempty"`
 }
 
-type legacyWorkspaceStatus struct {
-	Current       string
-	Latest        string
-	Dirty         bool
-	AtLatest      bool
-	Workspace     string
-	Repo          string
-	Engine        string
-	RecoveryHints []string
-}
-
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show folder save point status",
@@ -153,50 +142,12 @@ func sameStatusSavePoint(left, right *string) bool {
 	return *left == *right
 }
 
-func buildLegacyWorkspaceStatus(repoRoot, workspaceName string) (legacyWorkspaceStatus, error) {
-	cfg, err := worktree.NewManager(repoRoot).Get(workspaceName)
-	if err != nil {
-		return legacyWorkspaceStatus{}, fmt.Errorf("load workspace: %w", err)
-	}
-	dirty, err := workspaceDirty(repoRoot, workspaceName)
-	if err != nil {
-		return legacyWorkspaceStatus{}, err
-	}
-
-	atLatest := cfg.HeadSnapshotID != "" && cfg.HeadSnapshotID == cfg.LatestSnapshotID && !dirty
-	return legacyWorkspaceStatus{
-		Current:       string(cfg.HeadSnapshotID),
-		Latest:        string(cfg.LatestSnapshotID),
-		Dirty:         dirty,
-		AtLatest:      atLatest,
-		Workspace:     workspaceName,
-		Repo:          repoRoot,
-		Engine:        string(detectEngine(repoRoot)),
-		RecoveryHints: statusRecoveryHints(cfg.HeadSnapshotID, cfg.LatestSnapshotID, dirty),
-	}, nil
-}
-
 func statusStringPointer(id model.SnapshotID) *string {
 	if id == "" {
 		return nil
 	}
 	value := string(id)
 	return &value
-}
-
-func statusForRestore(repoRoot, workspaceName string) (map[string]any, error) {
-	status, err := buildLegacyWorkspaceStatus(repoRoot, workspaceName)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]any{
-		"current":       status.Current,
-		"latest":        status.Latest,
-		"dirty":         status.Dirty,
-		"at_latest":     status.AtLatest,
-		"checkpoint_id": status.Current,
-		"status":        "restored",
-	}, nil
 }
 
 func formatStatusSavePoint(ref *string) string {

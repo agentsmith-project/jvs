@@ -1,10 +1,10 @@
 <p align="center">
   <h1 align="center">JVS</h1>
   <p align="center">
-    <strong>Filesystem-native workspace checkpoints</strong>
+    <strong>Filesystem-native save points for real folders</strong>
   </p>
   <p align="center">
-    <a href="https://github.com/agentsmith-project/jvs/releases/latest"><img src="https://img.shields.io/github/v/release/agentsmith-project/jvs?style=flat-square" alt="Release"></a>
+    <a href="https://github.com/agentsmith-project/jvs/releases"><img src="https://img.shields.io/github/v/release/agentsmith-project/jvs?style=flat-square" alt="Release"></a>
     <a href="https://github.com/agentsmith-project/jvs/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/agentsmith-project/jvs/ci.yml?branch=main&style=flat-square&label=CI" alt="CI"></a>
     <a href="https://goreportcard.com/report/github.com/agentsmith-project/jvs"><img src="https://goreportcard.com/badge/github.com/agentsmith-project/jvs?style=flat-square" alt="Go Report Card"></a>
     <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square" alt="License: MIT"></a>
@@ -13,59 +13,46 @@
 
 ---
 
-JVS (**Juicy Versioned Workspaces**) creates verifiable checkpoints of entire
-workspace directories. It is local-first, works with normal filesystem paths,
-and uses the best available copy engine for the target filesystem: JuiceFS
-clone where available, reflink where supported, and recursive copy everywhere
-else.
+JVS (**Juicy Versioned Workspaces**) saves real folders as save points. Start
+in an ordinary directory, save it, browse its history, open read-only views,
+and restore a known state when you need to recover.
 
 ```bash
-jvs init myproject
-cd myproject/main
+mkdir myproject
+cd myproject
 
-echo "hello" > data.txt
+jvs init
+echo "hello" > notes.txt
+jvs save -m "baseline"
+
+echo "experiment" >> notes.txt
 jvs status
-jvs checkpoint "baseline"
+jvs history
 
-echo "experiment" >> data.txt
-jvs checkpoint "experiment-1" --tag exp
-
-jvs restore latest
-jvs fork experiment
-jvs verify --all
+# Pick a save point ID from history.
+jvs view <save> notes.txt
+jvs restore <save> --discard-unsaved
+jvs restore --run <plan-id>
 ```
+
+Restore is preview-first: `jvs restore <save>` prints a plan and the exact
+`jvs restore --run <plan-id>` command. No folder files change until you run
+the plan.
 
 ## Why JVS?
 
-| Problem | JVS approach |
+| Need | JVS approach |
 | --- | --- |
-| Git is awkward for large binary workspace state | Checkpoint the whole directory tree without staging files one by one |
-| Automation needs repeatable rollback points | `current`, `latest`, and `dirty` make workspace state explicit |
-| Teams want local-first workflows | Repos are ordinary directories; no JVS server or remote protocol is required |
-| Corruption should be detectable | Descriptor checksums and payload hashes can be verified with `jvs verify` |
+| Save a whole working folder | `jvs save -m "message"` captures managed files as a save point |
+| Recover from a bad edit | `jvs history`, `jvs view`, and preview-first `jvs restore` help you choose and apply a save point |
+| Keep real directories | A workspace is a normal folder; your tools keep using normal filesystem paths |
+| Try another line of work | `jvs workspace new <name> --from <save>` creates another real folder from a save point |
+| Diagnose trouble | `jvs doctor` and `jvs recovery` report health and interrupted restore plans |
 
 ## Install
 
-**Download a binary** from the [latest release](https://github.com/agentsmith-project/jvs/releases/latest)
-(Linux, macOS, Windows):
-
-```bash
-# Linux (amd64)
-curl -L https://github.com/agentsmith-project/jvs/releases/latest/download/jvs-linux-amd64 -o jvs
-chmod +x jvs && sudo mv jvs /usr/local/bin/
-
-# macOS (Apple Silicon)
-curl -L https://github.com/agentsmith-project/jvs/releases/latest/download/jvs-darwin-arm64 -o jvs
-chmod +x jvs && sudo mv jvs /usr/local/bin/
-```
-
-**Or install with Go** (requires Go 1.25+):
-
-```bash
-go install github.com/agentsmith-project/jvs/cmd/jvs@latest
-```
-
-**Or build from source** (requires Go 1.25+):
+Download a binary from [GitHub Releases](https://github.com/agentsmith-project/jvs/releases)
+or build from source:
 
 ```bash
 git clone https://github.com/agentsmith-project/jvs.git
@@ -73,81 +60,60 @@ cd jvs
 make build
 ```
 
-## Quick Start
+With Go installed, use a published version tag:
 
 ```bash
-jvs capability .
-
-jvs init myproject
-cd myproject/main
-
-echo "hello" > data.txt
-jvs status
-jvs checkpoint "first version"
-
-echo "world" >> data.txt
-jvs checkpoint "second version" --tag release
-
-jvs checkpoint list
-jvs restore latest
-
-jvs fork experiment
-cd "$(jvs workspace path experiment)"
+go install github.com/agentsmith-project/jvs/cmd/jvs@<VERSION>
 ```
 
-The repository root (`myproject/`) is the control plane plus workspace
-container. `myproject/main/` is the default workspace payload where your files
-live. Use `jvs status` to see whether the workspace is dirty, which checkpoint
-is `current`, and which checkpoint is `latest`.
-
-## Commands
+## Core Commands
 
 | Command | What it does |
 | --- | --- |
-| `jvs init <repo-path>` | Create a new JVS repo with a `main` workspace |
-| `jvs import <existing-dir> <repo-path>` | Import files into a new repo and create an initial checkpoint |
-| `jvs clone <source-repo> <dest-repo> [--scope full\|current]` | Copy a local JVS repo or its current workspace into a new repo |
-| `jvs capability <target-path> [--write-probe]` | Probe JuiceFS, reflink, and copy support |
-| `jvs info` | Show repo metadata and engine summary |
-| `jvs status` | Show `current`, `latest`, `dirty`, and recovery hints |
-| `jvs checkpoint [note] [--tag T]` | Create a checkpoint of the current workspace |
-| `jvs checkpoint list` | List checkpoints |
-| `jvs diff <from> <to> [--stat]` | Compare two checkpoints |
-| `jvs restore <ref\|current\|latest>` | Replace the workspace with a checkpoint |
-| `jvs fork [<ref> <name>\|<name>]` | Create another workspace from a checkpoint |
-| `jvs workspace list\|path\|rename\|remove` | Inspect and manage workspaces |
-| `jvs verify [<checkpoint-id>\|--all]` | Verify descriptor and payload integrity |
+| `jvs init [folder]` | Adopt a folder and prepare JVS control data |
+| `jvs status` | Show the active folder, workspace, newest save point, and unsaved changes |
+| `jvs save -m "message"` | Create a save point for managed files in the active workspace |
+| `jvs history` | List save points for the active workspace |
+| `jvs history --path <path>` | Find save points that contain a workspace-relative path |
+| `jvs view <save> [path]` | Open a read-only view of a save point or a path inside it |
+| `jvs restore <save> [--path <path>]` | Preview a restore plan |
+| `jvs restore --run <plan-id>` | Execute a restore plan after JVS rechecks the folder |
+| `jvs workspace new <name> --from <save>` | Create another workspace folder from a save point |
+| `jvs recovery status` | Show active restore recovery plans |
 | `jvs doctor [--strict]` | Check repository health |
-| `jvs gc plan` / `jvs gc run --plan-id ID` | Plan and run two-phase storage cleanup |
-
-Commands that overwrite or remove workspace files refuse dirty state by
-default. Use `--include-working` to checkpoint dirty work before `restore` or
-`fork`, or `--discard-dirty` when you intentionally want to throw it away.
 
 ## How It Works
 
+After `jvs init`, your folder stays where it is:
+
 ```text
 myproject/
-├── .jvs/                 # control plane: metadata, descriptors, audit, gc
-├── main/                 # default workspace payload
-└── ...                   # additional workspace payloads managed by JVS
+├── .jvs/          # JVS control data
+├── notes.txt      # your managed files
+└── ...
 ```
 
-JVS publishes checkpoints atomically: incomplete checkpoint attempts remain
-invisible, and `jvs doctor` can report or repair safe runtime leftovers. The
-active engine is selected per filesystem and reported through `jvs info`,
-`jvs capability`, and checkpoint metadata.
-Physical backup and migration must leave active runtime state behind:
-`.jvs/locks/`, `.jvs/intents/`, and active `.jvs/gc/*.json` are rebuilt with
-`jvs doctor --strict --repair-runtime` at the destination.
+JVS control data is not part of save points. `view` creates a read-only copy
+for inspection. `restore` copies managed files from a save point back into the
+workspace and leaves history intact.
 
-## Integrity
+## Documentation
 
-`jvs verify` checks checkpoint descriptors and payload hashes. `jvs doctor`
-checks repository layout, publish state, lineage, and safe repair candidates.
-The audit log is hash-chained so repository history can be made
-tamper-evident; signing and remote trust policy are future directions, not v0
-stable commands.
+Start with the [User Docs](docs/user/README.md):
+
+| Document | Description |
+| --- | --- |
+| [Quickstart](docs/user/quickstart.md) | First save point and first restore |
+| [Concepts](docs/user/concepts.md) | Folder, workspace, save point, history, view, restore, and recovery |
+| [Command Reference](docs/user/commands.md) | Release-facing command surface |
+| [Examples](docs/user/examples.md) | Practical workflows |
+| [FAQ](docs/user/faq.md) | Common questions |
+| [Troubleshooting](docs/user/troubleshooting.md) | Common errors and fixes |
+| [Safety](docs/user/safety.md) | Restore preview, unsaved changes, and read-only views |
+| [Recovery](docs/user/recovery.md) | Interrupted restore recovery |
+
+Contributor, architecture, and release evidence documents live under
+[docs/](docs/README.md).
 
 ## Development
 
@@ -158,16 +124,6 @@ make conformance
 make lint
 make release-gate
 ```
-
-## Documentation
-
-| Document | Description |
-| --- | --- |
-| [Quick Start](docs/QUICKSTART.md) | 5-minute tutorial |
-| [Product Plan](docs/PRODUCT_PLAN.md) | Current product and CLI direction |
-| [CLI Spec](docs/02_CLI_SPEC.md) | Stable command reference |
-| [Architecture](docs/ARCHITECTURE.md) | System design and internals |
-| [Changelog](docs/99_CHANGELOG.md) | Release history |
 
 ## License
 

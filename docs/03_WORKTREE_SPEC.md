@@ -1,73 +1,49 @@
-# Workspace Metadata Spec (v0)
+# Workspace Spec
 
-## Purpose
+**Status:** release-facing workspace contract
 
-This spec defines workspace identity, payload-root separation, and workspace
-removal semantics for the stable v0 contract. Public CLI and JSON vocabulary is
-workspace/checkpoint/current/latest. On-disk compatibility details are
-documented in the internal schema sections below.
+The repository filename is retained for manifest stability only. Public docs,
+help, examples, JSON, and release notes use `workspace`.
 
-## Workspace identity
+## Public Workspace Contract
 
-Workspace metadata is stored centrally under the control plane:
+- A workspace is a real folder.
+- The default workspace is `main`.
+- `jvs workspace new <name> --from <save>` creates a new real workspace from a
+  source save point.
+- The source workspace is unchanged.
+- The new workspace starts with no save point history:
+  `newest_save_point` and `history_head` are null until its first save.
+- The new workspace records `started_from_save_point`.
+- The first save in the new workspace starts a new history and records the
+  source save point as provenance, not as an inherited history parent.
 
-```text
-repo/.jvs/worktrees/<name>/
-└── config.json       # sole authoritative source for workspace metadata
-```
+## Public Metadata
 
-`config.json` is the only authoritative source for workspace identity and
-state. No separate legacy pointer files exist.
+Public JSON facades should prefer:
 
-Workspace payload directories (`repo/main/`, `repo/worktrees/<name>/`) contain
-pure user data only: no control-plane artifacts. This ensures `juicefs clone`
-captures a clean payload without exclusion logic (see
-`01_REPO_LAYOUT_SPEC.md` §Workspace discovery).
+- `workspace`
+- `folder`
+- `content_source`
+- `newest_save_point`
+- `history_head`
+- `started_from_save_point`
+- `path_sources`
 
-## Internal `config.json` schema (MUST)
+Implementation metadata is private storage. Its directory names and field names
+do not define user behavior or public vocabulary.
 
-Path: `repo/.jvs/worktrees/<name>/config.json`
+## Workspace Folders
 
-Required fields:
+The adopted workspace may be the repository root folder itself. Additional
+workspace folders are implementation-owned real directories selected through
+`jvs workspace new` and `--workspace`.
 
-- `name`: workspace name (matches directory name)
-- `created_at`: ISO 8601 timestamp
-- `base_snapshot_id`: internal checkpoint ID used to create this workspace;
-  nullable or omitted for `main`
-- `head_snapshot_id`: internal `current` checkpoint ID; nullable before the
-  first checkpoint
-- `latest_snapshot_id`: internal `latest` checkpoint ID; nullable before the
-  first checkpoint
+Workspace payload folders must not contain JVS control data. Save, restore,
+view, and cleanup logic must treat JVS control data as ignored/unmanaged.
 
-Optional fields:
+## Removal And Cleanup Boundary
 
-- `label`: human-readable description
-
-## Naming and path rules (MUST)
-
-- Name charset: `[a-zA-Z0-9._-]+`
-- Name MUST NOT contain separators, `..`, control chars, or empty segments.
-- Name MUST normalize to NFC before validation.
-- Canonical resolved path MUST remain under `repo/worktrees/` or be
-  `repo/main/`.
-- Operations MUST fail on symlink escape detection.
-
-## Lifecycle
-
-create -> active -> checkpoint -> restore(optional) -> remove
-
-### Remove semantics (MUST)
-
-`jvs workspace remove <name> [--force]` MUST:
-
-1. Delete the payload directory (`repo/worktrees/<name>/`).
-2. Delete the workspace metadata directory (`.jvs/worktrees/<name>/`).
-3. Append an audit event recording the removal.
-
-Removal MUST require `--force` when the workspace `current` checkpoint differs
-from `latest`.
-
-Removing a workspace does not remove checkpoints. Removed workspace roots no
-longer participate in v0 GC protection, so unprotected orphaned checkpoints may
-appear as deletion candidates in `jvs gc plan`. v0 exposes no pin commands or
-retention-policy knobs.
+Workspace removal is not part of the public root-help workflow. Any future
+removal flow must preview first, protect unsaved work, and leave save point
+deletion to reviewed cleanup.

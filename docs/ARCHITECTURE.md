@@ -1,83 +1,76 @@
 # JVS Architecture
 
-**Version:** v0 public contract
-**Last Updated:** 2026-04-25
-**Status:** Active
-
----
+**Status:** active save point architecture
+**Last Updated:** 2026-04-27
 
 ## Overview
 
-JVS (Juicy Versioned Workspaces) is a filesystem-native checkpoint layer for
-real workspace directories. It keeps control-plane metadata under the repo root
-and leaves workspace payload directories as ordinary files that existing tools
-can read and write directly.
+JVS is a filesystem-native save point layer for real workspace folders. It
+keeps control data under `.jvs/` or equivalent project storage and leaves
+workspace folders as ordinary directories that existing tools can read and
+write directly.
 
 JVS chooses the best available materialization engine for the target
 filesystem: JuiceFS clone when supported, reflink copy when available, and
 portable recursive copy everywhere else. Public performance claims are scoped
-to the selected engine and filesystem capability.
+to the selected engine and filesystem support.
 
-### Design Principles
+## Design Principles
 
-1. **Control/data separation** - Metadata lives under `.jvs/`; workspace
-   payload roots contain user data only.
-2. **Filesystem-native operation** - Workspaces are normal directories, not a
-   virtual filesystem or hidden index.
-3. **Checkpoint-first history** - The stable versioned unit is a complete
-   workspace tree at one point in time.
-4. **Local-first behavior** - JVS does not require a server or remote protocol.
-5. **Verifiable state** - Descriptor checksums, payload hashes, doctor checks,
-   and audit records make repository state inspectable.
-
----
+1. Control/data separation: JVS control data is never managed workspace
+   payload.
+2. Filesystem-native operation: a workspace is a normal real folder.
+3. Save point-first history: the public saved unit is a save point, not a Git
+   commit or branch.
+4. Preview before destructive restore: file replacement is plan-bound and
+   revalidated.
+5. Recoverable mutation: interrupted restore has status/resume/rollback.
+6. Verifiable state: checksums, payload hashes, doctor checks, and audit
+   records make repository state inspectable.
 
 ## Public Surface
 
-The v0 public contract uses these terms consistently:
+The public contract uses these terms:
 
 | Term | Meaning |
 | --- | --- |
-| `repo` | A repository root containing `.jvs/` metadata plus one or more workspaces. |
-| `workspace` | A real payload directory registered in the repo. |
-| `checkpoint` | An immutable full-tree record of a workspace. |
-| `current` | The checkpoint currently materialized in a workspace according to JVS metadata. |
-| `latest` | The newest checkpoint on the workspace's active line. |
-| `dirty` | Live workspace files differ from `current`, or JVS cannot prove they match. |
+| `folder` | The real filesystem directory where work happens. |
+| `workspace` | The JVS name for a managed real folder. |
+| `save point` | Immutable saved managed-file content plus creation facts. |
+| `history` | Save point listing and discovery. |
+| `view` | Read-only materialization of a save point or path. |
+| `restore` | Copy save point content into a workspace without rewriting history. |
+| `cleanup` | Product term for plan-bound deletion of unprotected save point storage. |
+| `recovery plan` | Durable interrupted-restore recovery record. |
 
-Stable user-facing commands are organized around setup, checkpointing,
-workspace targeting, verification, doctor checks, and two-phase cleanup:
+Visible user-facing commands are organized around:
 
 ```text
-init, import, clone, capability
-info, status
-checkpoint, checkpoint list, diff, restore
-fork, workspace list, workspace path, workspace rename, workspace remove
-verify, doctor, gc plan, gc run
+init
+save, history, view, restore
+workspace new
+status, doctor, recovery
+completion
 ```
 
-`restore current` and `restore latest` are the public refs for restoring the
-materialized checkpoint or returning to the latest checkpoint. No other
-restoration mode is part of the v0 CLI contract.
-
----
+Commands outside this visible surface are not public product vocabulary.
 
 ## System Components
 
 ```text
 +------------------------------------------------------------------+
 |                            JVS CLI                               |
-| init, checkpoint, restore, fork, workspace, verify, doctor, gc    |
+| init | save | history | view | restore | workspace new | recovery |
 +-------------------------------+----------------------------------+
                                 |
 +-------------------------------v----------------------------------+
 |                       Public output facade                       |
-| text output, JSON envelopes, stable error codes, progress policy |
+| save point terms | JSON envelopes | stable errors | progress     |
 +-------------------------------+----------------------------------+
                                 |
 +-------------------------------v----------------------------------+
 |                         Core services                            |
-| checkpoint creation | restore | workspace lifecycle | repository |
+| save creation | restore plans | workspace lifecycle | repository  |
 +-------------------------------+----------------------------------+
                                 |
 +-------------------------------v----------------------------------+
@@ -87,11 +80,9 @@ restoration mode is part of the v0 CLI contract.
                                 |
 +-------------------------------v----------------------------------+
 |                        Storage boundary                          |
-| .jvs control plane + workspace payload directories               |
+| .jvs control plane + real workspace folders                      |
 +------------------------------------------------------------------+
 ```
-
----
 
 ## CLI Layer
 
@@ -100,122 +91,121 @@ restoration mode is part of the v0 CLI contract.
 The CLI layer owns user-facing behavior:
 
 - Parse commands, global targeting flags, and command-specific flags.
-- Resolve the repo and workspace deterministically.
-- Enforce dirty-state safety before destructive operations.
+- Resolve the project and workspace deterministically.
+- Enforce unsaved-change safety before destructive operations.
 - Render human output and JSON envelopes.
-- Map failures to stable error classes and hints.
+- Map errors from internal terms to save point vocabulary.
+- Keep public help aligned with the save point command surface.
 
-The CLI should speak public v0 vocabulary even when it calls packages whose
-names retain older implementation terminology.
+## Save Point Lifecycle
 
----
-
-## Checkpoint Lifecycle
-
-Checkpoint creation captures the targeted workspace payload and publishes it
-atomically. A successful checkpoint must not become visible until both payload
-and descriptor durability requirements are complete.
-
-High-level flow:
+Save captures managed files and publishes a new save point atomically.
 
 ```text
-User: jvs checkpoint "fixed bug"
+User: jvs save -m "fixed bug"
         |
         v
-CLI validates targeting and dirty state
+CLI resolves workspace and message
         |
         v
-Creator materializes payload through selected engine
+Capacity and mutation preconditions are checked
+        |
+        v
+Creator materializes managed files into unpublished staging
         |
         v
 Payload hash and descriptor checksum are computed
         |
         v
-Checkpoint is published atomically
+Save point is published atomically
         |
         v
-Workspace current/latest metadata and audit log are updated
+Workspace newest save point, provenance, and audit log are updated
 ```
 
-User-visible rules:
+Rules:
 
-- A checkpoint captures exactly one workspace payload root.
-- Published checkpoints are immutable.
-- A new checkpoint advances only from the workspace's latest checkpoint.
-- Checkpoint refs are `current`, `latest`, full IDs, unique prefixes, and
-  unambiguous tags.
-
----
+- Control data and ignored/unmanaged files are not captured.
+- A save point becomes visible only after payload and descriptor durability
+  requirements are complete.
+- Failed or interrupted saves must not expose partial save points.
+- Save records provenance from workspace creation and restore when applicable.
 
 ## Restore Lifecycle
 
-Restore replaces the live workspace contents with a referenced checkpoint.
-
-High-level flow:
+Restore is split into preview and run.
 
 ```text
-User: jvs restore latest
+User: jvs restore <save>
         |
         v
-CLI resolves the checkpoint ref
+CLI resolves source save point
         |
         v
-Dirty-state policy is enforced
+Preview computes impact and expected target evidence
         |
         v
-Descriptor and payload integrity are checked
+Plan is written; no files are changed
         |
         v
-Workspace payload is replaced from checkpoint storage
+User: jvs restore --run <plan-id>
         |
         v
-Workspace current metadata is updated
+Run reloads plan and revalidates target evidence
+        |
+        v
+Recovery plan and backup are created
+        |
+        v
+Managed files are replaced
+        |
+        v
+Workspace file-source metadata is updated; history is unchanged
 ```
 
-Restoring an older checkpoint makes `current` older than `latest`. Users return
-to the normal advance point with `jvs restore latest` or create a separate
-workspace with `jvs fork`.
+Whole-workspace restore replaces managed files so they match the source save
+point. Path restore replaces one workspace-relative path. Both modes leave save
+point history unchanged and record provenance for the next save.
 
----
+If a restore cannot finish safely, the recovery plan remains active and blocks
+new restore runs in that workspace until `jvs recovery resume` or
+`jvs recovery rollback` resolves it.
 
 ## Workspace Lifecycle
 
-The default workspace is `main`. Additional workspaces are created with
-`jvs fork` and managed with `jvs workspace ...` commands.
+`jvs workspace new <name> --from <save>` creates a real workspace folder from
+source save point content.
 
-Responsibilities:
+Rules:
 
-- Create a workspace from `current`, `latest`, or an explicit checkpoint ref.
-- List, rename, remove, and resolve workspace payload paths.
-- Preserve payload/control-plane separation.
-- Refuse unsafe removal unless the user explicitly forces it.
+- The source workspace and save point are unchanged.
+- The new workspace's newest save point is `none`.
+- The new workspace records `started_from_save_point`.
+- The first save in the new workspace starts a new history rather than
+  inheriting the source history.
 
-Switching workspaces is done by changing directories or by targeting with
-`--workspace`. JVS does not virtualize the current directory.
-
----
+Workspace selection is done by changing directories or using `--workspace`.
+JVS does not virtualize the shell working directory.
 
 ## Repository Model
 
-The repository coordinates checkpoint descriptors, workspace metadata, runtime
-operation records, audit records, and cleanup plans.
+The repository/project coordinates:
 
-Responsibilities:
+- repo identity and format version
+- save point descriptors and payload storage
+- workspace metadata and real paths
+- runtime operation records
+- recovery plans
+- audit records
+- cleanup plans/tombstones
 
-- Maintain repo identity and format version.
-- Load and validate checkpoint descriptors.
-- Maintain per-workspace `current` and `latest` metadata.
-- Resolve checkpoint refs.
-- Protect active lineage during storage cleanup.
-- Keep runtime state separate from durable published state.
-
----
+The repository must keep runtime state separate from durable published state.
+Runtime lock files, operation records, and cleanup runtime plan files are
+non-portable across backup/migration.
 
 ## Engine Model
 
-JVS materializes checkpoint payloads through an engine abstraction. Engine
-selection is automatic and visible to users through setup output, `jvs info`,
-`jvs capability`, and checkpoint metadata.
+JVS materializes save point payloads through an engine abstraction.
 
 | Engine | Public class | Requirement |
 | --- | --- | --- |
@@ -223,203 +213,81 @@ selection is automatic and visible to users through setup output, `jvs info`,
 | `reflink-copy` | Tree walk with copy-on-write data sharing where supported | Filesystem reflink support |
 | `copy` | Portable recursive copy | Any supported filesystem |
 
-Engine metadata must report the effective engine, performance class,
-metadata-preservation behavior, and degradation reasons when fallback occurs.
-
----
+Engine metadata must report effective engine, performance class,
+metadata-preservation behavior, and fallback/degradation reasons when they
+matter.
 
 ## Integrity Model
 
-JVS uses two checkpoint integrity layers:
+JVS uses two save point integrity layers:
 
-- **Descriptor checksum:** SHA-256 over canonical descriptor fields, excluding
+- Descriptor checksum: SHA-256 over canonical descriptor fields, excluding
   mutable verification state.
-- **Payload root hash:** Deterministic SHA-256 over the materialized checkpoint
-  payload tree.
+- Payload root hash: deterministic SHA-256 over the materialized managed-file
+  tree.
 
-`jvs verify` checks descriptor and payload integrity for one checkpoint or all
-checkpoints. `jvs doctor --strict` additionally validates repository layout,
-publish state, workspace lineage, runtime hygiene, and audit-chain health.
-
----
+`jvs doctor --strict` validates repository layout, publish state, workspace
+provenance/lineage, runtime hygiene, integrity, and audit-chain health.
 
 ## Doctor And Repair
 
-Doctor checks repository health and reports findings with stable severity and
-machine-readable IDs.
+Doctor checks repository health and reports stable findings.
 
-Checks include:
-
-- Control-plane layout and format version.
-- Checkpoint descriptor and payload consistency.
-- Atomic publish state.
-- Workspace `current`/`latest` metadata consistency.
-- Runtime operation leftovers.
-- Audit-chain integrity in strict mode.
-
-The stable public automatic repair surface is intentionally narrow:
+Automatic repair is limited to runtime state:
 
 - `clean_locks`
 - `clean_runtime_tmp`
 - `clean_runtime_operations`
 
-Repairs that rewrite lineage, rebuild durable indexes, or rewrite audit history
-are outside the v0 stable public repair surface.
+Repairs that rewrite durable save point history, workspace provenance, or
+audit history are outside the public automatic repair surface.
 
----
+## Cleanup Architecture
 
-## Storage Cleanup
+Cleanup is a product concept for reviewed deletion of unprotected save point
+storage.
 
-Storage cleanup is two phase:
+Required product layering:
 
-```text
-jvs gc plan
-jvs gc run --plan-id <id>
-```
-
-Protection rules:
-
-- Checkpoints reachable from active workspace lineage are protected.
-- Checkpoints referenced by active runtime operation records are protected.
-- Tags are metadata only for v0 cleanup and do not create protection.
-- v0 publishes no pin command, tag-retention rule, or minimum-age policy.
-
-The plan output is the public contract for automation. The run step must use a
-previous plan ID so deletion decisions are reviewable before execution.
-
----
+- Public docs say cleanup preview/run.
+- Cleanup preview must not delete.
+- Cleanup run must bind to a reviewed plan and revalidate before deletion.
+- Cleanup protects live workspace needs, active views, active source reads,
+  active operations, active recovery plans, and kept save points when keep is
+  promoted.
+- Deleted save points require tombstone/audit information for later errors.
 
 ## Audit Boundary
 
 Audit records make operation history tamper-evident by linking each record to
 the previous record hash. The audit chain is checked by `jvs doctor --strict`.
 
-Representative event classes include checkpoint creation, restore, workspace
-management, verification, doctor checks, and cleanup runs. Signing, external
-trust policy, and key management are future directions, not v0 stable commands.
+Representative event classes include save creation, restore preview/run,
+workspace creation, recovery, doctor checks, and cleanup runs.
+Signing, external trust policy, and key management are future directions.
 
----
+## Implementation Storage Boundary
 
-## On-Disk Compatibility Layout
+JVS owns its control data and implementation storage. Architecture docs may
+refer to implementation packages when needed, but public docs, CLI help, JSON
+facades, and release notes use folder, workspace, save point, doctor,
+recovery, and cleanup terminology.
 
-This section describes internal storage names that remain for compatibility.
-They are not public CLI vocabulary.
+## Internal Component Map
 
-```text
-repo/
-|-- .jvs/
-|   |-- descriptors/
-|   |-- snapshots/
-|   |-- worktrees/
-|   |-- audit/
-|   |-- gc/
-|   `-- intents/
-|-- main/
-`-- worktrees/
-    `-- <name>/
-```
-
-Compatibility notes:
-
-- Checkpoint payloads are stored under `.jvs/snapshots/<id>/`.
-- Workspace metadata is stored under `.jvs/worktrees/<name>/config.json`.
-- Additional workspace payloads currently live under `repo/worktrees/<name>/`.
-- Some internal JSON fields retain historical names such as `snapshot_id`,
-  `worktree_name`, and `head_snapshot_id`; public JSON facades should expose
-  checkpoint/workspace/current/latest terms where feasible.
-
----
-
-## Internal Package Map
-
-This section is implementation-facing and may use package names that preserve
-historical terminology.
-
-| Package | Responsibility |
-| --- | --- |
-| `internal/cli` | CLI commands, targeting, JSON facade, error rendering. |
-| `internal/snapshot` | Checkpoint creation and atomic publish implementation. |
-| `internal/restore` | Workspace payload replacement from checkpoint storage. |
-| `internal/worktree` | Workspace metadata and on-disk compatibility paths. |
-| `internal/repo` | Repository discovery, identity, format, and path helpers. |
-| `internal/engine` | JuiceFS clone, reflink, and copy materialization engines. |
-| `internal/integrity` | Descriptor checksums and payload hashing. |
-| `internal/verify` | Checkpoint verification and lineage helpers. |
-| `internal/doctor` | Repository health checks and safe runtime repair. |
-| `internal/gc` | Plan/run storage cleanup implementation. |
-| `internal/audit` | Tamper-evident audit append and verification helpers. |
-
----
-
-## Internal Publish Protocol
-
-The checkpoint creator follows a durable publish protocol:
-
-1. Validate source workspace and targeting preconditions.
-2. Create a runtime operation record and fsync it.
-3. Materialize payload into a temporary checkpoint directory.
-4. Compute the payload root hash.
-5. Fsync materialized files and directories.
-6. Build and fsync the descriptor temporary file.
-7. Write and fsync the READY marker.
-8. Atomically rename payload and descriptor into published locations.
-9. Update workspace current/latest metadata last.
-10. Complete runtime cleanup and append the audit event.
-
-Crash recovery treats incomplete runtime records and temporary payloads as
-non-visible until doctor reports or safely cleans them.
-
----
-
-## Extension Points
-
-### Adding A Materialization Engine
-
-1. Implement the engine interface in `internal/engine/`.
-2. Register detection and fallback behavior in the engine factory.
-3. Declare metadata-preservation and performance-class behavior.
-4. Update `05_SNAPSHOT_ENGINE_SPEC.md` and conformance coverage.
-
-### Adding A Public Command
-
-1. Define the user-facing contract in `02_CLI_SPEC.md`.
-2. Implement command handling in `internal/cli/`.
-3. Add error classes and JSON envelope coverage.
-4. Add conformance tests and docs-contract examples.
-
-### Adding Audit Events
-
-1. Define the event type in `pkg/model/audit.go`.
-2. Append records from the operation boundary.
-3. Update `09_SECURITY_MODEL.md`.
-4. Add strict doctor or audit-chain conformance coverage.
-
----
-
-## Performance Characteristics
-
-| Operation | `juicefs-clone` on supported JuiceFS | `reflink-copy` when supported | `copy` fallback |
-| --- | --- | --- | --- |
-| Checkpoint materialization | Constant-time metadata clone with `juicefs-clone` | Linear tree walk with shared data blocks | Linear data copy |
-| Restore materialization | Constant-time metadata clone with `juicefs-clone` where available | Linear tree walk with shared data blocks | Linear data copy |
-| Verify | Linear in payload size | Linear in payload size | Linear in payload size |
-| Cleanup planning | Linear in checkpoint graph size | Linear in checkpoint graph size | Linear in checkpoint graph size |
-
-JVS must report engine fallback and degradation reasons so automation can avoid
-assuming `juicefs-clone` constant-time behavior when supported JuiceFS is not
-available.
-
----
+The implementation is split into CLI targeting/rendering, repository identity,
+save point publish, restore planning, recovery, workspace metadata, engine
+materialization, integrity, doctor, cleanup, audit, and source-protection
+components. Package paths are code facts and must not appear as product
+vocabulary in user-facing guidance.
 
 ## Related Documents
 
-- [CONSTITUTION.md](CONSTITUTION.md) - Core principles and non-goals
-- [00_OVERVIEW.md](00_OVERVIEW.md) - Product overview
-- [01_REPO_LAYOUT_SPEC.md](01_REPO_LAYOUT_SPEC.md) - Repository layout
-- [02_CLI_SPEC.md](02_CLI_SPEC.md) - Stable command contract
-- [03_WORKTREE_SPEC.md](03_WORKTREE_SPEC.md) - On-disk workspace compatibility
-- [04_SNAPSHOT_SCOPE_AND_LINEAGE_SPEC.md](04_SNAPSHOT_SCOPE_AND_LINEAGE_SPEC.md) - Checkpoint scope and lineage
-- [05_SNAPSHOT_ENGINE_SPEC.md](05_SNAPSHOT_ENGINE_SPEC.md) - Engine details
-- [08_GC_SPEC.md](08_GC_SPEC.md) - Storage cleanup
-- [09_SECURITY_MODEL.md](09_SECURITY_MODEL.md) - Integrity and audit
-- [10_THREAT_MODEL.md](10_THREAT_MODEL.md) - Threat analysis
+- [21_SAVE_POINT_WORKSPACE_SEMANTICS.md](21_SAVE_POINT_WORKSPACE_SEMANTICS.md)
+  - detailed save point semantics
+- [02_CLI_SPEC.md](02_CLI_SPEC.md) - CLI contract
+- [06_RESTORE_SPEC.md](06_RESTORE_SPEC.md) - restore preview/run/recovery
+- [13_OPERATION_RUNBOOK.md](13_OPERATION_RUNBOOK.md) - operations and drills
+- [18_MIGRATION_AND_BACKUP.md](18_MIGRATION_AND_BACKUP.md) - backup/migration
+- [12_RELEASE_POLICY.md](12_RELEASE_POLICY.md) - release gates
+- [RELEASE_EVIDENCE.md](RELEASE_EVIDENCE.md) - release evidence ledger

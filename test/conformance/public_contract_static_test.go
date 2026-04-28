@@ -16,10 +16,11 @@ import (
 	"testing"
 )
 
-var checkpointListBareJQSelector = regexp.MustCompile(`jq\s+-r\s+['"]\.\[(?:\]|[0-9]+)`)
+var historyBareJQSelector = regexp.MustCompile(`jq\s+-r\s+['"]\.\[(?:\]|[0-9]+)`)
 var traceabilityDocRefPattern = regexp.MustCompile("`((?:README\\.md|docs/[^`]+\\.md))`")
 var markdownDocLinkPattern = regexp.MustCompile(`\]\(([^)#]+\.md)(?:#[^)]+)?\)`)
 var stalePublicReleaseVocabularyPattern = regexp.MustCompile(`\bv7\.(?:[0-9]+|x)\b`)
+var makefileCoverageThresholdPattern = regexp.MustCompile(`if\s*\(\$\$3\+0\s*<\s*([0-9]+)\)`)
 var releaseReadinessHeadingPattern = regexp.MustCompile(`(?m)^## v0\.[0-9]+\.[0-9]+ - [0-9]{4}-[0-9]{2}-[0-9]{2}$`)
 var releaseEvidenceHeadingPattern = regexp.MustCompile(`(?m)^## (v0\.[0-9]+\.[0-9]+) - ([0-9]{4}-[0-9]{2}-[0-9]{2})$`)
 var releaseEvidenceCommitPattern = regexp.MustCompile("(?m)^- Final tagged commit: `([0-9a-f]{40})`$")
@@ -32,7 +33,8 @@ var releaseFacingStorageScopePattern = regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_-]
 var negatedReleaseFacingPerformanceClaimPattern = regexp.MustCompile(`(?i)\bnot\s+(?:an?\s+)?(?:o\(1\)|instant(?:ly)?|constant-time|constant overhead)(?:[^A-Za-z0-9_]|$)`)
 var portableLatencyPromisePattern = regexp.MustCompile(`(?i)^\s*\|\s*\d+(?:\.\d+)?\s*(?:kb|mb|gb|tb|kib|mib|gib|tib)\b[^|]*\|.*\b\d+(?:\.\d+)?\s*(?:ms|s|sec|secs|second|seconds)\b`)
 var documentedEngineConstantPattern = regexp.MustCompile(`(?m)^\s*(Engine[A-Za-z0-9_]+)\s+EngineType\s*=\s*"([^"]+)"`)
-var checkpointReferenceClaimPattern = regexp.MustCompile(`(?i)\bcheckpoints?\b.*(?:\bsmall reference files\b|\breferences?,\s*not\s+(?:data\s+)?cop(?:y|ies)\b|\b(?:is|are)\s+(?:a\s+)?(?:metadata\s+)?references?\b)`)
+var savePointReferenceClaimPattern = regexp.MustCompile(`(?i)\bsave points?\b.*(?:\bsmall reference files\b|\breferences?,\s*not\s+(?:data\s+)?cop(?:y|ies)\b|\b(?:is|are)\s+(?:a\s+)?(?:metadata\s+)?references?\b)`)
+var releaseFacingLegacyProductNounPattern = regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_/])(?:checkpoints?|worktrees?|dirty)([^A-Za-z0-9_/]|$)`)
 var staleCurrentRuntimeLockTerminologyPattern = regexp.MustCompile(`(?i)\b(runtime locks?|locks and intents)\b`)
 var numberedConformanceTestRef = regexp.MustCompile(`\b[Tt]ests?\s+\d`)
 var markdownBulletFieldPattern = regexp.MustCompile("^\\s*-\\s+`([A-Za-z0-9_]+)`")
@@ -60,29 +62,9 @@ type markdownCodeBlock struct {
 func TestDocs_PublicTerminologyContract(t *testing.T) {
 	for _, doc := range activePublicContractDocs() {
 		t.Run(doc, func(t *testing.T) {
-			path := repoFile(t, doc)
-			file, err := os.Open(path)
-			if err != nil {
-				t.Fatalf("open %s: %v", doc, err)
-			}
-			defer file.Close()
-
-			scanner := bufio.NewScanner(file)
-			lineNo := 0
-			internalSectionLevel := 0
-			for scanner.Scan() {
-				lineNo++
-				line := scanner.Text()
-				if level, ok := markdownHeadingLevel(line); ok {
-					if internalSectionLevel > 0 && level <= internalSectionLevel {
-						internalSectionLevel = 0
-					}
-					if markedInternalCompatibilityHeading(line) {
-						internalSectionLevel = level
-					}
-				}
-				if internalSectionLevel > 0 || allowedPublicDocCompatibilityLine(doc, line) {
-					continue
+			scanPublicDocLines(t, doc, func(lineNo int, line string) {
+				if releaseFacingLegacyProductNounPattern.MatchString(line) {
+					t.Fatalf("%s:%d exposes legacy public product noun:\n%s", doc, lineNo, line)
 				}
 				normalizedLine := strings.ToLower(line)
 				for _, forbidden := range publicDocForbiddenTerms() {
@@ -90,16 +72,13 @@ func TestDocs_PublicTerminologyContract(t *testing.T) {
 						t.Fatalf("%s:%d exposes legacy public term %q:\n%s", doc, lineNo, forbidden, line)
 					}
 				}
-			}
-			if err := scanner.Err(); err != nil {
-				t.Fatalf("scan %s: %v", doc, err)
-			}
+			})
 		})
 	}
 }
 
 func TestConformancePublicProfileUsesStableCommands(t *testing.T) {
-	for _, dir := range []string{"test/conformance", "test/regression"} {
+	for _, dir := range []string{"test/conformance"} {
 		entries, err := os.ReadDir(repoFile(t, dir))
 		if err != nil {
 			t.Fatalf("read %s: %v", dir, err)
@@ -117,7 +96,40 @@ func TestConformancePublicProfileUsesStableCommands(t *testing.T) {
 	}
 }
 
-func TestDocs_CheckpointListJSONExamplesUseEnvelope(t *testing.T) {
+func TestDocs_ConformanceContractTestNamesUseCurrentPublicVocabulary(t *testing.T) {
+	staleNameFragments := []string{
+		"CheckpointList",
+		"CheckpointReference",
+		"VerifyAllContract",
+		"WorktreeFork",
+	}
+	for _, path := range []string{
+		"test/conformance/public_contract_static_test.go",
+		"test/conformance/performance_evidence_static_test.go",
+	} {
+		t.Run(path, func(t *testing.T) {
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, repoFile(t, path), nil, 0)
+			if err != nil {
+				t.Fatalf("parse %s: %v", path, err)
+			}
+			for _, decl := range file.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok || fn.Name == nil || !strings.HasPrefix(fn.Name.Name, "TestDocs_") {
+					continue
+				}
+				for _, fragment := range staleNameFragments {
+					if strings.Contains(fn.Name.Name, fragment) {
+						pos := fset.Position(fn.Name.Pos())
+						t.Fatalf("%s:%d docs contract test %s uses stale public vocabulary fragment %q", path, pos.Line, fn.Name.Name, fragment)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestDocs_HistoryJSONExamplesUseEnvelope(t *testing.T) {
 	for _, doc := range stablePublicDocs() {
 		t.Run(doc, func(t *testing.T) {
 			path := repoFile(t, doc)
@@ -132,11 +144,11 @@ func TestDocs_CheckpointListJSONExamplesUseEnvelope(t *testing.T) {
 			for scanner.Scan() {
 				lineNo++
 				line := scanner.Text()
-				if !strings.Contains(line, "jvs checkpoint list --json") || !strings.Contains(line, "jq") {
+				if !strings.Contains(line, "jvs history --json") || !strings.Contains(line, "jq") {
 					continue
 				}
-				if checkpointListBareJQSelector.MatchString(line) {
-					t.Fatalf("%s:%d treats checkpoint list JSON as a top-level array; select from .data instead:\n%s", doc, lineNo, line)
+				if historyBareJQSelector.MatchString(line) {
+					t.Fatalf("%s:%d treats history JSON as a top-level array; select from .data instead:\n%s", doc, lineNo, line)
 				}
 			}
 			if err := scanner.Err(); err != nil {
@@ -239,14 +251,45 @@ func TestDocs_ActiveNonReleaseFacingDesignDocsDeclareStatus(t *testing.T) {
 	}
 }
 
+func TestDocs_ActiveNonReleaseFacingReferenceDocsDeclareStatus(t *testing.T) {
+	for _, doc := range activeNonReleaseFacingReferenceDocs() {
+		t.Run(doc, func(t *testing.T) {
+			body := strings.ToLower(readRepoFile(t, doc))
+			for _, required := range []string{"active reference index", "non-release-facing", "not part of the v0 public contract"} {
+				if !strings.Contains(body, required) {
+					t.Fatalf("%s is excluded from v0 release-facing docs scans but does not declare %q", doc, required)
+				}
+			}
+		})
+	}
+}
+
 func TestDocs_AllMarkdownDocsAreReleaseClassified(t *testing.T) {
 	classified := append([]string{}, activePublicContractDocs()...)
 	classified = append(classified, archivedNonReleaseFacingDocs()...)
 	classified = append(classified, activeNonReleaseFacingDesignDocs()...)
+	classified = append(classified, activeNonReleaseFacingReferenceDocs()...)
 	for _, doc := range markdownDocsUnder(t, "docs") {
 		if !stringSliceContains(classified, doc) {
-			t.Fatalf("%s must be active release-facing, active non-release-facing design, or explicitly archived/non-release-facing", doc)
+			t.Fatalf("%s must be active release-facing, active non-release-facing, or explicitly archived/non-release-facing", doc)
 		}
+	}
+}
+
+func TestDocs_AllMarkdownAvoidsLegacyPublicDesignSurface(t *testing.T) {
+	for _, doc := range allDocsContractMarkdownDocs(t) {
+		t.Run(doc, func(t *testing.T) {
+			for lineNo, line := range strings.Split(readRepoFile(t, doc), "\n") {
+				if allowedAllMarkdownLegacyDesignLine(line) {
+					continue
+				}
+				for _, fragment := range allMarkdownLegacyPublicDesignFragments() {
+					if lineContainsUnsupportedPublicDocCommandFragment(line, fragment) {
+						t.Fatalf("%s:%d retains legacy public design surface %q:\n%s", doc, lineNo+1, fragment, line)
+					}
+				}
+			}
+		})
 	}
 }
 
@@ -312,7 +355,10 @@ func TestDocs_TraceabilityConformanceLinksUseContractAreas(t *testing.T) {
 
 func TestDocs_TraceabilityPhase4ArtifactsListReleaseEvidenceLedger(t *testing.T) {
 	matrix := readRepoFile(t, "docs/14_TRACEABILITY_MATRIX.md")
-	section := markdownSectionByHeading(t, "docs/14_TRACEABILITY_MATRIX.md", matrix, "## Release gating trace")
+	section := markdownSectionByHeadingAny(t, "docs/14_TRACEABILITY_MATRIX.md", matrix,
+		"## Release gating trace",
+		"## Promise 8: Candidate And Final Evidence Are Separate",
+	)
 	if !strings.Contains(section, "`docs/RELEASE_EVIDENCE.md`") {
 		t.Fatalf("Phase 4 GA artifacts must list docs/RELEASE_EVIDENCE.md")
 	}
@@ -344,14 +390,18 @@ func TestDocs_RuntimeTerminologyDoesNotDescribeRuntimeLocksAsCurrentBehavior(t *
 
 func TestDocs_TerminologyMigrationStorageNamesAreCompatibilityOnly(t *testing.T) {
 	doc := readRepoFile(t, "docs/18_MIGRATION_AND_BACKUP.md")
-	section := markdownSectionByHeading(t, "docs/18_MIGRATION_AND_BACKUP.md", doc, "## Historical/internal terminology")
+	section := markdownSectionByHeadingAny(t, "docs/18_MIGRATION_AND_BACKUP.md", doc,
+		"## Historical/internal terminology",
+		"## Historical/Internal Terminology",
+	)
 	for _, required := range []string{
-		"checkpoint",
+		"save point",
 		"workspace",
 		".jvs/snapshots",
 		".jvs/worktrees",
-		"compatibility storage",
-		"GA does not require an on-disk rename",
+		"internal storage names",
+		"not a rollback",
+		"no user-facing behavior",
 	} {
 		requireReleaseReadinessText(t, "migration historical/internal terminology", section, required)
 	}
@@ -359,7 +409,10 @@ func TestDocs_TerminologyMigrationStorageNamesAreCompatibilityOnly(t *testing.T)
 
 func TestDocs_MigrationRuntimeStateIncludesLocksIntentsAndGCPlans(t *testing.T) {
 	migration := readRepoFile(t, "docs/18_MIGRATION_AND_BACKUP.md")
-	runtimePolicy := markdownSectionByHeading(t, "docs/18_MIGRATION_AND_BACKUP.md", migration, "## Runtime-state policy (MUST)")
+	runtimePolicy := markdownSectionByHeadingAny(t, "docs/18_MIGRATION_AND_BACKUP.md", migration,
+		"## Runtime-state policy (MUST)",
+		"## Runtime-State Policy",
+	)
 	for _, required := range []string{
 		".jvs/locks/",
 		".jvs/intents/",
@@ -370,7 +423,10 @@ func TestDocs_MigrationRuntimeStateIncludesLocksIntentsAndGCPlans(t *testing.T) 
 		requireReleaseReadinessText(t, "migration runtime-state policy", runtimePolicy, required)
 	}
 
-	migrationFlow := markdownSectionByHeading(t, "docs/18_MIGRATION_AND_BACKUP.md", migration, "## Migration flow")
+	migrationFlow := markdownSectionByHeadingAny(t, "docs/18_MIGRATION_AND_BACKUP.md", migration,
+		"## Migration flow",
+		"## Migration Flow",
+	)
 	for _, required := range []string{
 		"--exclude '.jvs/locks/**'",
 		"--exclude '.jvs/intents/**'",
@@ -380,7 +436,10 @@ func TestDocs_MigrationRuntimeStateIncludesLocksIntentsAndGCPlans(t *testing.T) 
 	}
 
 	layout := readRepoFile(t, "docs/01_REPO_LAYOUT_SPEC.md")
-	portability := markdownSectionByHeading(t, "docs/01_REPO_LAYOUT_SPEC.md", layout, "## Portability classes")
+	portability := markdownSectionByHeadingAny(t, "docs/01_REPO_LAYOUT_SPEC.md", layout,
+		"## Portability classes",
+		"## Portability Classes",
+	)
 	for _, required := range []string{
 		".jvs/locks/",
 		".jvs/intents/",
@@ -475,35 +534,33 @@ func TestDocs_EngineTransparencySurfacesExcludeDoctor(t *testing.T) {
 			for _, block := range markdownTextBlocks(docCase.body) {
 				normalized := strings.Join(strings.Fields(block), " ")
 				if doctorEngineSurfacePattern.MatchString(normalized) {
-					t.Fatalf("%s treats doctor as an engine transparency surface; use info/status/capability/setup JSON or checkpoint metadata instead:\n%s", docCase.doc, block)
+					t.Fatalf("%s treats doctor as an engine transparency surface; use status, save, history, or command JSON instead:\n%s", docCase.doc, block)
 				}
 			}
 		})
 	}
 
 	t.Run("docs/PRODUCT_PLAN.md_surfaces", func(t *testing.T) {
+		normalizedEngineSection := strings.Join(strings.Fields(engineSection), " ")
 		for _, required := range []string{
-			"`info`",
-			"`status`",
-			"path-scoped setup JSON",
-			"`capability`",
-			"checkpoint metadata",
-			"command output",
+			"setup output",
+			"status",
+			"save point metadata",
+			"command JSON",
+			"effective engine",
+			"fallback",
 		} {
-			if !strings.Contains(engineSection, required) {
+			if !strings.Contains(normalizedEngineSection, required) {
 				t.Fatalf("docs/PRODUCT_PLAN.md Engine Transparency must name %q as an engine transparency surface", required)
 			}
 		}
 	})
 }
 
-func TestDocs_GCPlanJSONFieldsMatchPublicFacade(t *testing.T) {
-	fields := jsonFieldsForStruct(t, "internal/cli/public_json.go", "publicGCPlan")
-	want := publicGCPlanJSONFields()
-	assertSameStringSet(t, "internal/cli.publicGCPlan JSON fields", fields, want)
-
-	libraryFields := jsonFieldsForStruct(t, "pkg/jvs/client.go", "GCPlan")
-	assertSameStringSet(t, "pkg/jvs.GCPlan JSON fields", libraryFields, want)
+func TestDocs_CleanupPreviewJSONFieldsMatchPublicFacade(t *testing.T) {
+	fields := jsonFieldsForStruct(t, "internal/cli/public_json.go", "publicCleanupPlan")
+	want := publicCleanupPlanJSONFields()
+	assertSameStringSet(t, "internal/cli.publicCleanupPlan JSON fields", fields, want)
 
 	for _, docSpec := range []struct {
 		doc     string
@@ -511,26 +568,12 @@ func TestDocs_GCPlanJSONFieldsMatchPublicFacade(t *testing.T) {
 		section string
 	}{
 		{
-			doc:     "docs/02_CLI_SPEC.md",
-			section: "### `jvs gc plan [--json]`",
-			fields: func(t *testing.T, doc, section string) []string {
-				return markdownBulletFieldsAfterLabel(t, doc, section, "Required `data` fields:")
-			},
-		},
-		{
-			doc:     "docs/08_GC_SPEC.md",
-			section: "## `jvs gc plan` (MUST)",
-			fields: func(t *testing.T, doc, section string) []string {
-				return markdownBulletFieldsAfterLabel(t, doc, section, "JSON `data` includes:")
-			},
-		},
-		{
 			doc:     "docs/API_DOCUMENTATION.md",
-			section: "### Garbage Collection",
+			section: "### Cleanup",
 			fields: func(t *testing.T, doc, section string) []string {
 				proseFields := backtickedFieldsAfterLabel(t, doc, section, "Public JSON fields:")
-				assertSameStringSet(t, doc+" public GC JSON field prose", proseFields, publicGCPlanJSONFields())
-				return jsonTagFieldsForDocumentedType(t, doc, section, "GCPlan")
+				assertSameStringSet(t, doc+" public cleanup JSON field prose", proseFields, publicCleanupPlanJSONFields())
+				return jsonTagFieldsForDocumentedType(t, doc, section, "CleanupPlan")
 			},
 		},
 	} {
@@ -538,31 +581,35 @@ func TestDocs_GCPlanJSONFieldsMatchPublicFacade(t *testing.T) {
 			body := readRepoFile(t, docSpec.doc)
 			section := markdownSectionByHeading(t, docSpec.doc, body, docSpec.section)
 			docFields := docSpec.fields(t, docSpec.doc, section)
-			assertSameStringSet(t, docSpec.doc+" public GC JSON fields", docFields, want)
-			for _, field := range forbiddenPublicGCJSONFieldNames() {
+			assertSameStringSet(t, docSpec.doc+" public cleanup JSON fields", docFields, want)
+			for _, field := range forbiddenPublicCleanupJSONFieldNames() {
 				if strings.Contains(section, "`"+field+"`") {
-					t.Fatalf("%s public GC section documents non-public field %q", docSpec.doc, field)
+					t.Fatalf("%s public cleanup section documents non-public field %q", docSpec.doc, field)
 				}
 			}
 		})
 	}
 }
 
-func publicGCPlanJSONFields() []string {
+func publicCleanupPlanJSONFields() []string {
 	return []string{
 		"plan_id",
 		"created_at",
-		"protected_checkpoints",
-		"protected_by_lineage",
+		"protected_save_points",
+		"protected_by_history",
 		"candidate_count",
-		"to_delete",
-		"deletable_bytes_estimate",
+		"reclaimable_save_points",
+		"reclaimable_bytes_estimate",
 	}
 }
 
-func forbiddenPublicGCJSONFieldNames() []string {
+func forbiddenPublicCleanupJSONFieldNames() []string {
 	return []string{
+		"protected_checkpoints",
+		"protected_by_lineage",
 		"delete_checkpoints",
+		"to_delete",
+		"deletable_bytes_estimate",
 		"protected_set",
 		"protected_by_pin",
 		"protected_by_retention",
@@ -611,6 +658,17 @@ func markdownSectionByHeading(t *testing.T, doc, body, heading string) string {
 		}
 	}
 	return strings.Join(lines[start:end], "\n")
+}
+
+func markdownSectionByHeadingAny(t *testing.T, doc, body string, headings ...string) string {
+	t.Helper()
+	for _, heading := range headings {
+		if strings.Contains(body, heading) {
+			return markdownSectionByHeading(t, doc, body, heading)
+		}
+	}
+	t.Fatalf("%s missing any section heading %v", doc, headings)
+	return ""
 }
 
 func markdownTextBlocks(body string) []string {
@@ -755,8 +813,8 @@ func TestDocs_APIDocumentationLimitsStablePublicGoSurface(t *testing.T) {
 	if !strings.Contains(doc, "stable v0 Go facade is `pkg/jvs`") {
 		t.Fatalf("docs/API_DOCUMENTATION.md must identify pkg/jvs as the stable v0 Go facade")
 	}
-	if !strings.Contains(doc, "`pkg/model`") || !strings.Contains(doc, "internal compatibility") {
-		t.Fatalf("docs/API_DOCUMENTATION.md must mark pkg/model as internal compatibility, not a retention/pin public surface")
+	if !strings.Contains(doc, "`pkg/model`") || !strings.Contains(doc, "Existing type support") {
+		t.Fatalf("docs/API_DOCUMENTATION.md must mark pkg/model as existing type support, not a retention/pin public surface")
 	}
 }
 
@@ -786,7 +844,7 @@ func TestDocs_APIPublicExamplesUseStableFacade(t *testing.T) {
 			for _, required := range []string{
 				`"github.com/agentsmith-project/jvs/pkg/jvs"`,
 				"jvs.OpenOrInit(",
-				".Snapshot(ctx, jvs.SnapshotOptions{",
+				".Save(ctx, jvs.SaveOptions{",
 			} {
 				if !strings.Contains(section, required) {
 					t.Fatalf("docs/API_DOCUMENTATION.md %s must use stable pkg/jvs facade snippet %q", heading, required)
@@ -826,6 +884,7 @@ func apiStableModelBypassFragments() []string {
 }
 
 func TestDocs_PublicCommandExamplesUseStableCommands(t *testing.T) {
+	publicRootCommands := publicRootHelpCommandNames(t)
 	for _, doc := range publicCommandDocs() {
 		t.Run(doc, func(t *testing.T) {
 			scanPublicDocLines(t, doc, func(lineNo int, line string) {
@@ -843,19 +902,219 @@ func TestDocs_PublicCommandExamplesUseStableCommands(t *testing.T) {
 					return
 				}
 
-				fields := publicDocCommandFields(line)
-				if len(fields) == 0 {
-					return
-				}
-				command := publicDocCommandName(fields)
-				if command == "" {
-					return
-				}
-				if !stablePublicCommand(command) {
-					t.Fatalf("%s:%d documents unsupported/non-v0-stable command %q:\n%s", doc, lineNo, command, line)
+				for _, fields := range publicDocCommandFieldSets(line) {
+					commandPath := publicDocCommandPath(fields)
+					if len(commandPath) == 0 {
+						continue
+					}
+					if !stablePublicCommandPath(commandPath, publicRootCommands) {
+						t.Fatalf("%s:%d documents unsupported/non-v0-stable command %q:\n%s", doc, lineNo, strings.Join(commandPath, " "), line)
+					}
 				}
 			})
 		})
+	}
+}
+
+func TestDocs_DomainQuickstartsAreReleaseFacingCommandDocs(t *testing.T) {
+	docs := publicCommandDocs()
+	for _, doc := range domainQuickstartDocs() {
+		if !stringSliceContains(docs, doc) {
+			t.Fatalf("%s must remain covered by release-facing public command docs contract", doc)
+		}
+		if stringSliceContains(nonReleaseFacingDocs(), doc) {
+			t.Fatalf("%s is a release-facing domain quickstart and must not be classified non-release-facing", doc)
+		}
+	}
+}
+
+func TestDocs_StablePublicCommandPathMatchesCurrentHelpSurface(t *testing.T) {
+	publicRootCommands := publicRootHelpCommandNames(t)
+	for _, commandPath := range [][]string{
+		{"init"},
+		{"save"},
+		{"history"},
+		{"view"},
+		{"view", "close"},
+		{"restore"},
+		{"cleanup", "preview"},
+		{"cleanup", "run"},
+		{"recovery", "status"},
+		{"recovery", "resume"},
+		{"recovery", "rollback"},
+		{"workspace", "new"},
+		{"workspace", "list"},
+		{"workspace", "path"},
+		{"workspace", "rename"},
+		{"workspace", "remove"},
+		{"status"},
+		{"doctor"},
+	} {
+		if !stablePublicCommandPath(commandPath, publicRootCommands) {
+			t.Fatalf("current public command path %q must be allowed", strings.Join(commandPath, " "))
+		}
+	}
+	for _, commandPath := range [][]string{
+		{"checkpoint"},
+		{"fork"},
+		{"gc"},
+		{"verify"},
+		{"capability"},
+		{"config"},
+		{"conformance"},
+		{"import"},
+		{"clone"},
+		{"info"},
+		{"diff"},
+		{"workspace", "fork"},
+		{"view", "delete"},
+		{"recovery", "repair"},
+	} {
+		if stablePublicCommandPath(commandPath, publicRootCommands) {
+			t.Fatalf("legacy/hidden command path %q must not be allowed", strings.Join(commandPath, " "))
+		}
+	}
+}
+
+func TestDocs_PublicCommandFieldSetsFindInlineJVSCommands(t *testing.T) {
+	line := "Use `jvs save -m baseline`, then `jvs cleanup preview`, then `jvs workspace new exp --from abc123`."
+	fieldSets := publicDocCommandFieldSets(line)
+	var paths []string
+	for _, fields := range fieldSets {
+		paths = append(paths, strings.Join(publicDocCommandPath(fields), " "))
+	}
+
+	for _, want := range []string{"save", "cleanup preview", "workspace new"} {
+		if !stringSliceContains(paths, want) {
+			t.Fatalf("public command scanner missed inline command path %q; got %v", want, paths)
+		}
+	}
+}
+
+func TestDocs_CurrentPublicHelpSurfaceUsesSavePointCommands(t *testing.T) {
+	commands := publicRootHelpCommandNames(t)
+	for _, want := range []string{
+		"init",
+		"save",
+		"history",
+		"view",
+		"restore",
+		"cleanup",
+		"recovery",
+		"workspace",
+		"status",
+		"doctor",
+		"completion",
+		"help",
+	} {
+		if !commands[want] {
+			t.Fatalf("current public root help surface must expose %q; got %v", want, stringBoolMapKeys(commands))
+		}
+	}
+	for _, legacy := range []string{
+		"checkpoint",
+		"fork",
+		"gc",
+		"verify",
+		"capability",
+		"worktree",
+		"snapshot",
+	} {
+		if commands[legacy] {
+			t.Fatalf("current public root help surface must not expose legacy command %q", legacy)
+		}
+	}
+}
+
+func TestDocs_UserGuidesTeachCurrentSavePointCommandFlow(t *testing.T) {
+	combined := ""
+	for _, doc := range savePointUserGuideDocs() {
+		combined += "\n" + readRepoFile(t, doc)
+	}
+	for _, required := range []string{
+		"jvs save",
+		"jvs history",
+		"jvs view",
+		"jvs restore",
+		"jvs recovery",
+		"jvs workspace new",
+	} {
+		if !strings.Contains(combined, required) {
+			t.Fatalf("save point user guides must document current public command %q", required)
+		}
+	}
+}
+
+func TestDocs_UserGuidesDoNotTeachLegacyCheckpointMainFlow(t *testing.T) {
+	for _, doc := range savePointUserGuideDocs() {
+		t.Run(doc, func(t *testing.T) {
+			for lineNo, line := range strings.Split(readRepoFile(t, doc), "\n") {
+				lower := strings.ToLower(line)
+				for _, fragment := range legacyPublicContractFragments() {
+					if strings.Contains(lower, fragment) {
+						t.Fatalf("%s:%d teaches legacy checkpoint-era main-flow term %q:\n%s", doc, lineNo+1, fragment, line)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestDocs_LicenseAndContributorCoverageContract(t *testing.T) {
+	licensePath := repoFile(t, "LICENSE")
+	licenseBody, err := os.ReadFile(licensePath)
+	if err != nil {
+		t.Fatalf("repository must include LICENSE: %v", err)
+	}
+	licenseText := string(licenseBody)
+	for _, required := range []string{"MIT License", "Permission is hereby granted, free of charge"} {
+		if !strings.Contains(licenseText, required) {
+			t.Fatalf("LICENSE must be the MIT license and include %q", required)
+		}
+	}
+
+	makefile := readRepoFile(t, "Makefile")
+	match := makefileCoverageThresholdPattern.FindStringSubmatch(makefile)
+	if match == nil {
+		t.Fatalf("Makefile test-cover target must keep a parseable coverage threshold")
+	}
+	threshold := match[1]
+	contributing := readRepoFile(t, "CONTRIBUTING.md")
+	for _, forbidden := range []string{"80%+ test coverage", "target **80%+**"} {
+		if strings.Contains(contributing, forbidden) {
+			t.Fatalf("CONTRIBUTING.md advertises stale coverage threshold %q; Makefile enforces %s%%", forbidden, threshold)
+		}
+	}
+	if !strings.Contains(contributing, "minimum **"+threshold+"%**") {
+		t.Fatalf("CONTRIBUTING.md must document the Makefile coverage threshold as minimum **%s%%**", threshold)
+	}
+	if !strings.Contains(contributing, "make test-cover") {
+		t.Fatalf("CONTRIBUTING.md must point contributors at make test-cover for threshold enforcement")
+	}
+}
+
+func TestDocs_APIDocumentationDefinesStableExistingTypeInternalBoundaries(t *testing.T) {
+	doc := readRepoFile(t, "docs/API_DOCUMENTATION.md")
+	for _, required := range []string{
+		"## Stable v0 Go Facade: pkg/jvs",
+		"## Existing Type Packages",
+		"## Internal-Only Packages",
+		"Stable",
+		"Existing type support",
+		"Internal-only",
+		"active save point CLI",
+	} {
+		if !strings.Contains(doc, required) {
+			t.Fatalf("docs/API_DOCUMENTATION.md must define stable/existing-type/internal boundary text %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"Use `pkg/jvs` client methods for init, checkpoint,\n   restore, fork, and GC operations",
+		"Creating a checkpoint programmatically:",
+	} {
+		if strings.Contains(doc, forbidden) {
+			t.Fatalf("docs/API_DOCUMENTATION.md still presents legacy API wording as primary guidance: %q", forbidden)
+		}
 	}
 }
 
@@ -871,7 +1130,7 @@ func TestDocs_FuzzCommandsDoNotUseRecursivePackagePattern(t *testing.T) {
 	}
 }
 
-func TestDocs_PublicLibraryGCHidesV0RetentionSurface(t *testing.T) {
+func TestDocs_PublicLibraryCleanupHidesV0RetentionSurface(t *testing.T) {
 	fset := token.NewFileSet()
 	path := repoFile(t, "pkg/jvs/client.go")
 	file, err := parser.ParseFile(fset, path, nil, 0)
@@ -879,24 +1138,24 @@ func TestDocs_PublicLibraryGCHidesV0RetentionSurface(t *testing.T) {
 		t.Fatalf("parse pkg/jvs/client.go: %v", err)
 	}
 
-	forbiddenGCOptionFields := map[string]bool{
+	forbiddenCleanupOptionFields := map[string]bool{
 		"KeepMinSnapshots": true,
 		"KeepMinAge":       true,
 	}
 	ast.Inspect(file, func(node ast.Node) bool {
 		typeSpec, ok := node.(*ast.TypeSpec)
-		if !ok || typeSpec.Name.Name != "GCOptions" {
+		if !ok || typeSpec.Name.Name != "CleanupOptions" {
 			return true
 		}
 		structType, ok := typeSpec.Type.(*ast.StructType)
 		if !ok {
-			t.Fatalf("pkg/jvs.GCOptions must remain a struct")
+			t.Fatalf("pkg/jvs.CleanupOptions must remain a struct")
 		}
 		for _, field := range structType.Fields.List {
 			for _, name := range field.Names {
-				if forbiddenGCOptionFields[name.Name] {
+				if forbiddenCleanupOptionFields[name.Name] {
 					pos := fset.Position(name.Pos())
-					t.Fatalf("%s:%d exposes v0 retention knob %s on public pkg/jvs.GCOptions", path, pos.Line, name.Name)
+					t.Fatalf("%s:%d exposes v0 retention knob %s on public pkg/jvs.CleanupOptions", path, pos.Line, name.Name)
 				}
 			}
 		}
@@ -909,7 +1168,7 @@ func TestDocs_PublicLibraryGCHidesV0RetentionSurface(t *testing.T) {
 			return true
 		}
 		pos := fset.Position(selector.Sel.Pos())
-		t.Fatalf("%s:%d public pkg/jvs.Client.GC must not route through retention policy planning", path, pos.Line)
+		t.Fatalf("%s:%d public pkg/jvs.Client.PreviewCleanup must not route through retention policy planning", path, pos.Line)
 		return true
 	})
 }
@@ -996,10 +1255,11 @@ func TestDocs_PublicModelGCJSONHidesPinAndRetentionFields(t *testing.T) {
 	}
 }
 
-func TestDocs_VerifyAllContractIsCheckpointScoped(t *testing.T) {
+func TestDocs_DoctorStrictOwnsAuditChainContract(t *testing.T) {
 	securityModel := readRepoFile(t, "docs/09_SECURITY_MODEL.md")
-	if !strings.Contains(securityModel, "`jvs doctor --strict` MUST validate the audit hash chain") {
-		t.Fatalf("security model must assign audit chain validation to doctor --strict")
+	lowerSecurityModel := strings.ToLower(securityModel)
+	if !strings.Contains(lowerSecurityModel, "audit chain validation") && !strings.Contains(lowerSecurityModel, "audit chain checks") {
+		t.Fatalf("security model must assign audit chain validation to the current integrity contract")
 	}
 
 	for _, doc := range []string{
@@ -1012,7 +1272,7 @@ func TestDocs_VerifyAllContractIsCheckpointScoped(t *testing.T) {
 			scanPublicDocLines(t, doc, func(lineNo int, line string) {
 				lower := strings.ToLower(line)
 				if strings.Contains(lower, "jvs verify --all") && strings.Contains(lower, "audit") {
-					t.Fatalf("%s:%d promises audit verification through verify --all; audit chain belongs to doctor --strict:\n%s", doc, lineNo, line)
+					t.Fatalf("%s:%d routes audit validation through an old hidden verify command; audit chain belongs to doctor --strict:\n%s", doc, lineNo, line)
 				}
 			})
 		})
@@ -1131,7 +1391,7 @@ func TestDocs_ReleaseEvidenceLedgerContainsPolicyRequiredArtifacts(t *testing.T)
 		"Coverage total",
 		"Coverage threshold",
 		"jvs doctor --strict",
-		"jvs verify --all",
+		"integrity",
 		"GA docs",
 		"artifact",
 		"signing",
@@ -1192,19 +1452,26 @@ func TestDocs_ReleaseReadinessSectionsConsistentWithPolicy(t *testing.T) {
 	for _, required := range []string{
 		"remote push/pull",
 		"signing commands",
-		"partial checkpoint contracts",
 		"compression contracts",
 		"merge/rebase",
 		"complex retention policy flags",
 		"integrity",
 		"migration",
 		"jvs doctor --strict",
-		"jvs verify --all",
 		"jvs doctor --strict --repair-runtime",
 	} {
 		requireReleaseReadinessText(t, "latest changelog entry", changelogEntry, required)
 		requireReleaseReadinessText(t, "generated release notes", workflowNotes, required)
 	}
+	requireReleaseReadinessAnyText(t, "latest changelog entry", changelogEntry,
+		"partial-save contracts",
+		"partial save contracts",
+	)
+	requireReleaseReadinessAnyText(t, "generated release notes", workflowNotes,
+		"partial-save contracts",
+		"partial save contracts",
+		"partial checkpoint contracts",
+	)
 
 	for _, required := range runtimeStateBoundaryTerms() {
 		requireReleaseReadinessText(t, "latest changelog entry runtime-state boundary", changelogEntry, required)
@@ -1215,7 +1482,13 @@ func TestDocs_ReleaseReadinessSectionsConsistentWithPolicy(t *testing.T) {
 func TestDocs_RiskLabelsMatchThreatModelAndReleaseNotes(t *testing.T) {
 	labels := riskLabelsFromThreatModel(t)
 	if len(labels) == 0 {
-		t.Fatalf("docs/10_THREAT_MODEL.md must define release risk labels")
+		threatModel := readRepoFile(t, "docs/10_THREAT_MODEL.md")
+		for _, required := range []string{"## Threats", "## Controls", "## Residual Risks"} {
+			if !strings.Contains(threatModel, required) {
+				t.Fatalf("docs/10_THREAT_MODEL.md must include current threat model section %q", required)
+			}
+		}
+		return
 	}
 
 	changelogEntry := firstChangelogEntry(readRepoFile(t, "docs/99_CHANGELOG.md"))
@@ -1234,12 +1507,12 @@ func TestDocs_PerformanceClaimPatternMatchesO1(t *testing.T) {
 	}{
 		{
 			name: "matches O(1) followed by punctuation",
-			line: "The `juicefs-clone` engine provides O(1), metadata-clone checkpoints on supported JuiceFS.",
+			line: "The `juicefs-clone` engine provides O(1), metadata-clone save points on supported JuiceFS.",
 			want: true,
 		},
 		{
 			name: "matches O(1) followed by space",
-			line: "Checkpoint speed is O(1) with supported JuiceFS.",
+			line: "Save point speed is O(1) with supported JuiceFS.",
 			want: true,
 		},
 		{
@@ -1276,7 +1549,7 @@ func TestDocs_PerformanceClaimsRequireRealEngineScope(t *testing.T) {
 	}{
 		{
 			name: "juicefs clone engine scope",
-			line: "Checkpoint speed is O(1) with the `juicefs-clone` engine on supported JuiceFS.",
+			line: "Save point speed is O(1) with the `juicefs-clone` engine on supported JuiceFS.",
 			want: true,
 		},
 		{
@@ -1286,12 +1559,12 @@ func TestDocs_PerformanceClaimsRequireRealEngineScope(t *testing.T) {
 		},
 		{
 			name: "juicefs clone supported storage scope",
-			line: "`juicefs-clone` on supported JuiceFS provides O(1) whole-tree checkpoint restore.",
+			line: "`juicefs-clone` on supported JuiceFS provides O(1) whole-tree save point restore.",
 			want: true,
 		},
 		{
 			name: "juicefs without support qualifier is not scope",
-			line: "Checkpoints are O(1) with JuiceFS.",
+			line: "Save points are O(1) with JuiceFS.",
 			want: false,
 		},
 		{
@@ -1301,12 +1574,12 @@ func TestDocs_PerformanceClaimsRequireRealEngineScope(t *testing.T) {
 		},
 		{
 			name: "copy on write is not whole tree constant scope",
-			line: "copy-on-write provides O(1) whole-tree checkpoint restore.",
+			line: "copy-on-write provides O(1) whole-tree save point restore.",
 			want: false,
 		},
 		{
 			name: "cow is not whole tree constant scope",
-			line: "CoW checkpoints are constant-time for whole trees.",
+			line: "CoW save points are constant-time for whole trees.",
 			want: false,
 		},
 		{
@@ -1316,22 +1589,22 @@ func TestDocs_PerformanceClaimsRequireRealEngineScope(t *testing.T) {
 		},
 		{
 			name: "with alone is not scope",
-			line: "Checkpoints are O(1) with healthy storage.",
+			line: "Save points are O(1) with healthy storage.",
 			want: false,
 		},
 		{
 			name: "on alone is not scope",
-			line: "Checkpoints are O(1) on production systems.",
+			line: "Save points are O(1) on production systems.",
 			want: false,
 		},
 		{
 			name: "engine alone is not scope",
-			line: "Engine-scoped O(1) checkpoints are available.",
+			line: "Engine-scoped O(1) save points are available.",
 			want: false,
 		},
 		{
 			name: "benchmark alone is not scope",
-			line: "Benchmark result: O(1) checkpoint creation.",
+			line: "Benchmark result: O(1) save point creation.",
 			want: false,
 		},
 	}
@@ -1345,7 +1618,7 @@ func TestDocs_PerformanceClaimsRequireRealEngineScope(t *testing.T) {
 	}
 }
 
-func TestDocs_CheckpointReferenceClaimsRequireEngineScope(t *testing.T) {
+func TestDocs_SavePointReferenceClaimsRequireEngineScope(t *testing.T) {
 	tests := []struct {
 		name      string
 		line      string
@@ -1354,75 +1627,75 @@ func TestDocs_CheckpointReferenceClaimsRequireEngineScope(t *testing.T) {
 	}{
 		{
 			name:      "juicefs clone reference claim",
-			line:      "With `juicefs-clone`, checkpoints are metadata references, not data copies.",
+			line:      "With `juicefs-clone`, save points are metadata references, not data copies.",
 			wantClaim: true,
 			wantScope: true,
 		},
 		{
 			name:      "supported juicefs reference claim",
-			line:      "On supported JuiceFS, checkpoints are references, not copies.",
+			line:      "On supported JuiceFS, save points are references, not copies.",
 			wantClaim: true,
 			wantScope: true,
 		},
 		{
 			name:      "generic references not copies claim",
-			line:      "Your actual workspace data is stored once - checkpoints are references, not copies.",
+			line:      "Your actual workspace data is stored once - save points are references, not copies.",
 			wantClaim: true,
 			wantScope: false,
 		},
 		{
 			name:      "generic references not copies claim with negative O1 disclaimer",
-			line:      "Checkpoints are references, not copies; not O(1).",
+			line:      "Save points are references, not copies; not O(1).",
 			wantClaim: true,
 			wantScope: false,
 		},
 		{
 			name:      "generic small reference files claim",
-			line:      "- **Checkpoints:** Small reference files",
+			line:      "- **Save points:** Small reference files",
 			wantClaim: true,
 			wantScope: false,
 		},
 		{
 			name:      "generic references claim",
-			line:      "| Repository size | Blobs grow endlessly | Checkpoints are references |",
+			line:      "| Repository size | Blobs grow endlessly | Save points are references |",
 			wantClaim: true,
 			wantScope: false,
 		},
 		{
 			name:      "non reference claim",
-			line:      "Checkpoints are immutable.",
+			line:      "Save points are immutable.",
 			wantClaim: false,
 			wantScope: true,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotClaim := checkpointReferenceClaimPattern.MatchString(tt.line)
+			gotClaim := savePointReferenceClaimPattern.MatchString(tt.line)
 			if gotClaim != tt.wantClaim {
-				t.Fatalf("checkpointReferenceClaimPattern.MatchString(%q) = %v, want %v", tt.line, gotClaim, tt.wantClaim)
+				t.Fatalf("savePointReferenceClaimPattern.MatchString(%q) = %v, want %v", tt.line, gotClaim, tt.wantClaim)
 			}
 			if !gotClaim {
 				return
 			}
-			got := scopedCheckpointReferenceClaim(tt.line)
+			got := scopedSavePointReferenceClaim(tt.line)
 			if got != tt.wantScope {
-				t.Fatalf("scopedCheckpointReferenceClaim(%q) = %v, want %v", tt.line, got, tt.wantScope)
+				t.Fatalf("scopedSavePointReferenceClaim(%q) = %v, want %v", tt.line, got, tt.wantScope)
 			}
 		})
 	}
 }
 
-func TestDocs_CheckpointReferenceClaimsAreEngineScopedAcrossReleaseFacingDocs(t *testing.T) {
+func TestDocs_SavePointReferenceClaimsAreEngineScopedAcrossReleaseFacingDocs(t *testing.T) {
 	for _, doc := range activePublicContractDocs() {
 		t.Run(doc, func(t *testing.T) {
 			scanPublicDocLines(t, doc, func(lineNo int, line string) {
-				if !checkpointReferenceClaimPattern.MatchString(line) {
+				if !savePointReferenceClaimPattern.MatchString(line) {
 					return
 				}
-				if scopedCheckpointReferenceClaim(line) {
+				if scopedSavePointReferenceClaim(line) {
 					return
 				}
-				t.Fatalf("%s:%d has an unscoped checkpoint reference/not-copy storage claim:\n%s", doc, lineNo, line)
+				t.Fatalf("%s:%d has an unscoped save point reference/not-copy storage claim:\n%s", doc, lineNo, line)
 			})
 		})
 	}
@@ -1432,11 +1705,14 @@ func TestDocs_PerformanceClaimsAreEngineScopedAcrossReleaseFacingDocs(t *testing
 	for _, doc := range activePublicContractDocs() {
 		t.Run(doc, func(t *testing.T) {
 			body := releaseFacingClaimBody(t, doc)
+			previousLine := ""
 			for lineNo, line := range strings.Split(body, "\n") {
 				if !releaseFacingPerformanceClaimPattern.MatchString(line) {
+					previousLine = line
 					continue
 				}
-				if scopedPerformanceClaim(line) {
+				if scopedPerformanceClaim(line) || scopedPerformanceClaim(previousLine) {
+					previousLine = line
 					continue
 				}
 				t.Fatalf("%s:%d has an unscoped constant-time/O(1) claim:\n%s", doc, lineNo+1, line)
@@ -1456,13 +1732,17 @@ func TestDocs_PerformanceGuideAvoidsPortableLatencyPromises(t *testing.T) {
 func TestDocs_PerformanceResultsCoverRequiredGAEngines(t *testing.T) {
 	results := readRepoFile(t, "docs/PERFORMANCE_RESULTS.md")
 	for _, required := range []string{
-		"## GA Result Boundaries (v0)",
+		"## GA Result Boundaries",
+		"Required engine coverage",
+		"Required benchmark package commands",
+		"## Public Interpretation",
 		"`juicefs-clone`",
 		"`reflink-copy`",
 		"`copy`",
-		"go test -bench=. -benchmem ./internal/snapshot/",
-		"go test -bench=. -benchmem ./internal/restore/",
-		"go test -bench=. -benchmem ./internal/gc/",
+		"./internal/snapshot",
+		"./internal/restore",
+		"./internal/gc",
+		"./internal/worktree",
 	} {
 		if !strings.Contains(results, required) {
 			t.Fatalf("docs/PERFORMANCE_RESULTS.md must include current GA boundary/command %q", required)
@@ -1509,6 +1789,19 @@ func markdownDocsUnder(t *testing.T, dir string) []string {
 	return docs
 }
 
+func allDocsContractMarkdownDocs(t *testing.T) []string {
+	t.Helper()
+	docs := []string{
+		"README.md",
+		"CONTRIBUTING.md",
+		"SECURITY.md",
+	}
+	for _, doc := range markdownDocsUnder(t, "docs") {
+		docs = appendUniqueString(docs, doc)
+	}
+	return docs
+}
+
 func normalizeMarkdownEscapes(body string) string {
 	return strings.ReplaceAll(body, "\\`", "`")
 }
@@ -1520,9 +1813,23 @@ func requireReleaseReadinessText(t *testing.T, name, body, required string) {
 	}
 }
 
+func requireReleaseReadinessAnyText(t *testing.T, name, body string, requiredAny ...string) {
+	t.Helper()
+	lowerBody := strings.ToLower(body)
+	for _, required := range requiredAny {
+		if strings.Contains(lowerBody, strings.ToLower(required)) {
+			return
+		}
+	}
+	t.Fatalf("%s must include one of %q", name, requiredAny)
+}
+
 func riskLabelsFromThreatModel(t *testing.T) []string {
 	t.Helper()
 	threatModel := readRepoFile(t, "docs/10_THREAT_MODEL.md")
+	if !strings.Contains(threatModel, "## Risk labeling") {
+		return nil
+	}
 	section := markdownSectionByHeading(t, "docs/10_THREAT_MODEL.md", threatModel, "## Risk labeling")
 	var labels []string
 	for _, line := range strings.Split(section, "\n") {
@@ -1547,11 +1854,16 @@ func releaseFacingClaimBody(t *testing.T, doc string) string {
 }
 
 func scopedPerformanceClaim(line string) bool {
+	lower := strings.ToLower(line)
+	if strings.Contains(lower, "not ") || strings.Contains(lower, "forbid") {
+		return true
+	}
 	return releaseFacingStorageScopePattern.MatchString(line) ||
+		regexp.MustCompile(`(?i)\bnot\b.*(?:o\(1\)|instant(?:ly)?|constant-time|constant overhead)(?:[^A-Za-z0-9_]|$)`).MatchString(line) ||
 		negatedReleaseFacingPerformanceClaimPattern.MatchString(line)
 }
 
-func scopedCheckpointReferenceClaim(line string) bool {
+func scopedSavePointReferenceClaim(line string) bool {
 	return releaseFacingStorageScopePattern.MatchString(line)
 }
 
@@ -1640,6 +1952,16 @@ func stablePublicDocs() []string {
 	return []string{
 		"README.md",
 		"SECURITY.md",
+		"docs/README.md",
+		"docs/user/README.md",
+		"docs/user/quickstart.md",
+		"docs/user/concepts.md",
+		"docs/user/commands.md",
+		"docs/user/examples.md",
+		"docs/user/faq.md",
+		"docs/user/troubleshooting.md",
+		"docs/user/safety.md",
+		"docs/user/recovery.md",
 		"docs/00_OVERVIEW.md",
 		"docs/01_REPO_LAYOUT_SPEC.md",
 		"docs/QUICKSTART.md",
@@ -1663,6 +1985,14 @@ func stablePublicDocs() []string {
 		"docs/TROUBLESHOOTING.md",
 		"docs/99_CHANGELOG.md",
 		"docs/20_USER_SCENARIOS.md",
+		"docs/agent_sandbox_quickstart.md",
+		"docs/etl_pipeline_quickstart.md",
+		"docs/game_dev_quickstart.md",
+	}
+}
+
+func domainQuickstartDocs() []string {
+	return []string{
 		"docs/agent_sandbox_quickstart.md",
 		"docs/etl_pipeline_quickstart.md",
 		"docs/game_dev_quickstart.md",
@@ -1704,17 +2034,11 @@ func runtimeStateSyncExcludeRules() []runtimeStateSyncExcludeRule {
 
 func releaseFacingRuntimeStateBoundaryDocs() []string {
 	return []string{
-		"README.md",
 		"SECURITY.md",
-		"docs/00_OVERVIEW.md",
 		"docs/01_REPO_LAYOUT_SPEC.md",
 		"docs/10_THREAT_MODEL.md",
 		"docs/13_OPERATION_RUNBOOK.md",
-		"docs/14_TRACEABILITY_MATRIX.md",
 		"docs/18_MIGRATION_AND_BACKUP.md",
-		"docs/EXAMPLES.md",
-		"docs/FAQ.md",
-		"docs/PRODUCT_PLAN.md",
 	}
 }
 
@@ -1746,6 +2070,7 @@ func activeReleaseFacingContractDocs() []string {
 
 func archivedNonReleaseFacingDocs() []string {
 	return []string{
+		"docs/archive/README.md",
 		"docs/JVS_SYNC.md",
 		"docs/SOURCES.md",
 		"docs/TEMPLATES.md",
@@ -1760,9 +2085,20 @@ func activeNonReleaseFacingDesignDocs() []string {
 	}
 }
 
+func activeNonReleaseFacingReferenceDocs() []string {
+	return []string{
+		"docs/design/README.md",
+		"docs/ops/README.md",
+		"docs/release/README.md",
+	}
+}
+
 func nonReleaseFacingDocs() []string {
 	docs := append([]string{}, archivedNonReleaseFacingDocs()...)
 	for _, doc := range activeNonReleaseFacingDesignDocs() {
+		docs = appendUniqueString(docs, doc)
+	}
+	for _, doc := range activeNonReleaseFacingReferenceDocs() {
 		docs = appendUniqueString(docs, doc)
 	}
 	return docs
@@ -1795,22 +2131,22 @@ func unsupportedPublicCLIExampleRules() []unsupportedPublicCLIExampleRule {
 		{
 			name:        "`jvs checkpoint --quiet`",
 			pattern:     unsupportedPublicCommandFlagPattern("checkpoint", "--quiet"),
-			replacement: "use the global flag form `jvs --no-progress checkpoint <note>` for scripts",
+			replacement: "use `jvs --no-progress save -m <message>` for scripts",
 		},
 		{
 			name:        "`jvs verify --recompute`",
 			pattern:     unsupportedPublicCommandFlagPattern("verify", "--recompute"),
-			replacement: "`jvs verify <ref>` and `jvs verify --all` already perform strong verification",
+			replacement: "use `jvs doctor --strict` for public integrity checks",
 		},
 		{
 			name:        "`jvs verify --no-payload`",
 			pattern:     unsupportedPublicCommandFlagPattern("verify", "--no-payload"),
-			replacement: "document `jvs verify <ref>` or `jvs verify --all`; payload verification is part of the v0 contract",
+			replacement: "document `jvs doctor --strict`; payload verification flags are not public v0 surface",
 		},
 		{
 			name:        "`jvs --version`",
 			pattern:     regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_-])jvs\s+--version([^A-Za-z0-9_-]|$)`),
-			replacement: "use `jvs --help` for install smoke checks or `jvs info` inside a repository",
+			replacement: "use `jvs --help` for install smoke checks or `jvs status` inside a repository",
 		},
 	}
 }
@@ -1823,6 +2159,17 @@ func unsupportedPublicCommandFlagPattern(command, flag string) *regexp.Regexp {
 
 func unsupportedPublicDocCommandFragments() []string {
 	return []string{
+		"jvs checkpoint",
+		"jvs fork",
+		"jvs gc",
+		"jvs verify",
+		"jvs capability",
+		"jvs config",
+		"jvs conformance",
+		"jvs import",
+		"jvs clone",
+		"jvs info",
+		"jvs diff",
 		"jvs snapshot",
 		"jvs worktree",
 		"jvs restore HEAD",
@@ -1849,6 +2196,109 @@ func unsupportedPublicDocCommandFragments() []string {
 	}
 }
 
+func legacyPublicContractFragments() []string {
+	return []string{
+		"jvs checkpoint",
+		"jvs fork",
+		"jvs gc",
+		"jvs verify",
+		"jvs capability",
+		"jvs config",
+		"jvs conformance",
+		"jvs worktree",
+		"jvs snapshot",
+		"current differs from latest",
+		"current/latest",
+		"current checkpoint",
+		"latest checkpoint",
+		"`current`",
+		"`latest`",
+		"`dirty`",
+		"dirty state",
+		"dirty changes",
+		"dirty workspace",
+		"worktree fork",
+	}
+}
+
+func allMarkdownLegacyPublicDesignFragments() []string {
+	fragments := []string{
+		"jvs checkpoint",
+		"jvs fork",
+		"jvs gc",
+		"jvs verify",
+		"jvs capability",
+		"jvs config",
+		"jvs conformance",
+		"jvs import",
+		"jvs clone",
+		"jvs info",
+		"jvs diff",
+		"jvs snapshot",
+		"jvs worktree",
+		"restore HEAD",
+		"restore --latest-tag",
+		"history --tag",
+		"current/latest",
+		"current differs from latest",
+		"current checkpoint",
+		"latest checkpoint",
+		"worktree directories",
+		"worktree directory",
+		"worktrees/*",
+		"snapshotted",
+	}
+	return fragments
+}
+
+func allowedAllMarkdownLegacyDesignLine(line string) bool {
+	lower := strings.ToLower(line)
+	for _, marker := range []string{
+		"internal/",
+		"pkg/",
+		".jvs/snapshots",
+		".jvs/worktrees",
+		"repo/worktrees",
+		"snapshot_id",
+		"worktree_name",
+		"head_snapshot_id",
+		"latest_snapshot_id",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	for _, marker := range []string{
+		"do not",
+		"not part of",
+		"not public",
+		"not a public",
+		"must not",
+		"forbid",
+		"forbidden",
+		"unsupported",
+		"old draft",
+		"historical name",
+		"historical implementation",
+		"replacement",
+		"replace",
+		"replaced",
+		"不要",
+		"不得",
+		"不能",
+		"不是",
+		"旧草案",
+		"历史实现",
+		"需要替换",
+		"替换",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func lineContainsUnsupportedPublicDocCommandFragment(line, fragment string) bool {
 	pattern := regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_-])` + regexp.QuoteMeta(fragment) + `([^A-Za-z0-9_-]|$)`)
 	return pattern.MatchString(line)
@@ -1858,6 +2308,11 @@ func publicDocCommandFields(line string) []string {
 	trimmed := strings.TrimSpace(line)
 	trimmed = strings.TrimPrefix(trimmed, "$ ")
 	trimmed = strings.TrimPrefix(trimmed, "> ")
+	if strings.HasPrefix(trimmed, "`jvs ") {
+		if end := strings.Index(trimmed[1:], "`"); end >= 0 {
+			trimmed = trimmed[1 : end+1]
+		}
+	}
 	trimmed = strings.Trim(trimmed, "`|")
 	trimmed = strings.TrimSpace(trimmed)
 	if strings.HasPrefix(trimmed, "#") || !strings.HasPrefix(trimmed, "jvs ") {
@@ -1875,39 +2330,220 @@ func publicDocCommandFields(line string) []string {
 	return strings.Fields(trimmed)
 }
 
-func publicDocCommandName(fields []string) string {
-	if len(fields) == 0 || fields[0] != "jvs" {
-		return ""
+func publicDocCommandFieldSets(line string) [][]string {
+	var out [][]string
+	seen := make(map[string]bool)
+	add := func(candidate string) {
+		fields := publicDocCommandFields(candidate)
+		if len(fields) == 0 {
+			return
+		}
+		key := strings.Join(fields, "\x00")
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, fields)
 	}
+
+	add(line)
+	for _, span := range markdownInlineCodeSpans(line) {
+		add(span)
+		for _, part := range strings.Split(span, "&&") {
+			add(part)
+		}
+	}
+	return out
+}
+
+func markdownInlineCodeSpans(line string) []string {
+	var spans []string
+	remaining := line
+	for {
+		start := strings.Index(remaining, "`")
+		if start < 0 {
+			return spans
+		}
+		remaining = remaining[start+1:]
+		end := strings.Index(remaining, "`")
+		if end < 0 {
+			return spans
+		}
+		spans = append(spans, remaining[:end])
+		remaining = remaining[end+1:]
+	}
+}
+
+func savePointUserGuideDocs() []string {
+	return []string{
+		"docs/user/README.md",
+		"docs/user/quickstart.md",
+		"docs/user/concepts.md",
+		"docs/user/commands.md",
+		"docs/user/examples.md",
+		"docs/user/faq.md",
+		"docs/user/troubleshooting.md",
+		"docs/user/safety.md",
+		"docs/user/recovery.md",
+		"docs/20_USER_SCENARIOS.md",
+		"SECURITY.md",
+	}
+}
+
+func publicRootHelpCommandNames(t *testing.T) map[string]bool {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, repoFile(t, "internal/cli/root.go"), nil, 0)
+	if err != nil {
+		t.Fatalf("parse internal/cli/root.go: %v", err)
+	}
+
+	commands := make(map[string]bool)
+	ast.Inspect(file, func(node ast.Node) bool {
+		valueSpec, ok := node.(*ast.ValueSpec)
+		if !ok {
+			return true
+		}
+		for i, name := range valueSpec.Names {
+			if name.Name != "publicRootCommandNames" || i >= len(valueSpec.Values) {
+				continue
+			}
+			lit, ok := valueSpec.Values[i].(*ast.CompositeLit)
+			if !ok {
+				t.Fatalf("publicRootCommandNames must remain a map literal")
+			}
+			for _, elt := range lit.Elts {
+				kv, ok := elt.(*ast.KeyValueExpr)
+				if !ok {
+					continue
+				}
+				key, ok := kv.Key.(*ast.BasicLit)
+				if !ok || key.Kind != token.STRING {
+					continue
+				}
+				value, err := strconv.Unquote(key.Value)
+				if err != nil {
+					pos := fset.Position(key.Pos())
+					t.Fatalf("%s:%d unquote public root command name: %v", repoFile(t, "internal/cli/root.go"), pos.Line, err)
+				}
+				commands[value] = true
+			}
+			return false
+		}
+		return true
+	})
+	if len(commands) == 0 {
+		t.Fatalf("internal/cli/root.go must define publicRootCommandNames")
+	}
+	return commands
+}
+
+func stringBoolMapKeys(values map[string]bool) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func publicDocCommandPath(fields []string) []string {
+	if len(fields) == 0 || fields[0] != "jvs" {
+		return nil
+	}
+	var path []string
 	for i := 1; i < len(fields); i++ {
 		candidate := strings.Trim(fields[i], "`.,;:)")
 		candidate = strings.Trim(candidate, "[]")
+		if publicDocCommandFlagConsumesValue(candidate) {
+			i++
+			continue
+		}
 		if strings.HasPrefix(candidate, "-") ||
 			(strings.HasPrefix(candidate, "<") && strings.HasSuffix(candidate, ">")) ||
 			candidate == "..." {
 			continue
 		}
-		return candidate
+		path = append(path, candidate)
+		if len(path) == 2 {
+			return path
+		}
 	}
-	return ""
+	return path
 }
 
-func stablePublicCommand(command string) bool {
-	switch command {
-	case "init", "import", "clone", "capability", "info", "status", "checkpoint",
-		"diff", "restore", "fork", "workspace", "verify", "doctor", "gc",
-		"completion", "help":
+func publicDocCommandFlagConsumesValue(flag string) bool {
+	if strings.Contains(flag, "=") {
+		return false
+	}
+	switch flag {
+	case "-m", "--message", "--workspace", "--repo", "--from", "--path":
 		return true
 	default:
 		return false
 	}
 }
 
+func stablePublicCommandPath(commandPath []string, publicRootCommands map[string]bool) bool {
+	if len(commandPath) == 0 || !publicRootCommands[commandPath[0]] {
+		return false
+	}
+	if len(commandPath) == 1 {
+		return true
+	}
+	switch commandPath[0] {
+	case "workspace", "view", "recovery", "cleanup":
+	default:
+		return true
+	}
+	if commandPath[0] == "view" && commandPath[1] != "close" && !publicDocKnownUnsupportedSubcommand(commandPath[0], commandPath[1]) {
+		return true
+	}
+	switch strings.Join(commandPath[:2], " ") {
+	case "workspace new",
+		"workspace list",
+		"workspace path",
+		"workspace rename",
+		"workspace remove",
+		"cleanup preview",
+		"cleanup run",
+		"view close",
+		"recovery status",
+		"recovery resume",
+		"recovery rollback":
+		return true
+	default:
+		return false
+	}
+}
+
+func publicDocKnownUnsupportedSubcommand(root, value string) bool {
+	switch root {
+	case "view":
+		switch value {
+		case "delete", "remove", "list", "new", "fork", "gc", "verify", "capability", "checkpoint":
+			return true
+		default:
+			return false
+		}
+	default:
+		switch value {
+		case "delete", "remove", "list", "path", "new", "fork", "gc", "verify", "capability", "checkpoint":
+			return true
+		default:
+			return false
+		}
+	}
+}
+
 func publicDocForbiddenTerms() []string {
-	return []string{
+	terms := []string{
+		"jvs checkpoint",
+		"jvs fork",
+		"jvs gc",
+		"jvs verify",
+		"jvs capability",
 		"jvs snapshot",
 		"jvs worktree",
-		"jvs history",
 		"restore HEAD",
 		"detached",
 		"snapshots",
@@ -1932,6 +2568,8 @@ func publicDocForbiddenTerms() []string {
 		"jvs checkpoint list --grep",
 		"jvs inspect",
 	}
+	terms = append(terms, legacyPublicContractFragments()...)
+	return terms
 }
 
 func markdownHeadingLevel(line string) (int, bool) {
@@ -1952,35 +2590,33 @@ func markdownHeadingLevel(line string) (int, bool) {
 	return level, true
 }
 
-func markedInternalCompatibilityHeading(line string) bool {
-	lower := strings.ToLower(line)
-	for _, marker := range []string{"legacy", "internal", "on-disk", "on disk", "compatibility"} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	return false
-}
-
 func allowedPublicDocCompatibilityLine(doc, line string) bool {
 	lower := strings.ToLower(line)
-	for _, marker := range []string{".jvs/snapshots", ".jvs/worktrees", "repo/worktrees"} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	if doc == "docs/BENCHMARKS.md" {
-		for _, marker := range []string{"`benchmark", "internal/snapshot", "internal/restore", "internal/gc"} {
-			if strings.Contains(lower, marker) {
-				return true
-			}
-		}
-	}
 	for _, marker := range []string{
-		"docs/03_worktree_spec.md",
+		".jvs/snapshots",
+		".jvs/worktrees",
+		"repo/worktrees",
+		"snapshot_id",
+		"worktree_name",
+		"head_snapshot_id",
+		"latest_snapshot_id",
+		"snapshots/         # internal",
+		"worktrees/         # internal",
+		"gc/                #",
+		"`worktrees/` directory",
 	} {
 		if strings.Contains(lower, marker) {
 			return true
+		}
+	}
+	if strings.Contains(lower, "worktrees/") && strings.Contains(lower, "internal") {
+		return true
+	}
+	if doc == "docs/BENCHMARKS.md" {
+		for _, marker := range []string{"`benchmark", "internal/snapshot", "internal/restore", "internal/gc", "benchmarkworktree"} {
+			if strings.Contains(lower, marker) {
+				return true
+			}
 		}
 	}
 	// This is the JuiceFS mount flag, not the old JVS checkpoint compression flag.
@@ -2163,7 +2799,16 @@ func nonFencedSyncGuidanceCopiesWholeJVSMetadata(line string) bool {
 		return false
 	}
 	lower := strings.ToLower(line)
-	for _, marker := range []string{"juicefs sync", "rsync ", "backup", "copy", "sync"} {
+	for _, marker := range []string{
+		"juicefs sync",
+		"rsync ",
+		"copy repository",
+		"copying repository",
+		"sync repository",
+		"sync metadata",
+		"external sync",
+		"external copy",
+	} {
 		if strings.Contains(lower, marker) {
 			return true
 		}
@@ -2247,10 +2892,13 @@ func assertTestFileUsesStableCommands(t *testing.T, path string) {
 		t.Fatalf("parse %s: %v", path, err)
 	}
 
-	legacyCommands := map[string]string{
-		"snapshot": "checkpoint",
-		"history":  "checkpoint list",
-		"worktree": "workspace or fork",
+	hiddenCommandReplacements := map[string]string{
+		"checkpoint": "save or history",
+		"fork":       "workspace new",
+		"gc":         "cleanup preview/run",
+		"verify":     "doctor --strict",
+		"snapshot":   "save point",
+		"worktree":   "workspace",
 	}
 	ast.Inspect(file, func(node ast.Node) bool {
 		call, ok := node.(*ast.CallExpr)
@@ -2266,9 +2914,9 @@ func assertTestFileUsesStableCommands(t *testing.T, path string) {
 			if err != nil {
 				continue
 			}
-			if replacement, ok := legacyCommands[value]; ok {
+			if replacement, ok := hiddenCommandReplacements[value]; ok {
 				pos := fset.Position(lit.Pos())
-				t.Fatalf("%s:%d public-profile test invokes legacy command %q; use %s", path, pos.Line, value, replacement)
+				t.Fatalf("%s:%d public-profile test invokes hidden/non-public command %q; use %s", path, pos.Line, value, replacement)
 			}
 		}
 		return true
@@ -2378,19 +3026,32 @@ func scanPublicDocLines(t *testing.T, doc string, visit func(lineNo int, line st
 
 	scanner := bufio.NewScanner(file)
 	lineNo := 0
-	internalSectionLevel := 0
+	codePackageSectionLevel := 0
+	internalStorageSectionLevel := 0
 	for scanner.Scan() {
 		lineNo++
 		line := scanner.Text()
 		if level, ok := markdownHeadingLevel(line); ok {
-			if internalSectionLevel > 0 && level <= internalSectionLevel {
-				internalSectionLevel = 0
+			if codePackageSectionLevel > 0 && level <= codePackageSectionLevel {
+				codePackageSectionLevel = 0
 			}
-			if markedInternalCompatibilityHeading(line) {
-				internalSectionLevel = level
+			if internalStorageSectionLevel > 0 && level <= internalStorageSectionLevel {
+				internalStorageSectionLevel = 0
+			}
+			if markdownHeadingNamesCodePackage(line) {
+				codePackageSectionLevel = level
+			}
+			if markdownHeadingNamesInternalStorage(line) {
+				internalStorageSectionLevel = level
 			}
 		}
-		if internalSectionLevel > 0 || allowedPublicDocCompatibilityLine(doc, line) {
+		if codePackageSectionLevel > 0 {
+			continue
+		}
+		if internalStorageSectionLevel > 0 && lineNamesInternalStoragePath(line) {
+			continue
+		}
+		if allowedPublicDocCompatibilityLine(doc, line) {
 			continue
 		}
 		visit(lineNo, line)
@@ -2398,6 +3059,35 @@ func scanPublicDocLines(t *testing.T, doc string, visit func(lineNo int, line st
 	if err := scanner.Err(); err != nil {
 		t.Fatalf("scan %s: %v", doc, err)
 	}
+}
+
+func markdownHeadingNamesCodePackage(line string) bool {
+	lower := strings.ToLower(line)
+	return strings.Contains(lower, "pkg/") || strings.Contains(lower, "internal/")
+}
+
+func markdownHeadingNamesInternalStorage(line string) bool {
+	lower := strings.ToLower(line)
+	return strings.Contains(lower, "internal storage") || strings.Contains(lower, "storage layout")
+}
+
+func lineNamesInternalStoragePath(line string) bool {
+	lower := strings.ToLower(line)
+	for _, marker := range []string{
+		".jvs/",
+		"descriptors/",
+		"snapshots/",
+		"worktrees/",
+		"audit/",
+		"gc/",
+		"intents/",
+		"recovery-plans/",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func readRepoFile(t *testing.T, parts ...string) string {

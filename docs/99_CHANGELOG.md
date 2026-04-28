@@ -1,46 +1,51 @@
 # Changelog
 
+This changelog is release-facing. Because JVS has not reached GA, earlier
+draft material is not carried forward as active reader content. The active
+product vocabulary is folder, workspace, save point, save, history, view,
+restore, recovery plan, doctor, and cleanup.
+
 ## v0.4.2 - 2026-04-27
 
 ### Highlights
 
-- Candidate patch release for compatible fixes and release-facing docs/test
-  coverage after `v0.4.1`; no public CLI, library API, or on-disk repository
-  format changes are introduced.
-- Partial checkpoint path handling now canonicalizes overlapping
-  ancestor/descendant selections to the ancestor path in descriptors and audit
-  records, while still validating every requested path before checkpoint
-  creation.
-- EMPTY workspace behavior is documented and covered as a first-checkpoint
-  workflow: a newly initialized empty `main` workspace can create the first
-  checkpoint, making it both `current` and `latest`.
-- User-story E2E coverage now records local story targets, JSON automation
-  story coverage, JuiceFS local story qualification requirements, and
-  release-blocking defect classification for product-facing flows.
-- Transfer and materialization paths used by clone, import, restore, fork, and
-  checkpoint flows are covered by destination-owned staging checks so story
-  tests exercise safer setup and workspace lifecycle behavior.
-- The release-facing identity remains
-  `github.com/agentsmith-project/jvs`; final releases remain published under
-  URLs such as `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.0`
-  and `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.1`.
+- GA candidate for the save point public contract. Visible help and active
+  specs lead with `init`, `save`, `history`, `view`, `restore`,
+  `workspace new`, `recovery`, `status`, and `doctor`.
+- Restore is preview-first: `jvs restore <save>` creates a plan and changes no
+  files; `jvs restore --run <plan-id>` revalidates and applies the reviewed
+  plan; `jvs recovery status|resume|rollback` closes interrupted restore
+  workflows.
+- `jvs workspace new <name> --from <save>` creates another real workspace from
+  a save point, leaves the source workspace unchanged, starts with
+  `Newest save point: none`, and records `started_from_save_point` on first
+  save.
+- Cleanup is documented as reviewed deletion of unprotected save point storage:
+  preview first, then run the reviewed plan.
+- Release-facing identity is `github.com/agentsmith-project/jvs`; release URLs
+  use the canonical GitHub project, for example
+  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.0`.
 
 ### Breaking changes
 
-- None for the stable v0 public CLI contract.
+- Active docs and visible help now present the save point contract as the only
+  public user surface.
+- Restore examples must use preview/run and the public safety flags
+  `--save-first` and `--discard-unsaved`.
+- Workspace creation examples must use `jvs workspace new <name> --from
+  <save>`.
 
 ### Known limitations
 
 - v0 does not include remote push/pull.
 - v0 does not include signing commands.
-- v0 does not include partial checkpoint contracts; the path-folding fix
-  improves existing behavior but does not promote partial checkpoints to a
-  stable public contract.
+- v0 does not include public partial-save contracts.
 - v0 does not include compression contracts.
 - v0 does not include merge/rebase.
 - v0 does not include complex retention policy flags.
-- Full verification reads checkpoint payloads and can be I/O intensive on large
-  workspaces.
+- Cleanup command promotion is still pending; release-facing docs describe the
+  cleanup preview/run contract.
+- Strict integrity checks can be I/O intensive on large workspaces.
 - Descriptor signing and in-JVS trust policy remain outside the stable v0
   repository format.
 
@@ -52,554 +57,36 @@
 - `migration`: active `.jvs/locks/`, `.jvs/intents/`, and `.jvs/gc/*.json`
   runtime state is non-portable and must be rebuilt at the destination with
   `jvs doctor --strict --repair-runtime`.
+- `recovery`: restore run is recoverable through recovery plans, but operators
+  must resolve active plans before starting another restore in the same
+  workspace.
 
 ### Migration notes
 
-- Existing repositories do not need an on-disk migration for this patch
-  release candidate; `.jvs/format_version` remains a repository layout
-  version, not the application release version.
-- After upgrading, run `jvs doctor --strict` and `jvs verify --all` on a
-  representative repo before relying on it for release workflows.
+- Existing repositories do not need an on-disk migration for this candidate;
+  `.jvs/format_version` remains a repository layout version, not the
+  application release version.
+- After upgrading, run `jvs doctor --strict` on a representative repo before
+  relying on it for release workflows.
 - After a physical backup or storage migration, run
-  `jvs doctor --strict --repair-runtime` at the destination before
-  verification.
+  `jvs doctor --strict --repair-runtime` at the destination before the final
+  strict doctor check.
 - Exclude active `.jvs/locks/`, `.jvs/intents/`, and `.jvs/gc/*.json` runtime
   state during physical sync; copied mutation locks may block destination
   writes until repaired.
+- Run the restore drill from `docs/13_OPERATION_RUNBOOK.md`, including
+  preview/run and recovery status/resume/rollback coverage.
 
 ### Release evidence
 
 - See the [release evidence ledger](RELEASE_EVIDENCE.md#v042---2026-04-27)
   for the `v0.4.2` GA candidate readiness record. It is not final, not tagged,
   and not published; final tag, release-gate, coverage, representative repo,
-  artifact, and signing evidence remain pending final release qualification.
+  restore drill, artifact, and signing evidence remain pending final release
+  qualification.
 
 ### Release artifacts
 
 - No release artifacts have been published for this candidate entry. Final
   binaries, `SHA256SUMS`, `.sig`, and `.pem` artifacts must be produced by the
   tag-gated release workflow after `make release-gate` succeeds.
-
-## v0.4.1 - 2026-04-26
-
-### Highlights
-
-- Published patch release for changes after `v0.4.0`; no public CLI,
-  library API, or on-disk repository format changes are introduced.
-- Final release evidence documentation records the `v0.4.1` final tagged
-  release facts with published-release language.
-- CI and release validation metadata now require tag-aware checkout metadata
-  so final release evidence can validate tagged commits against local tag
-  refs.
-- Deterministic fuzz smoke hardening makes release-blocking fuzz target
-  discovery explicit and keeps ordinary fuzz tests stable.
-- The release-facing identity remains
-  `github.com/agentsmith-project/jvs`; this final release is published at
-  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.1`, and the
-  previous final release was
-  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.0`.
-
-### Breaking changes
-
-- None for the stable v0 public CLI contract.
-
-### Known limitations
-
-- v0 does not include remote push/pull.
-- v0 does not include signing commands.
-- v0 does not include partial checkpoint contracts.
-- v0 does not include compression contracts.
-- v0 does not include merge/rebase.
-- v0 does not include complex retention policy flags.
-- Full verification reads checkpoint payloads and can be I/O intensive on large
-  workspaces.
-- Descriptor signing and in-JVS trust policy remain outside the stable v0
-  repository format.
-
-### Risk labels
-
-- `integrity`: descriptor checksum and payload hash detect independent
-  corruption; coordinated descriptor-plus-checksum rewrite remains a v0
-  residual risk.
-- `migration`: active `.jvs/locks/`, `.jvs/intents/`, and `.jvs/gc/*.json`
-  runtime state is non-portable and must be rebuilt at the destination with
-  `jvs doctor --strict --repair-runtime`.
-
-### Migration notes
-
-- Existing repositories do not need an on-disk migration for this patch
-  release; `.jvs/format_version` remains a repository layout version, not the
-  application release version.
-- After upgrading, run `jvs doctor --strict` and `jvs verify --all` on a
-  representative repo before relying on it for release workflows.
-- After a physical backup or storage migration, run
-  `jvs doctor --strict --repair-runtime` at the destination before
-  verification.
-- Exclude active `.jvs/locks/`, `.jvs/intents/`, and `.jvs/gc/*.json` runtime
-  state during physical sync; copied mutation locks may block destination
-  writes until repaired.
-
-### Release evidence
-
-- See the [release evidence ledger](RELEASE_EVIDENCE.md#v041---2026-04-26)
-  for the `v0.4.1` final tagged release record. It records the annotated tag,
-  final tagged commit, release gate, coverage, representative repo, GA docs,
-  artifact, signing, and runbook evidence for the published GitHub release.
-
-### Release artifacts
-
-- Published artifacts include five platform binaries, five `.sig` sidecars,
-  five `.pem` sidecars, `SHA256SUMS`, `SHA256SUMS.sig`, and `SHA256SUMS.pem`.
-- The release workflow verified all artifacts are non-empty and ran
-  `sha256sum --check --strict SHA256SUMS`; independent download verification
-  also ran `sha256sum -c --strict SHA256SUMS` successfully for all five
-  binaries.
-
-## v0.4.0 - 2026-04-25
-
-### Highlights
-
-- Public CLI JSON errors now use the stable envelope for unknown commands,
-  utility commands, and hidden legacy command paths.
-- Public examples use v0-stable commands and refs: `checkpoint`, `workspace`,
-  `current`, `latest`, exact tags, and full or unique checkpoint IDs.
-- Release artifacts include explicit readiness notes for limitations, risk
-  labels, and migration impact.
-- Release-facing identity now uses `github.com/agentsmith-project/jvs` for the
-  Go module/import path, install examples, signing guidance, release evidence,
-  and final release URLs such as
-  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.0`.
-
-### Breaking changes
-
-- None for the stable v0 public CLI contract.
-
-### Known limitations
-
-- v0 does not include remote push/pull, signing commands, partial checkpoint contracts, compression contracts, merge/rebase, or complex retention policy flags.
-- Full verification reads checkpoint payloads and can be I/O intensive on large
-  workspaces.
-- Descriptor signing and in-JVS trust policy remain outside the stable v0
-  repository format.
-
-### Risk labels
-
-- `integrity`: descriptor checksum and payload hash detect independent
-  corruption; coordinated descriptor-plus-checksum rewrite remains a v0
-  residual risk.
-- `migration`: runtime operation state must be rebuilt at the destination with
-  `jvs doctor --strict --repair-runtime`; do not copy mutation locks,
-  operation records, or active GC plans as authoritative state.
-
-### Migration notes
-
-- Existing repositories do not need an on-disk migration for this readiness
-  update; descriptors written before `metadata_preservation.ownership` remain
-  checksum-compatible.
-- After upgrading, run `jvs doctor --strict` and `jvs verify --all` on a
-  representative repo before publishing release artifacts.
-- After a physical backup or storage migration, run
-  `jvs doctor --strict --repair-runtime` at the destination before verification.
-- Exclude active `.jvs/locks/`, `.jvs/intents/`, and `.jvs/gc/*.json` runtime
-  state during physical sync; copied mutation locks may block destination
-  writes until repaired.
-- `.jvs/snapshots` and `.jvs/worktrees` are compatibility storage names, not a
-  public terminology rollback.
-
-### Release evidence
-
-- See the [release evidence ledger](RELEASE_EVIDENCE.md#v040---2026-04-25)
-  for the `v0.4.0` final tagged release record. It records the tag, final
-  tagged commit, release gate, coverage, representative repo, GA docs,
-  artifact, signing, and runbook evidence for the published GitHub release.
-
-### Release artifacts
-
-- Release notes generated by `.github/workflows/ci.yml` include binaries,
-  `SHA256SUMS`, `.sig` and `.pem` sidecars, known limitations, risk labels, and
-  migration notes.
-- See `docs/SIGNING.md` for Sigstore/cosign verification with
-  `--signature` and `--certificate`.
-
-# Legacy/Internal Changelog Archive
-
-## v8.2 — 2026-02-28
-
-### Housekeeping: remove stale artifacts and aspirational docs
-
-Continued the YAGNI cleanup from v8.1. Removed 9,200+ lines of orphaned infrastructure, aspirational documentation, and dead cross-references that accumulated during earlier development phases.
-
-### Removed
-
-- **Homebrew tap**: `homebrew-tap/` directory and `docs/HOMEBREW.md`. Release workflow was already removed in v8.1; the tap formula and scripts were orphaned.
-- **Ansible role**: `ansible-role-jvs/` directory. Deployment automation for a local CLI tool is over-engineering.
-- **GitHub Action**: `.github/actions/jvs-snapshot/`. No consuming workflows exist.
-- **VS Code extension**: `vscode-extension/` directory. A 647-line aspirational TypeScript extension that was never published; if needed, it belongs in its own repo.
-- **Aspirational governance docs**: `GOVERNANCE.md`, `ROADMAP.md`, `UPGRADE.md` — project governance artifacts for a single-maintainer CLI tool.
-- **Fictional/marketing docs**: `CNCF_SANDBOX_APPLICATION.md`, `CII_BADGE_ASSESSMENT.md`, `CASE_STUDIES.md`, `VIDEO_TUTORIALS.md`, `TEAM_CHARTER.md`.
-- **Completed planning docs**: 3 duplicate v8.0 development plans, `PRODUCT_PLAN_v8.1.md`, `PRODUCT_REPORT_v8.1.md`, `CODE_REVIEW_SIMPLIFICATION.md`, `FEATURE_SCOPE_REFINEMENTS.md`, v7.0 comprehensive fixes design.
-
-### Fixed
-
-- `CLAUDE.md`: removed stale "locks" reference in control plane description (locks removed in v6.7).
-- `regression_test.go`: removed redundant `// +build` tag (Go 1.17+ only needs `//go:build`).
-- Fixed dangling cross-references to removed files in README, FAQ, TROUBLESHOOTING, CONTRIBUTING, quickstart guides, and MIGRATION_AND_BACKUP.
-- Added `internal/cli/test-debug-flag/` to `.gitignore`.
-
-### What remains
-
-Core specs (00–18), CONSTITUTION, ARCHITECTURE, BENCHMARKS, PERFORMANCE, quickstart guides, TEMPLATES, EXAMPLES, FAQ, TROUBLESHOOTING, API_DOCUMENTATION, SIGNING, SOURCES, TARGET_USERS, SECURITY, CONTRIBUTING, CODE_OF_CONDUCT, and original implementation design/plan documents.
-
----
-
-## v8.1 — 2026-02-28
-
-### YAGNI: Remove Docker, Kubernetes operator, and Terraform provider
-
-JVS is a local CLI tool. Container orchestration, Kubernetes CRDs, and Terraform state management belong in the consumer (agentsmith), not in the versioning tool itself.
-
-### Removed
-
-- **Docker infrastructure**: `Dockerfile`, `.dockerignore`, `docker-compose.yml`, `.github/workflows/docker.yml`, `docs/DOCKER.md`. Running a local filesystem tool inside a container adds complexity (FUSE mounts, bind mounts, privileged mode) for no benefit.
-- **Kubernetes operator**: `controllers/`, `api/v1alpha1/`, `cmd/jvs-operator/`, `config/` (CRDs, RBAC, deployment manifests), `Makefile.operator`, `docs/OPERATOR.md`. Skeleton code that was never functional; workspace lifecycle belongs in the platform layer.
-- **Terraform provider**: `terraform-provider-jvs/` (entire module), `docs/TERRAFORM.md`. JVS repos are created by `jvs init`, not by infrastructure-as-code tools.
-- **241 dependency lines removed** from `go.mod`/`go.sum` (k8s.io/apimachinery, k8s.io/client-go, sigs.k8s.io/controller-runtime, and transitive deps).
-
-### Rationale
-
-Following the KISS and YAGNI principles established in v7.2:
-1. A local CLI tool should not ship container images — nobody runs `git` in Docker to manage host repos.
-2. If a Kubernetes operator is needed in the future, it should live in its own repository with its own release cycle.
-3. The Terraform provider duplicated `jvs init`/`jvs snapshot` as HCL resources with no added value.
-4. Removing 50+ files and 241 dependency lines reduces attack surface, build time, and cognitive overhead.
-
-### Migration from v8.0
-
-**No breaking changes to the CLI or library API.** If you were using the Docker image, install the `jvs` binary directly. If you were using the Kubernetes operator or Terraform provider, they were never released as stable features.
-
----
-
-## v8.0 — 2026-02-28
-
-### Production hardening release
-
-This release focuses on stability, correctness, and testing infrastructure ahead of agentsmith integration. No new user-facing features; all changes improve reliability of existing behavior.
-
-### Critical bug fixes
-
-- **CanSnapshot blocked first snapshot** (`pkg/model/worktree.go`): `CanSnapshot()` returned false for new worktrees with no snapshots, making it impossible to create the initial snapshot on a fresh worktree.
-- **Descriptor checksum excluded fields** (`internal/integrity/checksum.go`): `PartialPaths` and `Compression` fields were excluded from the descriptor checksum, meaning changes to these fields went undetected during integrity verification.
-- **GC ignored retention policies** (`internal/gc/collector.go`): `Plan()` never applied `KeepMinSnapshots` or `KeepMinAge` rules, so GC could delete snapshots that should have been protected.
-- **Engine detection on wrong filesystem** (`internal/engine/juicefs.go`): `DetectEngine` tested reflink capability in `/tmp` instead of the actual repository filesystem, leading to incorrect engine selection for repos on different mounts.
-- **Config cache mutation** (`pkg/config/config.go`): `Load()` returned a direct pointer to the cached config, allowing callers to mutate shared state. Now returns a deep copy.
-- **Color state race condition** (`pkg/color/color.go`): Refactored to use `atomic.Bool` with an `overridden` flag so explicit `Enable()`/`Disable()` calls are not silently undone by `Init()` or `NO_COLOR` env.
-- **Doctor format version detection** (`internal/doctor/doctor.go`): `checkFormatVersion` used `fmt.Sscanf` which silently treated non-numeric content as 0. Now uses `strconv.Atoi` to properly detect corrupted format files.
-
-### Robustness improvements
-
-- **Input validation**: `Restorer.restore()` now validates non-empty `worktreeName` and `snapshotID`; `Collector.Run()` validates non-empty `planID`.
-- **Error visibility**: `worktree.List()`, `gc.PlanWithPolicy()` now log warnings for malformed configs and descriptor load errors instead of silently skipping.
-- **Resource safety**: `FsyncTree()` uses close-after-sync pattern to prevent file handle leaks on error.
-- **Path handling**: `cli/init.go` uses `filepath.Join()` instead of string concatenation.
-
-### Test infrastructure
-
-- **20+ new unit tests**: GC retention policies (age, count, combined, zero), restore input validation, snapshot compression, empty worktree snapshots, corrupted descriptors, concurrent config access, concurrent audit appends, fsutil error paths, diff edge cases, doctor repair/detection.
-- **6 new E2E conformance tests**: compression round-trip, GC retention policy, doctor crash recovery, concurrent worktree operations, first snapshot on new worktree, verify after restore.
-- **5 new regression tests**: CanSnapshot fix, GC retention policy, restore empty args, GC empty plan ID, config cache mutation.
-- **Pre-existing test fix**: `TestE2E_Worktree_WorktreePath` now creates a snapshot before forking.
-- **Coverage**: 78.6% → 79.8% overall; GC 81.6% → 89.7%.
-
-### Project management infrastructure
-
-- **Makefile**: 6 new targets — `test-race`, `test-cover` (60% threshold), `test-all`, `integration`, `release-gate`, `clean`.
-- **Release gate**: `make release-gate` runs the full pre-release pipeline (test-race, test-cover, lint, build, conformance, fuzz).
-- **CLAUDE.md**: Added Build & Test section with all Makefile targets, testing conventions, coverage requirements, and pre-merge gate instructions.
-- **Release policy**: `docs/12_RELEASE_POLICY.md` updated to reference `make release-gate`.
-
-### Migration from v7.2
-
-**No breaking changes.** All v7.2 repositories and snapshots are fully compatible with v8.0.
-
-Recommended: Run `jvs doctor --strict` after upgrading to verify repository health.
-
-### Affected files
-
-29 files modified, 1 new conformance test file created. ~880 lines added, ~139 lines removed.
-
----
-
-## v7.2 — 2026-02-23
-
-### KISS Simplification: Focus on Core Value
-- **Removed unused packages**: Deleted `pkg/webhook/` (409 lines), `pkg/metrics/` (61 lines), and `pkg/template/` (75 lines)
-- **Simplified configuration**: Reduced `pkg/config/config.go` from 500 to 269 lines (-231 lines)
-- **Removed template CLI**: Deleted `internal/cli/template.go` (137 lines) and template subsystem
-- **Total code reduction**: ~900 lines of unused or low-value code removed
-
-### What was removed
-- **Webhook system**: HTTP webhook notification infrastructure (was never integrated into core workflow)
-- **Metrics system**: Empty Prometheus metrics implementation (no actual metrics were exported)
-- **Template system**: Snapshot template extension code (low usage, high complexity)
-
-### What was preserved
-- **Core features**: snapshot, restore, worktree, tags, verify, doctor, gc
-- **Config file**: Simplified to 4 settings (default_engine, default_tags, output_format, progress_enabled)
-- **All user-facing functionality**: No breaking changes to CLI commands or workflows
-
-### Why these changes?
-Following the KISS principle and user research (see docs/TARGET_USERS.md), JVS is focusing on its core value proposition: **O(1) snapshots for large files that Git cannot handle**. The removed features were either:
-1. Unused infrastructure (webhooks, metrics)
-2. Low-value complexity (templates)
-3. Outside core scope (monitoring, notifications belong in external tools)
-
-### Documentation updates
-- **Quick start guides**: Added game_dev_quickstart.md, agent_sandbox_quickstart.md, etl_pipeline_quickstart.md
-- **Templates**: Added TEMPLATES.md with `.jvsignore` patterns for common scenarios
-- **User research**: Added TARGET_USERS.md with pain point analysis for 3 target scenarios
-- **Feature scope**: Added FEATURE_SCOPE_REFINEMENTS.md with KISS-aligned recommendations
-
-### Migration from v7.1
-**No breaking changes.** All v7.1 repositories and snapshots are fully compatible with v7.2.
-
-If you were using webhook or template features:
-- Webhooks: Use external tools (Airflow webhooks, cron jobs, or script wrappers)
-- Templates: Use shell scripts or CI/CD pipelines instead
-
-### Affected files
-- Removed: pkg/webhook/, pkg/metrics/, pkg/template/
-- Removed: internal/cli/template.go, docs/WEBHOOKS.md
-- Simplified: pkg/config/config.go
-- Added: docs/TARGET_USERS.md, docs/FEATURE_SCOPE_REFINEMENTS.md
-- Added: docs/game_dev_quickstart.md, docs/agent_sandbox_quickstart.md, docs/etl_pipeline_quickstart.md
-- Added: docs/TEMPLATES.md
-
----
-
-## v7.1 — 2026-02-23
-
-### Quality and maturity improvements for CNCF readiness
-- **Test coverage milestone**: Achieved 83.7% overall coverage (up from 77.6%), exceeding 80% target
-- **CI/CD enhancements**: Added gosec and staticcheck to CI pipeline for automated security scanning
-- **Signed releases**: Implemented cryptographically signed releases with verifiable signatures
-- **DCO enforcement**: Added Developer Certificate of Origin (DCO) enforcement to CI workflow
-- **Conformance tests**: Expanded from 29 to 54+ tests covering edge cases and user scenarios
-
-### New features
-- **Shell completion**: Added bash, zsh, and fish shell completion for all JVS commands
-- **Snapshot diff**: Added `jvs diff` command to compare workspace changes between snapshots
-- **Interactive restore**: Enhanced `jvs restore` with fuzzy matching and confirmation prompts
-- **Progress bars**: Added visual progress reporting for long-running operations (GC, verify, hash computation)
-
-### Documentation expansion (11 new documents)
-- **CNCF readiness**: Created SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md
-- **Governance**: Created GOVERNANCE.md (roles, decision-making, continuity plan)
-- **Planning**: Created ROADMAP.md (12-month outlook, v8.0 candidates, CNCF timeline)
-- **Architecture**: Created docs/ARCHITECTURE.md (system components, data flows, trust boundaries)
-- **Getting started**: Created docs/QUICKSTART.md (5-minute tutorial)
-- **Examples**: Created docs/EXAMPLES.md (6 real-world workflows: ML, dev, CI/CD, agents, backup, multi-env)
-- **API documentation**: Created docs/API_DOCUMENTATION.md (Go library API reference)
-- **Videos**: Created docs/VIDEO_TUTORIALS.md (4 video outlines with production guides)
-- **CII assessment**: Created docs/CII_BADGE_ASSESSMENT.md (OpenSSF badge progress)
-- **Upgrade guide**: Created UPGRADE.md (version compatibility, migration steps)
-- **CNCF application**: Created docs/CNCF_SANDBOX_APPLICATION.md (Sandbox application package)
-
-### Repository cleanup
-- **Lock mechanism**: Removed all remaining references to v6.7 lock removal from documentation
-- **Spec updates**: Updated CONSTITUTION.md, SECURITY_MODEL.md, THREAT_MODEL.md to v7.0
-- **Cross-references**: Cleaned up references to removed spec 07 (LOCKING_AND_CONSISTENCY_SPEC.md)
-
-### CI/CD improvements
-- **Static analysis**: Integrated gosec for security vulnerability scanning
-- **Static analysis**: Integrated staticcheck for additional Go code quality checks
-- **Lint enforcement**: Made CI fail on static analysis findings
-- **Signed releases**: Added GPG signing for release artifacts
-
-### Badge and visibility
-- **CII Best Practices**: Achieved 95% Passing level (OpenSSF Best Practices Badge)
-- **CII Silver**: At 85% - targeting completion in Q2 2026
-- **Status badges**: Added CII, Go Report Card, and license badges to README.md
-
-### Minor fixes and improvements
-- **Error messages**: Improved error clarity with context-specific messages
-- **Help text**: Enhanced command help descriptions
-- **Config validation**: Added better validation for configuration file options
-- **Path handling**: Improved path validation and security checks
-
-### Affected files
-- Added: SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, GOVERNANCE.md, ROADMAP.md
-- Added: UPGRADE.md, docs/ARCHITECTURE.md, docs/QUICKSTART.md, docs/EXAMPLES.md
-- Added: docs/API_DOCUMENTATION.md, docs/VIDEO_TUTORIALS.md, docs/CII_BADGE_ASSESSMENT.md
-- Added: docs/CNCF_SANDBOX_APPLICATION.md
-- Modified: .github/workflows/ (CI enhancements)
-- Modified: docs/99_CHANGELOG.md, docs/CONSTITUTION.md, docs/09_SECURITY_MODEL.md, docs/10_THREAT_MODEL.md
-- Modified: docs/13_OPERATION_RUNBOOK.md, docs/plans/2026-02-20-jvs-implementation-plan.md
-- Modified: README.md (badges, quick start link)
-
-### Migration from v7.0
-No breaking changes. All v7.0 snapshots are fully compatible with v7.1.
-Recommended: Run `jvs doctor --strict` after upgrading to verify repository health.
-
----
-
-## v7.0 — 2026-02-22
-
-### Redesigned restore command with detached state model
-- **Single behavior restore**: `jvs restore <id>` now always operates inplace (no more --inplace/--force/--reason flags)
-- **Detached state**: After restoring to a historical snapshot, the worktree enters "detached state" where snapshots cannot be created
-- **Fork command**: `jvs worktree fork` creates a new worktree from current or specified snapshot (replaces old "safe restore" behavior)
-- **Restore HEAD**: `jvs restore HEAD` returns the worktree to the latest snapshot (exits detached state)
-- **History markers**: `jvs history` now shows [HEAD] marker and "you are here" indicator
-
-### Worktree config changes
-- Added `latest_snapshot_id` field to worktree config
-- `IsDetached()` returns true when `head_snapshot_id != latest_snapshot_id`
-- `CanSnapshot()` returns true only when not detached and has at least one snapshot
-
-### Migration from v6.x
-In v6.x, `restore` had two modes:
-- Default: created new worktree (`SafeRestore`)
-- `--inplace --force --reason`: overwrote current worktree
-
-In v7.0:
-- `restore` always does inplace restore
-- Use `worktree fork` to create new worktree from snapshot
-- No more `--inplace`, `--force`, `--reason` flags
-
-### Affected files
-- Modified: `internal/cli/restore.go`, `internal/cli/snapshot.go`, `internal/cli/worktree.go`, `internal/cli/history.go`, `internal/restore/restorer.go`, `internal/worktree/manager.go`, `pkg/model/worktree.go`
-- Updated tests: `internal/restore/restorer_test.go`, `test/conformance/fencing_test.go`
-- Updated docs: `06_RESTORE_SPEC.md`, `02_CLI_SPEC.md`, `11_CONFORMANCE_TEST_PLAN.md`, `CONSTITUTION.md`, `README.md`, `CLAUDE.md`
-- Added: `docs/20_USER_SCENARIOS.md`
-
-## v6.7 — 2026-02-20
-
-### Removed lock mechanism entirely
-- **Lock subsystem removed**: The entire lock/lease/fencing mechanism has been removed. For a local workspace versioning system, distributed locking was over-engineered and provided a false sense of security (it only protected snapshot/restore, not actual file operations).
-- **Simplified snapshot**: `jvs snapshot` no longer requires acquiring a lock first. Just snapshot whenever you want.
-- **Simplified restore**: `jvs restore --inplace` now only requires `--force --reason` (no fencing token).
-- Removed `jvs lock acquire/release/renew/status/steal` commands.
-- Removed `FencingToken` field from snapshot descriptor.
-- Removed lock-related audit event types: `EventTypeLockAcquire`, `EventTypeLockRelease`, `EventTypeLockSteal`.
-- Removed error classes: `E_LOCK_CONFLICT`, `E_LOCK_EXPIRED`, `E_LOCK_NOT_HELD`, `E_FENCING_MISMATCH`, `E_CLOCK_SKEW_EXCEEDED`, `E_CONSISTENCY_UNAVAILABLE`.
-- Removed `.jvs/locks/` directory from repository layout.
-- Removed `isolation` field from worktree config (was always `exclusive`).
-- Updated conformance tests: removed lock-related tests, added in-place restore requirements tests.
-
-### Rationale
-The lock mechanism was designed for distributed systems but JVS is local-first. Users should coordinate their own workflow (when to snapshot, when to restore). The lock only checked at snapshot/restore time but didn't prevent concurrent file writes anyway.
-
-### Affected files
-- Deleted: `internal/lock/manager.go`, `internal/lock/manager_test.go`, `internal/cli/lock.go`, `pkg/model/lock.go`, `test/conformance/lock_test.go`, `docs/07_LOCKING_AND_CONSISTENCY_SPEC.md`
-- Modified: `internal/cli/snapshot.go`, `internal/cli/restore.go`, `internal/snapshot/creator.go`, `internal/restore/restorer.go`, `internal/repo/repo.go`, `pkg/model/snapshot.go`, `pkg/model/audit.go`, `internal/cli/root.go`, `internal/cli/root_test.go`, `internal/doctor/doctor.go`, `internal/gc/collector.go`
-- Updated docs: 00_OVERVIEW, 01_REPO_LAYOUT_SPEC, 02_CLI_SPEC, 03_WORKTREE_SPEC, 04_SNAPSHOT_SCOPE_AND_LINEAGE_SPEC, 05_SNAPSHOT_ENGINE_SPEC, 06_RESTORE_SPEC, 11_CONFORMANCE_TEST_PLAN, 14_TRACEABILITY_MATRIX, 18_MIGRATION_AND_BACKUP, README.md
-
-## v6.6 — 2026-02-20
-
-### Simplified snapshot references: tags replace refs
-- **Removed refs subsystem**: The separate `.jvs/refs/` directory and `jvs ref` commands are removed. For local workspace versioning, a separate refs feature was over-engineered.
-- **Added tags to snapshots**: Tags are now embedded directly in snapshot descriptors as a `tags` array field. This provides a simpler UX - users just work with snapshots and optional tags.
-- `jvs snapshot` now accepts `--tag <tag>` (repeatable) to attach tags during snapshot creation.
-- `jvs history` now supports `--grep <pattern>` (filter by note), `--tag <tag>` (filter by tag), and `--all` (show all snapshots, not just current worktree lineage).
-- `jvs restore` now supports fuzzy snapshot lookup: snapshot-id can be a full ID, short ID prefix, tag name, or note prefix.
-- `jvs restore --latest-tag <tag>` restores the most recent snapshot with the given tag.
-- Removed `EventTypeRefCreate` and `EventTypeRefDelete` audit event types.
-- Removed refs from GC protection rules (tags are embedded in descriptors, so tagged snapshots are protected by lineage).
-- Updated conformance tests: removed ref-related tests, added tag validation test.
-
-### Affected files
-- Deleted: `internal/ref/manager.go`, `internal/ref/manager_test.go`, `internal/cli/ref.go`, `pkg/model/ref.go`, `test/conformance/ref_test.go`
-- Modified: `internal/gc/collector.go`, `internal/repo/repo.go`, `internal/repo/repo_test.go`, `pkg/model/audit.go`, `pkg/model/snapshot.go`, `internal/snapshot/creator.go`, `internal/cli/snapshot.go`, `internal/cli/history.go`, `internal/cli/restore.go`, `internal/cli/root_test.go`
-- Added: `internal/snapshot/catalog.go`
-- Updated docs: 01_REPO_LAYOUT_SPEC, 02_CLI_SPEC, 03_WORKTREE_SPEC, 08_GC_SPEC, 11_CONFORMANCE_TEST_PLAN, 14_TRACEABILITY_MATRIX, 18_MIGRATION_AND_BACKUP, README.md
-
-## v6.5 — 2026-02-20
-
-### Scope simplifications for v0.x implementation
-- **Shared mode deferred to v1.x**: v0.x supports `exclusive` isolation only. Shared mode requires conflict-resolution semantics not yet designed. Worktree creation no longer accepts `--isolation shared`.
-- **Signing system deferred to v1.x**: v0.x integrity relies on descriptor checksum + payload root hash (2-layer model). Descriptor signing, trust policy, keyring, and key lifecycle are architecturally planned but removed from v0.x scope. Coordinated descriptor+checksum rewrite by an attacker with filesystem access is accepted as v0.x residual risk.
-- Removed `.jvs/trust/` directory from on-disk layout.
-- Removed `--signing-key` from `jvs init`, `--allow-unsigned` from `jvs verify`.
-- Removed error classes: `E_SIGNATURE_INVALID`, `E_SIGNING_KEY_MISSING`, `E_TRUST_POLICY_VIOLATION`.
-- Descriptor schema removes: `signature`, `signing_key_id`, `signed_at`, `tamper_evidence_state`.
-- Conformance tests reduced from 32 to 29 (removed signature/trust tests 10, 11, 21).
-- Pin CLI (`jvs gc pin/unpin`) noted as v1.x planned feature.
-
-### Affected specs
-- 00_OVERVIEW.md, 01_REPO_LAYOUT_SPEC.md, 02_CLI_SPEC.md, 03_WORKTREE_SPEC.md
-- 04_SNAPSHOT_SCOPE_AND_LINEAGE_SPEC.md, 05_SNAPSHOT_ENGINE_SPEC.md
-- 06_RESTORE_SPEC.md, 09_SECURITY_MODEL.md, 10_THREAT_MODEL.md
-- 11_CONFORMANCE_TEST_PLAN.md, 14_TRACEABILITY_MATRIX.md, 18_MIGRATION_AND_BACKUP.md
-
-## v6.4 (2026-02-20)
-- **Layout migration**: worktree metadata moved from `<worktree>/.jvs-worktree/` to `.jvs/worktrees/<name>/`. Payload roots now contain zero control-plane artifacts. Rationale: `juicefs clone` cannot exclude subdirectories, so payload purity must be structural, not filter-based.
-- Added worktree discovery algorithm (walk-up to repo root, path-based name resolution) in 01_REPO_LAYOUT_SPEC.
-- `.jvs/worktrees/` added to portable history state.
-- Constitution v1.0 → v1.2: added §7.4 Integrity and Verifiability; acknowledged `shared` mode exception in §7.3; strengthened §2.3 control-plane separation; clarified §4.2 rationale; clarified O(1)/O(n) in §1; simplified §5.1 exclusion list (only `.jvs/`).
-- Simplified 04_SNAPSHOT_SCOPE: no exclusion logic needed (payloads are pure data).
-- Simplified 05_SNAPSHOT_ENGINE: removed `.jvs-worktree/` exclusion invariant; updated head pointer path to `.jvs/worktrees/<name>/config.json`; added O(1)/O(n) performance characteristics per engine.
-- Updated 03_WORKTREE_SPEC: centralized metadata under `.jvs/worktrees/`; documented pure-payload guarantee.
-- Updated 06_RESTORE_SPEC: metadata write targets `.jvs/worktrees/<name>/config.json`.
-- Fixed 18_MIGRATION: added `.jvs/worktrees/` and `.jvs/format_version` to portable sync list.
-- Defined worktree remove semantics: deletes both payload directory and `.jvs/worktrees/<name>/` metadata.
-- Specified `jvs init` must create `.jvs/worktrees/main/config.json` alongside `repo/main/`.
-- Corrected `reflink-copy` performance: O(n) file-count walk with O(1) per-file reflink (not O(1) overall).
-- Added conformance tests 28-32 (worktree discovery, payload purity, init metadata, remove cleanup, migration).
-- Added traceability Promise 9 (pure payload roots with centralized control plane).
-
-## v6.3 (2026-02-20)
-- Consolidated worktree metadata: `config.json` is sole authoritative source; removed redundant `id`/`base_snapshot`/`head_snapshot` files.
-- Defined `descriptor_checksum` coverage scope: all fields except checksum, signature, and mutable state fields.
-- Added ref-targeted snapshots to GC protection rules.
-- Defined lock steal atomic file replacement: write-to-tmp + `rename()` + concurrent stealer resolution.
-- Added `--signing-key` and `--json` parameters to `jvs init` in CLI spec.
-- Added `E_CONSISTENCY_UNAVAILABLE` to stable error class list.
-- Specified canonical JSON rules for deterministic hashing (audit records and descriptor checksums).
-- Clarified `audit_repair` scope: recomputes hash chain over present records only; missing records require escalation.
-- Added `format_version` to portable history state enumeration.
-- Documented worktree remove → GC eligibility implication.
-- Added conformance tests 25-27 (ref GC protection, steal atomicity, descriptor checksum computation).
-- Defined `refs/` as named snapshot references with immutable-create semantics and CLI (`ref create/list/delete`).
-- Defined audit log format: JSON Lines with hash chain for tamper evidence (`E_AUDIT_CHAIN_BROKEN`).
-- Defined trust bootstrap flow: `jvs init` generates Ed25519 keypair, writes keyring/policy, private key stored outside `.jvs/`.
-- Defined snapshot ID format: `<timestamp_ms>-<random_hex8>` for deterministic ordering and collision avoidance.
-- Defined `format_version` file semantics and `E_FORMAT_UNSUPPORTED` error for version mismatch.
-- Specified lock atomic creation mechanism (`O_CREAT|O_EXCL` with fsync) and JuiceFS metadata engine guarantee.
-- Defined worktree `config.json` schema with required and optional fields.
-- Defined `jvs info` required JSON output fields.
-- Added worktree rename + active lock conflict rule (`E_LOCK_CONFLICT`).
-- Added head-pointer orphan crash recovery scenario and `advance_head` repair action.
-- Specified supported algorithm set: SHA-256 for hashing, Ed25519 for signatures.
-- Defined payload root hash computation: deterministic sorted-path Merkle walk with SHA-256.
-- Specified clock skew detection logic and `E_CLOCK_SKEW_EXCEEDED` trigger conditions.
-- Expanded `doctor --repair-runtime` repair action catalogue: `clean_tmp`, `rebuild_index`, `audit_repair`, `advance_head`, `clean_locks`, `clean_intents`.
-- Added new error classes: `E_CLOCK_SKEW_EXCEEDED`, `E_SIGNING_KEY_MISSING`, `E_FORMAT_UNSUPPORTED`, `E_AUDIT_CHAIN_BROKEN`.
-- Added conformance tests 17-24 covering new spec requirements.
-- Added traceability promises 7-8 (auditable history, deterministic identity).
-- Document numbering 15-17 intentionally reserved for future specs.
-
-## v6.2 (2026-02-19)
-- Closed integrity gap by adding signed `payload_root_hash` to descriptor requirements.
-- Changed `jvs verify` default to strong verification; `--allow-unsigned` is explicit downgrade only.
-- Replaced GC atomic-delete wording with a two-phase `plan/mark/commit` protocol using `plan_id`.
-- Strengthened lock identity with `holder_nonce`, `session_id`, and `acquire_seq`.
-- Unified migration policy: runtime state (`locks`, active `intents`) is excluded and rebuilt.
-- Aligned README/overview/release/runbook language to avoid over-claims.
-
-## v6.1 (2026-02-18)
-- Strengthened lock protocol: lease + renew + steal + fencing token.
-- Added explicit snapshot consistency levels: `quiesced` and `best_effort`.
-- Made descriptor checksum mandatory.
-- Tightened dangerous restore semantics: `--force` no longer bypasses lock/fencing checks.
-- Added intent/audit/gc control-plane directories in repo layout.
-- Added `jvs verify`, lock commands, and GC planning/run commands to CLI spec.
-- Added strict migration gates and backup restore drill requirements.
-- Unified product wording around safe defaults and verifiable history.
-
-## v6.0 (2026-02-17)
-- Removed JVS remote/mirror/push/pull. Migration uses `juicefs sync`.
-- Repo layout changed: `repo/main/` is the main worktree payload root.
-- Removed backend config from `.jvs/` (JuiceFS prepared externally).
-- Snapshot-first terminology: snapshot/history/restore/worktree.
-- Snapshot storage fixed: `.jvs/snapshots/<id>/` full directory tree.
-- Added snapshot engine selection with CoW-friendly fallback (reflink/copy).

@@ -1,142 +1,101 @@
-# Conformance Test Plan (v0)
+# Conformance Test Plan
 
-## Purpose
+**Status:** active save point contract coverage plan
 
-Define the release-blocking public CLI contract tests for the v0 line. This
-plan is intentionally scoped to observable behavior documented in
-`docs/02_CLI_SPEC.md`; implementation layout and private storage choices are
-out of scope.
-
-## Profiles
-
-- `contract`: fast checks for the public command surface and JSON shape.
-- `release`: full contract, regression, integrity, and destructive-operation
-  safety checks.
-
-The `release` profile is mandatory before any pre-release or v0 tag.
+This plan defines release-blocking public contract coverage for the save point
+UX.
 
 ## Mandatory Contract Areas
 
-### Public Command Surface
+### CLI Help And Vocabulary
 
-- The documented commands exist and reject unsupported forms with stable error
-  classes: `init`, `import`, `clone`, `capability`, `info`, `status`,
-  `workspace list`, `workspace path`, `workspace rename`, `workspace remove`,
-  `checkpoint`, `checkpoint list`, `diff`, `restore`, `fork`, `verify`,
-  `doctor`, `gc plan`, `gc run`, and `completion`.
-- Commands that document `--json` accept it; commands that do not document a
-  flag reject it consistently.
-- Global flags `--repo`, `--workspace`, `--json`, `--debug`, `--no-progress`,
-  and `--no-color` are accepted according to the CLI spec.
-- Public help and examples use the v0 vocabulary: repo, workspace,
-  checkpoint, `current`, `latest`, and `dirty`.
+- Root help shows the save point path: `init`, `save`, `history`, `view`,
+  `restore`, `workspace new`, `status`, `recovery`, and `doctor`.
+- Public help and examples use folder, workspace, save point, save, history,
+  view, restore, unsaved changes, recovery plan, and cleanup.
+- Internal storage names do not appear as public commands, selectors, workflow
+  concepts, or examples.
 
 ### JSON Envelope
 
-- Successful JSON output emits exactly one object to stdout with
-  `schema_version`, `command`, `ok`, `repo_root`, `workspace`, `data`, and
-  `error`.
-- Failed JSON output sets `ok` to false, sets `data` to null, and returns an
-  `error` object containing `code`, `message`, and, when useful, `hint`.
-- Non-JSON diagnostics do not corrupt JSON stdout.
-- Failure exits are non-zero and use stable machine-readable error classes.
+- Every `--json` command emits one envelope with `schema_version`, `command`,
+  `ok`, `repo_root`, `workspace`, `data`, and `error`.
+- Error envelopes set `ok: false`, `data: null`, and include stable error
+  fields.
 
-### Repo and Workspace Resolution
+### Setup And Status
 
-- path-scoped setup commands (`init`, `import`, `clone`, and `capability`) are
-  repo-free and resolve only their explicit path arguments.
-- Repo-scoped and workspace-scoped commands require CWD to be inside a JVS
-  repo and resolve the repository from the current path.
-- For repo-scoped and workspace-scoped commands, `--repo` is an assertion, not
-  an alternate discovery root; it must resolve to the current repo or a path
-  inside the current repo.
-- Workspace-scoped commands resolve the targeted workspace from the current
-  path or `--workspace`.
-- Running from the repo root and from nested workspace paths produces the same
-  targeted state when the same workspace is selected.
-- `workspace list`, `workspace rename`, and `workspace remove` are
-  repo-scoped.
-- `workspace path <name>` is repo-scoped; `workspace path` without a name is
-  workspace-scoped.
-- `jvs workspace path [name]` returns a canonical path.
-- No command mutates the caller's shell CWD.
+- `jvs init [folder]` adopts the real folder without moving user files.
+- Initial status shows `Newest save point: none` and unsaved changes.
+- `jvs status --json` exposes `folder`, `workspace`, `newest_save_point`,
+  `history_head`, `content_source`, `started_from_save_point` when applicable,
+  `unsaved_changes`, `files_state`, and restored path sources when present.
 
-### Setup, Clone, and Capability
+### Save And History
 
-- `jvs init <repo-path>` creates a new repo with a `main` workspace and is
-  rejected for invalid, overlapping, or unsafe paths.
-- `jvs import <existing-dir> <repo-path>` copies user files into a new repo,
-  creates an initial checkpoint tagged `import`, rejects sources containing
-  `.jvs/`, and rejects overlapping source and destination paths.
-- `jvs clone <source-repo> <dest-repo>` with `--scope current` copies live
-  source workspace contents into the destination `main` workspace and creates
-  one initial checkpoint tagged `clone`.
-- `jvs clone <source-repo> <dest-repo>` with `--scope full` creates a new repo
-  identity, preserves user-visible checkpoints and workspaces, and excludes
-  active runtime operation state, including mutation lock directories,
-  operation records, and active GC plans.
-- `jvs clone` is validated as a local filesystem operation and does not expose
-  remote push or pull semantics.
-- `jvs capability <target-path>` reports engine support in both probe modes,
-  including conservative results when `--write-probe` is omitted.
-- Setup JSON reports stable filesystem and engine messaging: `capabilities`,
-  `effective_engine`, `warnings`, and, for transfer setup commands,
-  `transfer_engine` and `degraded_reasons`.
-- Full clone JSON additionally reports `optimized_transfer`.
+- `jvs save -m <message>` creates a save point from managed files.
+- Failed capacity/staging checks do not publish partial save points.
+- `jvs history` lists workspace save points.
+- `jvs history --path <path>` returns candidates and next commands without
+  changing files.
+- Messages, labels, and tags are discovery metadata, not restore/view targets.
 
-### Status, Refs, and State
+### View
 
-- `jvs status --json` reports `current`, `latest`, `dirty`, `at_latest`,
-  `workspace`, `repo`, `engine`, and `recovery_hints`.
-- `current` means the checkpoint materialized in the targeted workspace.
-- `latest` means the newest checkpoint on the targeted workspace's active
-  line.
-- `dirty` means uncheckpointed workspace contents and is never accepted as a
-  checkpoint ref.
-- Workspace commands accept `current`, `latest`, full checkpoint IDs, unique
-  ID prefixes, and exact tags where refs are documented.
-- Tags named `current`, `latest`, or `dirty` are rejected.
+- `jvs view <save> [path]` opens a read-only view.
+- View does not change the real folder, workspace metadata, or history.
+- Active views protect their source save point from cleanup.
 
-### Checkpoint, Diff, Restore, and Fork
+### Restore Preview And Run
 
-- `jvs checkpoint` records the targeted workspace contents, note, repeated
-  tags, and file-provided notes; it advances only when `current` is also
-  `latest`.
-- `jvs checkpoint list` marks `current` and `latest` in workspace context.
-- `jvs diff <from> <to>` reports source and target IDs, times, changed paths,
-  and changed-path totals.
-- `jvs restore <ref>` replaces the targeted workspace with the selected
-  checkpoint and updates `current` without changing unrelated workspaces.
-- `jvs fork` supports `jvs fork <name>`, `jvs fork <ref> <name>`, and
-  `jvs fork --from <ref> <name>` with equivalent ref resolution.
+- `jvs restore <save>` creates a preview plan and changes no files.
+- `jvs restore <save> --path <path>` previews path restore and changes no
+  files.
+- `jvs restore --path <path>` lists candidates only.
+- Preview output includes plan ID, impact counts, expected target evidence,
+  and run command.
+- `jvs restore --run <plan-id>` reloads the plan, revalidates target evidence,
+  and writes files only after validation.
+- Whole-workspace and path restore leave history unchanged.
+- `--save-first` and `--discard-unsaved` are mutually exclusive.
 
-### Dirty Guards
+### Restore Recovery
 
-- Destructive workspace operations refuse to overwrite uncheckpointed changes
-  by default.
-- `--include-working` creates a checkpoint for dirty contents before
-  `restore` or `fork`.
-- `--discard-dirty` discards dirty contents before `restore` or `fork`.
-- `--include-working` and `--discard-dirty` are mutually exclusive.
-- `workspace remove --force` is required when the workspace's `current`
-  checkpoint differs from `latest`.
+- Restore run creates a recovery plan before mutating files.
+- Interrupted restore exposes `jvs recovery status <plan>`.
+- `jvs recovery resume <plan>` can complete or confirm restore.
+- `jvs recovery rollback <plan>` can return to saved pre-restore state when
+  evidence proves it is safe.
+- Active recovery plans block another restore in the same workspace and protect
+  referenced save points from cleanup.
 
-### Integrity, Doctor, and Retention
+### Workspace Creation
 
-- `jvs verify [checkpoint-id]` and `jvs verify --all` detect descriptor and
-  payload integrity failures and return structured result fields.
-- `jvs doctor --strict` includes full checkpoint integrity and audit chain
-  verification, and reports actionable repair information without inventing
-  public state terms.
-- `jvs gc plan` returns a stable plan ID, protection reasons, deletion
-  candidates, and an estimated byte count.
-- `jvs gc run --plan-id <id>` rejects mismatched or stale plan IDs.
+- `jvs workspace new <name> --from <save>` creates a real workspace folder.
+- The source workspace is unchanged.
+- The new workspace has no newest save point until first save.
+- Status and JSON record `started_from_save_point`.
+- First save in the new workspace starts a new history and records provenance.
 
-## Acceptance
+### Doctor And Runtime Repair
 
-- The `release` profile requires 100% pass.
-- Any failed mandatory contract area blocks release.
-- Tests that touch destructive behavior must assert preserved user data on the
-  default path and explicit behavior only when safety flags are provided.
-- Contract tests and public docs must agree on command names, flags, JSON
-  fields, refs, and public terminology.
+- `jvs doctor --strict` validates repository health.
+- `jvs doctor --repair-list` lists only public runtime repair IDs:
+  `clean_locks`, `clean_runtime_tmp`, and `clean_runtime_operations`.
+- `jvs doctor --strict --repair-runtime` does not rewrite durable save point
+  history, workspace provenance, or audit history.
+
+### Cleanup Layering
+
+- Public docs describe cleanup preview/run semantics.
+- Cleanup must protect live workspace needs, active views, active source
+  operations, and active recovery plans.
+
+## Release Gate Expectations
+
+- Public command smoke tests match visible help.
+- Restore preview/run/recovery tests cover whole-workspace and path flows.
+- Workspace new tests cover `started_from_save_point`.
+- Migration tests exclude runtime state and run the restore drill.
+- Performance and benchmark docs scope engine claims and label internal
+  package names as implementation facts only.

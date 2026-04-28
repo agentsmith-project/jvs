@@ -1,429 +1,138 @@
-# JVS Quick Start: Game Development
+# JVS Quickstart: Game Development Folders
 
-**Version:** v0 public contract
-**Last Updated:** 2026-02-23
+**Status:** Release-facing domain entry
 
----
+Use this page as a short domain guide. The full user workflow is in
+[docs/user/examples.md](user/examples.md).
 
-## Overview
+## Why Game Teams Use JVS
 
-This guide helps game developers use JVS for versioning large game assets that Git cannot handle efficiently. On supported JuiceFS mounts, JVS complements your existing version control workflow with O(1) metadata-clone checkpoints for binary assets.
+Game projects contain large binary assets, generated editor state, and build
+outputs. JVS is useful around risky asset work because it saves the folder,
+lets you inspect earlier saves, and restores with a preview before files are
+changed.
 
----
+JVS does not provide editor locking, asset merge, source hosting, or a Unity or
+Unreal plugin. Keep using your normal source control and team coordination
+tools for those jobs.
 
-## Why JVS for Game Development?
+## Setup
 
-| Problem | Git + Git LFS | JVS |
-|---------|---------------|-----|
-| 5GB texture files | Slow clone, bandwidth costs | O(1) metadata clone on supported JuiceFS |
-| Repository size | Blobs grow endlessly | With `juicefs-clone` on supported JuiceFS, checkpoints are references; copy fallback copies data |
-| Asset history | LFS pointer complexity | Simple checkpoint/restore |
-| Team collaboration | Merge conflicts on binaries | Fork workspaces instead |
-
-**Key Benefit:** Checkpoint your entire `Assets/` folder with the best engine available; supported JuiceFS mounts use metadata clone, while copy fallback scales with payload size.
-
----
-
-## Prerequisites
-
-1. **Supported JuiceFS mounted** (recommended for O(1) performance)
-   ```bash
-   # Check if JuiceFS is mounted
-   mount | grep juicefs
-   ```
-
-2. **JVS installed**
-   ```bash
-   jvs --help
-   ```
-
-3. **Game project** (Unity or Unreal)
-
----
-
-## Quick Start (5 Minutes)
-
-### Step 1: Initialize JVS Repository
+Create a folder that contains the files you want JVS to manage:
 
 ```bash
-# Navigate to your JuiceFS mount
-cd /mnt/juicefs/game-projects
+mkdir mygame-assets
+cd mygame-assets
+jvs init
 
-# Initialize JVS repository
-jvs init mygame
-cd mygame/main
+cp -r ~/UnityProjects/MyGame/Assets .
+cp -r ~/UnityProjects/MyGame/ProjectSettings .
+jvs save -m "initial Unity asset import"
+jvs history
 ```
 
-**Structure created:**
-```
-/mnt/juicefs/game-projects/mygame/
-├── .jvs/           # JVS metadata (never checkpoint this)
-└── main/           # Your workspace (this is where you work)
-```
-
-### Step 2: Import Your Game Project
+For Unreal, copy `Content/` and `Config/` instead:
 
 ```bash
-# Copy Unity project (Assets/ and ProjectSettings/ only)
-cp -r ~/UnityProjects/MyGame/Assets/* .
-cp -r ~/UnityProjects/MyGame/ProjectSettings/* .
-
-# Create initial checkpoint
-jvs checkpoint "Initial Unity project import" --tag unity --tag baseline
+cp -r ~/UnrealProjects/MyGame/Content .
+cp -r ~/UnrealProjects/MyGame/Config .
+jvs save -m "initial Unreal asset import"
 ```
 
-**What just happened:**
-- JVS created a checkpoint of your entire workspace
-- With `juicefs-clone` on supported JuiceFS, the checkpoint is a metadata
-  reference; copy fallback copies data
-- Tags help you find this checkpoint later
+Keep generated caches and editor-local files outside the managed folder when
+you do not want them saved.
 
-### Step 3: Create Your First Asset Version
+## Daily Asset Work
 
 ```bash
-# Before working on an asset, create a checkpoint
-jvs checkpoint "Before character model work" --tag prework
+jvs save -m "before character model work"
 
-# ... work in Unity/Unreal ...
+# Work in Unity or Unreal.
 
-# After finishing, checkpoint the new version
-jvs checkpoint "Character model v2: added armor details" --tag character --tag v2
+jvs save -m "character model armor pass"
+jvs history --grep "character"
 ```
 
-### Step 4: Restore if Something Goes Wrong
+Before replacing the folder with an earlier save, inspect it:
 
 ```bash
-# Oops, made a mistake? Restore to previous state
-jvs restore prework
-
-# Or restore to a specific checkpoint
-jvs restore abc123  # Use checkpoint ID from jvs checkpoint list
+jvs view <save> Assets/Characters/Hero
+jvs view close <view-id>
 ```
 
----
-
-## Unity-Specific Workflow
-
-### Unity Project Structure
-
-**What to version:**
-```
-MyGame/
-├── Assets/              # ✅ Version this
-├── ProjectSettings/     # ✅ Version this
-├── Library/             # ❌ Generated, exclude
-├── Temp/                # ❌ Temporary files, exclude
-└── UserSettings/        # ❌ User-specific, exclude
-```
-
-### Setting Up `.jvsignore` for Unity
+Then preview and run restore:
 
 ```bash
-# Create .jvsignore in repository root
-cat > .jvsignore << 'EOF'
-# Unity generated files
-Library/
-Temp/
-obj/
-*.userprefs
-*.csproj
-*.sln
-*.suo
-
-# IDE files
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS files
-.DS_Store
-Thumbs.db
-EOF
+jvs restore <save> --discard-unsaved
+jvs restore --run <plan-id>
 ```
 
-### Daily Unity Workflow
+## Recover One Asset
+
+For one file or directory:
 
 ```bash
-# Morning: Start fresh
-cd /mnt/juicefs/game-projects/mygame/main
-jvs restore baseline
-
-# Before major work
-jvs checkpoint "Before animation work $(date +%Y-%m-%d)" --tag prework
-
-# After work
-jvs checkpoint "Animation: player run cycle v3" --tag animation --tag $(date +%Y-%m-%d)
-
-# View today's work
-jvs checkpoint list | grep $(date +%Y-%m-%d)
+jvs restore --path Assets/Characters/Hero
+jvs restore <save> --path Assets/Characters/Hero
+jvs restore --run <plan-id>
 ```
 
-### Unity Build Integration
+This restores only that managed path and keeps history unchanged.
 
-Add this to your build script (before creating the build):
+## Try A Variant In Another Folder
+
+Create another real folder from a save point:
 
 ```bash
-#!/bin/bash
-# build_with_snapshot.sh
-
-# Create pre-build checkpoint
-jvs checkpoint "Pre-build: $(date +%Y-%m-%d-%H%M)" --tag prebuild
-
-# Run Unity build
-/Applications/Unity/Hub/Editor/2022.3.0f1/Unity.app/Contents/MacOS/Unity \
-  -quit -batchmode -nographics \
-  -projectPath "$(pwd)" \
-  -executeMethod BuildScript.BuildAll
-
-# If build succeeds, create post-build checkpoint
-if [ $? -eq 0 ]; then
-    jvs checkpoint "Build success: v$(cat version.txt)" --tag build --tag success
-else
-    jvs checkpoint "Build failed: $(date +%Y-%m-%d-%H%M)" --tag build --tag failed
-    exit 1
-fi
+jvs workspace new hero-variant --from <save>
 ```
 
----
-
-## Unreal-Specific Workflow
-
-### Unreal Project Structure
-
-**What to version:**
-```
-MyGame/
-├── Content/             # ✅ Version this
-├── Config/              # ✅ Version this
-├── Binaries/            # ❌ Compiled, exclude
-├── Build/              # ❌ Build artifacts, exclude
-├── Intermediate/       # ❌ Intermediate files, exclude
-├── Saved/              # ❌ Auto-saved, exclude
-└── DerivedDataCache/   # ❌ Cache, exclude
-```
-
-### Setting Up `.jvsignore` for Unreal
+JVS prints the new folder path:
 
 ```bash
-cat > .jvsignore << 'EOF'
-# Unreal generated files
-Binaries/
-Build/
-Intermediate/
-Saved/
-DerivedDataCache/
-*.Openspeed
-*.log
-
-# IDE files
-.vscode/
-.idea/
-.vs/
-
-# OS files
-.DS_Store
-Thumbs.db
-EOF
+cd <printed-folder>
+# Work on the variant.
+jvs save -m "hero armored variant"
 ```
 
-### Unreal Daily Workflow
+The original folder is unchanged.
+
+## Build Script Hook
 
 ```bash
-# Before opening Unreal Editor
-jvs checkpoint "Before editor session" --tag prework
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Work in Unreal Editor...
+jvs save -m "pre-build ${BUILD_ID}"
 
-# After closing editor
-jvs checkpoint "New level: main menu v2" --tag level --tag $(date +%Y-%m-%d)
+./run-game-build.sh
+
+jvs save -m "build ${BUILD_ID} complete"
 ```
 
----
-
-## Multi-Project Workflow
-
-If you work on multiple games/projects:
+If a build damages generated or managed files, restore from the pre-build save:
 
 ```bash
-# Single parent repository
-cd /mnt/juicefs/studio
-jvs init studio-projects
-
-# Create workspace for each game
-cd studio-projects/main
-jvs fork game1-mobile
-jvs fork game1-pc
-jvs fork shared-assets
-
-# Work on different games independently
-cd "$(jvs workspace path game1-mobile)"
-jvs restore baseline
-# ... work on mobile version ...
-
-cd ../game1-pc/main
-jvs restore baseline
-# ... work on PC version ...
+jvs restore <pre-build-save> --discard-unsaved
+jvs restore --run <plan-id>
 ```
 
----
-
-## Collaboration Strategy
-
-JVS is single-writer. For team collaboration:
-
-### Option 1: JVS for Local, Git for Code
+## Health And Recovery
 
 ```bash
-# Use Git for C# scripts, shaders
-git add Assets/Scripts/
-git commit -m "Update player controller"
-
-# Use JVS for binary assets
-jvs checkpoint "Updated character model" --tag assets
+jvs doctor
+jvs doctor --strict
 ```
 
-### Option 2: Asset Handoff via JVS
+If a restore is interrupted:
 
 ```bash
-# Artist A: Work on asset
-cd /mnt/juicefs/game-projects/mygame/main
-jvs checkpoint "Character model ready for review" --tag review --tag character
-
-# Artist B: Review asset
-jvs restore review
-# Review in Unity...
-jvs checkpoint "Character model approved" --tag approved --tag character
+jvs recovery status
+jvs recovery resume <recovery-plan>
 ```
 
----
-
-## Best Practices
-
-### 1. Checkpoint Semantic Milestones
+or:
 
 ```bash
-# Good: Descriptive
-jvs checkpoint "MainMenu: Added background animation v2"
-
-# Bad: Generic
-jvs checkpoint "work"
-jvs checkpoint "update"
+jvs recovery rollback <recovery-plan>
 ```
-
-### 2. Use Tags for Organization
-
-```bash
-# Tag by asset type
-jvs checkpoint "New character" --tag character --tag models
-
-# Tag by milestone
-jvs checkpoint "Alpha build ready" --tag alpha --tag build
-
-# Tag by date
-jvs checkpoint "Daily checkpoint" --tag $(date +%Y-%m-%d)
-```
-
-### 3. Keep Build Outputs Outside the Workspace
-
-```bash
-# Keep build and cache directories outside the workspace when they should not
-# be checkpointed.
-jvs checkpoint "Assets update"
-jvs checkpoint "New audio assets"
-```
-
-### 4. Regular Garbage Collection
-
-```bash
-# Preview what will be deleted
-jvs gc plan
-
-# Actually run GC
-jvs gc run --plan-id <plan-id>
-```
-
----
-
-## Common Workflows
-
-### Recovering Deleted Assets
-
-```bash
-# Oops, deleted important asset
-# 1. Check history
-jvs checkpoint list | grep "important asset"
-
-# 2. Restore to checkpoint with the asset
-jvs restore abc123
-
-# 3. Copy asset to safe location
-cp Assets/Important/asset.fbx ~/backup/
-
-# 4. Return to latest state
-jvs restore latest
-```
-
-### Comparing Asset Versions
-
-```bash
-# List checkpoints and filter in your shell
-jvs checkpoint list | grep "character model"
-
-# Use JSON output when automation needs checkpoint IDs and metadata
-jvs checkpoint list --json
-```
-
-### Creating Asset Variants
-
-```bash
-# Create baseline
-jvs checkpoint "Character base model" --tag character --tag baseline
-
-# Fork for variant
-jvs fork character-armored
-cd "$(jvs workspace path character-armored)"
-
-# Modify armor...
-jvs checkpoint "Character: armored variant" --tag character --tag armored
-```
-
----
-
-## Troubleshooting
-
-### Problem: Checkpoint is slow
-
-**Solution:** Make sure you're using juicefs-clone engine
-```bash
-jvs info --json | jq '.data.engine'
-# Should be: "juicefs-clone"
-```
-
-### Problem: "File too large" errors
-
-**Solution:** JVS handles any size file. If you see this, you might not be on JuiceFS.
-```bash
-# Verify JuiceFS mount
-df -T | grep juicefs
-```
-
-### Problem: Can't find specific checkpoint
-
-**Solution:** Use tags and grep
-```bash
-# Find by tag
-jvs checkpoint list | grep character
-
-# Find by content in note
-jvs checkpoint list | grep "animation"
-```
-
----
-
-## Next Steps
-
-- Read [AGENT_SANDBOX_QUICKSTART.md](agent_sandbox_quickstart.md) for AI workflows
-- Read [ETL_PIPELINE_QUICKSTART.md](etl_pipeline_quickstart.md) for data workflows
-- Read [EXAMPLES.md](EXAMPLES.md) for more examples
-- Join the community: [GitHub Discussions](https://github.com/agentsmith-project/jvs/discussions)

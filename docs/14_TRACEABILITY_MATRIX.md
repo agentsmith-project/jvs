@@ -1,97 +1,116 @@
-# Traceability Matrix (v0)
+# Traceability Matrix
 
-This matrix maps product promises to normative specs and conformance contract
-areas.
+**Status:** active save point traceability matrix
 
-## Promise 1: Current/latest workspace state model
-- Product statement:
-  - `README.md` (Core guarantees)
-  - `docs/00_OVERVIEW.md` (Product promise)
-- Normative specs:
-  - `docs/06_RESTORE_SPEC.md` (in-place restore, current/latest state, fork command)
-  - `docs/02_CLI_SPEC.md` (`restore` and `fork` contract)
-- Conformance contract areas:
-  - `docs/11_CONFORMANCE_TEST_PLAN.md` §Status, Refs, and State
-  - `docs/11_CONFORMANCE_TEST_PLAN.md` §Checkpoint, Diff, Restore, and Fork
-  - `docs/11_CONFORMANCE_TEST_PLAN.md` §Dirty Guards
+## Promise 1: Real Folder Save Points
 
-## Promise 2: Verifiable tamper-evident checkpoint lineage
-- Product statement:
-  - `README.md` (strong default verification)
-  - `docs/00_OVERVIEW.md` (verification model)
-- Normative specs:
-  - `docs/04_SNAPSHOT_SCOPE_AND_LINEAGE_SPEC.md` (descriptor schema incl. payload hash)
-  - `docs/05_SNAPSHOT_ENGINE_SPEC.md` (payload hash generation + READY/durability)
-  - `docs/09_SECURITY_MODEL.md` (integrity model and audit)
-  - `docs/02_CLI_SPEC.md` (`verify` default strong mode)
-- Conformance contract areas:
-  - `docs/11_CONFORMANCE_TEST_PLAN.md` §Integrity, Doctor, and Retention
+Normative docs:
 
-## Promise 3: Safe migration semantics
-- Product statement:
-  - `README.md` (exclude runtime state)
-  - `docs/00_OVERVIEW.md` (runtime-state non-portable)
-  - Runtime-state boundary: active `.jvs/locks/`, `.jvs/intents/`, and
-    `.jvs/gc/*.json` are non-portable.
-- Normative specs:
-  - `docs/18_MIGRATION_AND_BACKUP.md` (exclude mutation locks, operation records, and active GC plans; rebuild runtime)
-  - `docs/01_REPO_LAYOUT_SPEC.md` (portability classes)
-- Conformance contract areas:
-  - `docs/11_CONFORMANCE_TEST_PLAN.md` §Setup, Clone, and Capability
-  - `docs/11_CONFORMANCE_TEST_PLAN.md` §Integrity, Doctor, and Retention
+- `docs/21_SAVE_POINT_WORKSPACE_SEMANTICS.md`
+- `docs/02_CLI_SPEC.md`
+- `docs/PRODUCT_PLAN.md`
+- `docs/ARCHITECTURE.md`
 
-## Promise 4: Safe cleanup and deletion
-- Product statement:
-  - `docs/00_OVERVIEW.md` (verifiable checkpoint lineage, operational safety)
-- Normative specs:
-  - `docs/08_GC_SPEC.md` (plan/mark/commit protocol)
-  - `docs/02_CLI_SPEC.md` (`gc plan`, `gc run --plan-id`)
-- Conformance contract areas:
-  - `docs/11_CONFORMANCE_TEST_PLAN.md` §Integrity, Doctor, and Retention
+Evidence:
 
-## Promise 5: Auditable operation trail with tamper evidence
-- Product statement:
-  - `docs/00_OVERVIEW.md` (verifiable and tamper-evident operation trail)
-- Normative specs:
-  - `docs/09_SECURITY_MODEL.md` (audit log format, hash chain, record schema)
-  - `docs/02_CLI_SPEC.md` (`doctor` audit chain validation)
-- Conformance contract areas:
-  - `docs/11_CONFORMANCE_TEST_PLAN.md` §Integrity, Doctor, and Retention
+- init/status/save/history conformance
+- docs-contract help-surface checks
 
-## Promise 6: Deterministic checkpoint identity and integrity
-- Product statement:
-  - `docs/00_OVERVIEW.md` (verifiable checkpoint lineage)
-- Normative specs:
-  - `docs/04_SNAPSHOT_SCOPE_AND_LINEAGE_SPEC.md` (checkpoint ID generation)
-  - `docs/05_SNAPSHOT_ENGINE_SPEC.md` (payload root hash computation)
-  - `docs/09_SECURITY_MODEL.md` (integrity hash algorithms)
-- Conformance contract areas:
-  - `docs/11_CONFORMANCE_TEST_PLAN.md` §Checkpoint, Diff, Restore, and Fork
-  - `docs/11_CONFORMANCE_TEST_PLAN.md` §Integrity, Doctor, and Retention
+## Promise 2: Restore Is Preview-First And Recoverable
 
-## Promise 7: Pure payload roots with centralized control plane
-- Product statement:
-  - `docs/CONSTITUTION.md` §2.3 (control-plane/data-plane separation)
-  - `docs/CONSTITUTION.md` §4.2 (JuiceFS clone lacks exclude filters)
-- Normative specs:
-  - `docs/01_REPO_LAYOUT_SPEC.md` (layout invariants, workspace discovery)
-  - `docs/03_WORKTREE_SPEC.md` (centralized metadata under `.jvs/worktrees/`)
-  - `docs/04_SNAPSHOT_SCOPE_AND_LINEAGE_SPEC.md` (no exclusion logic required)
-- Conformance contract areas:
-  - `docs/11_CONFORMANCE_TEST_PLAN.md` §Repo and Workspace Resolution
-  - `docs/11_CONFORMANCE_TEST_PLAN.md` §Setup, Clone, and Capability
+Normative docs:
 
-## Release gating trace
-- Normative release policy:
-  - `docs/12_RELEASE_POLICY.md`
-- Required operational checks:
-  - `docs/13_OPERATION_RUNBOOK.md`
-- Conformance execution:
-  - `docs/11_CONFORMANCE_TEST_PLAN.md`
-- Phase 4 GA artifacts:
-  - `docs/99_CHANGELOG.md` (changelog and generated release-note source)
-  - `docs/RELEASE_EVIDENCE.md` (persistent release evidence ledger)
-  - `.github/workflows/ci.yml` (CI release workflow and release notes gate)
-  - `docs/PERFORMANCE_RESULTS.md` (GA performance result boundaries)
-  - `docs/18_MIGRATION_AND_BACKUP.md` (migration notes)
-  - `SECURITY.md` and `docs/SIGNING.md` (artifact verification)
+- `docs/06_RESTORE_SPEC.md`
+- `docs/13_OPERATION_RUNBOOK.md`
+- `docs/02_CLI_SPEC.md`
+
+Evidence:
+
+- restore preview/run conformance
+- path restore conformance
+- recovery status/resume/rollback tests
+- restore drill recorded in release evidence
+
+## Promise 3: Workspace Creation Starts New History
+
+Normative docs:
+
+- `docs/02_CLI_SPEC.md`
+- `docs/03_WORKTREE_SPEC.md`
+- `docs/PRODUCT_PLAN.md`
+
+Evidence:
+
+- `workspace new --from <save>` conformance
+- status JSON `started_from_save_point`
+- first-save provenance tests
+
+## Promise 4: Control Data Is Not Payload
+
+Normative docs:
+
+- `docs/01_REPO_LAYOUT_SPEC.md`
+- `docs/04_SNAPSHOT_SCOPE_AND_LINEAGE_SPEC.md`
+- `docs/09_SECURITY_MODEL.md`
+
+Evidence:
+
+- payload purity tests
+- migration/runtime-state boundary tests
+- doctor layout checks
+
+## Promise 5: Integrity And Audit Are Verifiable
+
+Normative docs:
+
+- `docs/09_SECURITY_MODEL.md`
+- `docs/05_SNAPSHOT_ENGINE_SPEC.md`
+- `docs/12_RELEASE_POLICY.md`
+
+Evidence:
+
+- strict doctor tests
+- audit-chain tests
+- integrity evidence recorded through the public health path
+
+## Promise 6: Cleanup Is Review-First
+
+Normative docs:
+
+- `docs/08_GC_SPEC.md`
+- `docs/13_OPERATION_RUNBOOK.md`
+- `docs/18_MIGRATION_AND_BACKUP.md`
+
+Evidence:
+
+- cleanup protection tests
+- migration tests excluding runtime cleanup plan files
+
+## Promise 7: Engine Claims Are Scoped
+
+Normative docs:
+
+- `docs/05_SNAPSHOT_ENGINE_SPEC.md`
+- `docs/PERFORMANCE.md`
+- `docs/PERFORMANCE_RESULTS.md`
+- `docs/BENCHMARKS.md`
+
+Evidence:
+
+- benchmark package evidence
+- engine fallback/degradation checks
+- docs checks forbidding unconditional O(1) claims
+
+## Promise 8: Candidate And Final Evidence Are Separate
+
+Normative docs:
+
+- `docs/12_RELEASE_POLICY.md`
+- `docs/99_CHANGELOG.md`
+- `docs/RELEASE_EVIDENCE.md`
+
+Evidence:
+
+- release evidence ledger checks
+- changelog readiness sections
+- final tag validation checks

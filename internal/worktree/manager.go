@@ -429,13 +429,14 @@ func (m *Manager) rename(oldName, newName string) error {
 	}
 
 	var oldPayload, newPayload string
+	newRealPath := ""
 	rollback := renameRollbackLedger{}
 	if oldName != "main" {
-		oldPayload, err = m.payloadPathForMutation(oldName)
+		oldPayload, err = m.existingPayloadPathForMoveOrRemove(oldName)
 		if err != nil {
 			return err
 		}
-		newPayload, err = m.newPayloadPathForMutation(newName)
+		newPayload, newRealPath, err = m.newPayloadPathForRename(newName, oldCfg)
 		if err != nil {
 			return err
 		}
@@ -466,6 +467,7 @@ func (m *Manager) rename(oldName, newName string) error {
 	// Update config with new name
 	newCfg := *oldCfg
 	newCfg.Name = newName
+	newCfg.RealPath = newRealPath
 	if err := writeWorktreeConfig(m.repoRoot, newName, &newCfg); err != nil {
 		err = fmt.Errorf("write config after rename: %w", err)
 		if fsutil.IsCommitUncertain(err) {
@@ -475,6 +477,50 @@ func (m *Manager) rename(oldName, newName string) error {
 	}
 
 	return nil
+}
+
+func (m *Manager) existingPayloadPathForMoveOrRemove(name string) (string, error) {
+	payloadPath, err := repo.WorktreePayloadPath(m.repoRoot, name)
+	if err != nil {
+		return "", err
+	}
+	if !pathIsInsideRepo(m.repoRoot, payloadPath) {
+		if err := validateExistingRealDir(payloadPath); err != nil {
+			return "", fmt.Errorf("validate payload path: %w", err)
+		}
+		return payloadPath, nil
+	}
+	return m.payloadPathForMutation(name)
+}
+
+func (m *Manager) newPayloadPathForRename(newName string, oldCfg *model.WorktreeConfig) (payloadPath string, realPath string, err error) {
+	if oldCfg.RealPath == "" {
+		payloadPath, err := m.newPayloadPathForMutation(newName)
+		return payloadPath, "", err
+	}
+
+	payloadPath, err = renamedWorkspaceRealPath(oldCfg.RealPath, newName)
+	if err != nil {
+		return "", "", err
+	}
+	if err := m.validateExternalPayloadTarget(payloadPath); err != nil {
+		return "", "", err
+	}
+	return payloadPath, payloadPath, nil
+}
+
+func renamedWorkspaceRealPath(oldRealPath, newName string) (string, error) {
+	if oldRealPath == "" {
+		return "", fmt.Errorf("workspace real path is empty")
+	}
+	if !filepath.IsAbs(oldRealPath) {
+		return "", fmt.Errorf("workspace real path must be absolute: %s", oldRealPath)
+	}
+	path, err := filepath.Abs(filepath.Join(filepath.Dir(oldRealPath), newName))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(path), nil
 }
 
 type renameRollbackLedger struct {
@@ -537,7 +583,7 @@ func (m *Manager) remove(name string) error {
 		return fmt.Errorf("audit log not appendable: %w", err)
 	}
 
-	payloadPath, err := m.payloadPathForMutation(name)
+	payloadPath, err := m.existingPayloadPathForMoveOrRemove(name)
 	if err != nil {
 		return err
 	}
