@@ -55,6 +55,7 @@ pending final tag qualification and the tag-gated release workflow.
 | Coverage | `make test-cover` | required before pending final tag |
 | Lint | `make lint` | required before pending final tag |
 | Build | `make build` | required before pending final tag |
+| Release cross-build | `make release-build` | required before pending final tag; builds the five release artifacts |
 | Conformance | `make conformance` | required before pending final tag |
 | Library facade | `make library` | required before pending final tag |
 | Regression | `make regression` | required before pending final tag |
@@ -101,6 +102,9 @@ pending final tag qualification and the tag-gated release workflow.
 ### Artifact and signing evidence
 
 - Artifact workflow: `.github/workflows/ci.yml` release job.
+- Release gate includes `make release-build`, matching the release job's five
+  platform binaries: Linux x86_64, Linux ARM64, macOS x86_64, macOS ARM64, and
+  Windows x86_64.
 - Release toolchain smoke: non-publishing `release-toolchain-smoke` job installs
   `sigstore/cosign-installer@v4.1.1` with `cosign-release: v3.0.5` and
   verifies `cosign version` on pull request, main push, tag push, and

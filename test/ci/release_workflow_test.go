@@ -55,6 +55,43 @@ func TestReleaseWorkflowRequiresReleaseGate(t *testing.T) {
 	requireContains(t, releaseIf, "github.event_name == 'workflow_dispatch'")
 }
 
+func TestReleaseBuildBinariesUseMakefileTarget(t *testing.T) {
+	root := repoRoot(t)
+	workflow := readWorkflow(t, root)
+	jobs := requireMappingValue(t, workflow, "jobs")
+	release := requireMappingValue(t, jobs, "release")
+	buildBinaries := requireStepNamed(t, release, "Build binaries")
+	run := strings.TrimSpace(scalarValue(t, requireMappingValue(t, buildBinaries, "run")))
+	if run != "make release-build" {
+		t.Fatalf("release Build binaries step must delegate to make release-build, got %q", run)
+	}
+	if strings.Contains(run, "GOOS=") || strings.Contains(run, "GOARCH=") {
+		t.Fatalf("release Build binaries step must not inline platform build commands: %q", run)
+	}
+
+	data, err := os.ReadFile(filepath.Join(root, "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	makefile := string(data)
+	releaseBuildCommands := makeTargetCommands(makefile, "release-build")
+	for _, target := range expectedReleaseBuildTargets() {
+		if !commandsContainAll(releaseBuildCommands,
+			"GOOS="+target.goos,
+			"GOARCH="+target.goarch,
+			"-o bin/"+target.artifact,
+			"./cmd/jvs",
+		) {
+			t.Fatalf("release-build target commands %v must build %s/%s as bin/%s", releaseBuildCommands, target.goos, target.goarch, target.artifact)
+		}
+	}
+
+	releaseGateDeps := makeTargetDeps(t, makefile, "release-gate")
+	if !stringSliceContains(releaseGateDeps, "release-build") {
+		t.Fatalf("release-gate target dependencies %v must include release-build", releaseGateDeps)
+	}
+}
+
 func TestManualReleaseBindsToTagRef(t *testing.T) {
 	root := repoRoot(t)
 	workflow := readWorkflow(t, root)
@@ -1150,6 +1187,22 @@ func commandsContain(commands []string, want string) bool {
 	return false
 }
 
+func commandsContainAll(commands []string, wants ...string) bool {
+	for _, command := range commands {
+		matches := true
+		for _, want := range wants {
+			if !strings.Contains(command, want) {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			return true
+		}
+	}
+	return false
+}
+
 func releaseFuzzCountBudget(value string) (int, bool) {
 	value = strings.TrimSpace(value)
 	if !strings.HasSuffix(value, "x") {
@@ -1439,6 +1492,22 @@ func expectedReleaseBinaries() []string {
 		"jvs-darwin-amd64",
 		"jvs-darwin-arm64",
 		"jvs-windows-amd64.exe",
+	}
+}
+
+type releaseBuildTarget struct {
+	goos     string
+	goarch   string
+	artifact string
+}
+
+func expectedReleaseBuildTargets() []releaseBuildTarget {
+	return []releaseBuildTarget{
+		{goos: "linux", goarch: "amd64", artifact: "jvs-linux-amd64"},
+		{goos: "linux", goarch: "arm64", artifact: "jvs-linux-arm64"},
+		{goos: "darwin", goarch: "amd64", artifact: "jvs-darwin-amd64"},
+		{goos: "darwin", goarch: "arm64", artifact: "jvs-darwin-arm64"},
+		{goos: "windows", goarch: "amd64", artifact: "jvs-windows-amd64.exe"},
 	}
 }
 

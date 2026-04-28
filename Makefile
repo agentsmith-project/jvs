@@ -15,10 +15,18 @@ override RELEASE_FUZZ_EXCLUDE_TARGETS :=
 override RELEASE_FUZZ_ALL_TARGETS = $(call release_fuzz_checked_shell,set -eu; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT HUP INT TERM; for pkg in $(RELEASE_FUZZ_PACKAGES); do go test -list '^Fuzz' "$$pkg" >"$$tmp"; sed -n "s|^\(Fuzz[A-Za-z0-9_]*\)$$|$$pkg:\1|p" "$$tmp"; done,release fuzz target discovery failed)
 override RELEASE_FUZZ_TARGETS = $(filter-out $(RELEASE_FUZZ_EXCLUDE_TARGETS),$(RELEASE_FUZZ_ALL_TARGETS))
 
-.PHONY: build test library fuzz-tests tools lint conformance regression contract-check docs-contract ci-contract verify security sec fuzz fuzz-list test-race test-cover test-all integration release-gate story-local story-json story-e2e story-juicefs-local release-gate-juicefs clean
+.PHONY: build test library fuzz-tests tools lint conformance regression contract-check docs-contract ci-contract verify security sec fuzz fuzz-list test-race test-cover test-all integration release-build release-gate story-local story-json story-e2e story-juicefs-local release-gate-juicefs clean
 
 build:
 	go build -o bin/jvs ./cmd/jvs
+
+release-build:
+	mkdir -p bin
+	GOOS=linux GOARCH=amd64 go build -o bin/jvs-linux-amd64 ./cmd/jvs
+	GOOS=linux GOARCH=arm64 go build -o bin/jvs-linux-arm64 ./cmd/jvs
+	GOOS=darwin GOARCH=amd64 go build -o bin/jvs-darwin-amd64 ./cmd/jvs
+	GOOS=darwin GOARCH=arm64 go build -o bin/jvs-darwin-arm64 ./cmd/jvs
+	GOOS=windows GOARCH=amd64 go build -o bin/jvs-windows-amd64.exe ./cmd/jvs
 
 tools:
 	@set -eu; \
@@ -168,7 +176,7 @@ test-all: test conformance regression fuzz
 
 integration: build conformance
 
-release-gate: tools docs-contract ci-contract test-race test-cover lint build conformance library regression fuzz-tests fuzz
+release-gate: tools docs-contract ci-contract test-race test-cover lint build release-build conformance library regression fuzz-tests fuzz
 	@echo "RELEASE GATE PASSED"
 
 clean:

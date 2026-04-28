@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/agentsmith-project/jvs/pkg/errclass"
 )
 
@@ -217,28 +215,6 @@ func (e *InsufficientError) message() string {
 }
 
 type StatfsMeter struct{}
-
-func (StatfsMeter) AvailableBytes(path string) (int64, error) {
-	probe := existingParent(path)
-	var st unix.Statfs_t
-	if err := unix.Statfs(probe, &st); err != nil {
-		return 0, err
-	}
-	available, err := availableBytesFromStatfs(st.Bavail, st.Bsize)
-	if err != nil {
-		return 0, fmt.Errorf("statfs available bytes for %s: %w", probe, err)
-	}
-	return available, nil
-}
-
-func (StatfsMeter) DeviceID(path string) (string, error) {
-	probe := existingParent(path)
-	var st unix.Stat_t
-	if err := unix.Stat(probe, &st); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%d", st.Dev), nil
-}
 
 func probePath(req Request) string {
 	for _, component := range req.Components {
