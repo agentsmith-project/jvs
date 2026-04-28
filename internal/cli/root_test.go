@@ -308,6 +308,16 @@ func TestRestoreHelp(t *testing.T) {
 	assert.NotContains(t, stdout, "snapshot")
 }
 
+func TestDoctorHelpUsesSavePointIntegrityVocabulary(t *testing.T) {
+	stdout, err := executeCommand(createTestRootCmd(), "doctor", "--help")
+	require.NoError(t, err)
+
+	assert.Contains(t, stdout, "save point integrity")
+	assert.NotContains(t, stdout, "checkpoint")
+	assert.NotContains(t, stdout, "snapshot")
+	assert.NotContains(t, stdout, "worktree")
+}
+
 func TestDoctorCommand_Healthy(t *testing.T) {
 	setupTestDir(t)
 	repoPath := initLegacyRepoForCLITest(t, "testrepo")

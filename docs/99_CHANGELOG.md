@@ -11,7 +11,7 @@ restore, recovery plan, doctor, and cleanup.
 
 - GA candidate for the save point public contract. Visible help and active
   specs lead with `init`, `save`, `history`, `view`, `restore`,
-  `workspace new`, `recovery`, `status`, and `doctor`.
+  `workspace new`, `cleanup`, `recovery`, `status`, and `doctor`.
 - Restore is preview-first: `jvs restore <save>` creates a plan and changes no
   files; `jvs restore --run <plan-id>` revalidates and applies the reviewed
   plan; `jvs recovery status|resume|rollback` closes interrupted restore
@@ -20,8 +20,9 @@ restore, recovery plan, doctor, and cleanup.
   a save point, leaves the source workspace unchanged, starts with
   `Newest save point: none`, and records `started_from_save_point` on first
   save.
-- Cleanup is documented as reviewed deletion of unprotected save point storage:
-  preview first, then run the reviewed plan.
+- `jvs cleanup preview` creates a reviewed deletion plan for unprotected save
+  point storage; `jvs cleanup run --plan-id <plan>` revalidates and runs the
+  reviewed plan.
 - Release-facing identity is `github.com/agentsmith-project/jvs`; release URLs
   use the canonical GitHub project, for example
   `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.0`.
@@ -43,8 +44,6 @@ restore, recovery plan, doctor, and cleanup.
 - v0 does not include compression contracts.
 - v0 does not include merge/rebase.
 - v0 does not include complex retention policy flags.
-- Cleanup command promotion is still pending; release-facing docs describe the
-  cleanup preview/run contract.
 - Strict integrity checks can be I/O intensive on large workspaces.
 - Descriptor signing and in-JVS trust policy remain outside the stable v0
   repository format.

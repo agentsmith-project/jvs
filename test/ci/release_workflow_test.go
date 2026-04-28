@@ -227,10 +227,11 @@ func TestReleaseWorkflowNotesUseSigningGuideAndGASections(t *testing.T) {
 		"## Known limitations",
 		"remote push/pull",
 		"signing commands",
-		"partial checkpoint contracts",
+		"public partial-save contracts",
 		"compression contracts",
 		"merge/rebase",
 		"complex retention policy flags",
+		"save point payloads",
 		"## Risk labels",
 		"integrity",
 		"migration",
@@ -238,6 +239,35 @@ func TestReleaseWorkflowNotesUseSigningGuideAndGASections(t *testing.T) {
 		"jvs doctor --strict --repair-runtime",
 	} {
 		requireContains(t, run, required)
+	}
+	for _, legacy := range []string{
+		"partial checkpoint contracts",
+		"checkpoint payloads",
+		"jvs verify --all",
+	} {
+		requireNotContains(t, run, legacy)
+	}
+}
+
+func TestActiveChangelogPromotesCleanupCommand(t *testing.T) {
+	root := repoRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, "docs", "99_CHANGELOG.md"))
+	if err != nil {
+		t.Fatalf("read changelog: %v", err)
+	}
+	changelog := string(data)
+
+	for _, required := range []string{
+		"jvs cleanup preview",
+		"jvs cleanup run",
+	} {
+		requireContains(t, changelog, required)
+	}
+	for _, stale := range []string{
+		"Cleanup command promotion is still pending",
+		"cleanup command promotion",
+	} {
+		requireNotContains(t, changelog, stale)
 	}
 }
 
@@ -1177,6 +1207,13 @@ func requireContains(t *testing.T, got, want string) {
 	t.Helper()
 	if !strings.Contains(got, want) {
 		t.Fatalf("value %q must contain %q", got, want)
+	}
+}
+
+func requireNotContains(t *testing.T, got, unwanted string) {
+	t.Helper()
+	if strings.Contains(got, unwanted) {
+		t.Fatalf("value %q must not contain %q", got, unwanted)
 	}
 }
 

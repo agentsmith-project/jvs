@@ -976,6 +976,17 @@ func TestDocs_StablePublicCommandPathMatchesCurrentHelpSurface(t *testing.T) {
 	}
 }
 
+func TestDocs_CLISpecVisiblePublicCommandsIncludeCleanupSurface(t *testing.T) {
+	doc := "docs/02_CLI_SPEC.md"
+	body := readRepoFile(t, doc)
+	section := markdownSectionByHeading(t, doc, body, "## Root Help Surface")
+	for _, required := range []string{"cleanup preview", "cleanup run"} {
+		if !strings.Contains(section, required) {
+			t.Fatalf("%s visible public commands must include %q", doc, required)
+		}
+	}
+}
+
 func TestDocs_PublicCommandFieldSetsFindInlineJVSCommands(t *testing.T) {
 	line := "Use `jvs save -m baseline`, then `jvs cleanup preview`, then `jvs workspace new exp --from abc123`."
 	fieldSets := publicDocCommandFieldSets(line)
@@ -1038,6 +1049,8 @@ func TestDocs_UserGuidesTeachCurrentSavePointCommandFlow(t *testing.T) {
 		"jvs restore",
 		"jvs recovery",
 		"jvs workspace new",
+		"jvs cleanup preview",
+		"jvs cleanup run",
 	} {
 		if !strings.Contains(combined, required) {
 			t.Fatalf("save point user guides must document current public command %q", required)
@@ -1470,8 +1483,9 @@ func TestDocs_ReleaseReadinessSectionsConsistentWithPolicy(t *testing.T) {
 	requireReleaseReadinessAnyText(t, "generated release notes", workflowNotes,
 		"partial-save contracts",
 		"partial save contracts",
-		"partial checkpoint contracts",
 	)
+	requireReleaseReadinessAbsentText(t, "latest changelog entry", changelogEntry, "partial checkpoint contracts")
+	requireReleaseReadinessAbsentText(t, "generated release notes", workflowNotes, "partial checkpoint contracts")
 
 	for _, required := range runtimeStateBoundaryTerms() {
 		requireReleaseReadinessText(t, "latest changelog entry runtime-state boundary", changelogEntry, required)
@@ -1822,6 +1836,13 @@ func requireReleaseReadinessAnyText(t *testing.T, name, body string, requiredAny
 		}
 	}
 	t.Fatalf("%s must include one of %q", name, requiredAny)
+}
+
+func requireReleaseReadinessAbsentText(t *testing.T, name, body, forbidden string) {
+	t.Helper()
+	if strings.Contains(strings.ToLower(body), strings.ToLower(forbidden)) {
+		t.Fatalf("%s must not include legacy readiness text %q", name, forbidden)
+	}
 }
 
 func riskLabelsFromThreatModel(t *testing.T) []string {

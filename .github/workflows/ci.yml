@@ -242,8 +242,8 @@ jobs:
             echo "- None for the stable v0 public CLI contract."
             echo ""
             echo "## Known limitations"
-            echo "- v0 does not include remote push/pull, in-JVS signing commands, partial checkpoint contracts, compression contracts, merge/rebase, or complex retention policy flags."
-            echo "- Full verification reads checkpoint payloads and can be I/O intensive on large workspaces."
+            echo "- v0 does not include remote push/pull, in-JVS signing commands, public partial-save contracts, compression contracts, merge/rebase, or complex retention policy flags."
+            echo "- Full verification reads save point payloads and can be I/O intensive on large workspaces."
             echo "- Descriptor signing and in-JVS trust policy remain outside the stable v0 repository format."
             echo ""
             echo "## Risk labels"
@@ -252,7 +252,7 @@ jobs:
             echo ""
             echo "## Migration notes"
             echo "- Existing repositories do not need an on-disk migration for this release."
-            echo "- After upgrading, run jvs doctor --strict and jvs verify --all on a representative repo."
+            echo "- After upgrading, run jvs doctor --strict on a representative repo."
             echo "- After physical backup or storage migration, exclude active .jvs/locks/**, .jvs/intents/**, and .jvs/gc/*.json, then run jvs doctor --strict --repair-runtime at the destination before verification."
           } > release-notes.md
 

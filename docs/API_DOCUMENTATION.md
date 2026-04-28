@@ -64,7 +64,8 @@ concrete save point ID before restore or view operations.
 ### Restore
 
 CLI restore is preview-first. The Go facade restores a workspace to a concrete
-save point selected by the integration.
+save point selected by the integration. `Target` must be a save point ID or ID
+prefix; labels, messages, and tags are discovery metadata, not restore targets.
 
 ```go
 err := client.Restore(ctx, jvs.RestoreOptions{
@@ -72,9 +73,6 @@ err := client.Restore(ctx, jvs.RestoreOptions{
     Target:        savePoint.SavePointID.String(),
 })
 ```
-
-Use `RestoreOptions.SaveFirst` or `RestoreOptions.DiscardUnsaved` only when the
-integration has made an explicit safety decision.
 
 ### Cleanup
 

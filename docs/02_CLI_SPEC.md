@@ -38,6 +38,8 @@ jvs restore <save>
 Visible public commands:
 
 ```text
+cleanup preview
+cleanup run
 completion
 doctor
 history
@@ -352,8 +354,8 @@ Required JSON `data` fields:
 
 ### `jvs doctor [--strict] [--repair-runtime] [--repair-list] [--json]`
 
-Check repository health. `--strict` includes full integrity verification.
-`--repair-runtime` is limited to safe runtime cleanup.
+Check repository health. `--strict` includes full save point integrity
+verification. `--repair-runtime` is limited to safe runtime cleanup.
 
 Public automatic repair actions:
 
@@ -370,6 +372,39 @@ audit history as an automatic repair.
 first, then run a reviewed plan. A cleanup run must revalidate its plan before
 deleting anything and must protect live workspace needs, active views, active
 source reads, active operations, and active recovery plans.
+
+### `jvs cleanup preview [--json]`
+
+Create a cleanup plan for save point storage that is no longer needed by
+protected history or active operations. Preview does not delete anything.
+
+Human output must show:
+
+- `Plan ID`
+- `Protected by history`
+- `Reclaimable`
+- `Estimated reclaim`
+- the matching `jvs cleanup run --plan-id <plan-id>` command
+
+Required JSON `data` fields:
+
+- `plan_id`
+- `created_at`
+- `protected_save_points`
+- `protected_by_history`
+- `candidate_count`
+- `reclaimable_save_points`
+- `reclaimable_bytes_estimate`
+
+### `jvs cleanup run --plan-id <plan-id> [--json]`
+
+Run a reviewed cleanup plan. Run must reload and revalidate the plan before it
+deletes unneeded save point storage.
+
+Required JSON `data` fields:
+
+- `plan_id`
+- `status`
 
 ## Implementation Boundary
 

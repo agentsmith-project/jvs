@@ -65,7 +65,7 @@ type SavePoint struct {
 // RestoreOptions configures workspace restore.
 type RestoreOptions struct {
 	WorkspaceName string // Target workspace; defaults to "main"
-	Target        string // Save point ID prefix or tag name
+	Target        string // Save point ID or ID prefix
 }
 
 // CleanupOptions configures cleanup preview.
@@ -176,7 +176,7 @@ func (c *Client) Save(ctx context.Context, opts SaveOptions) (*SavePoint, error)
 }
 
 // Restore restores a workspace to a specific save point identified by opts.Target.
-// Target can be a save point ID prefix or tag name.
+// Target must be a save point ID or ID prefix.
 func (c *Client) Restore(ctx context.Context, opts RestoreOptions) error {
 	if err := checkContext(ctx); err != nil {
 		return err
@@ -188,13 +188,9 @@ func (c *Client) Restore(ctx context.Context, opts RestoreOptions) error {
 		return fmt.Errorf("restore target is required")
 	}
 
-	// Internal storage still resolves by descriptor ID first, then tag.
-	desc, err := snapshot.FindOne(c.repoRoot, target)
+	desc, err := resolveSavePointByIDPrefix(c.repoRoot, target)
 	if err != nil {
-		desc, err = snapshot.FindByTag(c.repoRoot, target)
-		if err != nil {
-			return fmt.Errorf("resolve target %q: %w", target, err)
-		}
+		return fmt.Errorf("resolve save point ID %q: %w", target, err)
 	}
 	if err := checkContext(ctx); err != nil {
 		return err
@@ -202,6 +198,36 @@ func (c *Client) Restore(ctx context.Context, opts RestoreOptions) error {
 
 	restorer := restore.NewRestorer(c.repoRoot, c.engineType)
 	return restorer.Restore(workspaceName, desc.SnapshotID)
+}
+
+func resolveSavePointByIDPrefix(repoRoot, target string) (*model.Descriptor, error) {
+	entries, err := snapshot.ListCatalogEntries(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	var matches []snapshot.CatalogEntry
+	for _, entry := range entries {
+		if strings.HasPrefix(string(entry.SnapshotID), target) {
+			matches = append(matches, entry)
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return nil, fmt.Errorf("no save point found matching ID prefix %q", target)
+	case 1:
+		if matches[0].DescriptorErr != nil {
+			return nil, matches[0].DescriptorErr
+		}
+		return matches[0].Descriptor, nil
+	default:
+		ids := make([]string, 0, len(matches))
+		for _, match := range matches {
+			ids = append(ids, string(match.SnapshotID))
+		}
+		return nil, fmt.Errorf("ambiguous save point ID prefix %q matches multiple save points: %s", target, strings.Join(ids, ", "))
+	}
 }
 
 // RestoreLatest restores a workspace to its most recent save point.

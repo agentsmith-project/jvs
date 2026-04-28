@@ -234,6 +234,9 @@ func TestContract_PublicHelpOnlyAdvertisesGACommands(t *testing.T) {
 	if !strings.Contains(doctorHelp, "--strict") {
 		t.Fatalf("doctor help must advertise --strict:\n%s", doctorHelp)
 	}
+	if !strings.Contains(strings.ToLower(doctorHelp), "save point integrity") {
+		t.Fatalf("doctor help must describe strict checks as save point integrity:\n%s", doctorHelp)
+	}
 
 	recoveryHelp, stderr, code := runJVS(t, conformanceRepoRoot, "recovery", "--help")
 	if code != 0 {
@@ -243,6 +246,19 @@ func TestContract_PublicHelpOnlyAdvertisesGACommands(t *testing.T) {
 		if !strings.Contains(recoveryHelp, required) {
 			t.Fatalf("recovery help missing public subcommand %q:\n%s", required, recoveryHelp)
 		}
+	}
+
+	for _, surface := range []struct {
+		name string
+		help string
+	}{
+		{"root help", rootHelp},
+		{"workspace help", workspaceHelp},
+		{"cleanup help", cleanupHelp},
+		{"doctor help", doctorHelp},
+		{"recovery help", recoveryHelp},
+	} {
+		assertContractHelpOmitsLegacyPublicVocabulary(t, surface.name, surface.help)
 	}
 }
 
@@ -327,4 +343,24 @@ func assertNoLegacyPublicJSONFields(t *testing.T, stdout string) {
 			t.Fatalf("public JSON exposes legacy field %q:\n%s", legacy, stdout)
 		}
 	}
+}
+
+func assertContractHelpOmitsLegacyPublicVocabulary(t *testing.T, name, help string) {
+	t.Helper()
+	for _, legacy := range []string{"checkpoint", "snapshot", "worktree", "fork", "gc", "info"} {
+		if containsContractHelpWord(help, legacy) {
+			t.Fatalf("%s exposes legacy public word %q:\n%s", name, legacy, help)
+		}
+	}
+}
+
+func containsContractHelpWord(body, word string) bool {
+	for _, field := range strings.FieldsFunc(strings.ToLower(body), func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-')
+	}) {
+		if field == word {
+			return true
+		}
+	}
+	return false
 }

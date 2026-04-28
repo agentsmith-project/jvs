@@ -22,7 +22,7 @@ var doctorCmd = &cobra.Command{
 	Long: `Check repository health.
 
 Runs diagnostic checks on the repository and reports any issues.
-Use --strict to include full checkpoint integrity verification.
+Use --strict to include full save point integrity verification.
 Use --repair-runtime to execute safe automatic repairs.`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
@@ -104,7 +104,7 @@ Use --repair-runtime to execute safe automatic repairs.`,
 }
 
 func init() {
-	doctorCmd.Flags().BoolVar(&doctorStrict, "strict", false, "include full integrity verification")
+	doctorCmd.Flags().BoolVar(&doctorStrict, "strict", false, "include full save point integrity verification")
 	doctorCmd.Flags().BoolVar(&doctorRepair, "repair-runtime", false, "execute safe automatic repairs")
 	doctorCmd.Flags().BoolVar(&doctorRepairList, "repair-list", false, "list available repair actions")
 	rootCmd.AddCommand(doctorCmd)

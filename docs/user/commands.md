@@ -150,6 +150,24 @@ jvs recovery rollback <recovery-plan>
 Use `resume` to continue the restore, or `rollback` to restore the protected
 pre-restore folder state.
 
+## `jvs cleanup`
+
+Free save point storage that JVS no longer needs.
+
+```bash
+jvs cleanup preview
+jvs cleanup run --plan-id <plan-id>
+```
+
+Cleanup is two-step. `preview` shows the plan and does not delete anything.
+After you review the plan, `run` rechecks that exact plan before deleting
+unneeded save point storage.
+
+| Command | Use |
+| --- | --- |
+| `jvs cleanup preview` | Show what can be cleaned and print a plan ID |
+| `jvs cleanup run --plan-id <plan-id>` | Run a reviewed cleanup plan |
+
 ## `jvs doctor`
 
 Check repository health.

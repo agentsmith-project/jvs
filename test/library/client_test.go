@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -113,6 +114,24 @@ func createOldOrphanSavePoint(t *testing.T, client *jvs.Client, age time.Duratio
 	return desc.SavePointID
 }
 
+func uniqueSavePointIDPrefix(id jvs.SavePointID, others ...jvs.SavePointID) string {
+	full := string(id)
+	for i := 1; i <= len(full); i++ {
+		prefix := full[:i]
+		unique := true
+		for _, other := range others {
+			if strings.HasPrefix(string(other), prefix) {
+				unique = false
+				break
+			}
+		}
+		if unique {
+			return prefix
+		}
+	}
+	return full
+}
+
 func TestPublicFacadeUsesSaveCleanupNames(t *testing.T) {
 	clientType := reflect.TypeOf(&jvs.Client{})
 	for _, name := range []string{
@@ -132,8 +151,10 @@ func TestPublicFacadeUsesSaveCleanupNames(t *testing.T) {
 	var _ jvs.CleanupPlan
 }
 
-func TestPublicFacadeDoesNotExposeOldSaveCleanupNames(t *testing.T) {
+func TestPublicFacadeKeepsLegacyStorageNamesOutOfPublicAPI(t *testing.T) {
 	clientType := reflect.TypeOf(&jvs.Client{})
+	// These legacy names may still appear in internal storage packages, but the
+	// public library facade should stay in the folder/workspace/save point vocabulary.
 	for _, name := range []string{
 		"Snapshot",
 		"LatestSnapshot",
@@ -430,7 +451,7 @@ func TestLatestSavePoint(t *testing.T) {
 	assert.Equal(t, desc.SavePointID, latest.SavePointID)
 }
 
-func TestRestore_ByTarget(t *testing.T) {
+func TestRestore_RequiresSavePointIDPrefixTarget(t *testing.T) {
 	dir := testRepoDir(t)
 	client, err := jvs.Init(dir, jvs.InitOptions{Name: "test-repo"})
 	require.NoError(t, err)
@@ -440,27 +461,30 @@ func TestRestore_ByTarget(t *testing.T) {
 
 	// Create two save points with different content
 	require.NoError(t, os.WriteFile(filepath.Join(mainDir, "file.txt"), []byte("v1"), 0644))
-	desc1, err := client.Save(ctx, jvs.SaveOptions{Message: "version-1", Tags: []string{"v1"}})
+	desc1, err := client.Save(ctx, jvs.SaveOptions{Message: "version-1", Tags: []string{"release-target"}})
 	require.NoError(t, err)
 
 	require.NoError(t, os.WriteFile(filepath.Join(mainDir, "file.txt"), []byte("v2"), 0644))
-	_, err = client.Save(ctx, jvs.SaveOptions{Message: "version-2", Tags: []string{"v2"}})
+	desc2, err := client.Save(ctx, jvs.SaveOptions{Message: "version-2", Tags: []string{"latest-target"}})
 	require.NoError(t, err)
 
 	// Restore by save point ID prefix
 	require.NoError(t, client.Restore(ctx, jvs.RestoreOptions{
-		Target: string(desc1.SavePointID),
+		Target: uniqueSavePointIDPrefix(desc1.SavePointID, desc2.SavePointID),
 	}))
 	data, err := os.ReadFile(filepath.Join(mainDir, "file.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, "v1", string(data))
 
-	// Restore by tag
-	require.NoError(t, client.Restore(ctx, jvs.RestoreOptions{Target: "v2"}))
-	data, err = os.ReadFile(filepath.Join(mainDir, "file.txt"))
-	require.NoError(t, err)
-	assert.Equal(t, "v2", string(data))
+	for _, target := range []string{"latest-target", "version-2"} {
+		err = client.Restore(ctx, jvs.RestoreOptions{Target: target})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "save point ID")
 
+		data, err = os.ReadFile(filepath.Join(mainDir, "file.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, "v1", string(data))
+	}
 }
 
 func TestPreviewCleanup(t *testing.T) {

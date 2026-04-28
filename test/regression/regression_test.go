@@ -52,13 +52,14 @@ func init() {
 	jvsBinary = "jvs"
 }
 
-// initTestRepo creates a temp repo and returns its path.
+// initTestRepo creates a temp repo and returns its folder path.
 func initTestRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	repoPath := filepath.Join(dir, "testrepo")
 
-	runJVS(t, dir, "init", "testrepo")
+	stdout, stderr, code := runJVS(t, dir, "init", "testrepo")
+	require.Equal(t, 0, code, "jvs init failed\nstdout=%s\nstderr=%s", stdout, stderr)
 	return repoPath
 }
 
@@ -87,48 +88,109 @@ func runJVS(t *testing.T, cwd string, args ...string) (stdout, stderr string, ex
 	return
 }
 
-// runJVSInRepo runs jvs from within the repo's main worktree.
+// runJVSInRepo runs jvs from within the repo's main workspace folder.
 func runJVSInRepo(t *testing.T, repoPath string, args ...string) (stdout, stderr string, exitCode int) {
 	t.Helper()
-	cwd := filepath.Join(repoPath, "main")
-	return runJVS(t, cwd, args...)
+	return runJVS(t, repoPath, args...)
 }
 
 type regressionJSONEnvelope struct {
-	OK    bool            `json:"ok"`
-	Data  json.RawMessage `json:"data"`
-	Error *struct {
+	Command string          `json:"command"`
+	OK      bool            `json:"ok"`
+	Data    json.RawMessage `json:"data"`
+	Error   *struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
 		Hint    string `json:"hint"`
 	} `json:"error"`
 }
 
-type regressionCheckpointData struct {
-	CheckpointID string `json:"checkpoint_id"`
+type regressionSavePointData struct {
+	SavePointID          string `json:"save_point_id"`
+	Workspace            string `json:"workspace"`
+	Message              string `json:"message"`
+	NewestSavePoint      string `json:"newest_save_point"`
+	StartedFromSavePoint string `json:"started_from_save_point,omitempty"`
+	UnsavedChanges       bool   `json:"unsaved_changes"`
 }
 
 type regressionRestoreData struct {
-	CheckpointID string `json:"checkpoint_id"`
-	Current      string `json:"current"`
-	Latest       string `json:"latest"`
-	Dirty        bool   `json:"dirty"`
-	AtLatest     bool   `json:"at_latest"`
-	Status       string `json:"status"`
+	Mode                    string `json:"mode"`
+	PlanID                  string `json:"plan_id,omitempty"`
+	Folder                  string `json:"folder"`
+	Workspace               string `json:"workspace"`
+	SourceSavePoint         string `json:"source_save_point"`
+	RestoredSavePoint       string `json:"restored_save_point,omitempty"`
+	NewestSavePoint         string `json:"newest_save_point"`
+	HistoryHead             string `json:"history_head"`
+	ExpectedNewestSavePoint string `json:"expected_newest_save_point,omitempty"`
+	ContentSource           string `json:"content_source,omitempty"`
+	UnsavedChanges          bool   `json:"unsaved_changes"`
+	FilesState              string `json:"files_state,omitempty"`
+	HistoryChanged          bool   `json:"history_changed"`
+	FilesChanged            bool   `json:"files_changed"`
 }
 
 type regressionStatusData struct {
-	Current  string `json:"current"`
-	Latest   string `json:"latest"`
-	Dirty    bool   `json:"dirty"`
-	AtLatest bool   `json:"at_latest"`
+	Folder               string  `json:"folder"`
+	Workspace            string  `json:"workspace"`
+	NewestSavePoint      *string `json:"newest_save_point"`
+	HistoryHead          *string `json:"history_head"`
+	ContentSource        *string `json:"content_source"`
+	StartedFromSavePoint *string `json:"started_from_save_point,omitempty"`
+	UnsavedChanges       bool    `json:"unsaved_changes"`
+	FilesState           string  `json:"files_state"`
 }
 
-type regressionForkData struct {
-	Workspace      string `json:"workspace"`
-	BaseCheckpoint string `json:"base_checkpoint"`
-	Current        string `json:"current"`
-	Latest         string `json:"latest"`
+type regressionHistoryData struct {
+	Workspace            string                       `json:"workspace"`
+	SavePoints           []regressionHistorySavePoint `json:"save_points"`
+	NewestSavePoint      string                       `json:"newest_save_point,omitempty"`
+	StartedFromSavePoint string                       `json:"started_from_save_point,omitempty"`
+}
+
+type regressionHistorySavePoint struct {
+	SavePointID string `json:"save_point_id"`
+	Workspace   string `json:"workspace"`
+	Message     string `json:"message,omitempty"`
+	CreatedAt   string `json:"created_at"`
+}
+
+type regressionWorkspaceNewData struct {
+	Mode                 string  `json:"mode"`
+	Status               string  `json:"status"`
+	Workspace            string  `json:"workspace"`
+	Folder               string  `json:"folder"`
+	StartedFromSavePoint string  `json:"started_from_save_point"`
+	ContentSource        string  `json:"content_source"`
+	NewestSavePoint      *string `json:"newest_save_point"`
+	HistoryHead          *string `json:"history_head"`
+	OriginalUnchanged    bool    `json:"original_workspace_unchanged"`
+	UnsavedChanges       bool    `json:"unsaved_changes"`
+}
+
+type regressionCleanupData struct {
+	PlanID                   string   `json:"plan_id"`
+	ProtectedSavePoints      []string `json:"protected_save_points"`
+	ProtectedByHistory       int      `json:"protected_by_history"`
+	CandidateCount           int      `json:"candidate_count"`
+	ReclaimableSavePoints    []string `json:"reclaimable_save_points"`
+	ReclaimableBytesEstimate int64    `json:"reclaimable_bytes_estimate"`
+}
+
+type regressionCleanupRunData struct {
+	PlanID string `json:"plan_id"`
+	Status string `json:"status"`
+}
+
+type regressionDoctorData struct {
+	Healthy bool `json:"healthy"`
+	Repairs []struct {
+		Action  string `json:"action"`
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+		Cleaned int    `json:"cleaned,omitempty"`
+	} `json:"repairs,omitempty"`
 }
 
 func runJVSJSONInRepo(t *testing.T, repoPath string, args ...string) (stdout, stderr string) {
@@ -148,24 +210,57 @@ func requireRegressionJSONData(t *testing.T, stdout string, target any) {
 	require.NoError(t, json.Unmarshal(envelope.Data, target), "JSON envelope data should match target:\n%s", stdout)
 }
 
-func createRegressionCheckpoint(t *testing.T, repoPath, note string) string {
+func requireRegressionJSONError(t *testing.T, stdout string) regressionJSONEnvelope {
 	t.Helper()
 
-	stdout, _ := runJVSJSONInRepo(t, repoPath, "checkpoint", note)
-	var data regressionCheckpointData
-	requireRegressionJSONData(t, stdout, &data)
-	require.NotEmpty(t, data.CheckpointID, "checkpoint JSON should include full checkpoint_id:\n%s", stdout)
-	return data.CheckpointID
+	var envelope regressionJSONEnvelope
+	require.NoError(t, json.Unmarshal([]byte(stdout), &envelope), "stdout should be a JSON envelope:\n%s", stdout)
+	require.False(t, envelope.OK, "JSON envelope should report failure:\n%s", stdout)
+	require.NotNil(t, envelope.Error, "JSON error envelope should include error:\n%s", stdout)
+	return envelope
 }
 
-func restoreRegressionCheckpoint(t *testing.T, repoPath, ref string) regressionRestoreData {
+func createRegressionSavePoint(t *testing.T, repoPath, message string) string {
+	t.Helper()
+
+	stdout, _ := runJVSJSONInRepo(t, repoPath, "save", "-m", message)
+	var data regressionSavePointData
+	requireRegressionJSONData(t, stdout, &data)
+	require.NotEmpty(t, data.SavePointID, "save JSON should include full save_point_id:\n%s", stdout)
+	require.Equal(t, message, data.Message, "save JSON should preserve message:\n%s", stdout)
+	require.Equal(t, data.SavePointID, data.NewestSavePoint, "save should make the new save point newest:\n%s", stdout)
+	return data.SavePointID
+}
+
+func previewRegressionRestore(t *testing.T, repoPath, ref string) regressionRestoreData {
 	t.Helper()
 
 	stdout, _ := runJVSJSONInRepo(t, repoPath, "restore", ref)
 	var data regressionRestoreData
 	requireRegressionJSONData(t, stdout, &data)
-	require.NotEmpty(t, data.CheckpointID, "restore JSON should include checkpoint_id:\n%s", stdout)
+	require.Equal(t, "preview", data.Mode, "restore should preview before changing files:\n%s", stdout)
+	require.NotEmpty(t, data.PlanID, "restore preview should include plan_id:\n%s", stdout)
+	require.Equal(t, ref, data.SourceSavePoint, "restore preview should target the requested save point:\n%s", stdout)
 	return data
+}
+
+func runRegressionRestorePlan(t *testing.T, repoPath, planID string) regressionRestoreData {
+	t.Helper()
+
+	stdout, _ := runJVSJSONInRepo(t, repoPath, "restore", "--run", planID)
+	var data regressionRestoreData
+	requireRegressionJSONData(t, stdout, &data)
+	require.Equal(t, "run", data.Mode, "restore run should execute a preview plan:\n%s", stdout)
+	require.Equal(t, planID, data.PlanID, "restore run should report the executed plan:\n%s", stdout)
+	require.NotEmpty(t, data.RestoredSavePoint, "restore run should include restored_save_point:\n%s", stdout)
+	return data
+}
+
+func restoreRegressionSavePoint(t *testing.T, repoPath, ref string) regressionRestoreData {
+	t.Helper()
+
+	preview := previewRegressionRestore(t, repoPath, ref)
+	return runRegressionRestorePlan(t, repoPath, preview.PlanID)
 }
 
 func readRegressionStatus(t *testing.T, repoPath string) regressionStatusData {
@@ -177,11 +272,26 @@ func readRegressionStatus(t *testing.T, repoPath string) regressionStatusData {
 	return data
 }
 
-// createFiles creates multiple files in a worktree.
-func createFiles(t *testing.T, worktreePath string, files map[string]string) {
+func runJVSJSONForWorkspace(t *testing.T, repoPath, workspace string, args ...string) (stdout, stderr string) {
+	t.Helper()
+	allArgs := append([]string{"--json", "--workspace", workspace}, args...)
+	stdout, stderr, code := runJVSInRepo(t, repoPath, allArgs...)
+	require.Equal(t, 0, code, "jvs --json --workspace %s %s failed\nstdout=%s\nstderr=%s", workspace, strings.Join(args, " "), stdout, stderr)
+	return stdout, stderr
+}
+
+func stringValue(ptr *string) string {
+	if ptr == nil {
+		return ""
+	}
+	return *ptr
+}
+
+// createFiles creates multiple files in a workspace folder.
+func createFiles(t *testing.T, workspacePath string, files map[string]string) {
 	t.Helper()
 	for filename, content := range files {
-		path := filepath.Join(worktreePath, filename)
+		path := filepath.Join(workspacePath, filename)
 		dir := filepath.Dir(path)
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			t.Fatalf("failed to create directory %s: %v", dir, err)
@@ -199,255 +309,184 @@ func createFiles(t *testing.T, worktreePath string, files map[string]string) {
 // Format: TestRegression_<BriefDescription>
 //
 // Example:
-// func TestRegression_GarbageCollectionLeak(t *testing.T) {
-//     // Bug: GC was not cleaning up orphaned snapshots when parent was deleted
+// func TestRegression_CleanupLeak(t *testing.T) {
+//     // Bug: cleanup was not cleaning up orphaned save point storage
 //     // Fixed: 2024-02-15, PR #456
 //     // ...
 // }
 // ============================================================================
 
-// TestRegression_TemplateExample demonstrates the expected format for regression tests.
-// This test serves as a template for adding new regression tests.
+// TestRegression_RestoreNonExistentSavePoint tests that restore fails
+// gracefully when given a non-existent save point ID.
 //
-// When adding a new regression test:
-// 1. Copy this template function
-// 2. Rename to TestRegression_<BriefDescription>
-// 3. Fill in the bug description, fix date, and PR reference
-// 4. Implement the test scenario
-// 5. Document in REGRESSION_TESTS.md
-func TestRegression_TemplateExample(t *testing.T) {
-	// Bug Description: Example template for regression tests
-	// Fixed: [Date], PR #[number]
-	// Issue: #[number]
-
+// Bug: Restore would panic with nil pointer dereference on invalid save point ID
+// Fixed: 2024-02-20
+func TestRegression_RestoreNonExistentSavePoint(t *testing.T) {
 	repoPath := initTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
 
-	// Setup: Create the scenario
-	createFiles(t, mainPath, map[string]string{
-		"test.txt": "content",
-	})
+	stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "restore", "1777360000000-deadbeef")
 
-	// Action: Create a snapshot
-	stdout, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "test snapshot")
-
-	// Assertion: Verify success
-	assert.Equal(t, 0, code, "snapshot should succeed")
-	assert.NotEmpty(t, stdout, "should have output")
-
-	// Verify snapshot was created
-	history, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "list")
-	assert.Contains(t, history, "test snapshot", "snapshot should appear in history")
-	assert.NotContains(t, stderr, "error", "should not show errors")
+	assert.NotEqual(t, 0, code, "restore should fail for a non-existent save point")
+	assert.Empty(t, strings.TrimSpace(stderr), "JSON errors should be emitted on stdout")
+	env := requireRegressionJSONError(t, stdout)
+	assert.Equal(t, "restore", env.Command)
+	assert.Equal(t, "E_USAGE", env.Error.Code)
+	assert.Contains(t, env.Error.Message, "save point")
+	assert.Contains(t, env.Error.Message, "not available")
+	assert.NotContains(t, stdout+stderr, "panic", "restore should not panic")
 }
 
-// TestRegression_RestoreNonExistentSnapshot tests that restore fails gracefully
-// when given a non-existent snapshot ID.
+// TestRegression_SaveRequiresMessage verifies the current public save command
+// rejects an empty message cleanly.
 //
-// Bug: Restore would panic with nil pointer dereference on invalid snapshot ID
+// Bug: Empty save text could produce unclear validation behavior
 // Fixed: 2024-02-20
-func TestRegression_RestoreNonExistentSnapshot(t *testing.T) {
-	// Bug: Restore could panic on invalid snapshot ID
-	// Fixed: 2024-02-20
-
+func TestRegression_SaveRequiresMessage(t *testing.T) {
 	repoPath := initTestRepo(t)
 
-	// Attempt to restore a snapshot that doesn't exist
-	stdout, stderr, code := runJVSInRepo(t, repoPath, "restore", "nonexistent-snapshot-id")
+	stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "save", "-m", "")
 
-	// Should fail gracefully, not panic
-	assert.NotEqual(t, 0, code, "restore should fail for non-existent snapshot")
-
-	// Should provide a helpful error message
-	combined := stdout + stderr
-	assert.True(t,
-		strings.Contains(combined, "not found") ||
-			strings.Contains(combined, "no snapshot") ||
-			strings.Contains(combined, "unknown"),
-		"error message should indicate snapshot not found")
+	assert.NotEqual(t, 0, code, "save with an empty message should fail")
+	assert.Empty(t, strings.TrimSpace(stderr), "JSON errors should be emitted on stdout")
+	env := requireRegressionJSONError(t, stdout)
+	assert.Equal(t, "save", env.Command)
+	assert.Equal(t, "E_USAGE", env.Error.Code)
+	assert.Contains(t, env.Error.Message, "save point message is required")
+	assert.NotContains(t, stdout+stderr, "panic", "save should not panic")
 }
 
-// TestRegression_SnapshotEmptyNote tests that snapshot accepts an empty note
-// without error.
+// TestRegression_HistoryGrepFiltersMessages tests that history filters save
+// points by public message text.
 //
-// Bug: Snapshot with empty note string would fail validation
+// Bug: History filtering could omit or include the wrong saved entries
 // Fixed: 2024-02-20
-func TestRegression_SnapshotEmptyNote(t *testing.T) {
-	// Bug: Empty note could cause validation errors
-	// Fixed: 2024-02-20
-
+func TestRegression_HistoryGrepFiltersMessages(t *testing.T) {
 	repoPath := initTestRepo(t)
 
-	// Create a snapshot with an empty note (explicit empty string)
-	_, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "")
+	createFiles(t, repoPath, map[string]string{"app.txt": "alpha"})
+	alphaID := createRegressionSavePoint(t, repoPath, "alpha milestone")
+	createFiles(t, repoPath, map[string]string{"app.txt": "release"})
+	releaseID := createRegressionSavePoint(t, repoPath, "release candidate")
 
-	// Should succeed
-	assert.Equal(t, 0, code, "snapshot with empty note should succeed")
-	assert.NotContains(t, stderr, "error", "should not show error for empty note")
+	stdout, _ := runJVSJSONInRepo(t, repoPath, "history", "--grep", "release")
+	var history regressionHistoryData
+	requireRegressionJSONData(t, stdout, &history)
 
-	// Verify snapshot was created - history should show it
-	stdout, _, _ := runJVSInRepo(t, repoPath, "checkpoint", "list")
-	// History output contains the timestamp and (no note) marker
-	assert.Contains(t, stdout, "(no note)", "history should show (no note) for empty note")
+	require.Len(t, history.SavePoints, 1, "history --grep should return only matching save points:\n%s", stdout)
+	assert.Equal(t, releaseID, history.SavePoints[0].SavePointID)
+	assert.Equal(t, "release candidate", history.SavePoints[0].Message)
+	assert.Equal(t, releaseID, history.NewestSavePoint, "newest save point should remain the workspace head")
+	assert.NotContains(t, stdout, alphaID, "non-matching save point should be filtered out")
 }
 
-// TestRegression_HistoryWithTags tests that history command properly displays
-// tagged snapshots.
+// TestRegression_RestorePreviewRun tests the preview-first restore flow and
+// verifies that restore changes files without rewriting workspace history.
 //
-// Bug: History command was not properly filtering or displaying tags
+// Bug: Restore could move to the wrong saved content or report stale status
 // Fixed: 2024-02-20
-func TestRegression_HistoryWithTags(t *testing.T) {
-	// Bug: History --tag filter was not working correctly
-	// Fixed: 2024-02-20
-
+func TestRegression_RestorePreviewRun(t *testing.T) {
 	repoPath := initTestRepo(t)
 
-	// Create snapshots with different tags
-	runJVSInRepo(t, repoPath, "checkpoint", "first snapshot", "--tag", "v1.0")
-	runJVSInRepo(t, repoPath, "checkpoint", "second snapshot", "--tag", "stable")
+	createFiles(t, repoPath, map[string]string{"file1.txt": "content1"})
+	firstSavePointID := createRegressionSavePoint(t, repoPath, "first save point")
 
-	// List checkpoints and verify tags are displayed.
-	stdout, _, code := runJVSInRepo(t, repoPath, "--json", "checkpoint", "list")
+	createFiles(t, repoPath, map[string]string{"file2.txt": "content2"})
+	secondSavePointID := createRegressionSavePoint(t, repoPath, "second save point")
 
-	assert.Equal(t, 0, code, "checkpoint list should succeed")
-	assert.Contains(t, stdout, "v1.0", "checkpoint list should show the tag")
-}
+	previewFirst := previewRegressionRestore(t, repoPath, firstSavePointID)
+	assert.Equal(t, firstSavePointID, previewFirst.SourceSavePoint)
+	assert.Equal(t, secondSavePointID, previewFirst.NewestSavePoint)
+	assert.Equal(t, secondSavePointID, previewFirst.HistoryHead)
+	assert.Equal(t, secondSavePointID, previewFirst.ExpectedNewestSavePoint)
+	assert.False(t, previewFirst.HistoryChanged, "preview should not change history")
+	assert.False(t, previewFirst.FilesChanged, "preview should not change files")
 
-// TestRegression_MultipleTags tests that multiple tags can be attached to a snapshot.
-//
-// Bug: Only the last tag was being saved when multiple --tag flags were used
-// Fixed: 2024-02-20
-func TestRegression_MultipleTags(t *testing.T) {
-	// Bug: Multiple --tag flags were not all being saved
-	// Fixed: 2024-02-20
-
-	repoPath := initTestRepo(t)
-
-	// Create snapshot with multiple tags
-	stdout, _, code := runJVSInRepo(t, repoPath, "checkpoint", "multi-tag snapshot",
-		"--tag", "v1.0", "--tag", "stable", "--tag", "release")
-
-	assert.Equal(t, 0, code, "snapshot with multiple tags should succeed")
-	assert.NotContains(t, stdout, "error", "should not show errors")
-
-	// Verify all tags are preserved
-	stdout, _, _ = runJVSInRepo(t, repoPath, "--json", "checkpoint", "list")
-	assert.Contains(t, stdout, "v1.0", "should find v1.0 tag")
-	assert.Contains(t, stdout, "stable", "should find stable tag")
-	assert.Contains(t, stdout, "release", "should find release tag")
-}
-
-// TestRegression_RestoreLatest tests that restore latest returns to the latest snapshot.
-//
-// Bug: Restoring the latest snapshot was not properly detecting the latest snapshot in some cases
-// Fixed: 2024-02-20
-func TestRegression_RestoreLatest(t *testing.T) {
-	// Bug: restore latest could fail to find the latest snapshot
-	// Fixed: 2024-02-20
-
-	repoPath := initTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
-
-	// Create initial snapshot
-	createFiles(t, mainPath, map[string]string{"file1.txt": "content1"})
-	firstCheckpointID := createRegressionCheckpoint(t, repoPath, "first snapshot")
-
-	// Create second snapshot
-	createFiles(t, mainPath, map[string]string{"file2.txt": "content2"})
-	secondCheckpointID := createRegressionCheckpoint(t, repoPath, "second snapshot")
-
-	// Restore to the first checkpoint by full JSON checkpoint ID.
-	restoredFirst := restoreRegressionCheckpoint(t, repoPath, firstCheckpointID)
-	assert.Equal(t, firstCheckpointID, restoredFirst.CheckpointID, "restore should target first checkpoint")
-	assert.Equal(t, firstCheckpointID, restoredFirst.Current, "current should move to first checkpoint")
-	assert.Equal(t, secondCheckpointID, restoredFirst.Latest, "latest should remain second checkpoint")
-	assert.False(t, restoredFirst.AtLatest, "restoring first should detach from latest")
-	assert.False(t, restoredFirst.Dirty, "restore should leave workspace clean")
-	assert.FileExists(t, filepath.Join(mainPath, "file1.txt"), "first content should be restored")
-	assert.NoFileExists(t, filepath.Join(mainPath, "file2.txt"), "latest-only content should be absent after restoring first")
+	restoredFirst := runRegressionRestorePlan(t, repoPath, previewFirst.PlanID)
+	assert.Equal(t, firstSavePointID, restoredFirst.RestoredSavePoint)
+	assert.Equal(t, firstSavePointID, restoredFirst.ContentSource)
+	assert.Equal(t, secondSavePointID, restoredFirst.NewestSavePoint)
+	assert.Equal(t, secondSavePointID, restoredFirst.HistoryHead)
+	assert.False(t, restoredFirst.HistoryChanged, "restore should leave history unchanged")
+	assert.True(t, restoredFirst.FilesChanged, "restore should change files")
+	assert.False(t, restoredFirst.UnsavedChanges, "restore should leave workspace clean")
+	assert.Equal(t, "matches_save_point", restoredFirst.FilesState)
+	assert.FileExists(t, filepath.Join(repoPath, "file1.txt"), "first content should be restored")
+	assert.NoFileExists(t, filepath.Join(repoPath, "file2.txt"), "newer-only content should be absent after restoring first")
 
 	statusAfterFirst := readRegressionStatus(t, repoPath)
-	assert.Equal(t, firstCheckpointID, statusAfterFirst.Current, "status current should be first checkpoint")
-	assert.Equal(t, secondCheckpointID, statusAfterFirst.Latest, "status latest should remain second checkpoint")
-	assert.False(t, statusAfterFirst.AtLatest, "status should report detached after first restore")
-	assert.False(t, statusAfterFirst.Dirty, "status should report clean after first restore")
+	assert.Equal(t, firstSavePointID, stringValue(statusAfterFirst.ContentSource), "status content source should be first save point")
+	assert.Equal(t, secondSavePointID, stringValue(statusAfterFirst.NewestSavePoint), "history head should remain second save point")
+	assert.False(t, statusAfterFirst.UnsavedChanges, "status should report clean after restore")
+	assert.Equal(t, "matches_save_point", statusAfterFirst.FilesState)
 
-	// Restore back to latest and verify the full latest checkpoint is active.
-	restoredLatest := restoreRegressionCheckpoint(t, repoPath, "latest")
-	assert.Equal(t, secondCheckpointID, restoredLatest.CheckpointID, "restore latest should target second checkpoint")
-	assert.Equal(t, secondCheckpointID, restoredLatest.Current, "current should move to latest checkpoint")
-	assert.Equal(t, secondCheckpointID, restoredLatest.Latest, "latest should be second checkpoint")
-	assert.True(t, restoredLatest.AtLatest, "restore latest should report at_latest")
-	assert.False(t, restoredLatest.Dirty, "restore latest should leave workspace clean")
-
-	// Verify we're back at the latest state
-	assert.FileExists(t, filepath.Join(mainPath, "file2.txt"), "latest content should be restored")
-
-	statusAfterLatest := readRegressionStatus(t, repoPath)
-	assert.Equal(t, secondCheckpointID, statusAfterLatest.Current, "status current should be latest checkpoint")
-	assert.Equal(t, secondCheckpointID, statusAfterLatest.Latest, "status latest should be second checkpoint")
-	assert.True(t, statusAfterLatest.AtLatest, "status should report at_latest after latest restore")
-	assert.False(t, statusAfterLatest.Dirty, "status should report clean after latest restore")
+	restoredSecond := restoreRegressionSavePoint(t, repoPath, secondSavePointID)
+	assert.Equal(t, secondSavePointID, restoredSecond.RestoredSavePoint)
+	assert.Equal(t, secondSavePointID, restoredSecond.ContentSource)
+	assert.Equal(t, secondSavePointID, restoredSecond.NewestSavePoint)
+	assert.Equal(t, secondSavePointID, restoredSecond.HistoryHead)
+	assert.False(t, restoredSecond.UnsavedChanges, "restoring newest save point should leave workspace clean")
+	assert.FileExists(t, filepath.Join(repoPath, "file2.txt"), "newest content should be restored")
 }
 
-// TestRegression_WorktreeFork tests forking a worktree from a snapshot.
+// TestRegression_WorkspaceNewFromSavePoint tests creating a workspace from a
+// save point.
 //
-// Bug: Worktree fork was not properly setting up the new worktree state
+// Bug: Workspace creation from saved content did not initialize state correctly
 // Fixed: 2024-02-20
-func TestRegression_WorktreeFork(t *testing.T) {
-	// Bug: Worktree fork had issues with state initialization
-	// Fixed: 2024-02-20
-
+func TestRegression_WorkspaceNewFromSavePoint(t *testing.T) {
 	repoPath := initTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
 
-	// Create a snapshot
-	createFiles(t, mainPath, map[string]string{"original.txt": "content"})
-	checkpointID := createRegressionCheckpoint(t, repoPath, "original snapshot")
+	createFiles(t, repoPath, map[string]string{"original.txt": "content"})
+	savePointID := createRegressionSavePoint(t, repoPath, "original save point")
 
-	// Fork a new worktree from the snapshot
-	stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "fork", checkpointID, "feature-branch")
+	stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "workspace", "new", "feature-branch", "--from", savePointID)
 
-	require.Equal(t, 0, code, "worktree fork should succeed\nstdout=%s\nstderr=%s", stdout, stderr)
-	var forked regressionForkData
-	requireRegressionJSONData(t, stdout, &forked)
-	assert.Equal(t, "feature-branch", forked.Workspace, "fork JSON should name the new workspace")
-	assert.Equal(t, checkpointID, forked.BaseCheckpoint, "fork should use the full checkpoint ID as base")
-	assert.Equal(t, checkpointID, forked.Current, "forked workspace should start at the checkpoint")
-	assert.Equal(t, checkpointID, forked.Latest, "forked workspace should be at latest")
+	require.Equal(t, 0, code, "workspace new should succeed\nstdout=%s\nstderr=%s", stdout, stderr)
+	var created regressionWorkspaceNewData
+	requireRegressionJSONData(t, stdout, &created)
+	assert.Equal(t, "new", created.Mode)
+	assert.Equal(t, "created", created.Status)
+	assert.Equal(t, "feature-branch", created.Workspace)
+	assert.Equal(t, savePointID, created.StartedFromSavePoint)
+	assert.Equal(t, savePointID, created.ContentSource)
+	assert.Nil(t, created.NewestSavePoint, "new workspace should not have its own newest save point yet")
+	assert.Nil(t, created.HistoryHead, "new workspace history should start empty")
+	assert.True(t, created.OriginalUnchanged, "source workspace should remain unchanged")
+	assert.False(t, created.UnsavedChanges, "new workspace should start clean")
 
-	// Verify the new worktree exists
-	worktreePath := filepath.Join(repoPath, "worktrees", "feature-branch")
-	fi, err := os.Stat(worktreePath)
-	require.NoError(t, err, "new worktree directory should exist")
-	require.True(t, fi.IsDir(), "new worktree should be a directory")
+	fi, err := os.Stat(created.Folder)
+	require.NoError(t, err, "new workspace folder should exist")
+	require.True(t, fi.IsDir(), "new workspace should be a directory")
 
-	// Verify the file exists in the new worktree
-	content, err := os.ReadFile(filepath.Join(worktreePath, "original.txt"))
-	require.NoError(t, err, "file should exist in forked worktree")
-	assert.Equal(t, "content", string(content), "file content should match snapshot")
+	content, err := os.ReadFile(filepath.Join(created.Folder, "original.txt"))
+	require.NoError(t, err, "file should exist in created workspace")
+	assert.Equal(t, "content", string(content), "file content should match save point")
 }
 
-// TestRegression_GCWithEmptySnapshot tests garbage collection with a snapshot
-// that has no files (empty payload).
+// TestRegression_CleanupPreviewWithEmptySavePoint tests cleanup with a save
+// point that has no managed files.
 //
-// Bug: GC would panic when processing snapshots with empty payloads
+// Bug: Cleanup could panic when processing empty saved content
 // Fixed: 2024-02-20
-func TestRegression_GCWithEmptySnapshot(t *testing.T) {
-	// Bug: GC could panic on empty snapshot payloads
-	// Fixed: 2024-02-20
-
+func TestRegression_CleanupPreviewWithEmptySavePoint(t *testing.T) {
 	repoPath := initTestRepo(t)
 
-	// Create an initial snapshot (no files yet)
-	runJVSInRepo(t, repoPath, "checkpoint", "empty snapshot")
+	savePointID := createRegressionSavePoint(t, repoPath, "empty save point")
 
-	// Plan GC - should not panic
-	stdout, _, code := runJVSInRepo(t, repoPath, "gc", "plan")
+	stdout, _ := runJVSJSONInRepo(t, repoPath, "cleanup", "preview")
+	var preview regressionCleanupData
+	requireRegressionJSONData(t, stdout, &preview)
 
-	assert.Equal(t, 0, code, "gc plan should succeed even with empty snapshots")
-	assert.NotEmpty(t, stdout, "gc plan should have output")
-	assert.NotContains(t, stdout, "panic", "should not panic")
+	assert.NotEmpty(t, preview.PlanID, "cleanup preview should create a runnable plan")
+	assert.Contains(t, preview.ProtectedSavePoints, savePointID, "active save point should be protected")
+	assert.Empty(t, preview.ReclaimableSavePoints, "active save point should not be reclaimable")
+	assert.NotContains(t, stdout, "panic", "cleanup preview should not panic")
+
+	runOut, _ := runJVSJSONInRepo(t, repoPath, "cleanup", "run", "--plan-id", preview.PlanID)
+	var run regressionCleanupRunData
+	requireRegressionJSONData(t, runOut, &run)
+	assert.Equal(t, preview.PlanID, run.PlanID)
+	assert.Equal(t, "completed", run.Status)
 }
 
 // TestRegression_DoctorRuntimeRepair tests that doctor --repair-runtime fixes
@@ -456,132 +495,134 @@ func TestRegression_GCWithEmptySnapshot(t *testing.T) {
 // Bug: Doctor --repair-runtime was not executing all repairs
 // Fixed: 2024-02-20, PR #7d0db0c
 func TestRegression_DoctorRuntimeRepair(t *testing.T) {
-	// Bug: Doctor --repair-runtime was not properly fixing runtime state
-	// Fixed: 2024-02-20, PR #7d0db0c
-
 	repoPath := initTestRepo(t)
 
-	// Run doctor with --repair-runtime
-	stdout, _, code := runJVSInRepo(t, repoPath, "doctor", "--repair-runtime")
+	stdout, _ := runJVSJSONInRepo(t, repoPath, "doctor", "--repair-runtime")
+	var doctor regressionDoctorData
+	requireRegressionJSONData(t, stdout, &doctor)
 
-	assert.Equal(t, 0, code, "doctor --repair-runtime should succeed")
-	assert.NotContains(t, stdout, "error", "should not show errors")
+	assert.True(t, doctor.Healthy, "doctor should report a healthy repository")
+	require.NotEmpty(t, doctor.Repairs, "doctor --repair-runtime should report repair actions")
+	for _, repair := range doctor.Repairs {
+		assert.True(t, repair.Success, "repair action %s should succeed", repair.Action)
+	}
 }
 
-// TestRegression_InfoCommand tests that info command displays repository info.
+// TestRegression_StatusCommand tests that status displays current folder and
+// save point state.
 //
-// Bug: Info command was missing some fields or had formatting issues
+// Bug: Repository status output was missing fields or had formatting issues
 // Fixed: 2024-02-20, PR #7d0db0c
-func TestRegression_InfoCommand(t *testing.T) {
-	// Bug: Info command output was incomplete
-	// Fixed: 2024-02-20, PR #7d0db0c
-
+func TestRegression_StatusCommand(t *testing.T) {
 	repoPath := initTestRepo(t)
 
-	// Get repo info
-	stdout, _, code := runJVSInRepo(t, repoPath, "info")
+	createFiles(t, repoPath, map[string]string{"status.txt": "content"})
+	savePointID := createRegressionSavePoint(t, repoPath, "status baseline")
 
-	assert.Equal(t, 0, code, "info command should succeed")
+	status := readRegressionStatus(t, repoPath)
 
-	// Verify key fields are present
-	assert.Contains(t, stdout, "Repository:", "should show repository path")
-	assert.Contains(t, stdout, "Repo ID:", "should show repo ID")
-	assert.Contains(t, stdout, "Format version:", "should show format version")
-	assert.Contains(t, stdout, "Engine:", "should show engine")
-	assert.Contains(t, stdout, "Workspaces:", "should show workspace count")
-	assert.Contains(t, stdout, "Checkpoints:", "should show checkpoint count")
+	assert.Equal(t, repoPath, status.Folder)
+	assert.Equal(t, "main", status.Workspace)
+	assert.Equal(t, savePointID, stringValue(status.NewestSavePoint))
+	assert.Equal(t, savePointID, stringValue(status.HistoryHead))
+	assert.Equal(t, savePointID, stringValue(status.ContentSource))
+	assert.False(t, status.UnsavedChanges)
+	assert.Equal(t, "matches_save_point", status.FilesState)
 }
 
-// TestRegression_CanSnapshotNewWorktree verifies that the first snapshot in a
-// freshly created worktree succeeds.
+// TestRegression_CanSaveNewWorkspace verifies that the first save in a freshly
+// created workspace succeeds.
 //
-// Bug: CanSnapshot() returned false for new worktrees with no snapshots,
-// blocking the first snapshot.
+// Bug: first-save validation returned false for new workspaces with no save
+// points, blocking the first save.
 // Fixed: 2026-02-28
-func TestRegression_CanSnapshotNewWorktree(t *testing.T) {
+func TestRegression_CanSaveNewWorkspace(t *testing.T) {
 	repoPath := initTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
 
-	createFiles(t, mainPath, map[string]string{
-		"baseline.txt": "base",
-	})
-	_, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "baseline")
-	assert.Equal(t, 0, code, "baseline checkpoint should succeed: %s", stderr)
+	createFiles(t, repoPath, map[string]string{"baseline.txt": "base"})
+	baseID := createRegressionSavePoint(t, repoPath, "baseline")
 
-	// Create a brand-new workspace from the current checkpoint.
-	_, stderr, code = runJVSInRepo(t, repoPath, "fork", "fresh")
-	assert.Equal(t, 0, code, "fork should succeed: %s", stderr)
+	stdout, _ := runJVSJSONInRepo(t, repoPath, "workspace", "new", "fresh", "--from", baseID)
+	var fresh regressionWorkspaceNewData
+	requireRegressionJSONData(t, stdout, &fresh)
 
-	freshPath := filepath.Join(repoPath, "worktrees", "fresh")
+	createFiles(t, fresh.Folder, map[string]string{"hello.txt": "world"})
 
-	// Add files to the fresh worktree
-	createFiles(t, freshPath, map[string]string{
-		"hello.txt": "world",
-	})
+	saveOut, _ := runJVSJSONForWorkspace(t, repoPath, "fresh", "save", "-m", "first save in fresh workspace")
+	var saved regressionSavePointData
+	requireRegressionJSONData(t, saveOut, &saved)
+	assert.Equal(t, "fresh", saved.Workspace)
+	assert.NotEmpty(t, saved.SavePointID, "save should produce a save point ID")
+	assert.Equal(t, saved.SavePointID, saved.NewestSavePoint)
+	assert.Equal(t, baseID, saved.StartedFromSavePoint)
 
-	// Checkpoint from within the fresh workspace.
-	stdout, stderr, code := runJVS(t, freshPath, "checkpoint", "first snapshot in fresh worktree")
-	assert.Equal(t, 0, code, "first checkpoint in new workspace should succeed: %s", stderr)
-	assert.NotEmpty(t, stdout, "checkpoint should produce output")
-
-	// Checkpoint list should show the checkpoint.
-	histOut, _, _ := runJVS(t, freshPath, "checkpoint", "list")
-	assert.Contains(t, histOut, "first snapshot in fresh worktree",
-		"checkpoint list should show the checkpoint note")
+	historyOut, _ := runJVSJSONForWorkspace(t, repoPath, "fresh", "history")
+	var history regressionHistoryData
+	requireRegressionJSONData(t, historyOut, &history)
+	require.Len(t, history.SavePoints, 1, "fresh workspace history should include its first save:\n%s", historyOut)
+	assert.Equal(t, saved.SavePointID, history.SavePoints[0].SavePointID)
+	assert.Equal(t, "first save in fresh workspace", history.SavePoints[0].Message)
+	assert.Equal(t, baseID, history.StartedFromSavePoint)
 }
 
-// TestRegression_GCRespectsRetentionPolicy verifies that GC Plan() honours
-// retention policies and does not mark protected snapshots for deletion.
+// TestRegression_CleanupRespectsProtectedSavePoint verifies that cleanup
+// preview does not mark the active save point as reclaimable.
 //
-// Bug: GC Plan() ignored configured retention policies (KeepMinSnapshots,
-// KeepMinAge).
+// Bug: Cleanup preview ignored configured retention/protection rules.
 // Fixed: 2026-02-28
-func TestRegression_GCRespectsRetentionPolicy(t *testing.T) {
+func TestRegression_CleanupRespectsProtectedSavePoint(t *testing.T) {
 	repoPath := initTestRepo(t)
 
-	// Create a snapshot so the repo is non-empty
-	_, stderr, code := runJVSInRepo(t, repoPath, "checkpoint", "protected snapshot")
-	assert.Equal(t, 0, code, "snapshot should succeed: %s", stderr)
+	createFiles(t, repoPath, map[string]string{"protected.txt": "content"})
+	savePointID := createRegressionSavePoint(t, repoPath, "protected save point")
 
-	// Run gc plan
-	stdout, stderr, code := runJVSInRepo(t, repoPath, "gc", "plan")
-	assert.Equal(t, 0, code, "gc plan should succeed: %s", stderr)
+	stdout, _ := runJVSJSONInRepo(t, repoPath, "cleanup", "preview")
+	var preview regressionCleanupData
+	requireRegressionJSONData(t, stdout, &preview)
 
-	// The single checkpoint is the workspace HEAD and therefore protected.
-	// "To delete: 0 checkpoints" must appear in the output.
-	assert.Contains(t, stdout, "To delete: 0 checkpoints",
-		"gc plan should report 0 deletable checkpoints for a protected checkpoint")
+	assert.Contains(t, preview.ProtectedSavePoints, savePointID)
+	assert.Equal(t, 0, preview.CandidateCount)
+	assert.Empty(t, preview.ReclaimableSavePoints, "protected save point should not be reclaimable")
+	assert.Equal(t, int64(0), preview.ReclaimableBytesEstimate)
 }
 
 // TestRegression_ConfigCacheMutation is tested at the unit level in
 // pkg/config/config_test.go TestLoad_CacheCopyIndependence
 
 // TestRegression_RestoreEmptyArgs verifies that restore fails gracefully when
-// given an empty snapshot ID instead of panicking.
+// given an empty save point ID instead of panicking.
 //
-// Bug: Restorer.restore() did not validate empty worktreeName or snapshotID.
+// Bug: restore did not validate empty workspace name or save point ID.
 // Fixed: 2026-02-28
 func TestRegression_RestoreEmptyArgs(t *testing.T) {
 	repoPath := initTestRepo(t)
 
-	// Attempt restore with an empty snapshot ID
-	_, stderr, code := runJVSInRepo(t, repoPath, "restore", "")
-	assert.NotEqual(t, 0, code, "restore with empty snapshot ID should fail")
+	stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "restore", "")
+	assert.NotEqual(t, 0, code, "restore with empty save point ID should fail")
+	assert.Empty(t, strings.TrimSpace(stderr), "JSON errors should be emitted on stdout")
+	env := requireRegressionJSONError(t, stdout)
 
-	// Must not panic — a helpful error message is expected
-	assert.NotContains(t, stderr, "panic", "restore should not panic on empty args")
+	assert.Equal(t, "restore", env.Command)
+	assert.Equal(t, "E_USAGE", env.Error.Code)
+	assert.Contains(t, env.Error.Message, "save point ID is required")
+	assert.NotContains(t, stdout+stderr, "panic", "restore should not panic on empty args")
 }
 
-// TestRegression_GCRunEmptyPlanID verifies that gc run fails gracefully when
-// given an empty plan ID.
+// TestRegression_CleanupRunEmptyPlanID verifies that cleanup run fails
+// gracefully when given an empty plan ID.
 //
-// Bug: GC Run() did not validate empty planID.
+// Bug: cleanup run did not validate empty plan ID.
 // Fixed: 2026-02-28
-func TestRegression_GCRunEmptyPlanID(t *testing.T) {
+func TestRegression_CleanupRunEmptyPlanID(t *testing.T) {
 	repoPath := initTestRepo(t)
 
-	// Attempt gc run with an empty plan ID
-	_, stderr, code := runJVSInRepo(t, repoPath, "gc", "run", "--plan-id", "")
-	assert.NotEqual(t, 0, code, "gc run with empty plan-id should fail")
-	assert.NotContains(t, stderr, "panic", "gc run should not panic on empty plan-id")
+	stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "cleanup", "run", "--plan-id", "")
+	assert.NotEqual(t, 0, code, "cleanup run with empty plan-id should fail")
+	assert.Empty(t, strings.TrimSpace(stderr), "JSON errors should be emitted on stdout")
+	env := requireRegressionJSONError(t, stdout)
+
+	assert.Equal(t, "cleanup run", env.Command)
+	assert.Equal(t, "E_USAGE", env.Error.Code)
+	assert.Contains(t, env.Error.Message, "--plan-id is required")
+	assert.NotContains(t, stdout+stderr, "panic", "cleanup run should not panic on empty plan-id")
 }
