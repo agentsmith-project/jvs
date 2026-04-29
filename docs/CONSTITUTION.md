@@ -16,7 +16,8 @@ workspace state without a server or Git-style mental model.
 4. JVS control data is never workspace payload.
 5. Restore copies content into a workspace; it does not rewrite history.
 6. Destructive restore is preview-first and recovery-backed.
-7. Cleanup is review-first and must protect live and active sources.
+7. Cleanup is review-first and must protect workspace history, open views,
+   active recovery plans, and active operations.
 8. Labels/messages/tags are discovery metadata, not restore targets or cleanup
    protection.
 9. Implementation names must not become user mental models.
@@ -109,9 +110,8 @@ Cleanup must be two-stage:
 cleanup preview -> cleanup run
 ```
 
-Cleanup protects live workspace needs, active views, active operations, active
-source reads, active recovery plans, and kept save points when keep is
-promoted.
+Cleanup protects workspace history, open views, active recovery plans, and
+active operations.
 
 ## Implementation Boundary
 

@@ -1,7 +1,9 @@
 package gc_test
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +11,7 @@ import (
 	"github.com/agentsmith-project/jvs/internal/recovery"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/sourcepin"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/agentsmith-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -43,21 +46,78 @@ func TestCollectorPlanProtectionGroupsExplainCommonReasons(t *testing.T) {
 	assert.NotContains(t, plan.ToDelete, activeOperationID)
 }
 
-func TestCollectorRunRejectsPlanWhenProtectedSetChangedEvenIfCandidatesMatch(t *testing.T) {
+func TestCollectorPlanProtectionGroupsDoNotExposeUnpublishedIntent(t *testing.T) {
 	repoPath := setupTestRepo(t)
-	createTestSnapshot(t, repoPath)
+	unpublishedID := model.NewSnapshotID()
+	writeSnapshotIntent(t, repoPath, unpublishedID)
+
+	plan, err := gc.NewCollector(repoPath).PlanWithPolicy(zeroRetention)
+	require.NoError(t, err)
+
+	assert.NotContains(t, plan.ProtectedSet, unpublishedID)
+	for _, group := range plan.ProtectionGroups {
+		assert.NotContains(t, group.SavePoints, unpublishedID)
+	}
+}
+
+func TestCollectorPlanActiveOperationScanFailureUsesPublicCleanupLanguage(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	blockIntentDirectory(t, repoPath)
+
+	_, err := gc.NewCollector(repoPath).PlanWithPolicy(zeroRetention)
+	require.Error(t, err)
+
+	var jvsErr *errclass.JVSError
+	require.ErrorAs(t, err, &jvsErr)
+	assert.Equal(t, errclass.ErrGCPlanMismatch.Code, jvsErr.Code)
+	assert.Contains(t, jvsErr.Message, "active operations")
+	assert.Contains(t, jvsErr.Message, "doctor --strict")
+	assertCleanupActiveOperationErrorOmitsInternalVocabulary(t, jvsErr.Code)
+	assertCleanupActiveOperationErrorOmitsInternalVocabulary(t, jvsErr.Message)
+}
+
+func TestCollectorRunRejectsPlanWhenPublishedIntentChangesCandidates(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	intentID := createRemovedWorktreeSnapshots(t, repoPath, "intent-after-preview", 1)[0]
 
 	collector := gc.NewCollector(repoPath)
 	plan, err := collector.PlanWithPolicy(zeroRetention)
 	require.NoError(t, err)
-	require.Empty(t, plan.ToDelete)
+	require.Contains(t, plan.ToDelete, intentID)
 
-	writeSnapshotIntent(t, repoPath, model.NewSnapshotID())
+	writeSnapshotIntent(t, repoPath, intentID)
 
 	err = collector.Run(plan.PlanID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "protected set changed")
+	assert.Contains(t, err.Error(), "candidate set changed")
 	assert.Contains(t, err.Error(), "cleanup preview")
+}
+
+func blockIntentDirectory(t *testing.T, repoPath string) {
+	t.Helper()
+
+	intentsDir := filepath.Join(repoPath, ".jvs", "intents")
+	require.NoError(t, os.RemoveAll(intentsDir))
+	require.NoError(t, os.WriteFile(intentsDir, []byte("not a directory"), 0644))
+}
+
+func assertCleanupActiveOperationErrorOmitsInternalVocabulary(t *testing.T, value string) {
+	t.Helper()
+
+	lower := strings.ToLower(value)
+	for _, forbidden := range []string{
+		"checkpoint",
+		"publish state",
+		"ready marker",
+		"intents",
+		"intent",
+		".jvs",
+		"control path",
+		"control directory",
+		"stat ",
+	} {
+		assert.NotContains(t, lower, forbidden)
+	}
 }
 
 func writeActiveRecoveryPlan(t *testing.T, repoPath string, sourceID model.SnapshotID) {

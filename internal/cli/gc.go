@@ -40,7 +40,11 @@ var cleanupPreviewCmd = &cobra.Command{
 		}
 
 		if jsonOutput {
-			return outputJSON(publicCleanup(plan))
+			record, err := publicCleanup(plan)
+			if err != nil {
+				return err
+			}
+			return outputJSON(record)
 		}
 
 		fmt.Printf("Plan ID: %s\n", plan.PlanID)

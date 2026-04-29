@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/agentsmith-project/jvs/internal/audit"
+	"github.com/agentsmith-project/jvs/internal/gc"
 	"github.com/agentsmith-project/jvs/internal/integrity"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
@@ -85,10 +86,11 @@ type Doctor struct {
 }
 
 const (
-	RepairCleanLocks             = "clean_locks"
-	RepairRebindWorkspacePaths   = "rebind_workspace_paths"
-	RepairCleanRuntimeTmp        = "clean_runtime_tmp"
-	RepairCleanRuntimeOperations = "clean_runtime_operations"
+	RepairCleanLocks               = "clean_locks"
+	RepairRebindWorkspacePaths     = "rebind_workspace_paths"
+	RepairCleanRuntimeTmp          = "clean_runtime_tmp"
+	RepairCleanRuntimeOperations   = "clean_runtime_operations"
+	RepairCleanRuntimeCleanupPlans = "clean_runtime_cleanup_plans"
 )
 
 const (
@@ -171,6 +173,18 @@ var repairRegistry = []repairActionDef{
 			result := d.repairCleanIntents()
 			result.Action = RepairCleanRuntimeOperations
 			return result
+		},
+	},
+	{
+		RepairAction: RepairAction{
+			ID:          RepairCleanRuntimeCleanupPlans,
+			Description: "Remove stale cleanup preview/run plan state",
+			AutoSafe:    true,
+		},
+		RuntimeSafe: true,
+		Implemented: true,
+		run: func(d *Doctor) RepairResult {
+			return d.repairCleanRuntimeCleanupPlans()
 		},
 	},
 	{
@@ -655,6 +669,24 @@ func (d *Doctor) repairCleanIntents() RepairResult {
 	return RepairResult{Action: "clean_intents", Success: true, Message: message, Cleaned: cleaned}
 }
 
+func (d *Doctor) repairCleanRuntimeCleanupPlans() RepairResult {
+	cleaned, err := gc.RemoveRuntimePlans(d.repoRoot)
+	if err != nil {
+		return RepairResult{
+			Action:  RepairCleanRuntimeCleanupPlans,
+			Success: false,
+			Message: "cleanup plan state could not be safely cleaned",
+			Cleaned: cleaned,
+		}
+	}
+	return RepairResult{
+		Action:  RepairCleanRuntimeCleanupPlans,
+		Success: true,
+		Message: fmt.Sprintf("cleaned %d stale cleanup plan%s", cleaned, pluralSuffix(cleaned)),
+		Cleaned: cleaned,
+	}
+}
+
 func (d *Doctor) collectMetadataSnapshotRefs() (map[model.SnapshotID]bool, error) {
 	refs := make(map[model.SnapshotID]bool)
 	worktreesDir, err := repo.WorktreesDirPath(d.repoRoot)
@@ -954,6 +986,13 @@ func summarizeRepairReasons(reasons []string) string {
 		return reasons[0]
 	}
 	return fmt.Sprintf("%s; +%d more", reasons[0], len(reasons)-1)
+}
+
+func pluralSuffix(count int) string {
+	if count == 1 {
+		return ""
+	}
+	return "s"
 }
 
 // Check runs all diagnostic checks.

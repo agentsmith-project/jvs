@@ -214,8 +214,8 @@ Rules:
 
 - The source must resolve to a full or unique save point ID.
 - The view path is read-only.
-- Active views/source reads protect their source save point from cleanup while
-  the operation is active.
+- Open views protect their source save point from cleanup while the operation
+  is active.
 
 ### `jvs view close <view-id|path>`
 
@@ -368,6 +368,7 @@ Public automatic repair actions:
 - `rebind_workspace_paths`
 - `clean_runtime_tmp`
 - `clean_runtime_operations`
+- `clean_runtime_cleanup_plans`
 
 Doctor must not rewrite durable save point history, workspace provenance, or
 audit history as an automatic repair.
@@ -376,8 +377,10 @@ audit history as an automatic repair.
 
 `cleanup` is the public product term. Cleanup must remain two-stage: preview
 first, then run a reviewed plan. A cleanup run must revalidate its plan before
-deleting anything and must protect live workspace needs, active views, active
-source reads, active operations, and active recovery plans.
+deleting anything and must protect the stable reasons: workspace history, open
+views, active recovery plans, and active operations.
+Stable cleanup reasons: workspace history; open views; active recovery plans;
+active operations.
 
 Cleanup preview must explain protected save points by stable generic reasons:
 

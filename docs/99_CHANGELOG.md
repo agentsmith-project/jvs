@@ -53,9 +53,8 @@ recovery plan, doctor, and cleanup.
 - `integrity`: descriptor checksum and payload hash detect independent
   corruption; coordinated descriptor-plus-checksum rewrite remains a v0
   residual risk.
-- `migration`: active `.jvs/locks/`, `.jvs/intents/`, and `.jvs/gc/*.json`
-  runtime state is non-portable and must be rebuilt at the destination with
-  `jvs doctor --strict --repair-runtime`.
+- `migration`: non-portable JVS runtime state is destination-local and must be
+  rebuilt at the destination with `jvs doctor --strict --repair-runtime`.
 - `recovery`: restore run is recoverable through recovery plans, but operators
   must resolve active plans before starting another restore in the same
   workspace.
@@ -70,9 +69,9 @@ recovery plan, doctor, and cleanup.
 - After a physical backup or storage migration, run
   `jvs doctor --strict --repair-runtime` at the destination before the final
   strict doctor check.
-- Exclude active `.jvs/locks/`, `.jvs/intents/`, and `.jvs/gc/*.json` runtime
-  state during physical sync; copied mutation locks may block destination
-  writes until repaired.
+- Do not treat non-portable JVS runtime state as authoritative during physical
+  backup or storage migration; rebuild it at the destination before resuming
+  JVS writes.
 - Run the restore drill from `docs/13_OPERATION_RUNBOOK.md`, including
   preview/run and recovery status/resume/rollback coverage.
 

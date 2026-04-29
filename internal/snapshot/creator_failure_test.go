@@ -27,11 +27,13 @@ func setupCreatorFailureRepo(t *testing.T) string {
 	return dir
 }
 
-func TestCreator_DescriptorWriteFailureDoesNotPublishReadyAndKeepsIntent(t *testing.T) {
+func TestCreator_DescriptorWriteFailureDoesNotPublishReadyAndRemovesIntent(t *testing.T) {
 	repoPath := setupCreatorFailureRepo(t)
 	creator := NewCreator(repoPath, model.EngineCopy)
 	descriptorLanded := false
+	var snapshotID model.SnapshotID
 	creator.descriptorWriter = func(path string, desc *model.Descriptor) error {
+		snapshotID = desc.SnapshotID
 		if err := writeDescriptorFile(path, desc); err != nil {
 			return err
 		}
@@ -43,11 +45,12 @@ func TestCreator_DescriptorWriteFailureDoesNotPublishReadyAndKeepsIntent(t *test
 	require.Error(t, err)
 	assert.Nil(t, desc)
 	assert.True(t, descriptorLanded, "test must exercise descriptor cleanup after a landed write")
+	require.NotEmpty(t, snapshotID)
 
-	intent := requireSingleIntent(t, repoPath)
-	assert.NoDirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(intent.SnapshotID)))
-	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(intent.SnapshotID), ".READY"))
-	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(intent.SnapshotID)+".json"))
+	assertNoIntents(t, repoPath)
+	assert.NoDirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID)))
+	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID), ".READY"))
+	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json"))
 
 	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
 	require.NoError(t, err)
@@ -55,12 +58,14 @@ func TestCreator_DescriptorWriteFailureDoesNotPublishReadyAndKeepsIntent(t *test
 	assert.Empty(t, cfg.LatestSnapshotID)
 }
 
-func TestCreator_PublishFailureAfterDescriptorWriteUnpublishesPayloadAndKeepsIntent(t *testing.T) {
+func TestCreator_PublishFailureAfterDescriptorWriteUnpublishesPayloadAndRemovesIntent(t *testing.T) {
 	repoPath := setupCreatorFailureRepo(t)
 	creator := NewCreator(repoPath, model.EngineCopy)
 
 	descriptorWritten := false
+	var snapshotID model.SnapshotID
 	creator.descriptorWriter = func(path string, desc *model.Descriptor) error {
+		snapshotID = desc.SnapshotID
 		descriptorWritten = true
 		return writeDescriptorFile(path, desc)
 	}
@@ -75,10 +80,11 @@ func TestCreator_PublishFailureAfterDescriptorWriteUnpublishesPayloadAndKeepsInt
 	require.Error(t, err)
 	assert.Nil(t, desc)
 	assert.True(t, descriptorWritten, "test must exercise failure after descriptor write")
+	require.NotEmpty(t, snapshotID)
 
-	intent := requireSingleIntent(t, repoPath)
-	assert.NoDirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(intent.SnapshotID)))
-	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(intent.SnapshotID)+".json"))
+	assertNoIntents(t, repoPath)
+	assert.NoDirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID)))
+	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json"))
 
 	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
 	require.NoError(t, err)
@@ -121,6 +127,7 @@ func TestCreator_PublishRenameDefiniteFailurePreservesExistingFinalSnapshot(t *t
 	require.NoError(t, readErr)
 	assert.Equal(t, "existing content", string(content))
 	assertPublishAttemptArtifactsCleaned(t, repoPath, snapshotID)
+	assertNoIntents(t, repoPath)
 
 	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
 	require.NoError(t, err)
@@ -171,6 +178,7 @@ func TestCreator_PublishRenameDefiniteFailurePreservesFinalSnapshotSymlinkTarget
 	require.NoError(t, readErr)
 	assert.Equal(t, "outside content", string(content))
 	assertPublishAttemptArtifactsCleaned(t, repoPath, snapshotID)
+	assertNoIntents(t, repoPath)
 
 	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
 	require.NoError(t, err)
@@ -258,12 +266,14 @@ func TestCreator_HeadUpdateUncertainCommitRetainsPublishedSnapshotAndIntent(t *t
 	assert.Equal(t, committedSnapshotID, cfg.LatestSnapshotID)
 }
 
-func TestCreator_HeadUpdateFailureUnpublishesDescriptorAndPayloadAndKeepsIntent(t *testing.T) {
+func TestCreator_HeadUpdateFailureUnpublishesDescriptorAndPayloadAndRemovesIntent(t *testing.T) {
 	repoPath := setupCreatorFailureRepo(t)
 	creator := NewCreator(repoPath, model.EngineCopy)
 
 	descriptorWritten := false
+	var snapshotID model.SnapshotID
 	creator.descriptorWriter = func(path string, desc *model.Descriptor) error {
+		snapshotID = desc.SnapshotID
 		descriptorWritten = true
 		return writeDescriptorFile(path, desc)
 	}
@@ -275,11 +285,12 @@ func TestCreator_HeadUpdateFailureUnpublishesDescriptorAndPayloadAndKeepsIntent(
 	require.Error(t, err)
 	assert.Nil(t, desc)
 	assert.True(t, descriptorWritten, "test must exercise failure after descriptor write")
+	require.NotEmpty(t, snapshotID)
 
-	intent := requireSingleIntent(t, repoPath)
-	assert.NoDirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(intent.SnapshotID)))
-	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(intent.SnapshotID)+".json"))
-	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(intent.SnapshotID), ".READY"))
+	assertNoIntents(t, repoPath)
+	assert.NoDirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID)))
+	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json"))
+	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID), ".READY"))
 
 	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
 	require.NoError(t, err)
@@ -308,8 +319,7 @@ func TestCreator_SavePointAuditAppendabilityFailureBeforeHistoryUpdateUnpublishe
 	assert.Contains(t, err.Error(), "audit")
 	require.NotEmpty(t, stagedSnapshotID)
 	assertUnpublishedSaveAttempt(t, repoPath, stagedSnapshotID)
-	intent := requireSingleIntent(t, repoPath)
-	assert.Equal(t, stagedSnapshotID, intent.SnapshotID)
+	assertNoIntents(t, repoPath)
 
 	cfg, cfgErr := repo.LoadWorktreeConfig(repoPath, "main")
 	require.NoError(t, cfgErr)
@@ -372,6 +382,15 @@ func requireSingleIntent(t *testing.T, repoPath string) model.IntentRecord {
 	require.NoError(t, json.Unmarshal(data, &intent))
 	require.NotEmpty(t, intent.SnapshotID)
 	return intent
+}
+
+func assertNoIntents(t *testing.T, repoPath string) {
+	t.Helper()
+
+	intentsDir := filepath.Join(repoPath, ".jvs", "intents")
+	entries, err := os.ReadDir(intentsDir)
+	require.NoError(t, err)
+	assert.Empty(t, entries)
 }
 
 func captureCreatorFailureStderr(t *testing.T, fn func()) string {

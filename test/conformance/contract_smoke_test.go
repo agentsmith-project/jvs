@@ -176,10 +176,17 @@ func TestContract_WorkspaceAndCleanupUseCurrentPublicCommands(t *testing.T) {
 	if planID == "" {
 		t.Fatalf("cleanup preview missing plan_id: %s", previewOut)
 	}
-	for _, field := range []string{"protected_save_points", "protected_by_history", "reclaimable_save_points", "reclaimable_bytes_estimate"} {
+	for _, field := range publicCleanupPlanJSONFields() {
 		if _, ok := preview[field]; !ok {
 			t.Fatalf("cleanup preview missing public field %q: %#v", field, preview)
 		}
+	}
+	requireCleanupProtectionGroups(t, preview, "history")
+	if _, ok := preview["protected_by_history"].(float64); !ok {
+		t.Fatalf("cleanup preview protected_by_history must be numeric: %#v", preview["protected_by_history"])
+	}
+	if _, ok := preview["candidate_count"].(float64); !ok {
+		t.Fatalf("cleanup preview candidate_count must be numeric: %#v", preview["candidate_count"])
 	}
 
 	runOut, stderr, code := runJVSInRepo(t, repoPath, "--json", "cleanup", "run", "--plan-id", planID)
@@ -189,6 +196,27 @@ func TestContract_WorkspaceAndCleanupUseCurrentPublicCommands(t *testing.T) {
 	if data := decodeContractDataMap(t, runOut); data["status"] != "completed" || data["plan_id"] != planID {
 		t.Fatalf("cleanup run data mismatch: %#v", data)
 	}
+}
+
+func TestContract_CleanupPreviewUsesStableProtectionReasonTokens(t *testing.T) {
+	repoPath, cleanup := initTestRepo(t)
+	defer cleanup()
+
+	createFiles(t, repoPath, map[string]string{"notes.txt": "base\n"})
+	base := savePoint(t, repoPath, "base")
+
+	viewOut, stderr, code := runJVSInRepo(t, repoPath, "--json", "view", base, "notes.txt")
+	if code != 0 {
+		t.Fatalf("view failed: stdout=%s stderr=%s", viewOut, stderr)
+	}
+	defer closeView(t, repoPath, viewOut)
+
+	previewOut, stderr, code := runJVSInRepo(t, repoPath, "--json", "cleanup", "preview")
+	if code != 0 {
+		t.Fatalf("cleanup preview failed: stdout=%s stderr=%s", previewOut, stderr)
+	}
+	preview := decodeContractDataMap(t, previewOut)
+	requireCleanupProtectionGroups(t, preview, "history", "open_view")
 }
 
 func TestContract_PublicHelpOnlyAdvertisesGACommands(t *testing.T) {
@@ -262,6 +290,22 @@ func TestContract_PublicHelpOnlyAdvertisesGACommands(t *testing.T) {
 	}
 }
 
+func TestContract_ReleaseFacingDocsUsePublicRuntimeBoundaryVocabulary(t *testing.T) {
+	for _, doc := range activePublicContractDocs() {
+		t.Run(doc, func(t *testing.T) {
+			scanPublicDocLines(t, doc, func(lineNo int, line string) {
+				assertNoPathShapedRuntimeMechanismLine(t, doc, lineNo, line)
+				lowerLine := strings.ToLower(line)
+				for _, internalTerm := range runtimeInternalFileVocabularyFragments() {
+					if strings.Contains(lowerLine, internalTerm) {
+						t.Fatalf("%s:%d leaks internal runtime/storage term %q; use JVS control data, runtime state, or active operations instead:\n%s", doc, lineNo, internalTerm, line)
+					}
+				}
+			})
+		})
+	}
+}
+
 func savePoint(t *testing.T, repoPath, message string) string {
 	t.Helper()
 	stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "save", "-m", message)
@@ -275,6 +319,42 @@ func savePoint(t *testing.T, repoPath, message string) string {
 	}
 	assertNoLegacyPublicJSONFields(t, stdout)
 	return id
+}
+
+func requireCleanupProtectionGroups(t *testing.T, preview map[string]any, requiredReasons ...string) {
+	t.Helper()
+
+	groups, ok := preview["protection_groups"].([]any)
+	if !ok {
+		t.Fatalf("cleanup preview protection_groups must be an array: %#v", preview["protection_groups"])
+	}
+	stableReasons := stableCleanupProtectionReasonSet()
+	seen := map[string]bool{}
+	for _, rawGroup := range groups {
+		group, ok := rawGroup.(map[string]any)
+		if !ok {
+			t.Fatalf("cleanup protection group must be an object: %#v", rawGroup)
+		}
+		reason, ok := group["reason"].(string)
+		if !ok || reason == "" {
+			t.Fatalf("cleanup protection group missing reason: %#v", group)
+		}
+		if !stableReasons[reason] {
+			t.Fatalf("cleanup protection group reason %q is outside stable token set %v", reason, stableCleanupProtectionReasonTokens())
+		}
+		if _, ok := group["count"].(float64); !ok {
+			t.Fatalf("cleanup protection group %q missing numeric count: %#v", reason, group)
+		}
+		if _, ok := group["save_points"].([]any); !ok {
+			t.Fatalf("cleanup protection group %q missing save_points array: %#v", reason, group)
+		}
+		seen[reason] = true
+	}
+	for _, reason := range requiredReasons {
+		if !seen[reason] {
+			t.Fatalf("cleanup preview missing protection group reason %q: %#v", reason, groups)
+		}
+	}
 }
 
 func closeView(t *testing.T, repoPath, viewOut string) {

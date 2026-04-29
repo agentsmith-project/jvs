@@ -102,15 +102,33 @@ type CleanupPlan struct {
 }
 
 type CleanupProtectionGroup struct {
-    Reason     string        `json:"reason"`
-    Count      int           `json:"count"`
-    SavePoints []SavePointID `json:"save_points"`
+    Reason     CleanupProtectionReason `json:"reason"`
+    Count      int                     `json:"count"`
+    SavePoints []SavePointID           `json:"save_points"`
 }
+
+type CleanupProtectionReason = string
+
+const (
+    CleanupProtectionReasonHistory         CleanupProtectionReason = "history"
+    CleanupProtectionReasonOpenView        CleanupProtectionReason = "open_view"
+    CleanupProtectionReasonActiveRecovery  CleanupProtectionReason = "active_recovery"
+    CleanupProtectionReasonActiveOperation CleanupProtectionReason = "active_operation"
+)
 ```
 
 Public JSON fields: `plan_id`, `created_at`, `protected_save_points`,
 `protection_groups`, `protected_by_history`, `candidate_count`,
 `reclaimable_save_points`, and `reclaimable_bytes_estimate`.
+
+Cleanup protection reason meanings:
+
+- `history`: the save point is part of workspace history or a selected
+  workspace base.
+- `open_view`: the save point backs an open read-only view.
+- `active_recovery`: the save point is referenced by an active recovery plan.
+- `active_operation`: the save point is referenced by an active JVS operation
+  that has not finished.
 
 ### EngineType
 

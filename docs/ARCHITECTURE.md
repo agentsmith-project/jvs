@@ -200,9 +200,9 @@ The repository/project coordinates:
 - cleanup plans/tombstones
 
 The repository must keep runtime state separate from durable published state.
-Runtime lock files, operation records, and cleanup runtime plan files are
-non-portable across backup/migration. Workspace folder real-path bindings are
-destination-local runtime bindings and are repaired at the destination.
+Non-portable JVS runtime state is destination-local across backup/migration.
+Workspace folder real-path bindings are destination-local runtime bindings and
+are repaired at the destination.
 
 ## Engine Model
 
@@ -240,6 +240,7 @@ Automatic repair is limited to runtime state:
 - `rebind_workspace_paths`
 - `clean_runtime_tmp`
 - `clean_runtime_operations`
+- `clean_runtime_cleanup_plans`
 
 Repairs that rewrite durable save point history, workspace provenance, or
 audit history are outside the public automatic repair surface.
@@ -254,9 +255,8 @@ Required product layering:
 - Public docs say cleanup preview/run.
 - Cleanup preview must not delete.
 - Cleanup run must bind to a reviewed plan and revalidate before deletion.
-- Cleanup protects live workspace needs, active views, active source reads,
-  active operations, active recovery plans, and kept save points when keep is
-  promoted.
+- Cleanup protects workspace history, open views, active recovery plans, and
+  active operations.
 - Deleted save points require tombstone/audit information for later errors.
 
 ## Audit Boundary

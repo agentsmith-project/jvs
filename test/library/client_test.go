@@ -15,6 +15,7 @@ import (
 
 	"github.com/agentsmith-project/jvs/internal/compression"
 	"github.com/agentsmith-project/jvs/internal/integrity"
+	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/pkg/jvs"
 	"github.com/agentsmith-project/jvs/pkg/model"
@@ -149,6 +150,20 @@ func TestPublicFacadeUsesSaveCleanupNames(t *testing.T) {
 	var _ jvs.SaveOptions
 	var _ jvs.CleanupOptions
 	var _ jvs.CleanupPlan
+}
+
+func TestCleanupProtectionReasonIsStringLikePublicFacade(t *testing.T) {
+	group := jvs.CleanupProtectionGroup{Reason: jvs.CleanupProtectionReasonHistory}
+
+	var reason string = group.Reason
+	byReason := map[string]bool{group.Reason: true}
+	assert.True(t, byReason[reason])
+	assert.Equal(t, "history", acceptCleanupProtectionReasonString(group.Reason))
+	assert.True(t, group.Reason == jvs.CleanupProtectionReasonHistory)
+}
+
+func acceptCleanupProtectionReasonString(reason string) string {
+	return reason
 }
 
 func TestPublicFacadeKeepsLegacyStorageNamesOutOfPublicAPI(t *testing.T) {
@@ -539,6 +554,37 @@ func TestPreviewCleanupPublicJSONUsesSavePointFields(t *testing.T) {
 	assert.NotContains(t, encoded, "keep_min_")
 }
 
+func TestPreviewCleanupActiveOperationScanErrorUsesPublicLanguage(t *testing.T) {
+	dir := testRepoDir(t)
+	client, err := jvs.Init(dir, jvs.InitOptions{Name: "test-repo", EngineType: model.EngineCopy})
+	require.NoError(t, err)
+	blockLibraryIntentDirectory(t, client.RepoRoot())
+
+	_, err = client.PreviewCleanup(context.Background(), jvs.CleanupOptions{})
+	require.Error(t, err)
+
+	assert.Contains(t, err.Error(), "active operations")
+	assert.Contains(t, err.Error(), "doctor --strict")
+	assertLibraryCleanupErrorOmitsInternalVocabulary(t, err.Error())
+}
+
+func TestPreviewCleanupDamagedReadyErrorUsesPublicLanguage(t *testing.T) {
+	dir := testRepoDir(t)
+	client, err := jvs.Init(dir, jvs.InitOptions{Name: "test-repo", EngineType: model.EngineCopy})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "app.txt"), []byte("baseline"), 0644))
+	savePoint, err := client.Save(context.Background(), jvs.SaveOptions{Message: "baseline"})
+	require.NoError(t, err)
+	corruptLibraryReadyMarker(t, client.RepoRoot(), savePoint.SavePointID)
+
+	_, err = client.PreviewCleanup(context.Background(), jvs.CleanupOptions{})
+	require.Error(t, err)
+
+	assert.Contains(t, err.Error(), "save point storage")
+	assert.Contains(t, err.Error(), "doctor --strict")
+	assertLibraryCleanupErrorOmitsInternalVocabulary(t, err.Error())
+}
+
 func TestClientOperations_ReturnContextErrorWhenCanceled(t *testing.T) {
 	dir := testRepoDir(t)
 	client, err := jvs.Init(dir, jvs.InitOptions{Name: "test-repo"})
@@ -573,6 +619,41 @@ func TestClientOperations_ReturnContextErrorWhenCanceled(t *testing.T) {
 
 	err = client.RunCleanup(ctx, "missing-plan")
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+func blockLibraryIntentDirectory(t *testing.T, repoRoot string) {
+	t.Helper()
+
+	intentsDir := filepath.Join(repoRoot, repo.JVSDirName, "intents")
+	require.NoError(t, os.RemoveAll(intentsDir))
+	require.NoError(t, os.WriteFile(intentsDir, []byte("not a directory"), 0644))
+}
+
+func corruptLibraryReadyMarker(t *testing.T, repoRoot string, savePointID jvs.SavePointID) {
+	t.Helper()
+
+	readyPath := filepath.Join(repoRoot, repo.JVSDirName, "snapshots", string(savePointID), ".READY")
+	require.NoError(t, os.WriteFile(readyPath, []byte("{not json"), 0644))
+}
+
+func assertLibraryCleanupErrorOmitsInternalVocabulary(t *testing.T, value string) {
+	t.Helper()
+
+	lower := strings.ToLower(value)
+	for _, forbidden := range []string{
+		"checkpoint",
+		"publish state",
+		"ready marker",
+		"intents",
+		"intent",
+		".jvs",
+		"control path",
+		"control directory",
+		"stat ",
+		"gc",
+	} {
+		assert.NotContains(t, lower, forbidden)
+	}
 }
 
 func TestWorkspacePath(t *testing.T) {

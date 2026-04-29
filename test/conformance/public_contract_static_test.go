@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/agentsmith-project/jvs/internal/doctor"
 )
 
 var historyBareJQSelector = regexp.MustCompile(`jq\s+-r\s+['"]\.\[(?:\]|[0-9]+)`)
@@ -42,17 +44,18 @@ var markdownBulletFieldPattern = regexp.MustCompile("^\\s*-\\s+`([A-Za-z0-9_]+)`
 var backtickedFieldPattern = regexp.MustCompile("`([A-Za-z0-9_]+)`")
 var jsonTagFieldPattern = regexp.MustCompile("json:\"([A-Za-z0-9_]+)(?:,[^\"]*)?\"")
 var wholeJVSMetadataPathPattern = regexp.MustCompile("`?\\.jvs/`?(?:\\s|$|[),.;:])")
+var pathShapedRuntimeMechanismPattern = regexp.MustCompile("`?\\.jvs/(?:locks|intents|gc)(?:/|\\*|\\b)")
+var staleCleanupProtectionVocabularyPattern = regexp.MustCompile(`(?i)\b(?:views?/)?source\s+reads?\b`)
 var doctorEngineSurfacePattern = regexp.MustCompile("(?i)(?:`?jvs\\s+doctor`?|`?doctor`?)[^.]*\\b(?:engine\\s+(?:visibility|probes?|summary)|capabilit(?:y|ies))\\b|\\b(?:engine\\s+(?:visibility|probes?|summary)|capabilit(?:y|ies))\\b[^.]*`?(?:jvs\\s+doctor|doctor)`?")
+var documentedCleanupProtectionReasonPattern = regexp.MustCompile(`(?m)^\s*(CleanupProtectionReason[A-Za-z0-9_]+)\s+CleanupProtectionReason\s*=\s*"([^"]+)"`)
+var runtimeRepairActionIDPattern = regexp.MustCompile("`((?:clean|rebind)_[A-Za-z0-9_]+)`")
+var staleMigrationRuntimeExcludePattern = regexp.MustCompile(`(?i)\bexclud(?:e|es|ed|ing)\b[^.\n]*(?:runtime\s+(?:cleanup\s+)?state|(?:runtime\s+)?cleanup\s+plan\s+files?)|(?:runtime\s+(?:cleanup\s+)?state|(?:runtime\s+)?cleanup\s+plan\s+files?)[^.\n]*\bexclud(?:e|es|ed|ing)\b`)
+var staleMigrationSyncVocabularyPattern = regexp.MustCompile(`(?i)\b(?:sync|syncs|synced|syncing|synchroni[sz](?:e|es|ed|ing|ation))\b`)
 
 type unsupportedPublicCLIExampleRule struct {
 	name        string
 	pattern     *regexp.Regexp
 	replacement string
-}
-
-type runtimeStateSyncExcludeRule struct {
-	name     string
-	patterns []string
 }
 
 type markdownCodeBlock struct {
@@ -166,7 +169,6 @@ func TestDocs_ReleaseBlockingManifestIncludesPublicDocs(t *testing.T) {
 		"docs/QUICKSTART.md",
 		"docs/PRODUCT_PLAN.md",
 		"docs/CONSTITUTION.md",
-		"docs/TARGET_USERS.md",
 		"docs/03_WORKTREE_SPEC.md",
 		"docs/04_SNAPSHOT_SCOPE_AND_LINEAGE_SPEC.md",
 		"docs/05_SNAPSHOT_ENGINE_SPEC.md",
@@ -265,11 +267,47 @@ func TestDocs_ActiveNonReleaseFacingReferenceDocsDeclareStatus(t *testing.T) {
 	}
 }
 
+func TestDocs_ActiveNonReleaseFacingResearchDocsDeclareStatus(t *testing.T) {
+	for _, doc := range activeNonReleaseFacingResearchDocs() {
+		t.Run(doc, func(t *testing.T) {
+			body := strings.ToLower(readRepoFile(t, doc))
+			for _, required := range []string{"active product research", "non-release-facing", "not part of the v0 public contract"} {
+				if !strings.Contains(body, required) {
+					t.Fatalf("%s is product research outside v0 release-facing docs but does not declare %q", doc, required)
+				}
+			}
+			for _, forbidden := range []string{"active release-facing", "release-facing product research"} {
+				if strings.Contains(body, forbidden) {
+					t.Fatalf("%s must not declare release-facing status marker %q", doc, forbidden)
+				}
+			}
+		})
+	}
+}
+
+func TestDocs_ActiveNonReleaseFacingExampleDocsDeclareStatus(t *testing.T) {
+	for _, doc := range activeNonReleaseFacingExampleDocs() {
+		t.Run(doc, func(t *testing.T) {
+			body := strings.ToLower(readRepoFile(t, doc))
+			for _, required := range []string{"non-release-facing", "non-normative example", "not part of the v0 public contract"} {
+				if !strings.Contains(body, required) {
+					t.Fatalf("%s is an example outside v0 release-facing docs but does not declare %q", doc, required)
+				}
+			}
+			if strings.Contains(body, "release-facing domain entry") {
+				t.Fatalf("%s must not declare the old release-facing domain entry status", doc)
+			}
+		})
+	}
+}
+
 func TestDocs_AllMarkdownDocsAreReleaseClassified(t *testing.T) {
 	classified := append([]string{}, activePublicContractDocs()...)
 	classified = append(classified, archivedNonReleaseFacingDocs()...)
 	classified = append(classified, activeNonReleaseFacingDesignDocs()...)
 	classified = append(classified, activeNonReleaseFacingReferenceDocs()...)
+	classified = append(classified, activeNonReleaseFacingResearchDocs()...)
+	classified = append(classified, activeNonReleaseFacingExampleDocs()...)
 	for _, doc := range markdownDocsUnder(t, "docs") {
 		if !stringSliceContains(classified, doc) {
 			t.Fatalf("%s must be active release-facing, active non-release-facing, or explicitly archived/non-release-facing", doc)
@@ -330,6 +368,15 @@ func TestDocs_TargetUsersIsSupportingResearchNotGAPromise9Normative(t *testing.T
 	}
 	supportingResearch := textBetweenMarkers(t, matrixPromise, "Supporting research:", "Evidence:")
 	requireReleaseReadinessText(t, "traceability promise 9 supporting research", supportingResearch, "`docs/TARGET_USERS.md`")
+}
+
+func TestDocs_TargetUsersIsSupportingResearchNotReleaseBlocking(t *testing.T) {
+	if stringSliceContains(releaseBlockingContractDocs(), "docs/TARGET_USERS.md") {
+		t.Fatalf("docs/TARGET_USERS.md is supporting product research and must not be release-blocking")
+	}
+	if !stringSliceContains(nonReleaseFacingDocs(), "docs/TARGET_USERS.md") {
+		t.Fatalf("docs/TARGET_USERS.md must be classified as non-release-facing product research")
+	}
 }
 
 func TestDocs_TraceabilityNormativeDocsUseV0ReleaseVocabulary(t *testing.T) {
@@ -407,11 +454,17 @@ func TestDocs_PublicDocsUseV0ReleaseVocabulary(t *testing.T) {
 }
 
 func TestDocs_RuntimeTerminologyDoesNotDescribeRuntimeLocksAsCurrentBehavior(t *testing.T) {
-	for _, doc := range runtimeOperationTerminologyDocs() {
+	for _, doc := range activePublicContractDocs() {
 		t.Run(doc, func(t *testing.T) {
 			scanPublicDocLines(t, doc, func(lineNo int, line string) {
 				if staleCurrentRuntimeLockTerminologyPattern.MatchString(line) {
 					t.Fatalf("%s:%d describes runtime locks as current release-facing behavior:\n%s", doc, lineNo, line)
+				}
+				lowerLine := strings.ToLower(line)
+				for _, fragment := range runtimeInternalFileVocabularyFragments() {
+					if strings.Contains(lowerLine, fragment) {
+						t.Fatalf("%s:%d leaks internal runtime file vocabulary %q; use runtime state or active operations instead:\n%s", doc, lineNo, fragment, line)
+					}
 				}
 			})
 		})
@@ -437,60 +490,132 @@ func TestDocs_TerminologyMigrationStorageNamesAreCompatibilityOnly(t *testing.T)
 	}
 }
 
-func TestDocs_MigrationRuntimeStateIncludesLocksIntentsAndGCPlans(t *testing.T) {
+func TestDocs_MigrationRuntimeStateUsesPublicRuntimeBoundary(t *testing.T) {
 	migration := readRepoFile(t, "docs/18_MIGRATION_AND_BACKUP.md")
 	runtimePolicy := markdownSectionByHeadingAny(t, "docs/18_MIGRATION_AND_BACKUP.md", migration,
 		"## Runtime-state policy (MUST)",
 		"## Runtime-State Policy",
 	)
 	for _, required := range []string{
-		".jvs/locks/",
-		".jvs/intents/",
-		".jvs/gc/*.json",
+		"runtime state",
 		"non-portable",
 		"jvs doctor --strict --repair-runtime",
+		"new cleanup preview",
 	} {
 		requireReleaseReadinessText(t, "migration runtime-state policy", runtimePolicy, required)
 	}
+	assertNoPathShapedRuntimeMechanisms(t, "docs/18_MIGRATION_AND_BACKUP.md runtime-state policy", runtimePolicy)
 
 	migrationFlow := markdownSectionByHeadingAny(t, "docs/18_MIGRATION_AND_BACKUP.md", migration,
 		"## Migration flow",
 		"## Migration Flow",
 	)
 	for _, required := range []string{
-		"--exclude '.jvs/locks/**'",
-		"--exclude '.jvs/intents/**'",
-		"--exclude '.jvs/gc/*.json'",
+		"non-portable JVS runtime state",
 	} {
 		requireReleaseReadinessText(t, "migration sync example", migrationFlow, required)
 	}
+	requireReleaseReadinessText(t, "migration runtime rebuild command", migration, "jvs doctor --strict --repair-runtime")
+	assertNoPathShapedRuntimeMechanisms(t, "docs/18_MIGRATION_AND_BACKUP.md migration flow", migrationFlow)
 
 	layout := readRepoFile(t, "docs/01_REPO_LAYOUT_SPEC.md")
 	portability := markdownSectionByHeadingAny(t, "docs/01_REPO_LAYOUT_SPEC.md", layout,
+		"## Runtime State Boundary",
+		"## Internal Runtime Portability Classes",
 		"## Portability classes",
 		"## Portability Classes",
 	)
 	for _, required := range []string{
-		".jvs/locks/",
-		".jvs/intents/",
-		".jvs/gc/*.json",
+		"portable durable state",
+		"non-portable runtime state",
+		"jvs doctor --strict --repair-runtime",
 	} {
 		requireReleaseReadinessText(t, "repo layout runtime-state portability class", portability, required)
 	}
+	assertNoPathShapedRuntimeMechanisms(t, "docs/01_REPO_LAYOUT_SPEC.md runtime-state portability class", portability)
 }
 
-func TestDocs_ReleaseFacingRuntimeStateBoundaryDocs(t *testing.T) {
+func TestDocs_MigrationFlowDocumentsExecutableColdWholeFolderCopy(t *testing.T) {
+	migration := readRepoFile(t, "docs/18_MIGRATION_AND_BACKUP.md")
+	body := releaseFacingClaimBody(t, "docs/18_MIGRATION_AND_BACKUP.md")
+	for _, required := range []string{
+		"offline whole-folder copy",
+		"stop all JVS writers",
+		"no active operations",
+		"jvs status",
+		"jvs recovery status",
+		"jvs cleanup preview",
+		"jvs doctor --strict",
+		"ordinary filesystem copy",
+		"managed folder/repository as a whole",
+		"fresh destination path",
+		"test ! -e /mnt/dst/myrepo",
+		"mkdir -p /mnt/dst",
+		"cp -a /mnt/src/myrepo /mnt/dst/myrepo",
+		"do not overlay",
+		"jvs doctor --strict --repair-runtime",
+		"fresh cleanup preview",
+	} {
+		requireReleaseReadinessText(t, "migration executable cold whole-folder copy", body, required)
+	}
+	migrationFlow := markdownSectionByHeadingAny(t, "docs/18_MIGRATION_AND_BACKUP.md", migration,
+		"## Migration flow",
+		"## Migration Flow",
+	)
+	assertNoPathShapedRuntimeMechanisms(t, "docs/18_MIGRATION_AND_BACKUP.md migration flow", migrationFlow)
+	for _, forbidden := range []string{
+		"mkdir -p /mnt/dst/myrepo",
+		"cp -a /mnt/src/myrepo/. /mnt/dst/myrepo/",
+	} {
+		if strings.Contains(migrationFlow, forbidden) {
+			t.Fatalf("docs/18_MIGRATION_AND_BACKUP.md migration flow must not use overlay-prone copy step %q:\n%s", forbidden, migrationFlow)
+		}
+	}
+}
+
+func TestDocs_MigrationCopyExamplesFailClosedBeforeCopy(t *testing.T) {
+	for _, doc := range []string{
+		"docs/13_OPERATION_RUNBOOK.md",
+		"docs/18_MIGRATION_AND_BACKUP.md",
+	} {
+		t.Run(doc, func(t *testing.T) {
+			body := releaseFacingClaimBody(t, doc)
+			blocks := migrationWholeFolderCopyCodeBlocks(body)
+			if len(blocks) == 0 {
+				t.Fatalf("%s must include an executable whole-folder copy example", doc)
+			}
+			for _, block := range blocks {
+				if !migrationCopyBlockFailsClosed(block.text) {
+					t.Fatalf("%s:%d migration copy example must fail closed before copying when destination exists; chain the destination existence check to mkdir/cp or use set -e before the check:\n%s",
+						doc, block.startLine, block.text)
+				}
+			}
+		})
+	}
+}
+
+func TestDocs_ReleaseFacingDocsAvoidPathShapedInternalRuntimeMechanisms(t *testing.T) {
+	for _, doc := range activePublicContractDocs() {
+		t.Run(doc, func(t *testing.T) {
+			scanPublicDocLines(t, doc, func(lineNo int, line string) {
+				assertNoPathShapedRuntimeMechanismLine(t, doc, lineNo, line)
+			})
+		})
+	}
+}
+
+func TestDocs_ReleaseFacingRuntimeBoundaryDocsDocumentRepairCommand(t *testing.T) {
 	for _, doc := range releaseFacingRuntimeStateBoundaryDocs() {
 		t.Run(doc, func(t *testing.T) {
 			body := readRepoFile(t, doc)
-			for _, required := range runtimeStateBoundaryTerms() {
+			for _, required := range append([]string{"runtime state"}, runtimeStateBoundaryTerms()...) {
 				requireReleaseReadinessText(t, "release-facing runtime-state boundary "+doc, body, required)
 			}
 		})
 	}
 }
 
-func TestDocs_ReleaseFacingSyncExamplesExcludeRuntimeState(t *testing.T) {
+func TestDocs_ReleaseFacingSyncExamplesDoNotCopyJVSMetadata(t *testing.T) {
 	for _, doc := range activePublicContractDocs() {
 		t.Run(doc, func(t *testing.T) {
 			body := releaseFacingClaimBody(t, doc)
@@ -498,12 +623,35 @@ func TestDocs_ReleaseFacingSyncExamplesExcludeRuntimeState(t *testing.T) {
 				if !syncExampleCopiesJVSMetadata(block.text) {
 					continue
 				}
-				for _, rule := range runtimeStateSyncExcludeRules() {
-					if codeBlockContainsAny(block.text, rule.patterns) {
-						continue
+				t.Fatalf("%s:%d storage-level sync example copies JVS metadata; use a product-level migration procedure or a documented safe JVS migration boundary instead of an unsafe command example:\n%s",
+					doc, block.startLine, block.text)
+			}
+		})
+	}
+}
+
+func TestDocs_CleanupProtectionVocabularyUsesStableReasons(t *testing.T) {
+	for _, doc := range activePublicContractDocs() {
+		t.Run(doc, func(t *testing.T) {
+			body := releaseFacingClaimBody(t, doc)
+			scanPublicDocLines(t, doc, func(lineNo int, line string) {
+				if cleanupProtectionVocabularyContext(line) &&
+					staleCleanupProtectionVocabularyPattern.MatchString(line) {
+					t.Fatalf("%s:%d uses unstable cleanup protection vocabulary; use workspace history, open views, active recovery plans, and active operations:\n%s", doc, lineNo, line)
+				}
+				lowerLine := strings.ToLower(line)
+				for _, forbidden := range forbiddenCleanupProtectionVocabulary() {
+					if strings.Contains(lowerLine, forbidden) {
+						t.Fatalf("%s:%d uses unstable cleanup protection vocabulary %q; use workspace history, open views, active recovery plans, and active operations:\n%s", doc, lineNo, forbidden, line)
 					}
-					t.Fatalf("%s:%d sync example copies JVS metadata without excluding %s runtime state; include one of %v:\n%s",
-						doc, block.startLine, rule.name, rule.patterns, block.text)
+				}
+			})
+			for _, block := range markdownNonFencedTextBlocks(body) {
+				if !cleanupProtectionBoundaryClaim(block.text) {
+					continue
+				}
+				for _, required := range stableCleanupProtectionNaturalTerms() {
+					requireReleaseReadinessText(t, "cleanup protection vocabulary "+doc, block.text, required)
 				}
 			}
 		})
@@ -618,6 +766,26 @@ func TestDocs_CleanupPreviewJSONFieldsMatchPublicFacade(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDocs_CleanupProtectionReasonsMatchPublicFacade(t *testing.T) {
+	want := cleanupProtectionReasonConstantsFromFacade(t)
+	assertSameStringSet(t, "pkg/jvs CleanupProtectionReason stable tokens", cleanupProtectionReasonTokensFromConstants(want), stableCleanupProtectionReasonTokens())
+	body := readRepoFile(t, "docs/API_DOCUMENTATION.md")
+	section := markdownSectionByHeading(t, "docs/API_DOCUMENTATION.md", body, "### Cleanup")
+	got := documentedCleanupProtectionReasonConstants(section)
+	assertSameStringSet(t, "docs/API_DOCUMENTATION.md CleanupProtectionReason constants", got, want)
+
+	for _, constant := range want {
+		_, token, ok := strings.Cut(constant, "=")
+		if !ok {
+			t.Fatalf("invalid cleanup protection reason constant descriptor %q", constant)
+		}
+		pattern := regexp.MustCompile(`(?m)^\s*-\s+` + regexp.QuoteMeta("`"+token+"`") + `:`)
+		if !pattern.MatchString(section) {
+			t.Fatalf("docs/API_DOCUMENTATION.md cleanup section must document meaning for reason token %q", token)
+		}
 	}
 }
 
@@ -947,14 +1115,14 @@ func TestDocs_PublicCommandExamplesUseStableCommands(t *testing.T) {
 	}
 }
 
-func TestDocs_DomainQuickstartsAreReleaseFacingCommandDocs(t *testing.T) {
+func TestDocs_DomainQuickstartsAreNonNormativeExamples(t *testing.T) {
 	docs := publicCommandDocs()
 	for _, doc := range domainQuickstartDocs() {
-		if !stringSliceContains(docs, doc) {
-			t.Fatalf("%s must remain covered by release-facing public command docs contract", doc)
+		if stringSliceContains(docs, doc) {
+			t.Fatalf("%s is a domain example and must not be covered by release-facing public command docs contract", doc)
 		}
-		if stringSliceContains(nonReleaseFacingDocs(), doc) {
-			t.Fatalf("%s is a release-facing domain quickstart and must not be classified non-release-facing", doc)
+		if !stringSliceContains(nonReleaseFacingDocs(), doc) {
+			t.Fatalf("%s must be classified as a non-release-facing non-normative example", doc)
 		}
 	}
 }
@@ -1324,20 +1492,42 @@ func TestDocs_DoctorStrictOwnsAuditChainContract(t *testing.T) {
 }
 
 func TestDocs_DoctorRuntimeRepairActionsUsePublicIDs(t *testing.T) {
-	runbook := readRepoFile(t, "docs/13_OPERATION_RUNBOOK.md")
-	for _, id := range publicRuntimeRepairActionIDs() {
-		if !strings.Contains(runbook, "`"+id+"`") {
-			t.Fatalf("docs/13_OPERATION_RUNBOOK.md must document public runtime repair action %q", id)
-		}
-	}
+	expected := publicRuntimeRepairActionIDs()
+	assertSameStringSet(t, "doctor.RuntimeRepairActionIDs()", doctor.RuntimeRepairActionIDs(), expected)
 
-	for _, doc := range []string{"docs/13_OPERATION_RUNBOOK.md"} {
+	for _, doc := range releaseFacingRuntimeRepairActionDocs() {
 		t.Run(doc, func(t *testing.T) {
+			body := releaseFacingClaimBody(t, doc)
+			assertSameStringSet(t, doc+" runtime repair action IDs", runtimeRepairActionIDsMentioned(body), expected)
 			scanPublicDocLines(t, doc, func(lineNo int, line string) {
 				for _, id := range unsupportedDoctorRepairActionIDs() {
 					if lineContainsRepairActionID(line, id) {
 						t.Fatalf("%s:%d documents unsupported doctor repair action %q:\n%s", doc, lineNo, id, line)
 					}
+				}
+			})
+		})
+	}
+}
+
+func TestDocs_MigrationGuidanceUsesFreshDestinationRuntimeRepairFlow(t *testing.T) {
+	for _, doc := range releaseFacingMigrationRuntimeFlowDocs() {
+		t.Run(doc, func(t *testing.T) {
+			body := releaseFacingClaimBody(t, doc)
+			for _, required := range []string{
+				"offline whole-folder copy",
+				"fresh destination",
+				"jvs doctor --strict --repair-runtime",
+				"fresh cleanup preview",
+			} {
+				requireReleaseReadinessText(t, "migration runtime repair flow "+doc, body, required)
+			}
+			scanPublicDocLines(t, doc, func(lineNo int, line string) {
+				if staleMigrationRuntimeExcludePattern.MatchString(line) {
+					t.Fatalf("%s:%d uses stale exclude/sync runtime migration guidance; require fresh-destination offline copy, destination repair-runtime, and fresh cleanup preview:\n%s", doc, lineNo, line)
+				}
+				if staleMigrationSyncVocabularyPattern.MatchString(line) {
+					t.Fatalf("%s:%d uses stale sync migration vocabulary; release-facing migration guidance must use offline whole-folder copy and fresh destination repair wording:\n%s", doc, lineNo, line)
 				}
 			})
 		})
@@ -2162,6 +2352,20 @@ func requireReleaseReadinessText(t *testing.T, name, body, required string) {
 	}
 }
 
+func assertNoPathShapedRuntimeMechanisms(t *testing.T, name, body string) {
+	t.Helper()
+	for lineNo, line := range strings.Split(body, "\n") {
+		assertNoPathShapedRuntimeMechanismLine(t, name, lineNo+1, line)
+	}
+}
+
+func assertNoPathShapedRuntimeMechanismLine(t *testing.T, name string, lineNo int, line string) {
+	t.Helper()
+	if pathShapedRuntimeMechanismPattern.MatchString(line) {
+		t.Fatalf("%s:%d exposes path-shaped internal runtime mechanism; use generic runtime-state wording instead:\n%s", name, lineNo, line)
+	}
+}
+
 func requireReleaseReadinessAnyText(t *testing.T, name, body string, requiredAny ...string) {
 	t.Helper()
 	lowerBody := strings.ToLower(body)
@@ -2273,13 +2477,111 @@ func documentedEngineConstants(section string) []string {
 	return constants
 }
 
+func cleanupProtectionReasonConstantsFromFacade(t *testing.T) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	path := repoFile(t, "pkg/jvs/client.go")
+	file, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		t.Fatalf("parse pkg/jvs/client.go: %v", err)
+	}
+
+	var constants []string
+	ast.Inspect(file, func(node ast.Node) bool {
+		valueSpec, ok := node.(*ast.ValueSpec)
+		if !ok || len(valueSpec.Names) == 0 {
+			return true
+		}
+		typeIdent, ok := valueSpec.Type.(*ast.Ident)
+		if !ok || typeIdent.Name != "CleanupProtectionReason" {
+			return true
+		}
+		for i, name := range valueSpec.Names {
+			if i >= len(valueSpec.Values) {
+				continue
+			}
+			lit, ok := valueSpec.Values[i].(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				continue
+			}
+			value, err := strconv.Unquote(lit.Value)
+			if err != nil {
+				pos := fset.Position(lit.Pos())
+				t.Fatalf("%s:%d unquote cleanup protection reason constant %s: %v", path, pos.Line, name.Name, err)
+			}
+			constants = append(constants, name.Name+"="+value)
+		}
+		return true
+	})
+	if len(constants) == 0 {
+		t.Fatalf("pkg/jvs/client.go defines no CleanupProtectionReason constants")
+	}
+	return constants
+}
+
+func documentedCleanupProtectionReasonConstants(section string) []string {
+	var constants []string
+	for _, match := range documentedCleanupProtectionReasonPattern.FindAllStringSubmatch(section, -1) {
+		constants = append(constants, match[1]+"="+match[2])
+	}
+	return constants
+}
+
+func cleanupProtectionReasonTokensFromConstants(constants []string) []string {
+	var tokens []string
+	for _, constant := range constants {
+		_, token, ok := strings.Cut(constant, "=")
+		if ok {
+			tokens = append(tokens, token)
+		}
+	}
+	return tokens
+}
+
+func stableCleanupProtectionReasonTokens() []string {
+	return []string{
+		"history",
+		"open_view",
+		"active_recovery",
+		"active_operation",
+	}
+}
+
+func stableCleanupProtectionReasonSet() map[string]bool {
+	reasons := make(map[string]bool)
+	for _, reason := range stableCleanupProtectionReasonTokens() {
+		reasons[reason] = true
+	}
+	return reasons
+}
+
 func publicRuntimeRepairActionIDs() []string {
 	return []string{
 		"clean_locks",
 		"rebind_workspace_paths",
 		"clean_runtime_tmp",
 		"clean_runtime_operations",
+		"clean_runtime_cleanup_plans",
 	}
+}
+
+func releaseFacingRuntimeRepairActionDocs() []string {
+	return []string{
+		"docs/02_CLI_SPEC.md",
+		"docs/09_SECURITY_MODEL.md",
+		"docs/11_CONFORMANCE_TEST_PLAN.md",
+		"docs/13_OPERATION_RUNBOOK.md",
+		"docs/ARCHITECTURE.md",
+		"docs/PRODUCT_PLAN.md",
+	}
+}
+
+func runtimeRepairActionIDsMentioned(body string) []string {
+	var ids []string
+	for _, match := range runtimeRepairActionIDPattern.FindAllStringSubmatch(body, -1) {
+		ids = appendUniqueString(ids, match[1])
+	}
+	return ids
 }
 
 func unsupportedDoctorRepairActionIDs() []string {
@@ -2342,9 +2644,6 @@ func stablePublicDocs() []string {
 		"docs/TROUBLESHOOTING.md",
 		"docs/99_CHANGELOG.md",
 		"docs/20_USER_SCENARIOS.md",
-		"docs/agent_sandbox_quickstart.md",
-		"docs/etl_pipeline_quickstart.md",
-		"docs/game_dev_quickstart.md",
 	}
 }
 
@@ -2356,36 +2655,9 @@ func domainQuickstartDocs() []string {
 	}
 }
 
-func runtimeOperationTerminologyDocs() []string {
-	return []string{
-		"docs/02_CLI_SPEC.md",
-		"docs/11_CONFORMANCE_TEST_PLAN.md",
-		"docs/PRODUCT_PLAN.md",
-	}
-}
-
 func runtimeStateBoundaryTerms() []string {
 	return []string{
-		".jvs/locks/",
-		".jvs/intents/",
-		".jvs/gc/*.json",
-	}
-}
-
-func runtimeStateSyncExcludeRules() []runtimeStateSyncExcludeRule {
-	return []runtimeStateSyncExcludeRule{
-		{
-			name:     "mutation locks",
-			patterns: []string{"--exclude '.jvs/locks/**'", `--exclude ".jvs/locks/**"`},
-		},
-		{
-			name:     "operation records",
-			patterns: []string{"--exclude '.jvs/intents/**'", `--exclude ".jvs/intents/**"`},
-		},
-		{
-			name:     "active GC plans",
-			patterns: []string{"--exclude '.jvs/gc/*.json'", `--exclude ".jvs/gc/*.json"`},
-		},
+		"jvs doctor --strict --repair-runtime",
 	}
 }
 
@@ -2396,6 +2668,68 @@ func releaseFacingRuntimeStateBoundaryDocs() []string {
 		"docs/10_THREAT_MODEL.md",
 		"docs/13_OPERATION_RUNBOOK.md",
 		"docs/18_MIGRATION_AND_BACKUP.md",
+		"docs/RELEASE_EVIDENCE.md",
+		"docs/99_CHANGELOG.md",
+	}
+}
+
+func releaseFacingMigrationRuntimeFlowDocs() []string {
+	return []string{
+		"docs/08_GC_SPEC.md",
+		"docs/11_CONFORMANCE_TEST_PLAN.md",
+		"docs/13_OPERATION_RUNBOOK.md",
+		"docs/14_TRACEABILITY_MATRIX.md",
+		"docs/18_MIGRATION_AND_BACKUP.md",
+		"docs/PRODUCT_PLAN.md",
+	}
+}
+
+func forbiddenCleanupProtectionVocabulary() []string {
+	return []string{
+		"active source reads",
+		"source reads",
+		"view/source reads",
+		"views/source reads",
+		"active sources",
+		"live and active sources",
+		"live workspace needs",
+		"live workspaces",
+	}
+}
+
+func stableCleanupProtectionNaturalTerms() []string {
+	return []string{
+		"workspace history",
+		"open views",
+		"active recovery plans",
+		"active operations",
+	}
+}
+
+func cleanupProtectionBoundaryClaim(block string) bool {
+	if strings.HasSuffix(strings.TrimSpace(block), ":") {
+		return false
+	}
+	lower := strings.ToLower(block)
+	return (strings.Contains(lower, "cleanup") && strings.Contains(lower, "must protect")) ||
+		strings.Contains(lower, "cleanup protects")
+}
+
+func cleanupProtectionVocabularyContext(line string) bool {
+	lower := strings.ToLower(line)
+	return strings.Contains(lower, "cleanup") ||
+		strings.Contains(lower, "protect") ||
+		strings.Contains(lower, "protection")
+}
+
+func runtimeInternalFileVocabularyFragments() []string {
+	return []string{
+		"runtime lock files",
+		"cleanup runtime plan files",
+		"internal cleanup runtime plans",
+		"operation lock files",
+		"repository mutation locks",
+		"operation intents",
 	}
 }
 
@@ -2421,7 +2755,6 @@ func activeReleaseFacingContractDocs() []string {
 		"docs/ARCHITECTURE.md",
 		"docs/CONSTITUTION.md",
 		"docs/SIGNING.md",
-		"docs/TARGET_USERS.md",
 	}
 }
 
@@ -2450,12 +2783,28 @@ func activeNonReleaseFacingReferenceDocs() []string {
 	}
 }
 
+func activeNonReleaseFacingResearchDocs() []string {
+	return []string{
+		"docs/TARGET_USERS.md",
+	}
+}
+
+func activeNonReleaseFacingExampleDocs() []string {
+	return domainQuickstartDocs()
+}
+
 func nonReleaseFacingDocs() []string {
 	docs := append([]string{}, archivedNonReleaseFacingDocs()...)
 	for _, doc := range activeNonReleaseFacingDesignDocs() {
 		docs = appendUniqueString(docs, doc)
 	}
 	for _, doc := range activeNonReleaseFacingReferenceDocs() {
+		docs = appendUniqueString(docs, doc)
+	}
+	for _, doc := range activeNonReleaseFacingResearchDocs() {
+		docs = appendUniqueString(docs, doc)
+	}
+	for _, doc := range activeNonReleaseFacingExampleDocs() {
 		docs = appendUniqueString(docs, doc)
 	}
 	return docs
@@ -3113,6 +3462,79 @@ func markdownFencedCodeBlocks(body string) []markdownCodeBlock {
 	return blocks
 }
 
+func migrationWholeFolderCopyCodeBlocks(body string) []markdownCodeBlock {
+	var blocks []markdownCodeBlock
+	for _, block := range markdownFencedCodeBlocks(body) {
+		lower := strings.ToLower(block.text)
+		if strings.Contains(lower, "cp -a ") &&
+			strings.Contains(lower, "/mnt/src/myrepo") &&
+			strings.Contains(lower, "/mnt/dst/myrepo") {
+			blocks = append(blocks, block)
+		}
+	}
+	return blocks
+}
+
+func migrationCopyBlockFailsClosed(block string) bool {
+	lines := meaningfulShellLines(block)
+	cpLine := -1
+	testLine := -1
+	for i, line := range lines {
+		if cpLine < 0 && strings.Contains(line, "cp -a ") && strings.Contains(line, "/mnt/src/myrepo") && strings.Contains(line, "/mnt/dst/myrepo") {
+			cpLine = i
+		}
+		if testLine < 0 && strings.Contains(line, "test ! -e ") && strings.Contains(line, "/mnt/dst/myrepo") {
+			testLine = i
+		}
+	}
+	if cpLine < 0 || testLine < 0 || testLine > cpLine {
+		return false
+	}
+	if shellBlockHasSetEBefore(lines, testLine) {
+		return true
+	}
+	if shellBlockHasExplicitDestinationExitBeforeCopy(lines, cpLine) {
+		return true
+	}
+	for i := testLine; i < cpLine; i++ {
+		if !strings.HasSuffix(strings.TrimSpace(lines[i]), "&&") {
+			return false
+		}
+	}
+	return true
+}
+
+func meaningfulShellLines(block string) []string {
+	var lines []string
+	for _, line := range strings.Split(block, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		lines = append(lines, trimmed)
+	}
+	return lines
+}
+
+func shellBlockHasSetEBefore(lines []string, limit int) bool {
+	for i := 0; i <= limit && i < len(lines); i++ {
+		line := lines[i]
+		if line == "set -e" ||
+			strings.HasPrefix(line, "set -e ") ||
+			strings.Contains(line, "set -euo pipefail") ||
+			strings.Contains(line, "set -o errexit") {
+			return true
+		}
+	}
+	return false
+}
+
+func shellBlockHasExplicitDestinationExitBeforeCopy(lines []string, cpLine int) bool {
+	joined := strings.Join(lines[:cpLine], "\n")
+	return strings.Contains(joined, "test -e /mnt/dst/myrepo") &&
+		strings.Contains(joined, "exit 1")
+}
+
 func releaseFacingSyncGuidanceBlocks(body string) []markdownCodeBlock {
 	blocks := markdownFencedCodeBlocks(body)
 	for _, block := range markdownNonFencedTextBlocks(body) {
@@ -3196,15 +3618,6 @@ func syncExampleCopiesJVSMetadata(block string) bool {
 	}
 	for _, marker := range []string{"jvs", "repo", "repository", "checkpoint", "workspace"} {
 		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-func codeBlockContainsAny(block string, patterns []string) bool {
-	for _, pattern := range patterns {
-		if strings.Contains(block, pattern) {
 			return true
 		}
 	}
@@ -3418,7 +3831,9 @@ func scanPublicDocLines(t *testing.T, doc string, visit func(lineNo int, line st
 		if codePackageSectionLevel > 0 {
 			continue
 		}
-		if internalStorageSectionLevel > 0 && lineNamesInternalStoragePath(line) {
+		if internalStorageSectionLevel > 0 &&
+			lineNamesInternalStoragePath(line) &&
+			!pathShapedRuntimeMechanismPattern.MatchString(line) {
 			continue
 		}
 		if allowedPublicDocCompatibilityLine(doc, line) {

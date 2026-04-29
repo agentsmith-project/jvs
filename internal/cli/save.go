@@ -122,12 +122,23 @@ func savePointError(err error) error {
 
 func appendSaveFailureHistoryUnchangedMessage(message string) string {
 	if !strings.Contains(message, "No save point was created.") {
-		message += ". No save point was created."
+		message = appendSaveFailureSentence(message, "No save point was created.")
 	}
 	if !strings.Contains(message, "History was not changed.") {
-		message += ". History was not changed."
+		message = appendSaveFailureSentence(message, "History was not changed.")
 	}
 	return message
+}
+
+func appendSaveFailureSentence(message, sentence string) string {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return sentence
+	}
+	if strings.HasSuffix(message, ".") || strings.HasSuffix(message, "!") || strings.HasSuffix(message, "?") {
+		return message + " " + sentence
+	}
+	return message + ". " + sentence
 }
 
 func publicSavePointVocabulary(value string) string {

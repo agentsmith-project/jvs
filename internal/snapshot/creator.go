@@ -236,22 +236,22 @@ func (c *Creator) createPartialWithDescriptorParentAndLineage(worktreeName, note
 
 	desc, err := c.stageSnapshot(&descriptorCfg, boundary, publishPaths, snapshotID, worktreeName, note, tags, partialPaths, lineage, saveEvidence)
 	if err != nil {
-		return nil, err
+		return nil, cleanupIntentAfterDefiniteFailure(intentPath, err)
 	}
 
 	// Step 12: Write descriptor atomically before publishing the READY payload.
 	if err := c.publishStagedSnapshot(publishPaths, desc); err != nil {
-		return nil, err
+		return nil, cleanupIntentAfterDefiniteFailure(intentPath, err)
 	}
 
 	// Step 14: Recheck audit appendability before the save point enters history.
 	if err := c.ensureAuditAppendableBeforeHistoryUpdate(publishPaths, desc); err != nil {
-		return nil, err
+		return nil, cleanupIntentAfterDefiniteFailure(intentPath, err)
 	}
 
 	// Step 15: Update worktree head and latest
 	if err := c.updateLatestAfterPublish(wtMgr, worktreeName, desc, publishPaths); err != nil {
-		return nil, err
+		return nil, cleanupIntentAfterDefiniteFailure(intentPath, err)
 	}
 
 	// Step 16: Remove intent only after the snapshot is fully published.
@@ -649,6 +649,13 @@ func removeSnapshotIntent(intentPath string) {
 	if err := os.Remove(intentPath); err != nil && !os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, "warning: failed to remove snapshot intent %s: %v\n", intentPath, err)
 	}
+}
+
+func cleanupIntentAfterDefiniteFailure(intentPath string, err error) error {
+	if err != nil && !fsutil.IsCommitUncertain(err) {
+		removeSnapshotIntent(intentPath)
+	}
+	return err
 }
 
 func (c *Creator) appendCreateAudit(worktreeName string, snapshotID model.SnapshotID, note string, checksum model.HashValue, partialPaths []string) error {

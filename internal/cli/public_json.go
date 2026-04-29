@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -198,32 +199,52 @@ func publicDoctorWithRepairs(result *clidoctor.Result, repairs []clidoctor.Repai
 	return record
 }
 
-func publicCleanup(plan *model.GCPlan) publicCleanupPlan {
+func publicCleanup(plan *model.GCPlan) (publicCleanupPlan, error) {
+	protectionGroups, err := publicCleanupProtectionGroups(plan.ProtectionGroups)
+	if err != nil {
+		return publicCleanupPlan{}, err
+	}
 	return publicCleanupPlan{
 		PlanID:                   plan.PlanID,
 		CreatedAt:                plan.CreatedAt,
 		ProtectedSavePoints:      publicSnapshotIDs(plan.ProtectedSet),
-		ProtectionGroups:         publicCleanupProtectionGroups(plan.ProtectionGroups),
-		ProtectedByHistory:       cleanupProtectionGroupCount(plan.ProtectionGroups, model.GCProtectionReasonHistory, plan.ProtectedByLineage),
+		ProtectionGroups:         protectionGroups,
+		ProtectedByHistory:       cleanupProtectionGroupCount(protectionGroups, model.GCProtectionReasonHistory, plan.ProtectedByLineage),
 		CandidateCount:           plan.CandidateCount,
 		ReclaimableSavePoints:    publicSnapshotIDs(plan.ToDelete),
 		ReclaimableBytesEstimate: plan.DeletableBytesEstimate,
-	}
+	}, nil
 }
 
-func publicCleanupProtectionGroups(groups []model.GCProtectionGroup) []publicCleanupProtectionGroup {
+func publicCleanupProtectionGroups(groups []model.GCProtectionGroup) ([]publicCleanupProtectionGroup, error) {
 	out := make([]publicCleanupProtectionGroup, 0, len(groups))
 	for _, group := range groups {
+		reason, err := publicCleanupProtectionReason(group.Reason)
+		if err != nil {
+			return nil, err
+		}
 		out = append(out, publicCleanupProtectionGroup{
-			Reason:     group.Reason,
+			Reason:     reason,
 			Count:      group.Count,
 			SavePoints: publicSnapshotIDs(group.SavePoints),
 		})
 	}
-	return out
+	return out, nil
 }
 
-func cleanupProtectionGroupCount(groups []model.GCProtectionGroup, reason string, fallback int) int {
+func publicCleanupProtectionReason(reason string) (string, error) {
+	switch reason {
+	case model.GCProtectionReasonHistory,
+		model.GCProtectionReasonOpenView,
+		model.GCProtectionReasonActiveRecovery,
+		model.GCProtectionReasonActiveOperation:
+		return reason, nil
+	default:
+		return "", fmt.Errorf("cleanup plan contains unsupported cleanup protection reason")
+	}
+}
+
+func cleanupProtectionGroupCount(groups []publicCleanupProtectionGroup, reason string, fallback int) int {
 	for _, group := range groups {
 		if group.Reason == reason {
 			return group.Count

@@ -96,14 +96,12 @@ JVS relies on OS-level filesystem permissions for access control:
 
 1. **Run `jvs doctor --strict`** after any suspicious system activity
 2. **Run `jvs doctor --strict`** periodically to check repository health
-3. **Backup/sync repository metadata safely** with `juicefs sync` only when
-   active runtime state is explicitly excluded: `.jvs/locks/` via
-   `--exclude '.jvs/locks/**'`, `.jvs/intents/` via
-   `--exclude '.jvs/intents/**'`, and `.jvs/gc/*.json` via
-   `--exclude '.jvs/gc/*.json'`; then run
-   `jvs doctor --strict --repair-runtime` on the restored destination
+3. **Back up repository metadata safely** only as part of a JVS-aware
+   migration procedure: treat non-portable JVS runtime state as
+   destination-local, then run `jvs doctor --strict --repair-runtime` on the
+   restored destination
 4. **Use JuiceFS authentication** to control access to underlying storage
-5. **Never commit `.jvs/` directory** to Git (contains metadata, not payload)
+5. **Never commit JVS control data** to Git; it is metadata, not payload
 
 ## Vulnerability Disclosure Process
 

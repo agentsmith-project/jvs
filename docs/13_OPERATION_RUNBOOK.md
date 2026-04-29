@@ -28,11 +28,13 @@ history.
 1. Run `jvs doctor --strict --json`.
 2. Run `jvs doctor --repair-list` and confirm only public runtime repairs are
    available:
-   - `clean_locks`: removes stale repository mutation locks
+   - `clean_locks`: removes stale write-coordination runtime state
    - `rebind_workspace_paths`: rebinds safe workspace folder paths after a
      filesystem migration
    - `clean_runtime_tmp`: removes stale JVS runtime temporary files
    - `clean_runtime_operations`: removes abandoned operation records
+   - `clean_runtime_cleanup_plans`: removes stale cleanup preview/run plan
+     state
 3. Run `jvs doctor --strict --repair-runtime`.
 4. Rerun `jvs doctor --strict`.
 
@@ -88,18 +90,36 @@ Run this drill for release qualification and after backup/migration changes.
 
 ## Migration Runbook
 
-1. Freeze writers and stop agent jobs.
-2. Ensure there are no active recovery plans:
+Use the offline whole-folder copy procedure in
+`docs/18_MIGRATION_AND_BACKUP.md`.
+
+1. Stop all JVS writers and stop agent jobs.
+2. Confirm the source folder status is readable:
+   ```bash
+   jvs status
+   ```
+3. Ensure there are no active recovery plans:
    ```bash
    jvs recovery status
    ```
-3. Run `jvs doctor --strict`.
-4. Create final save points for critical workspaces.
-5. Sync repository data while excluding active `.jvs/locks/`, `.jvs/intents/`,
-   and `.jvs/gc/*.json` runtime state.
-6. Run `jvs doctor --strict --repair-runtime` on the destination.
-7. Run strict doctor and record the destination result.
-8. Run the restore drill above on the destination.
+   Resolve any listed plan before copying.
+4. Run `jvs cleanup preview --json` and wait until cleanup protection shows no
+   open views, active recovery plans, or active operations. Do not reuse this
+   preview after migration.
+5. Run `jvs doctor --strict`.
+6. Create final save points for critical workspaces.
+7. Use ordinary filesystem copy of the managed folder/repository as a whole,
+   while writers remain stopped. The fresh destination path must not exist; do not
+   overlay a non-empty destination:
+   ```bash
+   test ! -e /mnt/dst/myrepo &&
+   mkdir -p /mnt/dst &&
+   cp -a /mnt/src/myrepo /mnt/dst/myrepo
+   ```
+8. Run `jvs doctor --strict --repair-runtime` on the destination.
+9. Run `jvs doctor --strict`, `jvs status`, and a fresh cleanup preview on the
+   destination; record the results.
+10. Run the restore drill above on the destination.
 
 ## Cleanup Runbook
 

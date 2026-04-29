@@ -2,6 +2,7 @@ package jvs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/internal/verify"
 	"github.com/agentsmith-project/jvs/internal/worktree"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
@@ -71,6 +73,18 @@ type RestoreOptions struct {
 // CleanupOptions configures cleanup preview.
 type CleanupOptions struct{}
 
+// CleanupProtectionReason is a stable public reason token explaining why save points
+// are protected from cleanup. It aliases string so cleanup plans remain natural
+// to use with ordinary Go string APIs.
+type CleanupProtectionReason = string
+
+const (
+	CleanupProtectionReasonHistory         CleanupProtectionReason = "history"
+	CleanupProtectionReasonOpenView        CleanupProtectionReason = "open_view"
+	CleanupProtectionReasonActiveRecovery  CleanupProtectionReason = "active_recovery"
+	CleanupProtectionReasonActiveOperation CleanupProtectionReason = "active_operation"
+)
+
 // CleanupPlan is the public library view of a cleanup plan.
 type CleanupPlan struct {
 	PlanID                   string                   `json:"plan_id"`
@@ -85,9 +99,22 @@ type CleanupPlan struct {
 
 // CleanupProtectionGroup explains why save points are protected from cleanup.
 type CleanupProtectionGroup struct {
-	Reason     string        `json:"reason"`
-	Count      int           `json:"count"`
-	SavePoints []SavePointID `json:"save_points"`
+	Reason     CleanupProtectionReason `json:"reason"`
+	Count      int                     `json:"count"`
+	SavePoints []SavePointID           `json:"save_points"`
+}
+
+type cleanupFacadeError struct {
+	message string
+	cause   error
+}
+
+func (e *cleanupFacadeError) Error() string {
+	return e.message
+}
+
+func (e *cleanupFacadeError) Is(target error) bool {
+	return errors.Is(e.cause, target)
 }
 
 func (o *SaveOptions) workspace() string {
@@ -367,9 +394,13 @@ func (c *Client) PreviewCleanup(ctx context.Context, _ CleanupOptions) (*Cleanup
 
 	plan, err := collector.Plan()
 	if err != nil {
+		return nil, publicCleanupFacadeError(err)
+	}
+	publicPlan, err := publicCleanupPlan(plan)
+	if err != nil {
 		return nil, fmt.Errorf("cleanup plan: %w", err)
 	}
-	return publicCleanupPlan(plan), nil
+	return publicPlan, nil
 }
 
 // RunCleanup executes a previously created cleanup plan by ID.
@@ -378,7 +409,7 @@ func (c *Client) RunCleanup(ctx context.Context, planID string) error {
 		return err
 	}
 	collector := gc.NewCollector(c.repoRoot)
-	return collector.Run(planID)
+	return publicCleanupFacadeError(collector.Run(planID))
 }
 
 // RepoRoot returns the absolute path to the repository root.
@@ -453,41 +484,79 @@ func publicSavePointIDs(ids []model.SnapshotID) []SavePointID {
 	return savePointIDs
 }
 
-func publicCleanupPlan(plan *model.GCPlan) *CleanupPlan {
+func publicCleanupPlan(plan *model.GCPlan) (*CleanupPlan, error) {
 	if plan == nil {
-		return nil
+		return nil, nil
+	}
+	protectionGroups, err := publicCleanupProtectionGroups(plan.ProtectionGroups)
+	if err != nil {
+		return nil, err
 	}
 	return &CleanupPlan{
 		PlanID:                   plan.PlanID,
 		CreatedAt:                plan.CreatedAt,
 		ProtectedSavePoints:      publicSavePointIDs(plan.ProtectedSet),
-		ProtectionGroups:         publicCleanupProtectionGroups(plan.ProtectionGroups),
-		ProtectedByHistory:       cleanupProtectionGroupCount(plan.ProtectionGroups, model.GCProtectionReasonHistory, plan.ProtectedByLineage),
+		ProtectionGroups:         protectionGroups,
+		ProtectedByHistory:       cleanupProtectionGroupCount(protectionGroups, CleanupProtectionReasonHistory, plan.ProtectedByLineage),
 		CandidateCount:           plan.CandidateCount,
 		ReclaimableSavePoints:    publicSavePointIDs(plan.ToDelete),
 		ReclaimableBytesEstimate: plan.DeletableBytesEstimate,
-	}
+	}, nil
 }
 
-func publicCleanupProtectionGroups(groups []model.GCProtectionGroup) []CleanupProtectionGroup {
+func publicCleanupProtectionGroups(groups []model.GCProtectionGroup) ([]CleanupProtectionGroup, error) {
 	out := make([]CleanupProtectionGroup, 0, len(groups))
 	for _, group := range groups {
+		reason, err := publicCleanupProtectionReason(group.Reason)
+		if err != nil {
+			return nil, err
+		}
 		out = append(out, CleanupProtectionGroup{
-			Reason:     group.Reason,
+			Reason:     reason,
 			Count:      group.Count,
 			SavePoints: publicSavePointIDs(group.SavePoints),
 		})
 	}
-	return out
+	return out, nil
 }
 
-func cleanupProtectionGroupCount(groups []model.GCProtectionGroup, reason string, fallback int) int {
+func publicCleanupProtectionReason(reason string) (CleanupProtectionReason, error) {
+	switch reason {
+	case model.GCProtectionReasonHistory:
+		return CleanupProtectionReasonHistory, nil
+	case model.GCProtectionReasonOpenView:
+		return CleanupProtectionReasonOpenView, nil
+	case model.GCProtectionReasonActiveRecovery:
+		return CleanupProtectionReasonActiveRecovery, nil
+	case model.GCProtectionReasonActiveOperation:
+		return CleanupProtectionReasonActiveOperation, nil
+	default:
+		return "", fmt.Errorf("cleanup plan contains unsupported cleanup protection reason")
+	}
+}
+
+func cleanupProtectionGroupCount(groups []CleanupProtectionGroup, reason CleanupProtectionReason, fallback int) int {
 	for _, group := range groups {
 		if group.Reason == reason {
 			return group.Count
 		}
 	}
 	return fallback
+}
+
+func publicCleanupFacadeError(err error) error {
+	if err == nil {
+		return nil
+	}
+	message := err.Error()
+	var jvsErr *errclass.JVSError
+	if errors.As(err, &jvsErr) && jvsErr.Message != "" {
+		message = jvsErr.Message
+	}
+	return &cleanupFacadeError{
+		message: message,
+		cause:   err,
+	}
 }
 
 func isNoRepoError(err error) bool {

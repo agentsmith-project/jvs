@@ -25,8 +25,8 @@ Rules:
   protection rules before deleting.
 - Run fails and requires a fresh cleanup preview when either the protected save
   point set or reclaimable candidate set differs from the reviewed plan.
-- Cleanup protects live workspace needs, active views, active source reads,
-  active operations, and active recovery plans.
+- Cleanup protects workspace history, open views, active recovery plans, and
+  active operations.
 - Labels do not protect save points.
 - Kept save points and direct explanatory sources are protected when the public
   keep contract is promoted.
@@ -37,14 +37,10 @@ Rules:
 
 At minimum cleanup protects save points needed by:
 
-- live workspace history/content state
-- `started_from_save_point`
-- whole-workspace restore provenance
-- restored path provenance
-- active read/materialization operations
-- active read-only views
-- active restore recovery plans
-- kept save points when keep is available
+- workspace history
+- open views
+- active recovery plans
+- active operations
 
 Protection explanations are grouped by stable generic reason:
 
@@ -54,9 +50,8 @@ Protection explanations are grouped by stable generic reason:
 - `active_operation`
 
 Each group reports its `reason`, `count`, and protected `save_points`. Reasons
-come from cleanup's structural sources: workspace history/provenance,
-documented active source pins, active read-only view pins, active operation
-intents, and active recovery plan state.
+come from cleanup's public protection boundary: workspace history/provenance,
+open read-only views, active recovery plans, and active operations.
 
 JSON keeps the stable reason tokens. Human cleanup output renders them as
 workspace history, open views, active recovery plans, and active operations.
@@ -69,6 +64,7 @@ Cleanup plan evidence must use save point terminology:
 - `created_at`
 - `protected_save_points`
 - `protection_groups`
+- `protected_by_history`
 - `candidate_count`
 - `reclaimable_save_points`
 - `reclaimable_bytes_estimate`
@@ -78,6 +74,9 @@ details and must not be used as product vocabulary.
 
 ## Runtime And Migration Boundary
 
-Cleanup runtime plan files are not portable backup or migration authority.
-Physical sync procedures must exclude runtime cleanup state and create a fresh
-cleanup preview after migration.
+Cleanup preview/run runtime state is not portable backup or migration
+authority.
+Migration uses an offline whole-folder copy of the managed folder/repository as
+a whole to a fresh destination. On the destination, run
+`jvs doctor --strict --repair-runtime` and create a fresh cleanup preview before
+using cleanup.

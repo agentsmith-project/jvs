@@ -1,8 +1,10 @@
 # JVS Quickstart: ETL Pipeline Folders
 
-**Status:** Release-facing domain entry
+**Status:** Active non-release-facing non-normative example, not part of the v0 public contract.
 
-Use this page as a short domain guide. The full user workflow is in
+Use this page as an illustrative domain example. It does not add GA product
+commitments, schedulers, table semantics, remote transport, or ETL-specific
+save semantics. The stable user workflow is in
 [docs/user/examples.md](user/examples.md).
 
 ## Why ETL Teams Use JVS

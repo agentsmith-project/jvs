@@ -13,7 +13,7 @@ authorization in the public contract.
 - workspace metadata and provenance
 - recovery plans and restore backups
 - audit records
-- runtime locks and operation records
+- destination-local runtime state
 
 ## Trust Boundary
 
@@ -49,7 +49,8 @@ terms.
 - Interrupted restore creates or preserves a recovery plan.
 - Active recovery plans block new restore runs in the same workspace.
 - Runtime repair is limited to `clean_locks`, `rebind_workspace_paths`,
-  `clean_runtime_tmp`, and `clean_runtime_operations`.
+  `clean_runtime_tmp`, `clean_runtime_operations`, and
+  `clean_runtime_cleanup_plans`.
 - Workspace path rebinding uses registry and boundary validation. Adopted
   `main` binds to the current repository folder; external workspaces rebind
   only when destination-local content can be proven to match the recorded

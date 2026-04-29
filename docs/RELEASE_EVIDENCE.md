@@ -138,9 +138,9 @@ tag-gated publication, by workflow run `25056873829`.
   semantics, EMPTY folder first-save docs/acceptance alignment, user-story E2E
   and JuiceFS story coverage, destination-owned transfer staging checks, and
   GA release evidence alignment.
-- Runtime-state migration boundary: active `.jvs/locks/`, `.jvs/intents/`,
-  and `.jvs/gc/*.json` runtime state remains non-portable and must be rebuilt
-  at the destination.
+- Runtime-state migration boundary: non-portable JVS runtime state remains
+  destination-local and must be rebuilt at the destination with
+  `jvs doctor --strict --repair-runtime`.
 
 ### Artifact and signing evidence
 

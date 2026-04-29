@@ -1,9 +1,14 @@
 # JVS Target Users: Pain Points And Requirements
 
-**Status:** Active release-facing product research
+**Status:** Active product research, non-release-facing, and not part of the v0 public contract.
 
 This document describes the primary audiences for JVS and the promises that
-matter to them. Release-facing examples must match the public save point CLI:
+matter to them. It is supporting research, not a GA product promise. Vertical
+sections and flows below are non-normative examples; they do not create
+commitments to game, ML/agent, ETL, editor, scheduler, or data-platform
+integrations.
+
+Any future release-facing examples must match the public save point CLI:
 
 ```text
 init -> save -> history -> view -> restore
@@ -184,7 +189,7 @@ for separate runs or variants.
 
 ## Product Boundaries
 
-Keep in the release-facing public contract:
+This research recommends keeping the GA public contract focused on:
 
 - Folder adoption.
 - Save point creation and history.

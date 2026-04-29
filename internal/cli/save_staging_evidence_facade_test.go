@@ -41,10 +41,12 @@ func TestSaveConcurrentWorkspaceChangeHumanErrorUsesPublicVocabulary(t *testing.
 	require.Empty(t, strings.TrimSpace(stdout))
 	assert.Contains(t, err.Error(), "workspace files changed while saving")
 	assert.Contains(t, err.Error(), "No save point was created.")
+	assert.NotContains(t, err.Error(), "..")
 	assertNoOldSavePointVocabulary(t, err.Error())
 	assert.Equal(t, 0, savePointCatalogCount(t, repoRoot))
 	assert.Equal(t, 0, descriptorFileCount(t, repoRoot))
 	assert.Equal(t, 0, snapshotTempCount(t, repoRoot))
+	assert.Equal(t, 0, intentFileCount(t, repoRoot))
 	assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "changed during save")
 }
 
@@ -64,6 +66,7 @@ func TestSaveConcurrentWorkspaceChangeKeepsPathSources(t *testing.T) {
 	assert.Equal(t, descriptorCount, descriptorFileCount(t, repoRoot))
 	assert.Equal(t, catalogCount, savePointCatalogCount(t, repoRoot))
 	assert.Equal(t, 0, snapshotTempCount(t, repoRoot))
+	assert.Equal(t, 0, intentFileCount(t, repoRoot))
 	assertFileContent(t, filepath.Join(repoRoot, "outside.txt"), "outside changed during save")
 
 	cfg, cfgErr := repo.LoadWorktreeConfig(repoRoot, "main")
@@ -86,10 +89,12 @@ func TestSaveConcurrentWorkspaceChangeJSONErrorUsesPublicVocabulary(t *testing.T
 	require.NotNil(t, env.Error)
 	assert.Contains(t, env.Error.Message, "workspace files changed while saving")
 	assert.Contains(t, env.Error.Message, "No save point was created.")
+	assert.NotContains(t, env.Error.Message, "..")
 	assertNoOldSavePointVocabulary(t, env.Error.Message)
 	assert.Equal(t, 0, savePointCatalogCount(t, repoRoot))
 	assert.Equal(t, 0, descriptorFileCount(t, repoRoot))
 	assert.Equal(t, 0, snapshotTempCount(t, repoRoot))
+	assert.Equal(t, 0, intentFileCount(t, repoRoot))
 	assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "changed during save")
 }
 
@@ -116,6 +121,7 @@ func TestSaveDefiniteFailureLeavesHistoryUnchangedAndFailedSavePointUnavailable(
 	assert.Equal(t, descriptorCount, descriptorFileCount(t, repoRoot))
 	assert.Equal(t, catalogCount, savePointCatalogCount(t, repoRoot))
 	assert.Equal(t, 0, snapshotTempCount(t, repoRoot))
+	assert.Equal(t, 0, intentFileCount(t, repoRoot))
 	assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "v2")
 
 	cfg, cfgErr := repo.LoadWorktreeConfig(repoRoot, "main")
@@ -156,6 +162,7 @@ func TestSaveDefiniteFailureJSONReportsHistoryUnchanged(t *testing.T) {
 	assert.Contains(t, env.Error.Message, "History was not changed.")
 	assertNoOldSavePointVocabulary(t, env.Error.Message)
 	require.NotEmpty(t, failedID)
+	assert.Equal(t, 0, intentFileCount(t, repoRoot))
 	assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "v2")
 
 	cfg, cfgErr := repo.LoadWorktreeConfig(repoRoot, "main")

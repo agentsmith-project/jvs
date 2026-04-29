@@ -32,6 +32,11 @@ type Collector struct {
 
 var collectorFsyncDir = fsutil.FsyncDir
 
+const (
+	cleanupActiveOperationsUnavailableMessage = "cleanup cannot determine active operations safely; run jvs doctor --strict before cleanup"
+	cleanupSavePointStorageUnavailableMessage = "cleanup cannot verify save point storage safely; run jvs doctor --strict before cleanup"
+)
+
 type planInputs struct {
 	protectedSet         []model.SnapshotID
 	protectionGroups     []model.GCProtectionGroup
@@ -43,6 +48,45 @@ type planInputs struct {
 type protectionBuilder struct {
 	protected map[model.SnapshotID]bool
 	groups    map[string]map[model.SnapshotID]bool
+}
+
+type cleanupPublicError struct {
+	public *errclass.JVSError
+	cause  error
+}
+
+func newCleanupPublicError(message string, cause error) error {
+	return &cleanupPublicError{
+		public: errclass.ErrGCPlanMismatch.WithMessage(message),
+		cause:  cause,
+	}
+}
+
+func (e *cleanupPublicError) Error() string {
+	if e.cause != nil {
+		return e.cause.Error()
+	}
+	return e.public.Error()
+}
+
+func (e *cleanupPublicError) Is(target error) bool {
+	if errors.Is(e.public, target) {
+		return true
+	}
+	var targetJVS *errclass.JVSError
+	if !errors.As(target, &targetJVS) {
+		return false
+	}
+	var causeJVS *errclass.JVSError
+	return errors.As(e.cause, &causeJVS) && causeJVS.Code == targetJVS.Code
+}
+
+func (e *cleanupPublicError) As(target any) bool {
+	if targetJVS, ok := target.(**errclass.JVSError); ok {
+		*targetJVS = e.public
+		return true
+	}
+	return false
 }
 
 func newProtectionBuilder() *protectionBuilder {
@@ -311,10 +355,11 @@ func (c *Collector) ensurePublishStateConsistent() error {
 			VerifyPayloadHash:        true,
 		})
 		if issue != nil {
-			return &errclass.JVSError{
+			cause := &errclass.JVSError{
 				Code:    issue.Code,
 				Message: fmt.Sprintf("checkpoint %s publish state invalid: %s", id, issue.Message),
 			}
+			return newCleanupPublicError(cleanupSavePointStorageUnavailableMessage, cause)
 		}
 	}
 	return nil
@@ -655,23 +700,11 @@ func (c *Collector) computeProtectedSet() ([]model.SnapshotID, []model.GCProtect
 		lineageCount += c.walkLineage(id, protection)
 	}
 
-	// 3. All intents (in-progress operations)
-	intentsDir, err := repo.IntentsDirPath(c.repoRoot)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return nil, nil, 0, fmt.Errorf("read intents directory: %w", err)
-		}
-	} else {
-		entries, err := os.ReadDir(intentsDir)
-		if err != nil {
-			return nil, nil, 0, fmt.Errorf("read intents directory: %w", err)
-		}
-		for _, entry := range entries {
-			name := entry.Name()
-			if strings.HasSuffix(name, ".json") {
-				protection.add(model.GCProtectionReasonActiveOperation, model.SnapshotID(strings.TrimSuffix(name, ".json")))
-			}
-		}
+	// 3. Active operation intents protect only published save points. Intent-only
+	// crash residue stays out of public save-point groups; publish-state
+	// inventory above still fails closed for descriptor/payload residue.
+	if err := c.addIntentProtections(protection); err != nil {
+		return nil, nil, 0, err
 	}
 
 	// 4. Documented active source pins. These are fail-closed: any unreadable
@@ -698,6 +731,67 @@ func (c *Collector) computeProtectedSet() ([]model.SnapshotID, []model.GCProtect
 	}
 
 	return protection.protectedSet(), protection.protectionGroups(), lineageCount, nil
+}
+
+func (c *Collector) addIntentProtections(protection *protectionBuilder) error {
+	intentsDir, err := repo.IntentsDirPath(c.repoRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return newCleanupPublicError(cleanupActiveOperationsUnavailableMessage, fmt.Errorf("read intents directory: %w", err))
+	}
+
+	entries, err := os.ReadDir(intentsDir)
+	if err != nil {
+		return newCleanupPublicError(cleanupActiveOperationsUnavailableMessage, fmt.Errorf("read intents directory: %w", err))
+	}
+	for _, entry := range entries {
+		id, ok := snapshotIDFromIntentEntryName(entry.Name())
+		if !ok {
+			continue
+		}
+		published, err := c.intentSavePointPublished(id)
+		if err != nil {
+			return err
+		}
+		if published {
+			protection.add(model.GCProtectionReasonActiveOperation, id)
+		}
+	}
+	return nil
+}
+
+func snapshotIDFromIntentEntryName(name string) (model.SnapshotID, bool) {
+	if !strings.HasSuffix(name, ".json") {
+		return "", false
+	}
+	id := model.SnapshotID(strings.TrimSuffix(name, ".json"))
+	if err := id.Validate(); err != nil {
+		return "", false
+	}
+	return id, true
+}
+
+func (c *Collector) intentSavePointPublished(snapshotID model.SnapshotID) (bool, error) {
+	_, issue := snapshot.InspectPublishState(c.repoRoot, snapshotID, snapshot.PublishStateOptions{
+		RequireReady:             true,
+		RequirePayload:           true,
+		VerifyDescriptorChecksum: true,
+		VerifyPayloadHash:        true,
+	})
+	if issue == nil {
+		return true, nil
+	}
+	if issue.Code == snapshot.PublishStateCodeSnapshotIDInvalid ||
+		issue.Code == snapshot.PublishStateCodeDescriptorMissing {
+		return false, nil
+	}
+	cause := &errclass.JVSError{
+		Code:    issue.Code,
+		Message: fmt.Sprintf("checkpoint %s publish state invalid: %s", snapshotID, issue.Message),
+	}
+	return false, newCleanupPublicError(cleanupActiveOperationsUnavailableMessage, cause)
 }
 
 func protectionReasonForSourcePin(pin model.Pin) string {
@@ -951,38 +1045,83 @@ func (c *Collector) writePlan(plan *model.GCPlan) error {
 	return fsutil.AtomicWrite(path, data, 0644)
 }
 
+// RemoveRuntimePlans removes top-level cleanup preview/run plan state. Durable
+// cleanup evidence under child directories is left intact.
+func RemoveRuntimePlans(repoRoot string) (int, error) {
+	gcDir, err := repo.GCDirPath(repoRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	entries, err := os.ReadDir(gcDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+
+	cleaned := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		planID := strings.TrimSuffix(name, ".json")
+		path, err := repo.GCPlanPathForDelete(repoRoot, planID)
+		if err != nil {
+			return cleaned, err
+		}
+		if err := os.Remove(path); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return cleaned, err
+		}
+		cleaned++
+	}
+	if cleaned > 0 {
+		if err := collectorFsyncDir(gcDir); err != nil {
+			return cleaned, err
+		}
+	}
+	return cleaned, nil
+}
+
 // LoadPlan loads a GC plan by ID.
 func (c *Collector) LoadPlan(planID string) (*model.GCPlan, error) {
 	path, err := repo.GCPlanPathForRead(c.repoRoot, planID)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, errclass.ErrGCPlanMismatch.WithMessagef("gc plan %q not found", planID)
+			return nil, errclass.ErrGCPlanMismatch.WithMessagef("cleanup plan %q not found", planID)
 		}
-		return nil, errclass.ErrGCPlanMismatch.WithMessagef("gc plan %q is not readable", planID)
+		return nil, errclass.ErrGCPlanMismatch.WithMessagef("cleanup plan %q is not readable", planID)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, errclass.ErrGCPlanMismatch.WithMessagef("gc plan %q not found", planID)
+			return nil, errclass.ErrGCPlanMismatch.WithMessagef("cleanup plan %q not found", planID)
 		}
-		return nil, errclass.ErrGCPlanMismatch.WithMessagef("gc plan %q is not readable", planID)
+		return nil, errclass.ErrGCPlanMismatch.WithMessagef("cleanup plan %q is not readable", planID)
 	}
 	var plan model.GCPlan
 	if err := json.Unmarshal(data, &plan); err != nil {
-		return nil, errclass.ErrGCPlanMismatch.WithMessagef("gc plan %q is not valid JSON", planID)
+		return nil, errclass.ErrGCPlanMismatch.WithMessagef("cleanup plan %q is not valid JSON", planID)
 	}
 	if plan.SchemaVersion != model.GCPlanSchemaVersion {
-		return nil, errclass.ErrGCPlanMismatch.WithMessagef("gc plan %q has unsupported schema version", planID)
+		return nil, errclass.ErrGCPlanMismatch.WithMessagef("cleanup plan %q has unsupported schema version", planID)
 	}
 	if plan.PlanID != planID {
-		return nil, errclass.ErrGCPlanMismatch.WithMessagef("gc plan %q plan_id does not match request", planID)
+		return nil, errclass.ErrGCPlanMismatch.WithMessagef("cleanup plan %q plan_id does not match request", planID)
 	}
 	repoID, err := c.currentRepoID()
 	if err != nil {
 		return nil, err
 	}
 	if plan.RepoID != repoID {
-		return nil, errclass.ErrGCPlanMismatch.WithMessagef("gc plan %q belongs to a different repository", planID)
+		return nil, errclass.ErrGCPlanMismatch.WithMessagef("cleanup plan %q belongs to a different repository", planID)
 	}
 	return &plan, nil
 }

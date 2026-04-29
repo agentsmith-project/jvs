@@ -1,37 +1,57 @@
 # Migration & Backup
 
-JVS does not provide remote replication. Use filesystem or JuiceFS replication
-tools and preserve the save point control plane carefully.
+JVS does not provide remote replication or hot migration. Use an offline
+whole-folder copy of the managed folder/repository, then let the destination
+rebuild runtime state before any writes resume.
 
 ## Recommended Method
 
-Use `juicefs sync` or an equivalent storage-level sync for repository
-migration. Treat active runtime state as non-portable.
+Use a cold maintenance window. Stop all JVS writers, stop agent jobs, verify
+there are no active operations that need cleanup protection, then use ordinary
+filesystem copy into a fresh destination path. Copy the managed
+folder/repository as a whole. The destination path must not exist before
+copying; do not overlay an existing repository or folder. Treat copied
+non-portable JVS runtime state as raw bytes
+only: the destination must rebuild runtime state before use.
 
 ## Pre-Migration Gates
 
-1. Freeze writers and stop agent jobs.
-2. Ensure no active restore recovery plans:
+1. Announce a maintenance window, stop all JVS writers, and stop agent jobs.
+2. Confirm the source folder status is readable:
+   ```bash
+   jvs status
+   ```
+3. Ensure there are no active restore recovery plans. If any plan is listed,
+   resume or roll it back before copying:
    ```bash
    jvs recovery status
    ```
-3. Run:
+4. Check cleanup protection state and wait until there are no open views,
+   active recovery plans, or active operations:
+   ```bash
+   jvs cleanup preview --json
+   ```
+   Review `protection_groups`. Any `open_view`, `active_recovery`, or
+   `active_operation` count means the migration window is not quiet yet. Do not
+   run or carry this preview forward; create a fresh cleanup preview on the
+   destination after validation.
+5. Run:
    ```bash
    jvs doctor --strict
    ```
-4. Create final save points for critical workspaces:
+6. Create final save points for critical workspaces:
    ```bash
    jvs save -m "pre-migration"
    ```
-5. Record the newest save point IDs with `jvs history --json`.
+7. Record the newest save point IDs with `jvs history --json`.
 
 ## Runtime-State Policy
 
 Runtime state is non-portable and must not be migrated as authoritative state:
 
-- active `.jvs/locks/` repository mutation locks
-- active `.jvs/intents/` operation records
-- active `.jvs/gc/*.json` internal cleanup runtime plans
+- in-flight write coordination
+- abandoned operation bookkeeping
+- active cleanup preview/run plans
 - destination-local workspace folder path bindings
 
 Destination MUST rebuild runtime state:
@@ -40,58 +60,71 @@ Destination MUST rebuild runtime state:
 jvs doctor --strict --repair-runtime
 ```
 
-Mutation locks are host/process-specific; a lock copied from another host is
-treated as held and can block destination writes until repaired. Active cleanup
-runtime plans are repository-bound runtime state; create a new cleanup preview
-after migration instead of reusing copied plans. Workspace folder path bindings
-that still point at the source volume are destination-local: adopted `main`
-binds to the current folder, and external workspace folders rebind only when
-the destination sibling can be proven safe. If an external workspace sibling is
-missing, a symlink, or has content that does not match the recorded content
-source, `doctor --strict --repair-runtime` remains unhealthy and reports the
-workspace path binding until the destination sibling is synced correctly.
+In-flight runtime state is host/process-specific and can block destination
+writes until repaired. Active cleanup preview/run plans are repository-bound
+runtime state; the repair command invalidates copied cleanup plans so the
+destination must create a new cleanup preview instead of reusing copied plan
+IDs. Workspace folder path bindings that still point at the source volume are
+destination-local: adopted `main` binds to the current folder, and external
+workspace folders rebind only when the destination sibling can be proven safe.
+If an external workspace sibling is missing, a symlink, or has content that
+does not match the recorded content source, `doctor --strict --repair-runtime`
+remains unhealthy and reports the workspace path binding until the destination
+sibling is present with matching content.
 
 ## Migration Flow
 
-1. Mount source and destination volumes.
-2. Sync repository data excluding runtime state:
+1. Keep the source in the maintenance window: stop all JVS writers, keep agent
+   jobs stopped, and proceed only after the pre-migration gates show no active
+   operations.
+2. Mount source and destination volumes, then copy the managed
+   folder/repository as a whole with an ordinary filesystem copy. Use a fresh
+   destination path; this example fails before copying if the destination path
+   already exists:
    ```bash
-   juicefs sync /mnt/src/myrepo/ /mnt/dst/myrepo/ \
-     --exclude '.jvs/locks/**' \
-     --exclude '.jvs/intents/**' \
-     --exclude '.jvs/gc/*.json' \
-     --update --threads 16
+   test ! -e /mnt/dst/myrepo &&
+   mkdir -p /mnt/dst &&
+   cp -a /mnt/src/myrepo /mnt/dst/myrepo
    ```
-3. Validate destination:
+   The copy is an offline whole-folder copy. Do not hand-select JVS control
+   paths, do not overlay a non-empty destination, and do not treat copied
+   non-portable JVS runtime state as authoritative.
+3. Validate destination and rebuild runtime state before any destination write:
    ```bash
    cd /mnt/dst/myrepo
    jvs doctor --strict --repair-runtime
    jvs doctor --strict
-   jvs history --json | jq '.data.save_points[:10]'
+   jvs status
+   jvs history --json
+   jvs cleanup preview
    ```
    A non-zero doctor result means some runtime state could not be rebuilt
    safely; fix the reported binding or runtime issue before using the copied
-   repository.
+   repository. The cleanup preview here is the fresh cleanup preview for the
+   destination; do not reuse a cleanup preview created before migration.
 4. Run the restore drill from `docs/13_OPERATION_RUNBOOK.md`.
+5. Resume writers only after doctor, status, history, the fresh cleanup
+   preview, and the restore drill pass on the destination.
 
-## What To Sync
+## Copy Boundary
 
-Portable save point state:
+Copy the managed folder/repository as a whole. This includes user payload and
+JVS durable control data:
 
-- `.jvs/format_version`
-- `.jvs/descriptors/`
-- `.jvs/audit/`
-- `.jvs/snapshots/` as the internal storage directory for save point payloads
-- `.jvs/worktrees/` as the internal storage directory for workspace metadata
-- `.jvs/gc/tombstones/` if present
+- repository identity and format records
+- save point descriptors and payload storage
+- workspace metadata
+- audit records
+- durable cleanup evidence when present
 
 Payload state:
 
 - the adopted main folder contents
 - selected additional workspace folders
 
-Do not copy `.jvs/locks/`, `.jvs/intents/`, or `.jvs/gc/*.json` as
-authoritative state.
+Non-portable JVS runtime state may exist in the raw copied bytes, but it is not
+authoritative product state. Rebuild it on the destination with
+`jvs doctor --strict --repair-runtime` and create a fresh cleanup preview there.
 
 ## Backup Restore Drill
 

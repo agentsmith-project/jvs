@@ -87,8 +87,8 @@ UX.
 
 - `jvs doctor --strict` validates repository health.
 - `jvs doctor --repair-list` lists only public runtime repair IDs:
-  `clean_locks`, `rebind_workspace_paths`, `clean_runtime_tmp`, and
-  `clean_runtime_operations`.
+  `clean_locks`, `rebind_workspace_paths`, `clean_runtime_tmp`,
+  `clean_runtime_operations`, and `clean_runtime_cleanup_plans`.
 - `jvs doctor --strict --repair-runtime` does not rewrite durable save point
   history, workspace provenance, or audit history.
 - Physical-copy migration tests cover destination-local workspace path rebinding
@@ -98,8 +98,12 @@ UX.
 ### Cleanup Layering
 
 - Public docs describe cleanup preview/run semantics.
-- Cleanup must protect live workspace needs, active views, active source
-  operations, and active recovery plans.
+- Cleanup must protect workspace history, open views, active recovery plans,
+  and active operations.
+- Cleanup preview JSON exposes `plan_id`, `created_at`,
+  `protected_save_points`, `protection_groups`, `protected_by_history`,
+  `candidate_count`, `reclaimable_save_points`, and
+  `reclaimable_bytes_estimate`.
 - Cleanup preview exposes protection groups by stable public reason and keeps
   protection group save points in the same public save point ID type as other
   cleanup fields.
@@ -132,16 +136,18 @@ UX.
   including backup-unavailable cases that must not recommend stale resume
   commands.
 - Workspace new tests cover `started_from_save_point`.
-- Boundary tests cover managed payload purity: JVS control data, workspace
-  locators, operation lock files, restore plans, recovery plans, and cleanup
-  plans are not user payload.
+- Boundary tests cover managed payload purity: JVS control data and runtime
+  state for workspace targeting, active operations, restore plans, recovery
+  plans, and cleanup plans are not user payload.
 - Path restore tests cover unrelated cache-like or unmanaged files staying
   untouched when another managed path is restored.
 - View tests cover read-only behavior for files and directories, including
   large managed paths.
 - Cleanup tests cover protection groups for history, open views, active
   recovery, and active operations.
-- Migration tests exclude runtime state and run the restore drill.
+- Migration tests cover offline whole-folder copy to a fresh destination,
+  destination `jvs doctor --strict --repair-runtime`, a fresh cleanup preview,
+  and the restore drill.
 - Performance and benchmark docs scope engine claims and label internal
   package names as implementation facts only.
 - User story tests must match the current coverage stated in

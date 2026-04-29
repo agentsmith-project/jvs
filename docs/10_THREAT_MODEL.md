@@ -18,8 +18,8 @@
 2. Crash during save publish or restore run.
 3. Manual edits to descriptors, payloads, or audit records.
 4. Runtime state copied across hosts during backup/migration.
-5. Cleanup deleting a source save point still needed by live workspaces, active
-   views, active operations, or recovery plans.
+5. Cleanup deleting a save point still needed by workspace history, open views,
+   active recovery plans, or active operations.
 6. A user treating labels/messages/tags as restore targets or retention
    protection.
 
@@ -31,9 +31,10 @@
 - Recovery status/resume/rollback for interrupted restore.
 - Descriptor checksum, payload hash, and audit chain validation.
 - Runtime repair limited to safe runtime cleanup actions.
-- Migration docs exclude `.jvs/locks/`, `.jvs/intents/`, and active
-  `.jvs/gc/*.json` plans.
-- Cleanup protects active sources and recovery plans.
+- Migration guidance treats non-portable JVS runtime state as
+  destination-local and rebuilds it with `jvs doctor --strict --repair-runtime`.
+- Cleanup protects workspace history, open views, active recovery plans, and
+  active operations.
 
 ## Residual Risks
 

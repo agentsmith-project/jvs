@@ -23,8 +23,8 @@ Core guarantees:
 3. A save point is immutable once published.
 4. Restore is preview-first and does not rewrite save point history.
 5. Interrupted restore is closed by recovery status/resume/rollback.
-6. Cleanup is review-first and must protect live workspace needs, active
-   views, active operations, and active recovery plans.
+6. Cleanup is review-first and must protect workspace history, open views,
+   active recovery plans, and active operations.
 7. Internal storage names do not define product vocabulary, commands,
    selectors, examples, or user mental models.
 

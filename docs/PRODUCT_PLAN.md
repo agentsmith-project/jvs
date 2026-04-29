@@ -194,12 +194,17 @@ Public automatic repair is intentionally narrow:
 - `rebind_workspace_paths`
 - `clean_runtime_tmp`
 - `clean_runtime_operations`
+- `clean_runtime_cleanup_plans`
 
 Doctor must not rewrite durable save point history, workspace provenance, or
 audit history as an automatic repair.
 After a physical copy or storage migration, adopted `main` is rebound to the
 current folder. External workspace folders rebind only with destination-local
 content evidence.
+Migration guidance uses an offline whole-folder copy of the managed
+folder/repository as a whole to a fresh destination, followed on the destination
+by `jvs doctor --strict --repair-runtime` and a fresh cleanup preview before
+writes resume.
 
 ## Cleanup
 
@@ -213,9 +218,8 @@ Required semantics:
 
 - Preview does not delete.
 - Run binds to a reviewed plan and revalidates before deletion.
-- Cleanup protects live workspace needs, active views, active source reads,
-  active operations, recovery plans, and kept save points when keep is
-  promoted.
+- Cleanup protects workspace history, open views, active recovery plans, and
+  active operations.
 - Labels do not protect save points.
 - Deleting a save point must preserve enough tombstone/audit information for
   later view/restore errors.

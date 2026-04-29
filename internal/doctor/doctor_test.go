@@ -434,6 +434,29 @@ func TestDoctorRepairRuntimeRebindsCopiedAdoptedMainWorkspaceWhenSourceStillExis
 	assert.FileExists(t, filepath.Join(copied, "app.txt"))
 }
 
+func TestDoctorRepairRuntimeRemovesCopiedCleanupPlans(t *testing.T) {
+	repoPath := setupTestRepo(t)
+
+	collector := gc.NewCollector(repoPath)
+	plan, err := collector.PlanWithPolicy(model.RetentionPolicy{})
+	require.NoError(t, err)
+	require.FileExists(t, filepath.Join(repoPath, ".jvs", "gc", plan.PlanID+".json"))
+
+	results, err := doctor.NewDoctor(repoPath).Repair(doctor.RuntimeRepairActionIDs())
+	require.NoError(t, err)
+
+	result := requireRepairAction(t, results, "clean_runtime_cleanup_plans")
+	assert.True(t, result.Success)
+	assert.Equal(t, 1, result.Cleaned)
+	assert.Contains(t, result.Message, "cleanup plan")
+	assert.NotContains(t, result.Message, ".jvs")
+	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "gc", plan.PlanID+".json"))
+
+	err = gc.NewCollector(repoPath).Run(plan.PlanID)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errclass.ErrGCPlanMismatch)
+}
+
 func TestDoctorCheckFlagsCopiedAdoptedMainWorkspaceWhenSourceStillExists(t *testing.T) {
 	base := t.TempDir()
 	source := filepath.Join(base, "source", "project")
@@ -729,11 +752,12 @@ func TestDoctor_ListRepairActions(t *testing.T) {
 	doc := doctor.NewDoctor(repoPath)
 
 	actions := doc.ListRepairActions()
-	require.Len(t, actions, 4)
+	require.Len(t, actions, 5)
 	assert.Equal(t, "clean_locks", actions[0].ID)
 	assert.Equal(t, "rebind_workspace_paths", actions[1].ID)
 	assert.Equal(t, "clean_runtime_tmp", actions[2].ID)
 	assert.Equal(t, "clean_runtime_operations", actions[3].ID)
+	assert.Equal(t, "clean_runtime_cleanup_plans", actions[4].ID)
 	for _, action := range actions {
 		assert.True(t, action.AutoSafe, action.ID)
 		assert.NotEmpty(t, action.Description, action.ID)
@@ -749,7 +773,7 @@ func TestDoctorRepairListOnlyListsExecutableActions(t *testing.T) {
 		ids = append(ids, action.ID)
 	}
 
-	assert.Equal(t, []string{"clean_locks", "rebind_workspace_paths", "clean_runtime_tmp", "clean_runtime_operations"}, ids)
+	assert.Equal(t, []string{"clean_locks", "rebind_workspace_paths", "clean_runtime_tmp", "clean_runtime_operations", "clean_runtime_cleanup_plans"}, ids)
 	assert.NotContains(t, ids, "rebuild_index")
 	assert.NotContains(t, ids, "audit_repair")
 	assert.NotContains(t, ids, "advance_head")
@@ -1939,4 +1963,16 @@ func assertRepairActionSucceeded(t *testing.T, results []doctor.RepairResult, ac
 		}
 	}
 	t.Fatalf("expected repair result for %s in %#v", action, results)
+}
+
+func requireRepairAction(t *testing.T, results []doctor.RepairResult, action string) doctor.RepairResult {
+	t.Helper()
+
+	for _, result := range results {
+		if result.Action == action {
+			return result
+		}
+	}
+	t.Fatalf("expected repair result for %s in %#v", action, results)
+	return doctor.RepairResult{}
 }

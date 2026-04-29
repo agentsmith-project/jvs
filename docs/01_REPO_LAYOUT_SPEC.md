@@ -24,7 +24,7 @@ The implementation owns its control data layout. Directory names and metadata
 fields are implementation facts and do not define user commands, selectors,
 examples, restore targets, or cleanup policy.
 
-## Portability Classes
+## Runtime State Boundary
 
 Portable durable state:
 
@@ -36,12 +36,14 @@ Portable durable state:
 
 Non-portable runtime state:
 
-- `.jvs/locks/`
-- `.jvs/intents/`
-- active `.jvs/gc/*.json` internal cleanup runtime plans
+- in-flight write coordination
+- operation bookkeeping for interrupted or abandoned commands
+- cleanup preview/run plans that have not been revalidated at the destination
+- destination-local workspace folder path bindings
 - temporary files created by interrupted operations
 
-After a physical copy or storage migration, rebuild runtime state with:
+After an offline whole-folder copy or storage migration, rebuild runtime state
+with:
 
 ```bash
 jvs doctor --strict --repair-runtime

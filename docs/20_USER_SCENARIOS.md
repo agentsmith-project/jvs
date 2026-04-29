@@ -127,16 +127,15 @@ Current coverage:
 
 - Workspace creation conformance covers distinct folders, source preservation,
   entered-folder targeting, first-save history, and `started_from_save_point`.
-- `TestBoundaryJSON_WorkspaceLocatorStaysControlData` covers locator data as
-  control data, not payload.
+- Boundary conformance covers workspace targeting state as JVS control data,
+  not payload.
 
 ## GA-US-04: User Payload Boundary
 
-Persona: user who expects JVS to manage only their files, not JVS internal
-control data.
+Persona: user who expects JVS to manage only their files, not JVS control data.
 
-Goal: save, view, and restore managed content while JVS internal data remains
-outside the user payload.
+Goal: save, view, and restore managed content while JVS control data and
+runtime state remain outside the user payload.
 
 Workflow:
 
@@ -149,8 +148,8 @@ jvs doctor --strict
 ```
 
 Expected behavior: managed paths such as `managed/report.txt` can be saved,
-viewed, and restored. JVS control data, workspace locators, operation lock
-files, restore plans, recovery plans, cleanup plans, and other runtime state
+viewed, and restored. JVS control data and runtime state for workspace
+targeting, active operations, restore plans, recovery plans, and cleanup plans
 are never saved, viewed, restored, deleted, or recreated as user payload.
 
 Acceptance criteria:
@@ -159,8 +158,8 @@ Acceptance criteria:
 - View materializes only user payload and rejects attempts to view JVS control
   data as a path inside a save point.
 - Restore rejects JVS control paths as restore targets.
-- Whole-workspace restore does not delete or recreate JVS internal control
-  data as user files.
+- Whole-workspace restore does not delete or recreate JVS control data or
+  runtime state as user files.
 - Public JSON and human output keep the boundary understandable without
   exposing storage mechanics as user workflow concepts.
 - `jvs doctor --strict` validates repository health through the public health
@@ -171,7 +170,7 @@ Current coverage:
 - Payload purity, migration/runtime-state boundary, and doctor layout checks.
 - `TestBoundaryJSON_UserPayloadExcludesJVSControlData` covers managed payload
   purity for JVS control data, restore plans, recovery plans, cleanup plans,
-  and operation lock files.
+  and active operation state.
 
 ## GA-US-05: Read-Only Views For Files And Directories
 
@@ -301,9 +300,8 @@ jvs cleanup run --plan-id <plan-id>
 jvs doctor --strict
 ```
 
-Expected behavior: cleanup is preview-first. It protects live workspace needs,
-active views, active source operations, active recovery plans, and save points
-that must remain available for current workflows.
+Expected behavior: cleanup is preview-first. It protects workspace history,
+open views, active recovery plans, and active operations.
 
 Acceptance criteria:
 
@@ -343,7 +341,7 @@ public contract.
 - `jvs view` is read-only.
 - `jvs history --path` is the discovery path for one file or directory.
 - `jvs workspace new <name> --from <save>` creates a separate real folder.
-- JVS internal control data is never user payload.
+- JVS control data and runtime state are never user payload.
 - `jvs recovery status`, `jvs recovery resume`, and `jvs recovery rollback`
   are the public path for interrupted restore.
 - `jvs cleanup preview` and `jvs cleanup run --plan-id <plan-id>` keep cleanup

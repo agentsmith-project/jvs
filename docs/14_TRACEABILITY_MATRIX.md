@@ -89,7 +89,8 @@ Normative docs:
 Evidence:
 
 - cleanup protection and protection-group tests
-- migration tests excluding runtime cleanup plan files
+- migration tests covering offline whole-folder copy to a fresh destination,
+  destination `jvs doctor --strict --repair-runtime`, and a fresh cleanup preview
 
 ## Promise 7: Engine Claims Are Scoped
 
@@ -137,9 +138,9 @@ Evidence:
 - `make story-e2e` for current generic story coverage: managed folder save and
   restore, managed path discovery/view/restore, deletion recovery, restore
   preview/run, and workspace creation
-- boundary conformance for JVS control data, workspace locators, restore plans,
-  recovery plans, cleanup plans, cache-like unrelated paths, and read-only
-  large file or directory views
+- boundary conformance for JVS control data and runtime state for workspace
+  targeting, active operations, restore plans, recovery plans, cleanup plans,
+  cache-like unrelated paths, and read-only large file or directory views
 - `make story-juicefs-local` when the real local JuiceFS profile is required
 - Product Design Improvement Candidates in `docs/20_USER_SCENARIOS.md` for
   future ideas that are not GA commitments

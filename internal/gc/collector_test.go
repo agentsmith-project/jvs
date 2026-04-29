@@ -1767,24 +1767,15 @@ func TestCollector_Plan_PinFileDoesNotAffectAlreadyProtectedSnapshotInV0(t *test
 
 func TestCollector_Plan_WithIntents(t *testing.T) {
 	repoPath := setupTestRepo(t)
-
-	// Create some intents (in-progress operations)
-	intentsDir := filepath.Join(repoPath, ".jvs", "intents")
-	require.NoError(t, os.MkdirAll(intentsDir, 0755))
-
-	intentIDs := []string{"intent1", "intent2", "intent3"}
-	for _, id := range intentIDs {
-		intentPath := filepath.Join(intentsDir, id+".json")
-		require.NoError(t, os.WriteFile(intentPath, []byte(`{"intent_id":"`+id+`"}`), 0644))
-	}
+	intentID := createRemovedWorktreeSnapshots(t, repoPath, "intent", 1)[0]
+	writeSnapshotIntent(t, repoPath, intentID)
 
 	collector := gc.NewCollector(repoPath)
 	plan, err := collector.Plan()
 	require.NoError(t, err)
 
-	// Plan should succeed with intents considered protected
-	// (though they're not valid snapshot IDs, they're in the protected set)
-	assert.NotEmpty(t, plan.ProtectedSet)
+	assert.Contains(t, plan.ProtectedSet, intentID)
+	assert.NotContains(t, plan.ToDelete, intentID)
 }
 
 func TestCollector_walkLineage_WithMissingDescriptor(t *testing.T) {
