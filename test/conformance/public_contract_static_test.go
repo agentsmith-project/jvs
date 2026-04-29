@@ -734,6 +734,13 @@ cp -R "$src" "$dst"
 		t.Fatalf("migration copy fail-closed guard must accept bracket checks with explicit exit:\n%s", bracketOrExitBlock)
 	}
 
+	bracketAndExitBlock := `
+[ -e "$dst" ] && exit 1; mkdir -p "$parent"; cp -a "$src" "$dst"
+`
+	if !migrationCopyBlockFailsClosed(bracketAndExitBlock) {
+		t.Fatalf("migration copy fail-closed guard must accept exists-check and-exit before copy:\n%s", bracketAndExitBlock)
+	}
+
 	sudoCopyBlock := `
 set -e
 test ! -e "$dst"
@@ -792,6 +799,30 @@ cp -a /data/jvs-repo/. /backup/jvs-repo/
 		block string
 	}{
 		{
+			name: "short-circuited nonexistence guard",
+			block: `
+true || test ! -e "$dst" &&
+mkdir -p "$parent" &&
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "short-circuited explicit exit guard",
+			block: `
+false && [ -e "$dst" ] && exit 1
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "pipelined chained nonexistence guard",
+			block: `
+echo checking | test ! -e "$dst" &&
+mkdir -p "$parent" &&
+cp -a "$src" "$dst"
+`,
+		},
+		{
 			name: "precreated destination",
 			block: `
 test ! -e "$dst" &&
@@ -804,6 +835,171 @@ cp -a "$src" "$dst"
 			block: `
 set -e
 test ! -e "$dst" || true
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "compound test nonexistence condition",
+			block: `
+test ! -e "$dst" -o -e "$dst" &&
+mkdir -p "$parent" &&
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "compound bracket nonexistence condition",
+			block: `
+[ ! -e "$dst" -o -e "$dst" ] &&
+mkdir -p "$parent" &&
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "compound test exists explicit exit",
+			block: `
+test -e "$dst" -a "$flag" = yes && exit 1
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "compound bracket exists explicit exit",
+			block: `
+[ -e "$dst" -a "$flag" = yes ] && exit 1
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "compound bracket exists if true branch exit",
+			block: `
+if [ -e "$dst" -a "$flag" = yes ]; then
+  exit 1
+fi
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "if condition-list masks destination exists before true branch exit",
+			block: `
+if [ -e "$dst" ] && false; then
+  exit 1
+fi
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "disabled set -e before check",
+			block: `
+set -e
+set +e
+test ! -e "$dst"
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "short-circuited disabled set -e before check",
+			block: `
+set -e
+true && set +e
+test ! -e "$dst"
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "branch disabled set -e before check",
+			block: `
+set -e
+if true; then
+  set +e
+fi
+test ! -e "$dst"
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "short-circuited set -e before check",
+			block: `
+false && set -e
+test ! -e "$dst"
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "disabled set -o errexit before check",
+			block: `
+set -o errexit
+set +o errexit
+test ! -e "$dst"
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "pipelined set -e nonexistence check",
+			block: `
+set -e
+test ! -e "$dst" | cat
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "pipelined set -e bracket nonexistence check",
+			block: `
+set -e
+[ ! -e "$dst" ] | cat
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "if condition set -e test nonexistence check",
+			block: `
+set -e
+if test ! -e "$dst"; then
+  echo ok
+fi
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "if condition set -e bracket nonexistence check",
+			block: `
+set -e
+if [ ! -e "$dst" ]; then
+  echo ok
+fi
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "if condition-list later set -e test nonexistence check",
+			block: `
+set -e
+if echo checking; test ! -e "$dst"; then
+  :
+fi
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "if condition-list later set -e bracket nonexistence check",
+			block: `
+set -e
+if echo checking; [ ! -e "$dst" ]; then
+  :
+fi
 mkdir -p "$parent"
 cp -a "$src" "$dst"
 `,
@@ -827,6 +1023,109 @@ cp -a "$src" "$dst"
 `,
 		},
 		{
+			name: "skipped branch explicit exit guard",
+			block: `
+if false; then
+  if test -e "$dst"; then
+    exit 1
+  fi
+fi
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "if true branch pipelined exit",
+			block: `
+if test -e "$dst"; then
+  exit 1 | cat
+fi
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "and chained pipelined exit",
+			block: `
+[ -e "$dst" ] && exit 1 | cat
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "backgrounded explicit exit guard",
+			block: `
+[ -e "$dst" ] && exit 1 &
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "backgrounded set -e nonexistence check",
+			block: `
+set -e
+test ! -e "$dst" &
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "conditional true branch exit",
+			block: `
+if test -e "$dst"; then
+  echo "destination exists" || exit 1
+fi
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "loop guarded true branch exit",
+			block: `
+if test -e "$dst"; then
+  while false; do
+    exit 1
+  done
+fi
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "until guarded true branch exit",
+			block: `
+if test -e "$dst"; then
+  until true; do
+    exit 1
+  done
+fi
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "empty for true branch exit",
+			block: `
+if test -e "$dst"; then
+  for x in; do
+    exit 1
+  done
+fi
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "and-conditional true branch exit",
+			block: `
+if test -e "$dst"; then
+  echo "destination exists" && exit 1
+fi
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
 			name: "reversed positive destination exit",
 			block: `
 [ -e "$dst" ] || exit 1
@@ -844,10 +1143,121 @@ cp -a "$src" "$dst"
 `,
 		},
 		{
+			name: "case branch scoped set e before check",
+			block: `
+case "$mode" in
+  guarded)
+    set -e
+    ;;
+esac
+test ! -e "$dst"
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "subshell scoped set e before check",
+			block: `
+(
+  set -e
+)
+test ! -e "$dst"
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "subshell scoped explicit exit guard",
+			block: `
+(
+  [ -e "$dst" ] && exit 1
+)
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "function body scoped set e before check",
+			block: `
+guard() {
+  set -e
+}
+test ! -e "$dst"
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "function body scoped explicit exit guard",
+			block: `
+guard() {
+  [ -e "$dst" ] && exit 1
+}
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
 			name: "precreated destination subdir",
 			block: `
 test ! -e "$dst" &&
 mkdir -p "$dst/subdir" &&
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "install precreated destination subdir",
+			block: `
+test ! -e "$dst" &&
+install -d "$dst/subdir" &&
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "install D precreated destination file",
+			block: `
+test ! -e "$dst" &&
+install -D /dev/null "$dst/subdir/file" &&
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "install D target directory precreated destination subdir",
+			block: `
+test ! -e "$dst" &&
+install -D -t "$dst/subdir" /dev/null &&
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "install clustered D target directory precreated destination subdir",
+			block: `
+test ! -e "$dst" &&
+install -Dt "$dst/subdir" /dev/null &&
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "install clustered D verbose target directory precreated destination subdir",
+			block: `
+test ! -e "$dst" &&
+install -Dvt "$dst/subdir" /dev/null &&
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "install D long target directory precreated destination subdir",
+			block: `
+test ! -e "$dst" &&
+install -D --target-directory "$dst/subdir" /dev/null &&
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "precreated quoted destination prefix subdir",
+			block: `
+test ! -e "$dst" &&
+mkdir -p "$dst"/subdir &&
 cp -a "$src" "$dst"
 `,
 		},
@@ -860,10 +1270,58 @@ cp -a "$src" "${dst}"
 `,
 		},
 		{
+			name: "precreated quoted braced destination prefix subdir",
+			block: `
+test ! -e "${dst}" &&
+mkdir -p "${dst}"/subdir &&
+cp -a "$src" "${dst}"
+`,
+		},
+		{
 			name: "precreated literal destination subdir",
 			block: `
 test ! -e /backup/jvs-repo &&
 mkdir -p /backup/jvs-repo/subdir &&
+cp -a /data/jvs-repo /backup/jvs-repo
+`,
+		},
+		{
+			name: "precreated literal destination subdir with dot segment",
+			block: `
+test ! -e /backup/jvs-repo &&
+mkdir -p /backup/./jvs-repo/subdir &&
+cp -a /data/jvs-repo /backup/jvs-repo
+`,
+		},
+		{
+			name: "precreated literal destination subdir with dot-dot segment",
+			block: `
+test ! -e /backup/jvs-repo &&
+mkdir -p /backup/other/../jvs-repo/subdir &&
+cp -a /data/jvs-repo /backup/jvs-repo
+`,
+		},
+		{
+			name: "precreated literal destination subdir with repeated slash",
+			block: `
+test ! -e /backup/jvs-repo &&
+mkdir -p /backup//jvs-repo/subdir &&
+cp -a /data/jvs-repo /backup/jvs-repo
+`,
+		},
+		{
+			name: "precreated quoted literal destination prefix subdir",
+			block: `
+test ! -e /backup/jvs-repo &&
+mkdir -p "/backup/jvs-repo"/subdir &&
+cp -a /data/jvs-repo /backup/jvs-repo
+`,
+		},
+		{
+			name: "precreated embedded quoted literal destination subdir",
+			block: `
+test ! -e /backup/jvs-repo &&
+mkdir -p /backup/"jvs-repo"/subdir &&
 cp -a /data/jvs-repo /backup/jvs-repo
 `,
 		},
@@ -3725,7 +4183,7 @@ func migrationCopyCommandFailsClosed(steps []shellCommandStep, command shellCopy
 	if shellNonexistenceCheckHasOrExitBeforeCopy(steps, testStep, command.stepIndex) {
 		return true
 	}
-	if shellBlockHasSetEBefore(steps, testStep) && shellStepIsStandaloneErrexitGuard(steps, testStep) {
+	if shellBlockHasActiveErrexitAt(steps, testStep) && shellStepIsStandaloneErrexitGuard(steps, testStep) {
 		return true
 	}
 	return shellBlockHasChainedAndBetween(steps, testStep, command.stepIndex)
@@ -3904,15 +4362,146 @@ func shellBlockCreatesCopyDestinationBeforeCopy(steps []shellCommandStep, copySt
 
 func shellStepCreatesDirectory(step shellCommandStep, destination string) bool {
 	fields := shellCommandInvocationFields(shellTrimReservedCommandPrefixes(step.fields))
-	if len(fields) == 0 || fields[0] != "mkdir" {
+	if len(fields) == 0 {
 		return false
 	}
-	for _, operand := range shellCommandOperands(fields[1:]) {
+	var operands []string
+	switch fields[0] {
+	case "mkdir":
+		operands = shellCommandOperands(fields[1:])
+	case "install":
+		operands = shellInstallDirectoryOperands(fields[1:])
+	default:
+		return false
+	}
+	for _, operand := range operands {
 		if shellPathTokenCreatesDestinationOrDescendant(operand, destination) {
 			return true
 		}
 	}
 	return false
+}
+
+func shellInstallDirectoryOperands(fields []string) []string {
+	parsed := shellParseInstallFields(fields)
+	if !parsed.explicitDirectories && !parsed.leadingDirectories {
+		return nil
+	}
+	if parsed.explicitDirectories {
+		operands := append([]string{}, parsed.operands...)
+		return append(operands, parsed.targetDirectories...)
+	}
+	if parsed.leadingDirectories {
+		if len(parsed.targetDirectories) > 0 {
+			return append([]string{}, parsed.targetDirectories...)
+		}
+		if len(parsed.operands) == 0 {
+			return nil
+		}
+		return []string{parsed.operands[len(parsed.operands)-1]}
+	}
+	return nil
+}
+
+func shellInstallOperands(fields []string) []string {
+	return shellParseInstallFields(fields).operands
+}
+
+type shellInstallFields struct {
+	operands            []string
+	targetDirectories   []string
+	explicitDirectories bool
+	leadingDirectories  bool
+}
+
+func shellParseInstallFields(fields []string) shellInstallFields {
+	var parsed shellInstallFields
+	for i := 0; i < len(fields); i++ {
+		field := cleanShellField(fields[i])
+		if field == "" {
+			continue
+		}
+		if field == "--" {
+			for _, operand := range fields[i+1:] {
+				cleaned := cleanShellField(operand)
+				if cleaned != "" {
+					parsed.operands = append(parsed.operands, cleaned)
+				}
+			}
+			break
+		}
+		if strings.HasPrefix(field, "--") {
+			shellParseInstallLongOption(&parsed, field, fields, &i)
+			continue
+		}
+		if strings.HasPrefix(field, "-") && field != "-" {
+			shellParseInstallShortOptions(&parsed, field, fields, &i)
+			continue
+		}
+		parsed.operands = append(parsed.operands, field)
+	}
+	return parsed
+}
+
+func shellParseInstallLongOption(parsed *shellInstallFields, field string, fields []string, index *int) {
+	switch {
+	case field == "--directory":
+		parsed.explicitDirectories = true
+	case field == "--target-directory":
+		if *index+1 < len(fields) {
+			shellAddInstallTargetDirectory(parsed, fields[*index+1])
+			*index = *index + 1
+		}
+	case strings.HasPrefix(field, "--target-directory="):
+		shellAddInstallTargetDirectory(parsed, strings.TrimPrefix(field, "--target-directory="))
+	case shellInstallLongOptionTakesValue(field):
+		if !strings.Contains(field, "=") && *index+1 < len(fields) {
+			*index = *index + 1
+		}
+	}
+}
+
+func shellParseInstallShortOptions(parsed *shellInstallFields, field string, fields []string, index *int) {
+	cluster := strings.TrimPrefix(field, "-")
+	for pos := 0; pos < len(cluster); pos++ {
+		switch cluster[pos] {
+		case 'd':
+			parsed.explicitDirectories = true
+		case 'D':
+			parsed.leadingDirectories = true
+		case 't':
+			if pos+1 < len(cluster) {
+				shellAddInstallTargetDirectory(parsed, cluster[pos+1:])
+			} else if *index+1 < len(fields) {
+				shellAddInstallTargetDirectory(parsed, fields[*index+1])
+				*index = *index + 1
+			}
+			return
+		case 'g', 'm', 'o':
+			if pos+1 >= len(cluster) && *index+1 < len(fields) {
+				*index = *index + 1
+			}
+			return
+		}
+	}
+}
+
+func shellAddInstallTargetDirectory(parsed *shellInstallFields, value string) {
+	if cleaned := cleanShellField(value); cleaned != "" {
+		parsed.targetDirectories = append(parsed.targetDirectories, cleaned)
+	}
+}
+
+func shellInstallLongOptionTakesValue(field string) bool {
+	if option, _, ok := strings.Cut(field, "="); ok {
+		field = option
+	}
+	switch field {
+	case "--group", "--mode", "--owner":
+		return true
+	default:
+		return false
+	}
 }
 
 func meaningfulShellLines(block string) []string {
@@ -3961,53 +4550,75 @@ func shellCommandSteps(lines []string) []shellCommandStep {
 	return steps
 }
 
-func shellBlockHasSetEBefore(steps []shellCommandStep, limit int) bool {
+func shellBlockHasActiveErrexitAt(steps []shellCommandStep, limit int) bool {
+	active := false
 	for i := 0; i <= limit && i < len(steps); i++ {
-		if shellStepEnablesErrexit(steps[i]) {
-			return true
+		state, ok := shellStepErrexitStateChange(steps[i])
+		if !ok {
+			continue
+		}
+		if state {
+			if shellStepCanProveParentShellStateChange(steps, i) {
+				active = true
+			}
+			continue
+		}
+		if shellStepMayAffectParentShellState(steps, i) {
+			active = state
 		}
 	}
-	return false
+	return active
 }
 
-func shellStepEnablesErrexit(step shellCommandStep) bool {
+func shellStepErrexitStateChange(step shellCommandStep) (bool, bool) {
 	fields := shellBuiltinInvocationFields(step.fields)
 	if len(fields) == 0 || fields[0] != "set" {
-		return false
+		return false, false
 	}
+	active := false
+	changed := false
 	for i := 1; i < len(fields); i++ {
 		field := strings.Trim(fields[i], `"'`)
 		if field == "--" {
 			break
 		}
-		if field == "-o" {
+		if field == "-o" || field == "+o" {
 			if i+1 < len(fields) && strings.Trim(fields[i+1], `"'`) == "errexit" {
-				return true
+				active = field == "-o"
+				changed = true
 			}
 			i++
 			continue
 		}
-		if shellSetFlagEnablesErrexit(field) {
-			return true
+		if state, ok := shellSetFlagErrexitState(field); ok {
+			active = state
+			changed = true
 		}
 	}
-	return false
+	return active, changed
 }
 
-func shellSetFlagEnablesErrexit(field string) bool {
-	if !strings.HasPrefix(field, "-") || strings.HasPrefix(field, "--") || field == "-" {
-		return false
+func shellSetFlagErrexitState(field string) (bool, bool) {
+	if len(field) < 2 || strings.HasPrefix(field, "--") {
+		return false, false
+	}
+	prefix := field[0]
+	if prefix != '-' && prefix != '+' {
+		return false, false
 	}
 	for _, flag := range field[1:] {
 		if flag == 'e' {
-			return true
+			return prefix == '-', true
 		}
 	}
-	return false
+	return false, false
 }
 
 func shellBlockHasExplicitDestinationExitBeforeCopy(steps []shellCommandStep, copyStep int, destination string) bool {
 	for i := 0; i < copyStep; i++ {
+		if !shellStepCanStartExplicitDestinationGuard(steps, i, copyStep) {
+			continue
+		}
 		if !shellFieldsHaveDestinationExistsCheck(steps[i].fields, destination) {
 			continue
 		}
@@ -4024,34 +4635,65 @@ func shellBlockHasExplicitDestinationExitBeforeCopy(steps []shellCommandStep, co
 func shellDestinationExistsCheckHasAndExitBeforeCopy(steps []shellCommandStep, start, copyStep int) bool {
 	return start+1 < copyStep &&
 		steps[start].opAfter == "&&" &&
-		shellStepHasExplicitExit(steps[start+1])
+		shellStepExitsParentShell(steps, start+1)
 }
 
 func shellDestinationExistsIfTrueBranchExitsBeforeCopy(steps []shellCommandStep, start, copyStep int) bool {
-	if !shellStepStartsIf(steps[start]) {
+	thenStep, ok := shellIfDestinationExistsConditionDirectlyEntersThen(steps, start, copyStep)
+	if !ok {
 		return false
 	}
-	nestedIfDepth := 0
-	for i := start + 1; i < copyStep; i++ {
-		switch {
-		case shellStepStartsIf(steps[i]):
-			nestedIfDepth++
-		case shellStepIsFi(steps[i]):
-			if nestedIfDepth == 0 {
-				return false
+	nestedCompoundDepth := 0
+	trueBranchExits := false
+	for i := thenStep; i < copyStep; i++ {
+		if nestedCompoundDepth > 0 {
+			if shellStepStartsConditionalCompound(steps[i]) {
+				nestedCompoundDepth++
 			}
-			nestedIfDepth--
-		case nestedIfDepth == 0 && shellStepStartsElseBranch(steps[i]):
+			if shellStepEndsConditionalCompound(steps[i]) {
+				nestedCompoundDepth--
+			}
+			continue
+		}
+		switch {
+		case shellStepStartsConditionalCompound(steps[i]):
+			nestedCompoundDepth++
+		case shellStepIsFi(steps[i]):
+			return trueBranchExits
+		case shellStepStartsElseBranch(steps[i]):
 			return false
-		case nestedIfDepth == 0 && shellStepHasExplicitExit(steps[i]):
-			return true
+		case shellStepHasStandaloneExplicitExit(steps, i):
+			trueBranchExits = true
 		}
 	}
 	return false
 }
 
+func shellIfDestinationExistsConditionDirectlyEntersThen(steps []shellCommandStep, start, copyStep int) (int, bool) {
+	if !shellStepStartsIf(steps[start]) {
+		return 0, false
+	}
+	if !shellStepEndsDirectIfConditionCheck(steps[start]) {
+		return 0, false
+	}
+	for i := start + 1; i < copyStep; i++ {
+		if shellStepStartsThenBranch(steps[i]) {
+			return i, true
+		}
+		return 0, false
+	}
+	return 0, false
+}
+
+func shellStepEndsDirectIfConditionCheck(step shellCommandStep) bool {
+	return step.opAfter == "" || step.opAfter == ";"
+}
+
 func shellDestinationNonexistenceCheckStep(steps []shellCommandStep, limit int, destination string) int {
 	for i := 0; i < limit; i++ {
+		if !shellStepCanStartSimpleDestinationGuard(steps, i, limit) {
+			continue
+		}
 		if shellStepIsDestinationNonexistenceCheck(steps[i], destination) {
 			return i
 		}
@@ -4069,15 +4711,7 @@ func shellStepIsDestinationNonexistenceCheck(step shellCommandStep, destination 
 
 func shellFieldsHaveDestinationNonexistenceCheck(fields []string, destination string) bool {
 	fields = shellConditionCommandFields(fields)
-	if len(fields) >= 4 && fields[0] == "test" && fields[1] == "!" && fields[2] == "-e" &&
-		shellPathTokenEqual(fields[3], destination) {
-		return true
-	}
-	if len(fields) >= 4 && (fields[0] == "[" || fields[0] == "[[") && fields[1] == "!" && fields[2] == "-e" &&
-		shellPathTokenEqual(fields[3], destination) {
-		return true
-	}
-	return false
+	return shellFieldsAreSimpleDestinationTest(fields, "!", destination)
 }
 
 func shellLineHasDestinationExistsCheck(line, destination string) bool {
@@ -4086,23 +4720,121 @@ func shellLineHasDestinationExistsCheck(line, destination string) bool {
 
 func shellFieldsHaveDestinationExistsCheck(fields []string, destination string) bool {
 	fields = shellConditionCommandFields(fields)
-	if len(fields) >= 3 && fields[0] == "test" && fields[1] == "-e" &&
-		shellPathTokenEqual(fields[2], destination) {
-		return true
+	return shellFieldsAreSimpleDestinationTest(fields, "", destination)
+}
+
+func shellFieldsAreSimpleDestinationTest(fields []string, negation, destination string) bool {
+	switch {
+	case len(fields) > 0 && fields[0] == "test":
+		return shellTestFieldsAreSimpleDestinationTest(fields, negation, destination)
+	case len(fields) > 0 && (fields[0] == "[" || fields[0] == "[["):
+		return shellBracketFieldsAreSimpleDestinationTest(fields, negation, destination)
+	default:
+		return false
 	}
-	if len(fields) >= 3 && (fields[0] == "[" || fields[0] == "[[") && fields[1] == "-e" &&
-		shellPathTokenEqual(fields[2], destination) {
-		return true
+}
+
+func shellTestFieldsAreSimpleDestinationTest(fields []string, negation, destination string) bool {
+	if negation == "!" {
+		return len(fields) == 4 &&
+			fields[1] == "!" &&
+			fields[2] == "-e" &&
+			shellPathTokenEqual(fields[3], destination)
+	}
+	return len(fields) == 3 &&
+		fields[1] == "-e" &&
+		shellPathTokenEqual(fields[2], destination)
+}
+
+func shellBracketFieldsAreSimpleDestinationTest(fields []string, negation, destination string) bool {
+	close := "]"
+	if fields[0] == "[[" {
+		close = "]]"
+	}
+	if negation == "!" {
+		return len(fields) == 5 &&
+			fields[1] == "!" &&
+			fields[2] == "-e" &&
+			shellPathTokenEqual(fields[3], destination) &&
+			fields[4] == close
+	}
+	return len(fields) == 4 &&
+		fields[1] == "-e" &&
+		shellPathTokenEqual(fields[2], destination) &&
+		fields[3] == close
+}
+
+func shellLineHasExplicitExit(line string) bool {
+	steps := shellCommandSteps([]string{line})
+	for i := range steps {
+		if shellStepExitsParentShell(steps, i) {
+			return true
+		}
 	}
 	return false
 }
 
-func shellLineHasExplicitExit(line string) bool {
-	return shellFieldsHaveExplicitExit(shellCommandFields(line))
-}
-
 func shellStepHasExplicitExit(step shellCommandStep) bool {
 	return shellFieldsHaveExplicitExit(step.fields)
+}
+
+func shellStepHasStandaloneExplicitExit(steps []shellCommandStep, index int) bool {
+	if !shellStepExitsParentShell(steps, index) {
+		return false
+	}
+	return index == 0 || (steps[index-1].opAfter != "&&" && steps[index-1].opAfter != "||")
+}
+
+func shellStepExitsParentShell(steps []shellCommandStep, index int) bool {
+	if index < 0 || index >= len(steps) {
+		return false
+	}
+	if shellScopedBodyDepthAtStep(steps, index) != 0 {
+		return false
+	}
+	if shellStepParticipatesInPipeline(steps, index) {
+		return false
+	}
+	if shellStepRunsInBackground(steps, index) {
+		return false
+	}
+	return shellStepHasExplicitExit(steps[index])
+}
+
+func shellStepParticipatesInPipeline(steps []shellCommandStep, index int) bool {
+	return index >= 0 && index < len(steps) &&
+		(steps[index].opAfter == "|" || (index > 0 && steps[index-1].opAfter == "|"))
+}
+
+func shellStepRunsInBackground(steps []shellCommandStep, index int) bool {
+	return index >= 0 && index < len(steps) && steps[index].opAfter == "&"
+}
+
+func shellStepCanProveParentShellStateChange(steps []shellCommandStep, index int) bool {
+	if index < 0 || index >= len(steps) {
+		return false
+	}
+	if !shellStepMayAffectParentShellState(steps, index) {
+		return false
+	}
+	if shellStepRunsInErrexitExemptCondition(steps, index) {
+		return false
+	}
+	if shellStepIsShortCircuitControlled(steps, index) {
+		return false
+	}
+	return shellStepCanLinearlyDominateCopy(steps, index, index+1)
+}
+
+func shellStepMayAffectParentShellState(steps []shellCommandStep, index int) bool {
+	if index < 0 || index >= len(steps) {
+		return false
+	}
+	if shellScopedBodyDepthAtStep(steps, index) != 0 {
+		return false
+	}
+	return !shellStepParticipatesInPipeline(steps, index) &&
+		!shellStepRunsInBackground(steps, index)
 }
 
 func shellFieldsHaveExplicitExit(fields []string) bool {
@@ -4115,17 +4847,224 @@ func shellFieldsHaveExplicitExit(fields []string) bool {
 }
 
 func shellNonexistenceCheckHasOrExitBeforeCopy(steps []shellCommandStep, start, end int) bool {
-	return start+1 < end && steps[start].opAfter == "||" && shellStepHasExplicitExit(steps[start+1])
+	return start+1 < end && steps[start].opAfter == "||" && shellStepExitsParentShell(steps, start+1)
 }
 
 func shellStepIsStandaloneErrexitGuard(steps []shellCommandStep, index int) bool {
 	if index < 0 || index >= len(steps) {
 		return false
 	}
+	if shellStepParticipatesInPipeline(steps, index) {
+		return false
+	}
+	if shellStepRunsInBackground(steps, index) {
+		return false
+	}
+	if shellStepRunsInErrexitExemptCondition(steps, index) {
+		return false
+	}
 	if steps[index].opAfter == "&&" || steps[index].opAfter == "||" {
 		return false
 	}
 	return index == 0 || (steps[index-1].opAfter != "&&" && steps[index-1].opAfter != "||")
+}
+
+func shellStepRunsInErrexitExemptCondition(steps []shellCommandStep, index int) bool {
+	if index < 0 || index >= len(steps) {
+		return false
+	}
+	var terminators []string
+	for i := 0; i <= index; i++ {
+		if len(steps[i].fields) == 0 {
+			continue
+		}
+		keyword := steps[i].fields[0]
+		if shellConditionListTerminator(keyword) {
+			terminators = shellPopConditionListTerminator(terminators, keyword)
+			if i == index {
+				return false
+			}
+			continue
+		}
+		if len(terminators) > 0 && i == index {
+			return true
+		}
+		if terminator, ok := shellConditionListStartTerminator(keyword); ok {
+			terminators = append(terminators, terminator)
+			if i == index {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func shellConditionListStartTerminator(keyword string) (string, bool) {
+	switch keyword {
+	case "if", "elif":
+		return "then", true
+	case "while", "until":
+		return "do", true
+	default:
+		return "", false
+	}
+}
+
+func shellConditionListTerminator(keyword string) bool {
+	return keyword == "then" || keyword == "do"
+}
+
+func shellPopConditionListTerminator(terminators []string, keyword string) []string {
+	if len(terminators) == 0 || terminators[len(terminators)-1] != keyword {
+		return terminators
+	}
+	return terminators[:len(terminators)-1]
+}
+
+func shellStepCanStartExplicitDestinationGuard(steps []shellCommandStep, index, copyStep int) bool {
+	if !shellStepCanStartTopLevelDestinationGuard(steps, index, copyStep) {
+		return false
+	}
+	if shellStepStartsIf(steps[index]) {
+		return true
+	}
+	return !shellStepRunsInErrexitExemptCondition(steps, index)
+}
+
+func shellStepCanStartSimpleDestinationGuard(steps []shellCommandStep, index, copyStep int) bool {
+	return shellStepCanStartTopLevelDestinationGuard(steps, index, copyStep) &&
+		!shellStepRunsInErrexitExemptCondition(steps, index)
+}
+
+func shellStepCanStartTopLevelDestinationGuard(steps []shellCommandStep, index, copyStep int) bool {
+	return shellStepCanLinearlyDominateCopy(steps, index, copyStep) &&
+		!shellStepParticipatesInPipeline(steps, index) &&
+		!shellStepRunsInBackground(steps, index) &&
+		!shellStepIsShortCircuitControlled(steps, index)
+}
+
+func shellStepIsShortCircuitControlled(steps []shellCommandStep, index int) bool {
+	if index <= 0 || index >= len(steps) {
+		return false
+	}
+	return steps[index-1].opAfter == "&&" || steps[index-1].opAfter == "||"
+}
+
+func shellStepCanLinearlyDominateCopy(steps []shellCommandStep, index, copyStep int) bool {
+	if index < 0 || index >= len(steps) || copyStep < 0 || copyStep > len(steps) || index >= copyStep {
+		return false
+	}
+	if shellBranchBodyDepthAtStep(steps, index) != 0 {
+		return false
+	}
+	if shellScopedBodyDepthAtStep(steps, index) != 0 {
+		return false
+	}
+	if copyStep < len(steps) && shellBranchBodyDepthAtStep(steps, copyStep) != 0 {
+		return false
+	}
+	if copyStep < len(steps) && shellScopedBodyDepthAtStep(steps, copyStep) != 0 {
+		return false
+	}
+	return true
+}
+
+func shellBranchBodyDepthAtStep(steps []shellCommandStep, index int) int {
+	depth := shellBranchBodyDepthBeforeStep(steps, index)
+	if index < 0 || index >= len(steps) || len(steps[index].fields) == 0 {
+		return depth
+	}
+	switch steps[index].fields[0] {
+	case "then", "do":
+		return depth + 1
+	case "esac":
+		if depth > 0 {
+			return depth - 1
+		}
+	case "else", "elif":
+		if depth == 0 {
+			return 1
+		}
+	}
+	return depth
+}
+
+func shellBranchBodyDepthBeforeStep(steps []shellCommandStep, index int) int {
+	depth := 0
+	for i := 0; i < index && i < len(steps); i++ {
+		if len(steps[i].fields) == 0 {
+			continue
+		}
+		switch steps[i].fields[0] {
+		case "case", "then", "do":
+			depth++
+		case "esac", "fi", "done":
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+	return depth
+}
+
+func shellScopedBodyDepthAtStep(steps []shellCommandStep, index int) int {
+	depth := shellScopedBodyDepthBeforeStep(steps, index)
+	if index < 0 || index >= len(steps) {
+		return depth
+	}
+	if shellStepEndsScopedBody(steps[index]) && depth > 0 {
+		return depth - 1
+	}
+	return depth
+}
+
+func shellScopedBodyDepthBeforeStep(steps []shellCommandStep, index int) int {
+	depth := 0
+	for i := 0; i < index && i < len(steps); i++ {
+		if shellStepEndsScopedBody(steps[i]) {
+			if depth > 0 {
+				depth--
+			}
+			continue
+		}
+		if shellStepStartsScopedBody(steps[i]) {
+			depth++
+		}
+	}
+	return depth
+}
+
+func shellStepStartsScopedBody(step shellCommandStep) bool {
+	return shellStepStartsSubshellBody(step) || shellStepStartsFunctionBody(step)
+}
+
+func shellStepEndsScopedBody(step shellCommandStep) bool {
+	fields := shellTrimReservedCommandPrefixes(step.fields)
+	return len(fields) == 1 && (fields[0] == ")" || fields[0] == "}")
+}
+
+func shellStepStartsSubshellBody(step shellCommandStep) bool {
+	fields := shellTrimReservedCommandPrefixes(step.fields)
+	return len(fields) == 1 && fields[0] == "("
+}
+
+func shellStepStartsFunctionBody(step shellCommandStep) bool {
+	fields := shellTrimReservedCommandPrefixes(step.fields)
+	switch {
+	case len(fields) >= 2 && fields[1] == "{" && shellFunctionNameWithParens(fields[0]):
+		return true
+	case len(fields) >= 3 && fields[1] == "()" && fields[2] == "{" && shellIdentifierName(fields[0]):
+		return true
+	case len(fields) >= 3 && fields[0] == "function" && shellIdentifierName(fields[1]) && fields[2] == "{":
+		return true
+	default:
+		return false
+	}
+}
+
+func shellFunctionNameWithParens(field string) bool {
+	name := strings.TrimSuffix(field, "()")
+	return name != field && shellIdentifierName(name)
 }
 
 func shellBlockHasChainedAndBetween(steps []shellCommandStep, start, end int) bool {
@@ -4141,8 +5080,37 @@ func shellStepIsFi(step shellCommandStep) bool {
 	return len(step.fields) == 1 && step.fields[0] == "fi"
 }
 
+func shellStepStartsThenBranch(step shellCommandStep) bool {
+	return len(step.fields) > 0 && step.fields[0] == "then"
+}
+
 func shellStepStartsIf(step shellCommandStep) bool {
 	return len(step.fields) > 0 && step.fields[0] == "if"
+}
+
+func shellStepStartsConditionalCompound(step shellCommandStep) bool {
+	fields := shellTrimReservedCommandPrefixes(step.fields)
+	if len(fields) == 0 {
+		return false
+	}
+	switch fields[0] {
+	case "if", "while", "until", "for", "case":
+		return true
+	default:
+		return false
+	}
+}
+
+func shellStepEndsConditionalCompound(step shellCommandStep) bool {
+	if len(step.fields) == 0 {
+		return false
+	}
+	switch step.fields[0] {
+	case "fi", "done", "esac":
+		return true
+	default:
+		return false
+	}
 }
 
 func shellStepStartsElseBranch(step shellCommandStep) bool {
@@ -4201,17 +5169,40 @@ func splitShellControlOperators(field string) []string {
 func firstShellControlOperator(field string) (int, string) {
 	firstIndex := -1
 	firstOperator := ""
-	for _, operator := range []string{"&&", "||", ";"} {
-		if index := strings.Index(field, operator); index >= 0 && (firstIndex < 0 || index < firstIndex) {
-			firstIndex = index
-			firstOperator = operator
+	for _, operator := range []string{"&&", "||", ";", "|", "&"} {
+		searchFrom := 0
+		for {
+			index := strings.Index(field[searchFrom:], operator)
+			if index < 0 {
+				break
+			}
+			index += searchFrom
+			if operator == "&" && shellAmpersandIsRedirection(field, index) {
+				searchFrom = index + len(operator)
+				continue
+			}
+			if firstIndex < 0 || index < firstIndex {
+				firstIndex = index
+				firstOperator = operator
+			}
+			break
 		}
 	}
 	return firstIndex, firstOperator
 }
 
+func shellAmpersandIsRedirection(field string, index int) bool {
+	if index > 0 && (field[index-1] == '>' || field[index-1] == '<') {
+		return true
+	}
+	if index+1 < len(field) && field[index+1] == '>' {
+		return true
+	}
+	return false
+}
+
 func shellControlOperator(token string) bool {
-	return token == "&&" || token == "||" || token == ";"
+	return token == "&&" || token == "||" || token == ";" || token == "|" || token == "&"
 }
 
 func cleanShellField(field string) string {
@@ -4278,7 +5269,10 @@ func shellIdentifierName(name string) bool {
 
 func normalizeShellPathToken(token string) string {
 	token = cleanShellField(token)
+	token = normalizeShellQuotedPathPrefixJoin(token)
+	token = normalizeShellQuotedPathSegments(token)
 	token = strings.Trim(token, `"'`)
+	token = normalizeShellQuotedVariablePathJoin(token)
 	token = strings.TrimSuffix(token, "]]")
 	token = strings.TrimSuffix(token, "]")
 	token = strings.TrimSuffix(token, ";")
@@ -4286,12 +5280,132 @@ func normalizeShellPathToken(token string) string {
 	return strings.TrimSpace(token)
 }
 
+func normalizeShellQuotedPathSegments(token string) string {
+	var builder strings.Builder
+	quote := byte(0)
+	changed := false
+	for i := 0; i < len(token); i++ {
+		ch := token[i]
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+				changed = true
+				continue
+			}
+			builder.WriteByte(ch)
+			continue
+		}
+		if ch == '"' || ch == '\'' {
+			quote = ch
+			changed = true
+			continue
+		}
+		builder.WriteByte(ch)
+	}
+	if quote != 0 || !changed {
+		return token
+	}
+	return builder.String()
+}
+
+func normalizeShellQuotedPathPrefixJoin(token string) string {
+	if len(token) < 3 {
+		return token
+	}
+	quote := token[0]
+	if quote != '"' && quote != '\'' {
+		return token
+	}
+	end := strings.IndexByte(token[1:], quote)
+	if end < 0 {
+		return token
+	}
+	end++
+	if end+1 >= len(token) || token[end+1] != '/' {
+		return token
+	}
+	return token[1:end] + token[end+1:]
+}
+
+func normalizeShellQuotedVariablePathJoin(token string) string {
+	end, ok := shellLeadingVariableTokenEnd(token)
+	if !ok || end+1 >= len(token) {
+		return token
+	}
+	if (token[end] == '"' || token[end] == '\'') && token[end+1] == '/' {
+		return token[:end] + token[end+1:]
+	}
+	return token
+}
+
+func shellLeadingVariableTokenEnd(token string) (int, bool) {
+	if strings.HasPrefix(token, "${") {
+		end := strings.IndexByte(token, '}')
+		if end < 0 {
+			return 0, false
+		}
+		return end + 1, shellIdentifierName(token[2:end])
+	}
+	if !strings.HasPrefix(token, "$") {
+		return 0, false
+	}
+	end := 1
+	for end < len(token) {
+		ch := token[end]
+		if ch == '_' || ('a' <= ch && ch <= 'z') || ('A' <= ch && ch <= 'Z') || (end > 1 && '0' <= ch && ch <= '9') {
+			end++
+			continue
+		}
+		break
+	}
+	return end, shellIdentifierName(token[1:end])
+}
+
 func normalizeShellDirectoryToken(token string) string {
 	token = normalizeShellPathToken(token)
+	token = normalizeShellLiteralDirectoryPath(token)
 	if token == "/" {
 		return token
 	}
 	return strings.TrimRight(token, "/")
+}
+
+func normalizeShellLiteralDirectoryPath(token string) string {
+	if !shellPathTokenIsLiteralPath(token) || !strings.Contains(token, "/") {
+		return token
+	}
+	absolute := strings.HasPrefix(token, "/")
+	segments := strings.Split(token, "/")
+	cleaned := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		if segment == "" || segment == "." {
+			continue
+		}
+		if segment == ".." {
+			if len(cleaned) > 0 && cleaned[len(cleaned)-1] != ".." {
+				cleaned = cleaned[:len(cleaned)-1]
+				continue
+			}
+			if absolute {
+				continue
+			}
+		}
+		cleaned = append(cleaned, segment)
+	}
+	if absolute {
+		if len(cleaned) == 0 {
+			return "/"
+		}
+		return "/" + strings.Join(cleaned, "/")
+	}
+	return strings.Join(cleaned, "/")
+}
+
+func shellPathTokenIsLiteralPath(token string) bool {
+	if token == "" {
+		return false
+	}
+	return !strings.ContainsAny(token, "$`*?[]{}")
 }
 
 func shellTrimReservedCommandPrefixes(fields []string) []string {
