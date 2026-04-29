@@ -62,14 +62,14 @@ protection records while a recovery plan is active. Use `jvs recovery status`,
 `jvs recovery resume`, or `jvs recovery rollback` so JVS can close the plan
 cleanly.
 
-## Runtime Repairs
+## Interrupted Operation Repairs
 
-If `doctor` reports safe runtime leftovers after a crash:
+If `doctor` reports safe leftover JVS operation state after a crash:
 
 ```bash
 jvs doctor --repair-list
 jvs doctor --repair-runtime
 ```
 
-Runtime repair is separate from restore recovery. Finish active recovery plans
-before starting another restore.
+This repair step is separate from restore recovery. Finish active recovery
+plans before starting another restore.

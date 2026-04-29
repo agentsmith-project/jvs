@@ -103,13 +103,13 @@ change workspace files or history.
 ## `jvs restore [save-point] [--path path]`
 
 Create or run a restore plan. `jvs restore <save>` is preview-only; files change
-only when you run `jvs restore --run <plan-id>`.
+only when you run `jvs restore --run <restore-plan-id>`.
 
 ```bash
 jvs restore <save>
 jvs restore <save> --path src/config.yaml
 jvs restore --path src/config.yaml
-jvs restore --run <plan-id>
+jvs restore --run <restore-plan-id>
 ```
 
 Modes:
@@ -119,7 +119,7 @@ Modes:
 | `jvs restore <save>` | Preview whole-folder restore |
 | `jvs restore <save> --path <path>` | Preview one-path restore |
 | `jvs restore --path <path>` | List candidate save points for a path |
-| `jvs restore --run <plan-id>` | Execute a preview plan |
+| `jvs restore --run <restore-plan-id>` | Execute a reviewed restore plan |
 
 Safety flags:
 
@@ -141,7 +141,7 @@ jvs workspace path [name]
 jvs workspace rename <old> <new>
 jvs workspace new experiment --from <save>
 jvs workspace remove experiment
-jvs workspace remove --run <plan-id>
+jvs workspace remove --run <remove-plan-id>
 ```
 
 Common commands:
@@ -153,7 +153,7 @@ Common commands:
 | `jvs workspace rename <old> <new>` | Rename a workspace |
 | `jvs workspace new <name> --from <save>` | Create another workspace folder from a save point |
 | `jvs workspace remove <name>` | Preview removal of a workspace folder |
-| `jvs workspace remove --run <plan-id>` | Run a reviewed remove plan |
+| `jvs workspace remove --run <remove-plan-id>` | Run a reviewed remove plan |
 
 `workspace new` prints:
 
@@ -167,10 +167,13 @@ The original workspace is unchanged.
 Review the folder path, workspace name, unsaved-change status, and printed
 `Run:` command before running the plan.
 
-`workspace remove --run <plan-id>` removes the selected workspace folder and
-workspace entry. It does not remove save point storage. Use
-`jvs cleanup preview`, then `jvs cleanup run --plan-id <plan-id>` for reviewed
-cleanup of save point storage.
+Use the remove plan ID from the workspace remove preview you just reviewed. Do
+not reuse a restore or cleanup plan ID for workspace removal.
+
+`workspace remove --run <remove-plan-id>` removes the selected workspace folder
+and workspace entry. It does not remove save point storage. Use
+`jvs cleanup preview`, then `jvs cleanup run --plan-id <cleanup-plan-id>` for
+reviewed cleanup of save point storage.
 
 If the workspace has unsaved changes, add `--force` to the preview command
 only when those local changes are intentionally disposable:
@@ -199,7 +202,7 @@ Free save point storage that JVS no longer needs.
 
 ```bash
 jvs cleanup preview
-jvs cleanup run --plan-id <plan-id>
+jvs cleanup run --plan-id <cleanup-plan-id>
 ```
 
 Cleanup is two-step. `preview` shows the plan and does not delete anything.
@@ -210,7 +213,7 @@ files, JVS control data, active recovery information, or history.
 | Command | Use |
 | --- | --- |
 | `jvs cleanup preview` | Show what can be cleaned and print a plan ID |
-| `jvs cleanup run --plan-id <plan-id>` | Run a reviewed cleanup plan |
+| `jvs cleanup run --plan-id <cleanup-plan-id>` | Run a reviewed cleanup plan |
 
 ## `jvs doctor`
 
@@ -224,7 +227,7 @@ jvs doctor --repair-runtime
 ```
 
 `--strict` performs deeper integrity checks. `--repair-runtime` runs safe
-automatic repairs for runtime leftovers.
+automatic repairs for leftover state from interrupted JVS operations.
 
 ## Shell Completion
 

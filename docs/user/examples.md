@@ -6,6 +6,10 @@ from `jvs history` that JVS accepts. If a short ID is ambiguous, use a longer
 or full ID. If history does not show enough characters, `jvs history --json`
 includes the full `save_point_id` value.
 
+The JVS commands are reusable as written. Project commands such as copying
+files, running scripts, editing files, or opening tools are examples only;
+replace them with your own files, scripts, editor, or toolchain.
+
 ## Experiment Folder
 
 Create repeatable experiment states:
@@ -31,7 +35,7 @@ To return the folder to the baseline state:
 
 ```bash
 jvs restore <baseline-save> --discard-unsaved
-jvs restore --run <plan-id>
+jvs restore --run <restore-plan-id>
 ```
 
 ## Recover One File
@@ -46,7 +50,7 @@ Preview and run the one-path restore:
 
 ```bash
 jvs restore <save> --path config/app.yaml
-jvs restore --run <plan-id>
+jvs restore --run <restore-plan-id>
 ```
 
 Only that path is restored. History is unchanged.
@@ -106,7 +110,7 @@ To reset for the next run:
 
 ```bash
 jvs restore <baseline-save> --discard-unsaved
-jvs restore --run <plan-id>
+jvs restore --run <restore-plan-id>
 ```
 
 Scripts should parse JSON output rather than human text when they need stable
@@ -115,7 +119,7 @@ fields:
 ```bash
 jvs history --json
 jvs restore <save> --json
-jvs restore --run <plan-id> --json
+jvs restore --run <restore-plan-id> --json
 ```
 
 ## Health Check Before A Risky Restore

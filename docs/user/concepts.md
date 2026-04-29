@@ -114,7 +114,7 @@ preview-first:
 
 ```bash
 jvs restore <save>
-jvs restore --run <plan-id>
+jvs restore --run <restore-plan-id>
 ```
 
 The first command creates a plan and changes nothing. The plan tells you the
@@ -143,7 +143,7 @@ Removing a workspace is also preview-first:
 
 ```bash
 jvs workspace remove experiment
-jvs workspace remove --run <plan-id>
+jvs workspace remove --run <remove-plan-id>
 ```
 
 The preview does not delete the folder. Read the folder path and workspace name
@@ -163,7 +163,7 @@ Cleanup frees save point storage JVS no longer needs. Cleanup is preview-first:
 
 ```bash
 jvs cleanup preview
-jvs cleanup run --plan-id <plan-id>
+jvs cleanup run --plan-id <cleanup-plan-id>
 ```
 
 Preview shows what can be cleaned and prints a plan ID. Run deletes only the

@@ -251,15 +251,30 @@ func TestDocs_UserCommandsDocumentsWorkspaceManagement(t *testing.T) {
 		"jvs workspace rename <old> <new>",
 		"jvs workspace new <name> --from <save>",
 		"jvs workspace remove <name>",
-		"jvs workspace remove --run <plan-id>",
+		"jvs workspace remove --run <remove-plan-id>",
 		"preview-first",
 		"does not remove save point storage",
 		"jvs cleanup preview",
 	} {
 		requireReleaseReadinessText(t, "workspace command documentation", section, required)
 	}
+	if strings.Contains(section, "jvs workspace remove --run <plan-id>") {
+		t.Fatalf("%s workspace command section uses generic remove plan placeholder; use <remove-plan-id> to avoid mixing preview plan IDs:\n%s", doc, section)
+	}
 	if strings.Contains(strings.ToLower(section), "worktree") {
 		t.Fatalf("%s workspace command section leaks old worktree vocabulary:\n%s", doc, section)
+	}
+}
+
+func TestDocs_UserDocsUseTypedPlanIDPlaceholders(t *testing.T) {
+	for _, doc := range markdownDocsUnder(t, "docs/user") {
+		t.Run(doc, func(t *testing.T) {
+			for lineNo, line := range strings.Split(readRepoFile(t, doc), "\n") {
+				if strings.Contains(line, "<plan-id>") {
+					t.Fatalf("%s:%d uses generic <plan-id>; user docs must distinguish <restore-plan-id>, <remove-plan-id>, and <cleanup-plan-id>:\n%s", doc, lineNo+1, line)
+				}
+			}
+		})
 	}
 }
 

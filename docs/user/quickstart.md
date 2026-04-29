@@ -164,17 +164,19 @@ This is only a preview. Look for:
 
 ```text
 Preview only. No files were changed.
-Plan: <plan-id>
-Run: `jvs restore --run <plan-id>`
+Plan: <restore-plan-id>
+Run: `jvs restore --run <restore-plan-id>`
 ```
 
 Also read the impact lines. They tell you how many files would be overwritten,
-created, or deleted.
+created, or deleted. The restore plan ID belongs to this restore preview.
+Later previews will print their own plan IDs for removal or cleanup; use each
+ID only with the `Run:` line from the same preview.
 
 If the plan looks right, run the printed command:
 
 ```bash
-jvs restore --run <plan-id>
+jvs restore --run <restore-plan-id>
 ```
 
 Check the result:
@@ -212,13 +214,14 @@ Look for the same preview clues:
 
 ```text
 Preview only. No files were changed.
-Run: `jvs restore --run <plan-id>`
+Run: `jvs restore --run <restore-plan-id>`
 ```
 
-Run only if the path and save point are the ones you intended:
+Run only if the path and save point are the ones you intended. Use the restore
+plan ID from this path restore preview:
 
 ```bash
-jvs restore --run <plan-id>
+jvs restore --run <restore-plan-id>
 ```
 
 Check the path afterward:
@@ -259,11 +262,26 @@ jvs status
 This workspace has its own folder. The original `myproject` workspace is
 unchanged.
 
-Next: learn how removal works without accidentally deleting the folder first.
+Next: go back to the original folder before removing the experiment folder.
 
 ## 9. Preview Workspace Removal
 
-From any folder inside the same JVS project, preview removal:
+Before removing `experiment`, return to the original `myproject` folder. In
+your own project, use the folder path you started from:
+
+```bash
+cd /path/to/myproject
+jvs status
+```
+
+Look for:
+
+```text
+Workspace: main
+```
+
+Run the removal preview from this folder, because this folder will still exist
+after the experiment workspace is removed:
 
 ```bash
 jvs workspace remove experiment
@@ -275,7 +293,7 @@ Look for:
 Preview only. No workspace folder was removed.
 Folder: /path/to/experiment
 Workspace: experiment
-Run: `jvs workspace remove --run <plan-id>`
+Run: `jvs workspace remove --run <remove-plan-id>`
 ```
 
 The preview does not delete the folder. If the folder has unsaved changes, JVS
@@ -286,10 +304,11 @@ disposable:
 jvs workspace remove experiment --force
 ```
 
-Run the printed command only after checking the folder path:
+Run the printed command only after checking the folder path. Use the remove
+plan ID from this workspace remove preview:
 
 ```bash
-jvs workspace remove --run <plan-id>
+jvs workspace remove --run <remove-plan-id>
 ```
 
 This removes the workspace folder and workspace entry. It does not remove save
@@ -301,9 +320,10 @@ Check afterward:
 jvs workspace list
 ```
 
-The `experiment` workspace should no longer appear. The folder path shown in
-the preview should be gone. Save point storage remains until you review and run
-cleanup.
+Run this from the original `myproject` folder, not from the folder you just
+removed. The `experiment` workspace should no longer appear. The folder path
+shown in the preview should be gone. Save point storage remains until you
+review and run cleanup.
 
 Next: preview cleanup.
 
@@ -315,18 +335,20 @@ Cleanup is also preview-first:
 jvs cleanup preview
 ```
 
+Run cleanup preview from the original `myproject` folder too.
+
 Look for:
 
 ```text
-Plan ID: <plan-id>
+Plan ID: <cleanup-plan-id>
 Reclaimable: ...
-Run: jvs cleanup run --plan-id <plan-id>
+Run: jvs cleanup run --plan-id <cleanup-plan-id>
 ```
 
 If the plan lists storage you really want JVS to remove, run:
 
 ```bash
-jvs cleanup run --plan-id <plan-id>
+jvs cleanup run --plan-id <cleanup-plan-id>
 ```
 
 Cleanup never removes your workspace folders. It only removes save point

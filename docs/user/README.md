@@ -53,12 +53,12 @@ treat as important moments.
 | `jvs init` | Adds JVS control data to the folder. Your existing files stay in place. |
 | `jvs save -m "message"` | Creates a save point. Your files stay as they are. |
 | `jvs restore <save>` | Preview only. No files change. |
-| `jvs restore --run <plan-id>` | Changes files in the workspace according to the previewed plan. |
+| `jvs restore --run <restore-plan-id>` | Changes files in the workspace according to the previewed restore plan. |
 | `jvs workspace new <name> --from <save>` | Creates another real folder from a save point. |
 | `jvs workspace remove <name>` | Preview only. The workspace folder is not removed. |
-| `jvs workspace remove --run <plan-id>` | Removes that workspace folder and its workspace entry. Save point storage stays. |
+| `jvs workspace remove --run <remove-plan-id>` | Removes that workspace folder and its workspace entry. Save point storage stays. |
 | `jvs cleanup preview` | Preview only. No storage is removed. |
-| `jvs cleanup run --plan-id <plan-id>` | Removes save point storage that the reviewed cleanup plan selected. |
+| `jvs cleanup run --plan-id <cleanup-plan-id>` | Removes save point storage that the reviewed cleanup plan selected. |
 | `jvs recovery resume <plan>` | Continues an interrupted restore and may change files. |
 | `jvs recovery rollback <plan>` | Returns the folder to the protected pre-restore state when possible. |
 
@@ -78,4 +78,4 @@ cleanup preview -> cleanup run
 
 When a command prints a `Run:` line, stop and read the folder path, workspace
 name, save point, and impact summary. Run the printed command only if the plan
-matches what you meant.
+matches what you meant. Use the plan ID from that same preview.

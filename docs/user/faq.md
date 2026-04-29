@@ -59,9 +59,9 @@ has not made the destructive change yet.
 These commands run a reviewed plan:
 
 ```bash
-jvs restore --run <plan-id>
-jvs workspace remove --run <plan-id>
-jvs cleanup run --plan-id <plan-id>
+jvs restore --run <restore-plan-id>
+jvs workspace remove --run <remove-plan-id>
+jvs cleanup run --plan-id <cleanup-plan-id>
 ```
 
 `restore --run` changes workspace files named by the plan. `workspace remove
@@ -88,7 +88,7 @@ That is the safety promise. Path restore changes only the path you named:
 
 ```bash
 jvs restore <save> --path src/config.yaml
-jvs restore --run <plan-id>
+jvs restore --run <restore-plan-id>
 ```
 
 If the plan says `src/config.yaml`, unrelated files are not restored or
@@ -146,7 +146,7 @@ Use the two-step remove flow:
 
 ```bash
 jvs workspace remove experiment
-jvs workspace remove --run <plan-id>
+jvs workspace remove --run <remove-plan-id>
 ```
 
 The first command is a preview. Check the folder path, workspace name, and
@@ -163,7 +163,7 @@ Use cleanup only after reviewing save point storage:
 
 ```bash
 jvs cleanup preview
-jvs cleanup run --plan-id <plan-id>
+jvs cleanup run --plan-id <cleanup-plan-id>
 ```
 
 If you want to remove a workspace folder, use `jvs workspace remove <name>`.

@@ -1,12 +1,15 @@
 # Tutorials
 
-These tutorials are written as real work stories. They use ordinary folder
-names and public CLI commands, and they assume you are working in a terminal
-from the folder you want JVS to protect.
+These tutorials are written as real work stories. The first tutorial is a
+practice flow you can run with only shell file commands and JVS. The later
+stories are adaptable templates: keep the JVS steps, but replace the project
+commands with the tools you actually use.
 
 Use `<save>` for the full save point ID printed by `jvs save`, or for an ID
 copied from `jvs history` when JVS accepts it.
-Use `<plan-id>` for the plan ID printed by a preview command.
+Use `<restore-plan-id>` for the plan ID printed by a restore preview.
+Use `<remove-plan-id>` for the plan ID printed by a workspace remove preview.
+Use `<cleanup-plan-id>` for the plan ID printed by a cleanup preview.
 Anything shown in angle brackets is a placeholder, not text to type exactly.
 Replace it with the value JVS printed or with the folder path on your machine:
 
@@ -14,21 +17,110 @@ Replace it with the value JVS printed or with the folder path on your machine:
 | --- | --- |
 | `<save>` | A save point ID from `jvs save`, or an ID from `jvs history` that JVS accepts |
 | `<baseline-save>` | The save point ID for the baseline you saved earlier |
-| `<plan-id>` | The plan ID printed by a restore, workspace remove, or cleanup preview |
+| `<restore-plan-id>` | The plan ID printed by the restore preview you just reviewed |
+| `<remove-plan-id>` | The plan ID printed by the workspace remove preview you just reviewed |
+| `<cleanup-plan-id>` | The plan ID printed by the cleanup preview you just reviewed |
 | `<view-path>` | The read-only file or folder path printed by `jvs view` |
 | `<view-id>` | The view ID printed by `jvs view` |
 | `<printed-folder>` | The folder path printed by `jvs workspace new` |
 | `<main-folder>` | The original folder you were working in before opening another workspace |
 
 Commands such as `python`, `cp`, `diff`, `head`, and opening an image viewer
-are examples to make the stories concrete. Replace them with your own tools,
-scripts, spreadsheet exports, editors, or design applications. The reusable
-parts are the JVS commands and the preview-before-run habit.
+are examples to make the stories concrete. Do not type those lines exactly
+unless you have the same files and tools. Replace them with your own scripts,
+spreadsheet exports, editors, or design applications. The reusable parts are
+the JVS commands and the preview-before-run habit.
+
+A plan ID belongs to the preview that printed it. When a preview shows a
+`Run:` line, use that matching run command instead of reusing an ID from a
+different preview.
 
 If JVS says a short save point ID is ambiguous or non-unique, use more of the
 same ID. If the history output does not show enough characters, run
 `jvs history --json` and copy the `save_point_id` field for the save point you
 want.
+
+## Practice: Copyable Document Folder
+
+### When To Use
+
+Use this first if you want a safe practice run. It creates a tiny document
+folder from scratch, saves two moments, previews a restore with unsaved
+changes, then restores one file.
+
+### Prepare
+
+Create a new practice folder:
+
+```bash
+mkdir jvs-practice-report
+cd jvs-practice-report
+jvs init
+
+mkdir -p drafts data exports
+printf "# Practice Report\n\nOpening notes.\n" > drafts/report.md
+printf "source,total\nonline,42\n" > data/survey.csv
+jvs save -m "practice baseline"
+```
+
+Add a second saved moment:
+
+```bash
+printf "\n## Findings\nCustomers asked for clearer onboarding.\n" >> drafts/report.md
+printf "Practice export\n" > exports/report.txt
+jvs save -m "practice findings and export"
+```
+
+### Commands
+
+Make a bad edit:
+
+```bash
+printf "# Practice Report\n\nWrong replacement text.\n" > drafts/report.md
+jvs status
+```
+
+Ask JVS what would happen if you restored the report without choosing a safety
+option:
+
+```bash
+jvs history --path drafts/report.md
+jvs restore <baseline-save> --path drafts/report.md
+```
+
+Because the report has unsaved changes, JVS should show a decision preview.
+That preview changes no files and does not print a runnable plan. Now rerun
+the preview with the safety choice that keeps your bad edit as a save point
+before restoring:
+
+```bash
+jvs restore <baseline-save> --path drafts/report.md --save-first
+jvs restore --run <restore-plan-id>
+```
+
+### How To Know It Worked
+
+- `drafts/report.md` contains the baseline report text again.
+- `exports/report.txt` still exists, because the restore targeted only one
+  file.
+- `jvs history` includes a save point for the state JVS protected before the
+  restore.
+- `jvs status` reports no unsaved changes after the restore finishes.
+
+### Common Pitfalls
+
+- Do not run `jvs restore --run <restore-plan-id>` until you have reviewed the
+  restore preview that printed that exact restore plan ID.
+- A decision preview is not runnable. Add `--save-first` or
+  `--discard-unsaved` and preview again.
+- `--path drafts/report.md` means only that file is restored. Use a
+  whole-folder restore only when you have read the broader impact summary.
+
+### Next Step
+
+Try the same pattern in one of your own folders: save, make a harmless edit,
+preview a path restore, then decide whether to use `--save-first` or
+`--discard-unsaved`.
 
 ## Data Experiment
 
@@ -43,6 +135,10 @@ larger restore.
 
 Start in a folder that has your scripts, input data, configuration files, and
 output folder.
+
+The non-JVS commands below stand in for your own data copy and training tools.
+If you do not have these files or scripts, use the practice tutorial above or
+replace the commands with your own workflow.
 
 ```bash
 mkdir customer-risk-experiment
@@ -65,6 +161,9 @@ jvs save -m "baseline prepared data and default parameters"
 ### Commands
 
 Run a first experiment and save the result:
+
+Replace `python train.py ...` with the command that creates your own result
+files.
 
 ```bash
 python train.py --config configs/train.yaml --output outputs/run-001
@@ -94,7 +193,8 @@ jvs view <save> configs/train.yaml
 ```
 
 The command prints a read-only path. Open that path in your editor or compare
-it with your working file:
+it with your working file. If you do not use `diff`, open both files in the
+tool you normally use:
 
 ```bash
 diff -u <view-path> configs/train.yaml
@@ -106,14 +206,14 @@ first:
 
 ```bash
 jvs restore <baseline-save> --path configs/train.yaml --save-first
-jvs restore --run <plan-id>
+jvs restore --run <restore-plan-id>
 ```
 
 Restore the whole folder to the baseline, again saving today's work first:
 
 ```bash
 jvs restore <baseline-save> --save-first
-jvs restore --run <plan-id>
+jvs restore --run <restore-plan-id>
 ```
 
 If a restore preview finds unsaved changes and you did not choose
@@ -139,7 +239,7 @@ the two safety options when you are ready.
 - Do not use `--discard-unsaved` for experiment work you still need. Use
   `--save-first` when in doubt.
 - A preview is not the restore. Files change only after `jvs restore --run
-  <plan-id>`.
+  <restore-plan-id>`.
 - A view is read-only. Copy from it or restore from it; do not treat it as the
   active project folder.
 
@@ -159,6 +259,9 @@ file you still need. You remember the file path but not the exact save point.
 ### Prepare
 
 Set up a small analysis folder and save clean stages as you work:
+
+The `cp` and `python` lines are examples for an analysis project. Replace them
+with your spreadsheet export, notebook run, or cleaning tool.
 
 ```bash
 mkdir churn-analysis
@@ -191,6 +294,9 @@ jvs history --path cleaned/customers.csv
 
 Open the file from a likely save point before restoring it:
 
+Use `head` only if it is a familiar way for you to preview a text file. Opening
+`<view-path>` in an editor is just as good.
+
 ```bash
 jvs view <save> cleaned/customers.csv
 head <view-path>
@@ -208,7 +314,7 @@ jvs restore <save> --path cleaned/customers.csv --discard-unsaved
 Review the preview, then run the printed command:
 
 ```bash
-jvs restore --run <plan-id>
+jvs restore --run <restore-plan-id>
 ```
 
 ### How To Know It Worked
@@ -273,6 +379,10 @@ jvs workspace new agent-run-42 --from <save>
 JVS prints a folder path. Move into that folder and let the agent or script
 work there:
 
+Replace `./run-agent-task.sh` with the agent, script, or manual edit you want
+to isolate. The important part is that it runs in `<printed-folder>`, not in
+`<main-folder>`.
+
 ```bash
 cd <printed-folder>
 ./run-agent-task.sh
@@ -297,7 +407,7 @@ jvs workspace remove agent-run-42
 Review the folder path and printed `Run:` command, then run it:
 
 ```bash
-jvs workspace remove --run <plan-id>
+jvs workspace remove --run <remove-plan-id>
 ```
 
 Check that it is gone:
@@ -311,7 +421,7 @@ want to free space and have read the preview:
 
 ```bash
 jvs cleanup preview
-jvs cleanup run --plan-id <plan-id>
+jvs cleanup run --plan-id <cleanup-plan-id>
 ```
 
 ### How To Know It Worked
@@ -353,6 +463,10 @@ UI kits, level packs, sound sets, or brand design folders.
 
 Create the project folder and save the first playable or reviewable state:
 
+The `cp ~/Downloads/...` commands represent files exported from your art,
+audio, or design tools. Replace them with your real asset paths. If you are
+only practicing, create small placeholder files instead.
+
 ```bash
 mkdir city-level-pack
 cd city-level-pack
@@ -383,7 +497,9 @@ jvs history --grep "first playable"
 jvs view <save> assets/ui/title.png
 ```
 
-Open `<view-path>` in your image viewer. Close the view after checking it:
+Open `<view-path>` in your image viewer. If the file is not an image, open it
+with the viewer or editor that matches that asset type. Close the view after
+checking it:
 
 ```bash
 jvs view close <view-id>
@@ -393,14 +509,14 @@ Restore only the balance file:
 
 ```bash
 jvs restore <save> --path configs/balance.yaml --discard-unsaved
-jvs restore --run <plan-id>
+jvs restore --run <restore-plan-id>
 ```
 
 Restore a folder of assets if a batch export went wrong:
 
 ```bash
 jvs restore <save> --path assets/ui --discard-unsaved
-jvs restore --run <plan-id>
+jvs restore --run <restore-plan-id>
 ```
 
 ### How To Know It Worked
@@ -488,14 +604,14 @@ Restore one document after a bad edit:
 
 ```bash
 jvs restore <save> --path drafts/report.md --save-first
-jvs restore --run <plan-id>
+jvs restore --run <restore-plan-id>
 ```
 
 Restore the whole folder before sending a package:
 
 ```bash
 jvs restore <save> --save-first
-jvs restore --run <plan-id>
+jvs restore --run <restore-plan-id>
 ```
 
 ### How To Know It Worked

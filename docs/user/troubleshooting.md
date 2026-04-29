@@ -71,7 +71,7 @@ This is expected for preview mode. Restore has two steps:
 
 ```bash
 jvs restore <save>
-jvs restore --run <plan-id>
+jvs restore --run <restore-plan-id>
 ```
 
 Run the exact command printed after `Run:`.
@@ -81,7 +81,7 @@ What is okay:
 - The preview shows the folder you meant to restore.
 - The preview lists files that would be overwritten, created, or deleted.
 - The preview says history will not change.
-- Nothing in your folder changes until `jvs restore --run <plan-id>`.
+- Nothing in your folder changes until `jvs restore --run <restore-plan-id>`.
 
 ## Folder Has Unsaved Changes
 
@@ -115,7 +115,7 @@ The folder changed after preview, or the plan is stale. Create a new preview:
 jvs restore <save>
 ```
 
-Then run the new plan ID.
+Then run the new restore plan ID.
 
 This is a safety stop. JVS binds run commands to the previewed folder state so
 an old plan cannot silently apply to a different folder state.
@@ -147,7 +147,7 @@ Example:
 
 ```bash
 jvs restore <save> --path src/config.yaml
-jvs restore --run <plan-id>
+jvs restore --run <restore-plan-id>
 ```
 
 If the preview says `src/config.yaml`, files such as `src/notes.md` are not
@@ -184,7 +184,7 @@ That is expected. Workspace remove is two-step:
 
 ```bash
 jvs workspace remove experiment
-jvs workspace remove --run <plan-id>
+jvs workspace remove --run <remove-plan-id>
 ```
 
 What is okay:
@@ -238,14 +238,14 @@ Cleanup only reviews save point storage:
 
 ```bash
 jvs cleanup preview
-jvs cleanup run --plan-id <plan-id>
+jvs cleanup run --plan-id <cleanup-plan-id>
 ```
 
 To remove a workspace folder, use:
 
 ```bash
 jvs workspace remove experiment
-jvs workspace remove --run <plan-id>
+jvs workspace remove --run <remove-plan-id>
 ```
 
 ## Workspace Remove Did Not Free Save Point Storage
@@ -258,7 +258,7 @@ storage that may no longer be protected:
 
 ```bash
 jvs cleanup preview
-jvs cleanup run --plan-id <plan-id>
+jvs cleanup run --plan-id <cleanup-plan-id>
 ```
 
 ## Another Recovery Plan Blocks Restore

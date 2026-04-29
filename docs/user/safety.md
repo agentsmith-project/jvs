@@ -56,18 +56,18 @@ still reviewing.
 These commands perform the reviewed action:
 
 ```bash
-jvs restore --run <plan-id>
-jvs workspace remove --run <plan-id>
-jvs cleanup run --plan-id <plan-id>
+jvs restore --run <restore-plan-id>
+jvs workspace remove --run <remove-plan-id>
+jvs cleanup run --plan-id <cleanup-plan-id>
 ```
 
 What they change:
 
 | Command | What it can change | What it does not change |
 | --- | --- | --- |
-| `jvs restore --run <plan-id>` | Workspace files in the plan | Save point history |
-| `jvs workspace remove --run <plan-id>` | The selected workspace folder and workspace entry | Save point storage |
-| `jvs cleanup run --plan-id <plan-id>` | Save point storage listed by the cleanup plan | Workspace folders |
+| `jvs restore --run <restore-plan-id>` | Workspace files in the restore plan | Save point history |
+| `jvs workspace remove --run <remove-plan-id>` | The selected workspace folder and workspace entry | Save point storage |
+| `jvs cleanup run --plan-id <cleanup-plan-id>` | Save point storage listed by the cleanup plan | Workspace folders |
 
 Run commands are tied to the preview plan. If the folder changed after preview,
 JVS should stop and ask you to make a fresh preview.
@@ -82,7 +82,7 @@ of the ID to copy into commands. If JVS says the ID is ambiguous or
 non-unique, use a longer or full ID; `jvs history --json` includes the full
 `save_point_id` value.
 
-`jvs restore --run <plan-id>` copies files from a save point into your
+`jvs restore --run <restore-plan-id>` copies files from a save point into your
 workspace. Restore does not change history. After restoring, make a new save if
 you want the recovered state to become the newest save point:
 
@@ -133,7 +133,7 @@ For one file or directory, start with path discovery:
 jvs history --path src/config.yaml
 jvs view <save> src/config.yaml
 jvs restore <save> --path src/config.yaml
-jvs restore --run <plan-id>
+jvs restore --run <restore-plan-id>
 ```
 
 Path restore changes only the selected path. If you restore
@@ -148,7 +148,7 @@ Use workspace removal when you want to remove a separate workspace folder:
 
 ```bash
 jvs workspace remove experiment
-jvs workspace remove --run <plan-id>
+jvs workspace remove --run <remove-plan-id>
 ```
 
 The first command is only a preview. It should show the folder, workspace name,
@@ -159,7 +159,7 @@ remove save point storage. To review save point storage cleanup later, use:
 
 ```bash
 jvs cleanup preview
-jvs cleanup run --plan-id <plan-id>
+jvs cleanup run --plan-id <cleanup-plan-id>
 ```
 
 The `main` workspace cannot be removed. If you want to stop using JVS for a
@@ -174,7 +174,7 @@ Cleanup is for save point storage that JVS no longer needs:
 
 ```bash
 jvs cleanup preview
-jvs cleanup run --plan-id <plan-id>
+jvs cleanup run --plan-id <cleanup-plan-id>
 ```
 
 Cleanup does not delete workspace folders. If `jvs workspace list` shows a
