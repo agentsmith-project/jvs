@@ -1198,6 +1198,50 @@ cp -a "$src" "$dst"
 `,
 		},
 		{
+			name: "compact function body scoped set e before check",
+			block: `
+guard(){
+  set -e
+}
+test ! -e "$dst"
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "compact function body scoped explicit exit guard",
+			block: `
+guard(){
+  [ -e "$dst" ] && exit 1
+}
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "next-line brace function body scoped set e before check",
+			block: `
+guard()
+{
+  set -e
+}
+test ! -e "$dst"
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "next-line brace function body scoped explicit exit guard",
+			block: `
+guard()
+{
+  [ -e "$dst" ] && exit 1
+}
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
 			name: "precreated destination subdir",
 			block: `
 test ! -e "$dst" &&
@@ -5027,15 +5071,30 @@ func shellScopedBodyDepthBeforeStep(steps []shellCommandStep, index int) int {
 			}
 			continue
 		}
-		if shellStepStartsScopedBody(steps[i]) {
+		if shellStepStartsScopedBodyAt(steps, i) {
 			depth++
 		}
 	}
 	return depth
 }
 
+func shellStepStartsScopedBodyAt(steps []shellCommandStep, index int) bool {
+	if index < 0 || index >= len(steps) {
+		return false
+	}
+	return shellStepStartsScopedBody(steps[index]) || shellStepOpensPendingFunctionBody(steps, index)
+}
+
 func shellStepStartsScopedBody(step shellCommandStep) bool {
 	return shellStepStartsSubshellBody(step) || shellStepStartsFunctionBody(step)
+}
+
+func shellStepOpensPendingFunctionBody(steps []shellCommandStep, index int) bool {
+	if index <= 0 || index >= len(steps) || steps[index-1].opAfter != "" {
+		return false
+	}
+	fields := shellTrimReservedCommandPrefixes(steps[index].fields)
+	return len(fields) == 1 && fields[0] == "{" && shellStepIsFunctionHeader(steps[index-1])
 }
 
 func shellStepEndsScopedBody(step shellCommandStep) bool {
@@ -5051,11 +5110,33 @@ func shellStepStartsSubshellBody(step shellCommandStep) bool {
 func shellStepStartsFunctionBody(step shellCommandStep) bool {
 	fields := shellTrimReservedCommandPrefixes(step.fields)
 	switch {
+	case len(fields) >= 1 && shellCompactFunctionNameWithOpeningBrace(fields[0]):
+		return true
 	case len(fields) >= 2 && fields[1] == "{" && shellFunctionNameWithParens(fields[0]):
 		return true
 	case len(fields) >= 3 && fields[1] == "()" && fields[2] == "{" && shellIdentifierName(fields[0]):
 		return true
-	case len(fields) >= 3 && fields[0] == "function" && shellIdentifierName(fields[1]) && fields[2] == "{":
+	case len(fields) >= 2 && fields[0] == "function" && shellCompactFunctionNameWithOpeningBrace(fields[1]):
+		return true
+	case len(fields) >= 3 && fields[0] == "function" && shellFunctionKeywordName(fields[1]) && fields[2] == "{":
+		return true
+	case len(fields) >= 4 && fields[0] == "function" && shellIdentifierName(fields[1]) && fields[2] == "()" && fields[3] == "{":
+		return true
+	default:
+		return false
+	}
+}
+
+func shellStepIsFunctionHeader(step shellCommandStep) bool {
+	fields := shellTrimReservedCommandPrefixes(step.fields)
+	switch {
+	case len(fields) == 1 && shellFunctionNameWithParens(fields[0]):
+		return true
+	case len(fields) == 2 && fields[1] == "()" && shellIdentifierName(fields[0]):
+		return true
+	case len(fields) == 2 && fields[0] == "function" && shellFunctionKeywordName(fields[1]):
+		return true
+	case len(fields) == 3 && fields[0] == "function" && shellIdentifierName(fields[1]) && fields[2] == "()":
 		return true
 	default:
 		return false
@@ -5065,6 +5146,15 @@ func shellStepStartsFunctionBody(step shellCommandStep) bool {
 func shellFunctionNameWithParens(field string) bool {
 	name := strings.TrimSuffix(field, "()")
 	return name != field && shellIdentifierName(name)
+}
+
+func shellFunctionKeywordName(field string) bool {
+	return shellIdentifierName(field) || shellFunctionNameWithParens(field)
+}
+
+func shellCompactFunctionNameWithOpeningBrace(field string) bool {
+	header := strings.TrimSuffix(field, "{")
+	return header != field && shellFunctionNameWithParens(header)
 }
 
 func shellBlockHasChainedAndBetween(steps []shellCommandStep, start, end int) bool {
