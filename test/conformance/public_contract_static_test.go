@@ -816,6 +816,57 @@ mkdir -p "$parent"
 cp -a "$src" "$dst"
 `,
 		},
+		{
+			name: "successful exit",
+			block: `
+if test -e "$dst"; then
+  exit 0
+fi
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "reversed positive destination exit",
+			block: `
+[ -e "$dst" ] || exit 1
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "echoed set e",
+			block: `
+echo "set -euo pipefail"
+test ! -e "$dst"
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "precreated destination subdir",
+			block: `
+test ! -e "$dst" &&
+mkdir -p "$dst/subdir" &&
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "precreated braced destination subdir",
+			block: `
+test ! -e "${dst}" &&
+mkdir -p "${dst}/subdir" &&
+cp -a "$src" "${dst}"
+`,
+		},
+		{
+			name: "precreated literal destination subdir",
+			block: `
+test ! -e /backup/jvs-repo &&
+mkdir -p /backup/jvs-repo/subdir &&
+cp -a /data/jvs-repo /backup/jvs-repo
+`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if migrationCopyBlockFailsClosed(tc.block) {
@@ -3857,7 +3908,7 @@ func shellStepCreatesDirectory(step shellCommandStep, destination string) bool {
 		return false
 	}
 	for _, operand := range shellCommandOperands(fields[1:]) {
-		if shellPathTokensSameDirectory(operand, destination) {
+		if shellPathTokenCreatesDestinationOrDescendant(operand, destination) {
 			return true
 		}
 	}
@@ -3920,11 +3971,39 @@ func shellBlockHasSetEBefore(steps []shellCommandStep, limit int) bool {
 }
 
 func shellStepEnablesErrexit(step shellCommandStep) bool {
-	line := strings.Join(step.fields, " ")
-	return line == "set -e" ||
-		strings.HasPrefix(line, "set -e ") ||
-		strings.Contains(line, "set -euo pipefail") ||
-		strings.Contains(line, "set -o errexit")
+	fields := shellBuiltinInvocationFields(step.fields)
+	if len(fields) == 0 || fields[0] != "set" {
+		return false
+	}
+	for i := 1; i < len(fields); i++ {
+		field := strings.Trim(fields[i], `"'`)
+		if field == "--" {
+			break
+		}
+		if field == "-o" {
+			if i+1 < len(fields) && strings.Trim(fields[i+1], `"'`) == "errexit" {
+				return true
+			}
+			i++
+			continue
+		}
+		if shellSetFlagEnablesErrexit(field) {
+			return true
+		}
+	}
+	return false
+}
+
+func shellSetFlagEnablesErrexit(field string) bool {
+	if !strings.HasPrefix(field, "-") || strings.HasPrefix(field, "--") || field == "-" {
+		return false
+	}
+	for _, flag := range field[1:] {
+		if flag == 'e' {
+			return true
+		}
+	}
+	return false
 }
 
 func shellBlockHasExplicitDestinationExitBeforeCopy(steps []shellCommandStep, copyStep int, destination string) bool {
@@ -3932,13 +4011,40 @@ func shellBlockHasExplicitDestinationExitBeforeCopy(steps []shellCommandStep, co
 		if !shellFieldsHaveDestinationExistsCheck(steps[i].fields, destination) {
 			continue
 		}
-		for j := i; j < copyStep; j++ {
-			if shellStepHasExplicitExit(steps[j]) {
-				return true
+		if shellDestinationExistsCheckHasAndExitBeforeCopy(steps, i, copyStep) {
+			return true
+		}
+		if shellDestinationExistsIfTrueBranchExitsBeforeCopy(steps, i, copyStep) {
+			return true
+		}
+	}
+	return false
+}
+
+func shellDestinationExistsCheckHasAndExitBeforeCopy(steps []shellCommandStep, start, copyStep int) bool {
+	return start+1 < copyStep &&
+		steps[start].opAfter == "&&" &&
+		shellStepHasExplicitExit(steps[start+1])
+}
+
+func shellDestinationExistsIfTrueBranchExitsBeforeCopy(steps []shellCommandStep, start, copyStep int) bool {
+	if !shellStepStartsIf(steps[start]) {
+		return false
+	}
+	nestedIfDepth := 0
+	for i := start + 1; i < copyStep; i++ {
+		switch {
+		case shellStepStartsIf(steps[i]):
+			nestedIfDepth++
+		case shellStepIsFi(steps[i]):
+			if nestedIfDepth == 0 {
+				return false
 			}
-			if shellStepIsFi(steps[j]) {
-				break
-			}
+			nestedIfDepth--
+		case nestedIfDepth == 0 && shellStepStartsElseBranch(steps[i]):
+			return false
+		case nestedIfDepth == 0 && shellStepHasExplicitExit(steps[i]):
+			return true
 		}
 	}
 	return false
@@ -3962,7 +4068,7 @@ func shellStepIsDestinationNonexistenceCheck(step shellCommandStep, destination 
 }
 
 func shellFieldsHaveDestinationNonexistenceCheck(fields []string, destination string) bool {
-	fields = shellCommandInvocationFields(fields)
+	fields = shellConditionCommandFields(fields)
 	if len(fields) >= 4 && fields[0] == "test" && fields[1] == "!" && fields[2] == "-e" &&
 		shellPathTokenEqual(fields[3], destination) {
 		return true
@@ -3979,14 +4085,14 @@ func shellLineHasDestinationExistsCheck(line, destination string) bool {
 }
 
 func shellFieldsHaveDestinationExistsCheck(fields []string, destination string) bool {
-	for i := 0; i+2 < len(fields); i++ {
-		if fields[i] == "test" && fields[i+1] == "-e" && shellPathTokenEqual(fields[i+2], destination) {
-			return true
-		}
-		if (fields[i] == "[" || fields[i] == "[[") && fields[i+1] == "-e" &&
-			i+2 < len(fields) && shellPathTokenEqual(fields[i+2], destination) {
-			return true
-		}
+	fields = shellConditionCommandFields(fields)
+	if len(fields) >= 3 && fields[0] == "test" && fields[1] == "-e" &&
+		shellPathTokenEqual(fields[2], destination) {
+		return true
+	}
+	if len(fields) >= 3 && (fields[0] == "[" || fields[0] == "[[") && fields[1] == "-e" &&
+		shellPathTokenEqual(fields[2], destination) {
+		return true
 	}
 	return false
 }
@@ -4000,8 +4106,12 @@ func shellStepHasExplicitExit(step shellCommandStep) bool {
 }
 
 func shellFieldsHaveExplicitExit(fields []string) bool {
-	fields = shellCommandInvocationFields(shellTrimReservedCommandPrefixes(fields))
-	return len(fields) > 0 && fields[0] == "exit"
+	fields = shellBuiltinInvocationFields(fields)
+	if len(fields) < 2 || fields[0] != "exit" {
+		return false
+	}
+	status, err := strconv.Atoi(strings.Trim(fields[1], `"'`))
+	return err == nil && status != 0
 }
 
 func shellNonexistenceCheckHasOrExitBeforeCopy(steps []shellCommandStep, start, end int) bool {
@@ -4029,6 +4139,14 @@ func shellBlockHasChainedAndBetween(steps []shellCommandStep, start, end int) bo
 
 func shellStepIsFi(step shellCommandStep) bool {
 	return len(step.fields) == 1 && step.fields[0] == "fi"
+}
+
+func shellStepStartsIf(step shellCommandStep) bool {
+	return len(step.fields) > 0 && step.fields[0] == "if"
+}
+
+func shellStepStartsElseBranch(step shellCommandStep) bool {
+	return len(step.fields) > 0 && (step.fields[0] == "else" || step.fields[0] == "elif")
 }
 
 func shellCommandFields(line string) []string {
@@ -4108,8 +4226,54 @@ func shellPathTokenEqual(left, right string) bool {
 	return normalizeShellPathToken(left) == normalizeShellPathToken(right)
 }
 
-func shellPathTokensSameDirectory(left, right string) bool {
-	return normalizeShellDirectoryToken(left) == normalizeShellDirectoryToken(right)
+func shellPathTokenCreatesDestinationOrDescendant(path, destination string) bool {
+	path = normalizeShellDirectoryToken(path)
+	destination = normalizeShellDirectoryToken(destination)
+	if path == "" || destination == "" {
+		return false
+	}
+	if shellPathTokenHasDirectoryPrefix(path, destination) {
+		return true
+	}
+	if name, ok := shellPathTokenVariableName(destination); ok {
+		return shellPathTokenHasDirectoryPrefix(path, "$"+name) ||
+			shellPathTokenHasDirectoryPrefix(path, "${"+name+"}")
+	}
+	return false
+}
+
+func shellPathTokenHasDirectoryPrefix(path, prefix string) bool {
+	return path == prefix || strings.HasPrefix(path, prefix+"/")
+}
+
+func shellPathTokenVariableName(token string) (string, bool) {
+	token = normalizeShellDirectoryToken(token)
+	if strings.HasPrefix(token, "${") && strings.HasSuffix(token, "}") {
+		name := token[2 : len(token)-1]
+		return name, shellIdentifierName(name)
+	}
+	if strings.HasPrefix(token, "$") {
+		name := token[1:]
+		return name, shellIdentifierName(name)
+	}
+	return "", false
+}
+
+func shellIdentifierName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		ch := name[i]
+		if ch == '_' || ('a' <= ch && ch <= 'z') || ('A' <= ch && ch <= 'Z') {
+			continue
+		}
+		if i > 0 && '0' <= ch && ch <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func normalizeShellPathToken(token string) string {
@@ -4140,6 +4304,27 @@ func shellTrimReservedCommandPrefixes(fields []string) []string {
 		}
 	}
 	return fields
+}
+
+func shellBuiltinInvocationFields(fields []string) []string {
+	fields = shellTrimReservedCommandPrefixes(fields)
+	for len(fields) > 0 {
+		switch fields[0] {
+		case "command", "builtin":
+			fields = fields[1:]
+		default:
+			return fields
+		}
+	}
+	return fields
+}
+
+func shellConditionCommandFields(fields []string) []string {
+	fields = shellTrimReservedCommandPrefixes(fields)
+	if len(fields) > 0 && fields[0] == "if" {
+		fields = fields[1:]
+	}
+	return shellCommandInvocationFields(fields)
 }
 
 func releaseFacingSyncGuidanceBlocks(body string) []markdownCodeBlock {

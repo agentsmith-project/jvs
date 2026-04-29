@@ -6,8 +6,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/agentsmith-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
@@ -117,6 +119,34 @@ func TestCleanupFacadeErrorAsIsExposeOnlyPublicCleanupClass(t *testing.T) {
 	assert.NotContains(t, err.Error(), ".jvs")
 }
 
+func TestPreviewCleanupRepoBusyUsesPublicCleanupVocabulary(t *testing.T) {
+	dir := t.TempDir()
+	client, err := Init(dir, InitOptions{Name: "client-test", EngineType: model.EngineCopy})
+	require.NoError(t, err)
+
+	held, err := repo.AcquireMutationLock(client.RepoRoot(), "held-by-test")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, held.Release()) })
+
+	_, err = client.PreviewCleanup(context.Background(), CleanupOptions{})
+	require.Error(t, err)
+	assertPublicCleanupBusyError(t, err, "cleanup preview")
+}
+
+func TestRunCleanupRepoBusyUsesPublicCleanupVocabulary(t *testing.T) {
+	dir := t.TempDir()
+	client, err := Init(dir, InitOptions{Name: "client-test", EngineType: model.EngineCopy})
+	require.NoError(t, err)
+
+	held, err := repo.AcquireMutationLock(client.RepoRoot(), "held-by-test")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, held.Release()) })
+
+	err = client.RunCleanup(context.Background(), "missing-plan")
+	require.Error(t, err)
+	assertPublicCleanupBusyError(t, err, "cleanup run")
+}
+
 func clientProtectionGroupByReason(groups []CleanupProtectionGroup, reason CleanupProtectionReason) *CleanupProtectionGroup {
 	for i := range groups {
 		if groups[i].Reason == reason {
@@ -124,4 +154,17 @@ func clientProtectionGroupByReason(groups []CleanupProtectionGroup, reason Clean
 		}
 	}
 	return nil
+}
+
+func assertPublicCleanupBusyError(t *testing.T, err error, operation string) {
+	t.Helper()
+
+	var jvsErr *errclass.JVSError
+	require.True(t, errors.As(err, &jvsErr), "cleanup facade error should expose a public JVSError")
+	assert.Equal(t, errclass.ErrRepoBusy.Code, jvsErr.Code)
+	assert.Contains(t, jvsErr.Message, operation)
+	assert.NotContains(t, strings.ToLower(jvsErr.Code), "gc")
+	assert.NotContains(t, strings.ToLower(jvsErr.Message), "gc")
+	assert.NotContains(t, strings.ToLower(err.Error()), "gc")
+	assert.True(t, errors.Is(err, errclass.ErrRepoBusy), "cleanup facade error should match repo busy")
 }

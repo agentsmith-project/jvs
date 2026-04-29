@@ -33,6 +33,9 @@ type Collector struct {
 var collectorFsyncDir = fsutil.FsyncDir
 
 const (
+	cleanupPreviewOperation = "cleanup preview"
+	cleanupRunOperation     = "cleanup run"
+
 	cleanupActiveOperationsUnavailableMessage = "cleanup cannot determine active operations safely; run jvs doctor --strict before cleanup"
 	cleanupSavePointStorageUnavailableMessage = "cleanup cannot verify save point storage safely; run jvs doctor --strict before cleanup"
 )
@@ -183,7 +186,7 @@ func (c *Collector) Plan() (*model.GCPlan, error) {
 // PlanWithPolicy creates a GC plan using the given retention policy.
 func (c *Collector) PlanWithPolicy(policy model.RetentionPolicy) (*model.GCPlan, error) {
 	var plan *model.GCPlan
-	err := repo.WithMutationLock(c.repoRoot, "gc plan", func() error {
+	err := repo.WithMutationLock(c.repoRoot, cleanupPreviewOperation, func() error {
 		var err error
 		plan, err = c.planWithPolicy(policy)
 		return err
@@ -244,7 +247,7 @@ func (c *Collector) planWithPolicy(policy model.RetentionPolicy) (*model.GCPlan,
 
 // Run executes a GC plan.
 func (c *Collector) Run(planID string) error {
-	return repo.WithMutationLock(c.repoRoot, "gc run", func() error {
+	return repo.WithMutationLock(c.repoRoot, cleanupRunOperation, func() error {
 		return c.run(planID)
 	})
 }
