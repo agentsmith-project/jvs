@@ -722,7 +722,7 @@ func printRestorePreviewResult(result publicRestorePreviewResult) {
 	printRestorePreviewImpact("delete", result.ManagedFiles.Delete)
 	printRestorePreviewImpact("create", result.ManagedFiles.Create)
 	printRestorePreviewOptions(result.Options)
-	fmt.Println("Ignored/unmanaged files will be kept.")
+	fmt.Println("JVS control data and runtime state are not user files; restore leaves them alone.")
 	fmt.Println("History will not change.")
 	newest := formatStatusSavePoint(result.NewestSavePoint)
 	fmt.Printf("Newest save point is still %s.\n", newest)

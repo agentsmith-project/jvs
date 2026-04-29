@@ -358,6 +358,9 @@ func assertRestoreOutputOmitsLegacyVocabulary(t *testing.T, value string) {
 		"detached",
 		"fork",
 		"commit",
+		"ignored/unmanaged",
+		"unmanaged",
+		"ignore rule",
 	} {
 		assert.NotContains(t, lower, word)
 	}

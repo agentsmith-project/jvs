@@ -34,7 +34,7 @@ func TestRestoreWholePreviewDoesNotMutateAndWritesPlan(t *testing.T) {
 	assert.Contains(t, stdout, "workspace-only.txt")
 	assert.Contains(t, stdout, "Managed files to create: 1")
 	assert.Contains(t, stdout, "only-source.txt")
-	assert.Contains(t, stdout, "Ignored/unmanaged files will be kept.")
+	assert.Contains(t, stdout, "JVS control data and runtime state are not user files; restore leaves them alone.")
 	assert.Contains(t, stdout, "History will not change.")
 	assert.Contains(t, stdout, "Newest save point is still "+secondID+".")
 	assert.Contains(t, stdout, "You can return to save point "+secondID+".")

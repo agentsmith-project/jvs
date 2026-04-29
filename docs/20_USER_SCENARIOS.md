@@ -331,8 +331,8 @@ public contract.
 
 - Guided selection could help users pick a save point or path candidate
   without turning messages, labels, or tags into restore targets.
-- Future payload-boundary features are outside GA; there are no configurable
-  ignore rules or glob policies in GA.
+- Future payload-boundary features are outside GA; GA does not provide
+  configurable file selection.
 - Domain-specific presets, templates, or workflow bundles are explicitly out
   of the GA plan. They can be reconsidered only if they compile to the generic
   capabilities above and do not change payload, view, restore, recovery, or

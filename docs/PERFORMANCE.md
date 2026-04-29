@@ -28,8 +28,9 @@ constant-time claims.
 
 ## Practical Guidance
 
-- Keep generated output, dependency caches, and build artifacts ignored or
-  unmanaged when they are not useful save point content.
+- Generated output, dependency caches, and build artifacts inside the
+  workspace are saved like other user files; keep high-churn outputs outside
+  the workspace when they are not useful save point content.
 - Prefer path restore for accidental single-file or single-directory recovery.
 - Use `jvs history --path <path>` to find candidates before restore.
 - Expect first save of a large folder to be the most expensive operation.

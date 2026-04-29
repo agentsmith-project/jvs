@@ -1504,6 +1504,29 @@ func TestDocs_PublicDocsDoNotAdvertiseRetentionPolicySurface(t *testing.T) {
 	}
 }
 
+func TestDocs_ReleaseFacingDocsAvoidIgnoreUnmanagedPayloadVocabulary(t *testing.T) {
+	for _, doc := range activePublicContractDocs() {
+		t.Run(doc, func(t *testing.T) {
+			scanPublicDocLines(t, doc, func(lineNo int, line string) {
+				lower := strings.ToLower(line)
+				for _, forbidden := range []string{
+					"ignored/unmanaged",
+					"unmanaged",
+					"ignore rule",
+					"ignore rules",
+					"glob policy",
+					"glob policies",
+				} {
+					if strings.Contains(lower, forbidden) {
+						t.Fatalf("%s:%d exposes old payload-boundary vocabulary %q; use JVS control data, runtime state, or explicit user-file wording instead:\n%s",
+							doc, lineNo, forbidden, line)
+					}
+				}
+			})
+		})
+	}
+}
+
 func TestDocs_EngineTransparencySurfacesExcludeDoctor(t *testing.T) {
 	productPlan := readRepoFile(t, "docs/PRODUCT_PLAN.md")
 	engineSection := markdownSectionByHeading(t, "docs/PRODUCT_PLAN.md", productPlan, "## Engine Transparency")

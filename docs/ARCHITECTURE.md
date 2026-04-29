@@ -125,7 +125,7 @@ Workspace newest save point, provenance, and audit log are updated
 
 Rules:
 
-- Control data and ignored/unmanaged files are not captured.
+- JVS control data and runtime state are not captured as user content.
 - A save point becomes visible only after payload and descriptor durability
   requirements are complete.
 - Failed or interrupted saves must not expose partial save points.

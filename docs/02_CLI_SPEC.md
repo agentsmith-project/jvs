@@ -158,7 +158,7 @@ Create a save point for the active workspace. A message is required, either as
 Rules:
 
 - The save captures the workspace managed files, excluding JVS control data and
-  runtime state. GA has no configurable ignore rules.
+  runtime state. GA has no configurable file filtering.
 - Save must hold the workspace mutation lock.
 - Capacity and staging checks must fail before publishing a partial save point.
 - If the workspace was created with `workspace new --from`, the first save has

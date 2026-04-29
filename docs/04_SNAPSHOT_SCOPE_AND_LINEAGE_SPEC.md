@@ -20,10 +20,8 @@ Excluded from scope:
 
 - JVS control data
 - other workspace folders
-- ignored/unmanaged files
-- runtime operation records
-- recovery plans
-- cleanup plans
+- runtime state for active operations
+- restore plans, recovery plans, and cleanup plans
 
 Published save point payloads are implementation-owned storage. Storage paths
 and field names are not public vocabulary.

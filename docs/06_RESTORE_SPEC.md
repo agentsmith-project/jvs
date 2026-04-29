@@ -124,7 +124,8 @@ Recovery requirements:
 - Preview does not change files.
 - Run revalidates the target state before writing.
 - Managed files are replaced only inside the workspace boundary.
-- JVS control data and ignored/unmanaged files are not restored or deleted.
+- JVS control data and runtime state are not user files; restore leaves them
+  alone.
 - Save point history is not moved by restore.
 - A failed or interrupted restore must either leave files unchanged or produce
   a recovery plan that closes the loop with resume or rollback.

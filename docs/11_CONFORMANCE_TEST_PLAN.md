@@ -139,8 +139,8 @@ UX.
 - Boundary tests cover managed payload purity: JVS control data and runtime
   state for workspace targeting, active operations, restore plans, recovery
   plans, and cleanup plans are not user payload.
-- Path restore tests cover unrelated cache-like or unmanaged files staying
-  untouched when another managed path is restored.
+- Path restore tests cover unrelated cache-like user files staying untouched
+  when another managed path is restored.
 - View tests cover read-only behavior for files and directories, including
   large managed paths.
 - Cleanup tests cover protection groups for history, open views, active

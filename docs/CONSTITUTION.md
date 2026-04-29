@@ -81,7 +81,6 @@ A save point captures managed files from exactly one workspace. It excludes:
 
 - JVS control data
 - other workspaces
-- ignored/unmanaged files
 - runtime operation state
 - restore/recovery/cleanup plans
 
