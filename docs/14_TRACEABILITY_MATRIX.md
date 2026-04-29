@@ -31,7 +31,8 @@ Evidence:
 
 - restore preview/run conformance
 - path restore conformance
-- recovery status/resume/rollback tests
+- recovery status/resume/rollback tests, including live-derived recommended
+  next commands and backup-unavailable status behavior
 - restore drill recorded in release evidence
 
 ## Promise 3: Workspace Creation Starts New History
@@ -59,7 +60,7 @@ Normative docs:
 
 Evidence:
 
-- payload purity tests
+- payload purity and generic boundary tests
 - migration/runtime-state boundary tests
 - doctor layout checks
 
@@ -87,7 +88,7 @@ Normative docs:
 
 Evidence:
 
-- cleanup protection tests
+- cleanup protection and protection-group tests
 - migration tests excluding runtime cleanup plan files
 
 ## Promise 7: Engine Claims Are Scoped
@@ -124,15 +125,23 @@ Evidence:
 Normative docs:
 
 - `docs/20_USER_SCENARIOS.md`
-- `docs/TARGET_USERS.md`
 - `docs/PRODUCT_PLAN.md`
+
+Supporting research:
+
+- `docs/TARGET_USERS.md`
 
 Evidence:
 
 - `docs/11_CONFORMANCE_TEST_PLAN.md` User Story Matrix Coverage
-- `make story-e2e` for the current first-batch story coverage:
-  ML run discovery, ETL path and stage retry, deletion recovery, restore
+- `make story-e2e` for current generic story coverage: managed folder save and
+  restore, managed path discovery/view/restore, deletion recovery, restore
   preview/run, and workspace creation
+- boundary conformance for JVS control data, workspace locators, restore plans,
+  recovery plans, cleanup plans, cache-like unrelated paths, and read-only
+  large file or directory views
 - `make story-juicefs-local` when the real local JuiceFS profile is required
-- planned story gaps and product design improvement candidates tracked in
-  `docs/20_USER_SCENARIOS.md`
+- Product Design Improvement Candidates in `docs/20_USER_SCENARIOS.md` for
+  future ideas that are not GA commitments
+- domain-specific presets remain outside the GA plan unless promoted into the
+  public contract

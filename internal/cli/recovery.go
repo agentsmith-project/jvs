@@ -3,7 +3,6 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -146,7 +145,7 @@ func recoveryStatusList(repoRoot string) (publicRecoveryStatusList, error) {
 		if plan.Status != recovery.StatusActive {
 			continue
 		}
-		result.Plans = append(result.Plans, publicRecoveryPlanFromPlan(&plan))
+		result.Plans = append(result.Plans, publicRecoveryPlanFromPlan(repoRoot, &plan))
 	}
 	return result, nil
 }
@@ -156,15 +155,16 @@ func recoveryStatusDetail(repoRoot, planID string) (publicRecoveryPlan, error) {
 	if err != nil {
 		return publicRecoveryPlan{}, err
 	}
-	return publicRecoveryPlanFromPlan(plan), nil
+	return publicRecoveryPlanFromPlan(repoRoot, plan), nil
 }
 
-func publicRecoveryPlanFromPlan(plan *recovery.Plan) publicRecoveryPlan {
+func publicRecoveryPlanFromPlan(repoRoot string, plan *recovery.Plan) publicRecoveryPlan {
 	var resolvedAt *string
 	if plan.ResolvedAt != nil {
 		value := plan.ResolvedAt.Format(time.RFC3339)
 		resolvedAt = &value
 	}
+	backupStatus := recoveryBackupStatus(repoRoot, plan)
 	return publicRecoveryPlan{
 		PlanID:                 plan.PlanID,
 		Status:                 string(plan.Status),
@@ -174,11 +174,31 @@ func publicRecoveryPlanFromPlan(plan *recovery.Plan) publicRecoveryPlan {
 		Workspace:              plan.Workspace,
 		SourceSavePoint:        string(plan.SourceSavePoint),
 		Path:                   plan.Path,
-		RecommendedNextCommand: plan.RecommendedNextCommand,
+		RecommendedNextCommand: publicRecoveryRecommendedNextCommand(repoRoot, plan, backupStatus),
 		LastError:              recoveryVocabulary(plan.LastError),
-		BackupAvailable:        recoveryBackupAvailable(plan),
+		BackupAvailable:        backupStatus.Available,
 		ResolvedAt:             resolvedAt,
 	}
+}
+
+func publicRecoveryRecommendedNextCommand(repoRoot string, plan *recovery.Plan, backupStatus recoveryBackupSafetyStatus) string {
+	if plan == nil || plan.Status != recovery.StatusActive {
+		return ""
+	}
+	if !backupStatus.Available && !backupStatus.Missing {
+		return ""
+	}
+	state, err := recovery.RecognizeCurrentState(repoRoot, plan)
+	if err != nil {
+		return ""
+	}
+	if backupStatus.Available {
+		return "jvs recovery resume " + plan.PlanID
+	}
+	if backupStatus.Missing && recovery.BackupMissingIsSafe(plan) && state.State == recovery.RecognizedPreMutation {
+		return "jvs recovery rollback " + plan.PlanID
+	}
+	return ""
 }
 
 func runRecoveryRollback(repoRoot, planID string) (publicRecoveryActionResult, error) {
@@ -294,7 +314,7 @@ func runRecoveryResume(repoRoot, planID string) (publicRecoveryActionResult, err
 		}
 		restoredBackupPath := ""
 		if state.State == recovery.RecognizedPreMutation {
-			if recoveryBackupAvailable(plan) {
+			if recoveryBackupStatus(repoRoot, plan).Available {
 				restoredBackupPath = plan.Backup.Path
 			}
 		} else {
@@ -443,7 +463,7 @@ func keepRecoveryPlanActiveAfterRestoreFailure(repoRoot string, plan *recovery.P
 	plan.LastError = restoreErr.Error()
 	plan.CompletedSteps = []string{"restore attempted", "recovery backup retained"}
 	plan.PendingSteps = []string{"resume restore or rollback"}
-	plan.RecommendedNextCommand = "jvs recovery status " + plan.PlanID
+	plan.RecommendedNextCommand = "jvs recovery resume " + plan.PlanID
 	plan.UpdatedAt = time.Now().UTC()
 	if err := recovery.NewManager(repoRoot).Write(plan); err != nil {
 		return err
@@ -469,7 +489,7 @@ func keepRecoveryPlanActiveAfterNonIncompleteFailure(repoRoot string, plan *reco
 	plan.LastError = restoreErr.Error()
 	plan.CompletedSteps = []string{"restore retried", "recovery point retained"}
 	plan.PendingSteps = []string{"resume restore or rollback"}
-	plan.RecommendedNextCommand = "jvs recovery status " + plan.PlanID
+	plan.RecommendedNextCommand = "jvs recovery resume " + plan.PlanID
 	plan.UpdatedAt = time.Now().UTC()
 	if err := recovery.NewManager(repoRoot).Write(plan); err != nil {
 		return err
@@ -508,7 +528,7 @@ func markRecoveryBackupRestored(repoRoot string, plan *recovery.Plan) error {
 }
 
 func resolveRecoveryPlanAndMaybeRemoveBackup(repoRoot string, mgr *recovery.Manager, plan *recovery.Plan) (bool, error) {
-	backupAvailable := recoveryBackupAvailable(plan)
+	backupAvailable := recoveryBackupStatus(repoRoot, plan).Available
 	if err := mgr.MarkResolved(plan.PlanID); err != nil {
 		return false, err
 	}
@@ -547,12 +567,20 @@ func restoreRecoveryBackupPath(folder string) string {
 	return folder + ".restore-backup-" + uuidutil.NewV4()[:8]
 }
 
-func recoveryBackupAvailable(plan *recovery.Plan) bool {
-	if plan == nil || plan.Backup.Path == "" {
-		return false
+type recoveryBackupSafetyStatus struct {
+	Available bool
+	Missing   bool
+}
+
+func recoveryBackupStatus(repoRoot string, plan *recovery.Plan) recoveryBackupSafetyStatus {
+	err := recovery.NewManager(repoRoot).ValidateLiveBackup(plan)
+	if err == nil {
+		return recoveryBackupSafetyStatus{Available: true}
 	}
-	info, err := os.Lstat(plan.Backup.Path)
-	return err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0
+	if errors.Is(err, recovery.ErrBackupMissing) {
+		return recoveryBackupSafetyStatus{Missing: true}
+	}
+	return recoveryBackupSafetyStatus{}
 }
 
 func printRecoveryStatusList(result publicRecoveryStatusList) {
@@ -561,31 +589,42 @@ func printRecoveryStatusList(result publicRecoveryStatusList) {
 		return
 	}
 	fmt.Println("Active recovery plans:")
-	for _, plan := range result.Plans {
-		if plan.Path != "" {
-			fmt.Printf("  %s  %s  %s  %s\n", plan.PlanID, plan.Status, plan.Workspace, plan.Path)
-		} else {
-			fmt.Printf("  %s  %s  %s\n", plan.PlanID, plan.Status, plan.Workspace)
+	for i, plan := range result.Plans {
+		if i > 0 {
+			fmt.Println()
 		}
+		printRecoveryPlanSummary(plan, "  ")
 	}
 }
 
 func printRecoveryStatusDetail(result publicRecoveryPlan) {
-	fmt.Printf("Recovery plan: %s\n", result.PlanID)
-	fmt.Printf("Status: %s\n", result.Status)
-	fmt.Printf("Operation: %s\n", recoveryOperationLabel(result.Operation))
-	fmt.Printf("Folder: %s\n", result.Folder)
-	fmt.Printf("Workspace: %s\n", result.Workspace)
-	fmt.Printf("Source save point: %s\n", color.SnapshotID(result.SourceSavePoint))
+	printRecoveryPlanSummary(result, "")
+}
+
+func printRecoveryPlanSummary(result publicRecoveryPlan, indent string) {
+	fmt.Printf("%sRecovery plan: %s\n", indent, result.PlanID)
+	fmt.Printf("%sStatus: %s\n", indent, result.Status)
+	fmt.Printf("%sOperation: %s\n", indent, recoveryOperationLabel(result.Operation))
+	fmt.Printf("%sFolder: %s\n", indent, result.Folder)
+	fmt.Printf("%sWorkspace: %s\n", indent, result.Workspace)
+	fmt.Printf("%sSource save point: %s\n", indent, color.SnapshotID(result.SourceSavePoint))
 	if result.Path != "" {
-		fmt.Printf("Path: %s\n", result.Path)
+		fmt.Printf("%sPath: %s\n", indent, result.Path)
 	}
+	fmt.Printf("%sRecovery backup: %s\n", indent, recoveryBackupAvailabilityLabel(result.BackupAvailable))
 	if result.LastError != "" {
-		fmt.Printf("Last error: %s\n", result.LastError)
+		fmt.Printf("%sLast error: %s\n", indent, result.LastError)
 	}
 	if result.RecommendedNextCommand != "" {
-		fmt.Printf("Run: %s\n", result.RecommendedNextCommand)
+		fmt.Printf("%sRecommended next command: %s\n", indent, result.RecommendedNextCommand)
 	}
+}
+
+func recoveryBackupAvailabilityLabel(available bool) string {
+	if available {
+		return "available"
+	}
+	return "unavailable"
 }
 
 func printRecoveryRollbackResult(result publicRecoveryActionResult) {

@@ -63,13 +63,20 @@ type publicDoctorRepair struct {
 }
 
 type publicCleanupPlan struct {
-	PlanID                   string    `json:"plan_id"`
-	CreatedAt                time.Time `json:"created_at"`
-	ProtectedSavePoints      []string  `json:"protected_save_points"`
-	ProtectedByHistory       int       `json:"protected_by_history"`
-	CandidateCount           int       `json:"candidate_count"`
-	ReclaimableSavePoints    []string  `json:"reclaimable_save_points"`
-	ReclaimableBytesEstimate int64     `json:"reclaimable_bytes_estimate"`
+	PlanID                   string                         `json:"plan_id"`
+	CreatedAt                time.Time                      `json:"created_at"`
+	ProtectedSavePoints      []string                       `json:"protected_save_points"`
+	ProtectionGroups         []publicCleanupProtectionGroup `json:"protection_groups"`
+	ProtectedByHistory       int                            `json:"protected_by_history"`
+	CandidateCount           int                            `json:"candidate_count"`
+	ReclaimableSavePoints    []string                       `json:"reclaimable_save_points"`
+	ReclaimableBytesEstimate int64                          `json:"reclaimable_bytes_estimate"`
+}
+
+type publicCleanupProtectionGroup struct {
+	Reason     string   `json:"reason"`
+	Count      int      `json:"count"`
+	SavePoints []string `json:"save_points"`
 }
 
 type publicRestoredPathSource struct {
@@ -196,11 +203,33 @@ func publicCleanup(plan *model.GCPlan) publicCleanupPlan {
 		PlanID:                   plan.PlanID,
 		CreatedAt:                plan.CreatedAt,
 		ProtectedSavePoints:      publicSnapshotIDs(plan.ProtectedSet),
-		ProtectedByHistory:       plan.ProtectedByLineage,
+		ProtectionGroups:         publicCleanupProtectionGroups(plan.ProtectionGroups),
+		ProtectedByHistory:       cleanupProtectionGroupCount(plan.ProtectionGroups, model.GCProtectionReasonHistory, plan.ProtectedByLineage),
 		CandidateCount:           plan.CandidateCount,
 		ReclaimableSavePoints:    publicSnapshotIDs(plan.ToDelete),
 		ReclaimableBytesEstimate: plan.DeletableBytesEstimate,
 	}
+}
+
+func publicCleanupProtectionGroups(groups []model.GCProtectionGroup) []publicCleanupProtectionGroup {
+	out := make([]publicCleanupProtectionGroup, 0, len(groups))
+	for _, group := range groups {
+		out = append(out, publicCleanupProtectionGroup{
+			Reason:     group.Reason,
+			Count:      group.Count,
+			SavePoints: publicSnapshotIDs(group.SavePoints),
+		})
+	}
+	return out
+}
+
+func cleanupProtectionGroupCount(groups []model.GCProtectionGroup, reason string, fallback int) int {
+	for _, group := range groups {
+		if group.Reason == reason {
+			return group.Count
+		}
+	}
+	return fallback
 }
 
 func publicSnapshotIDs(ids []model.SnapshotID) []string {

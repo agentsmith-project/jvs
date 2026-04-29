@@ -244,17 +244,24 @@ func (c *Creator) createPartialWithDescriptorParentAndLineage(worktreeName, note
 		return nil, err
 	}
 
-	// Step 14: Update worktree head and latest
+	// Step 14: Recheck audit appendability before the save point enters history.
+	if err := c.ensureAuditAppendableBeforeHistoryUpdate(publishPaths, desc); err != nil {
+		return nil, err
+	}
+
+	// Step 15: Update worktree head and latest
 	if err := c.updateLatestAfterPublish(wtMgr, worktreeName, desc, publishPaths); err != nil {
 		return nil, err
 	}
 
-	// Step 15: Remove intent only after the snapshot is fully published.
+	// Step 16: Remove intent only after the snapshot is fully published.
 	removeSnapshotIntent(intentPath)
 
-	// Step 16: Write audit log
+	// Step 17: Write audit log. Once history has changed, a late audit write
+	// failure is reported as a warning so callers never see a failed save that
+	// already entered history.
 	if err := c.appendCreateAudit(worktreeName, snapshotID, note, desc.DescriptorChecksum, partialPaths); err != nil {
-		return nil, err
+		fmt.Fprintf(os.Stderr, "warning: saved save point %s but could not write audit log: %v\n", snapshotID, err)
 	}
 
 	return desc, nil
@@ -626,6 +633,14 @@ func (c *Creator) updateLatestAfterPublish(
 		}
 		cleanupErr := c.cleanupOwnedPublishedSnapshot(publishPaths, desc)
 		return withCleanupError(fmt.Errorf("update head: %w", err), cleanupErr)
+	}
+	return nil
+}
+
+func (c *Creator) ensureAuditAppendableBeforeHistoryUpdate(publishPaths snapshotPublishPaths, desc *model.Descriptor) error {
+	if err := c.auditLogger.EnsureAppendable(); err != nil {
+		cleanupErr := c.cleanupOwnedPublishedSnapshot(publishPaths, desc)
+		return withCleanupError(fmt.Errorf("audit log not appendable before history update: %w", err), cleanupErr)
 	}
 	return nil
 }

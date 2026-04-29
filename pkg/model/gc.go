@@ -7,6 +7,13 @@ import (
 
 const GCPlanSchemaVersion = 1
 
+const (
+	GCProtectionReasonHistory         = "history"
+	GCProtectionReasonOpenView        = "open_view"
+	GCProtectionReasonActiveRecovery  = "active_recovery"
+	GCProtectionReasonActiveOperation = "active_operation"
+)
+
 // Pin protects a snapshot from garbage collection.
 type Pin struct {
 	PinID      string     `json:"pin_id,omitempty"`
@@ -17,19 +24,27 @@ type Pin struct {
 	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
 }
 
+// GCProtectionGroup explains why save points are protected from cleanup.
+type GCProtectionGroup struct {
+	Reason     string       `json:"reason"`
+	Count      int          `json:"count"`
+	SavePoints []SnapshotID `json:"save_points"`
+}
+
 // GCPlan is the output of gc plan phase.
 type GCPlan struct {
-	SchemaVersion          int             `json:"schema_version"`
-	RepoID                 string          `json:"repo_id"`
-	PlanID                 string          `json:"plan_id"`
-	CreatedAt              time.Time       `json:"created_at"`
-	ProtectedSet           []SnapshotID    `json:"protected_set"`
-	ProtectedByLineage     int             `json:"protected_by_lineage"`
-	CandidateCount         int             `json:"candidate_count"`
-	ToDelete               []SnapshotID    `json:"to_delete"`
-	DeletableBytesEstimate int64           `json:"deletable_bytes_estimate"`
-	ProtectedByRetention   int             `json:"-"`
-	RetentionPolicy        RetentionPolicy `json:"-"`
+	SchemaVersion          int                 `json:"schema_version"`
+	RepoID                 string              `json:"repo_id"`
+	PlanID                 string              `json:"plan_id"`
+	CreatedAt              time.Time           `json:"created_at"`
+	ProtectedSet           []SnapshotID        `json:"protected_set"`
+	ProtectionGroups       []GCProtectionGroup `json:"protection_groups"`
+	ProtectedByLineage     int                 `json:"protected_by_lineage"`
+	CandidateCount         int                 `json:"candidate_count"`
+	ToDelete               []SnapshotID        `json:"to_delete"`
+	DeletableBytesEstimate int64               `json:"deletable_bytes_estimate"`
+	ProtectedByRetention   int                 `json:"-"`
+	RetentionPolicy        RetentionPolicy     `json:"-"`
 }
 
 // Tombstone marks a snapshot as deleted but not yet reclaimed.

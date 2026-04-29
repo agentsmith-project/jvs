@@ -118,6 +118,22 @@ func writeTombstone(t *testing.T, repoPath string, tombstone model.Tombstone) {
 	require.NoError(t, os.WriteFile(filepath.Join(tombstonesDir, string(tombstone.SnapshotID)+".json"), data, 0644))
 }
 
+func writeSnapshotIntent(t *testing.T, repoPath string, snapshotID model.SnapshotID) {
+	t.Helper()
+
+	intentPath, err := repo.IntentPath(repoPath, snapshotID)
+	require.NoError(t, err)
+	intent := model.IntentRecord{
+		SnapshotID:   snapshotID,
+		WorktreeName: "main",
+		StartedAt:    time.Now().UTC(),
+		Engine:       model.EngineCopy,
+	}
+	data, err := json.Marshal(intent)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(intentPath, data, 0644))
+}
+
 func assertSnapshotIDsSorted(t *testing.T, ids []model.SnapshotID) {
 	t.Helper()
 
@@ -135,6 +151,29 @@ func requireTombstoneState(t *testing.T, repoPath string, snapshotID model.Snaps
 	var tombstone map[string]any
 	require.NoError(t, json.Unmarshal(data, &tombstone))
 	require.Equal(t, expected, tombstone["gc_state"])
+}
+
+func requireProtectionGroup(t *testing.T, plan *model.GCPlan, reason string) model.GCProtectionGroup {
+	t.Helper()
+
+	for _, group := range plan.ProtectionGroups {
+		if group.Reason == reason {
+			return group
+		}
+	}
+	t.Fatalf("missing protection group %q in %#v", reason, plan.ProtectionGroups)
+	return model.GCProtectionGroup{}
+}
+
+func assertProtectionGroupContains(t *testing.T, plan *model.GCPlan, reason string, ids ...model.SnapshotID) {
+	t.Helper()
+
+	group := requireProtectionGroup(t, plan, reason)
+	require.Equal(t, len(group.SavePoints), group.Count)
+	for _, id := range ids {
+		assert.Contains(t, group.SavePoints, id)
+	}
+	assertSnapshotIDsSorted(t, group.SavePoints)
 }
 
 func TestCollector_Plan(t *testing.T) {

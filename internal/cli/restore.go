@@ -561,7 +561,13 @@ func publicSnapshotIDPtr(id *model.SnapshotID) *string {
 
 func normalizeRestorePathFlag(repoRoot, workspaceName, raw string) (string, error) {
 	path, err := normalizeViewPath(raw)
-	if err != nil || path == "" {
+	if err != nil {
+		if strings.Contains(err.Error(), "JVS control data is not managed") {
+			return "", fmt.Errorf("path must be a workspace-relative path; JVS control data is not managed")
+		}
+		return "", fmt.Errorf("path must be a workspace-relative path")
+	}
+	if path == "" {
 		return "", fmt.Errorf("path must be a workspace-relative path")
 	}
 	boundary, err := repo.WorktreeManagedPayloadBoundary(repoRoot, workspaceName)

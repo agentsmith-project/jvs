@@ -64,6 +64,9 @@ UX.
 
 - Restore run creates a recovery plan before mutating files.
 - Interrupted restore exposes `jvs recovery status <plan>`.
+- Recovery status derives the public recommended next command from live
+  plan/evidence/backup state and omits it when the available evidence would
+  make resume or rollback unsafe.
 - `jvs recovery resume <plan>` can complete or confirm restore.
 - `jvs recovery rollback <plan>` can return to saved pre-restore state when
   evidence proves it is safe.
@@ -97,33 +100,52 @@ UX.
 - Public docs describe cleanup preview/run semantics.
 - Cleanup must protect live workspace needs, active views, active source
   operations, and active recovery plans.
+- Cleanup preview exposes protection groups by stable public reason and keeps
+  protection group save points in the same public save point ID type as other
+  cleanup fields.
 
 ### User Story Matrix Coverage
 
 - `docs/20_USER_SCENARIOS.md` is the GA user story matrix and must stay
   user-mental-model first.
 - Story coverage proves persona goals and workflows, not implementation
-  storage details or another tool's mental model.
+  storage details, domain presets, or another tool's mental model.
 - `make story-local` covers the current human CLI story slices.
 - `make story-json` covers the current JSON story slices and public fields
   that automation depends on.
 - `make story-e2e` combines those current story gates. It is a first-batch
-  story gate, not a claim that every GA story in the matrix is automated yet.
+  story gate for generic save point workflows, not a claim that every example
+  in the matrix is automated yet.
 - `make story-juicefs-local` qualifies the covered story slices on a real
   local JuiceFS profile when that release profile is required.
-- If a story is not naturally supported by the public save point model, the gap
-  belongs in Product Design Improvement Candidates in
+- If a story is not naturally supported by the public save point model, the
+  candidate belongs in Product Design Improvement Candidates in
   `docs/20_USER_SCENARIOS.md`.
+- Domain-specific presets, templates, and workflow bundles are outside the GA
+  plan unless they are explicitly promoted into the public contract.
 
 ## Release Gate Expectations
 
 - Public command smoke tests match visible help.
 - Restore preview/run/recovery tests cover whole-workspace and path flows.
+- Recovery status tests cover live-derived next-command recommendations,
+  including backup-unavailable cases that must not recommend stale resume
+  commands.
 - Workspace new tests cover `started_from_save_point`.
+- Boundary tests cover managed payload purity: JVS control data, workspace
+  locators, operation lock files, restore plans, recovery plans, and cleanup
+  plans are not user payload.
+- Path restore tests cover unrelated cache-like or unmanaged files staying
+  untouched when another managed path is restored.
+- View tests cover read-only behavior for files and directories, including
+  large managed paths.
+- Cleanup tests cover protection groups for history, open views, active
+  recovery, and active operations.
 - Migration tests exclude runtime state and run the restore drill.
 - Performance and benchmark docs scope engine claims and label internal
   package names as implementation facts only.
 - User story tests must match the current coverage stated in
-  `docs/20_USER_SCENARIOS.md`. Planned story gaps remain visible there until
-  covered by `make story-e2e`, with `make story-juicefs-local` added when the
-  real local JuiceFS profile is release-blocking.
+  `docs/20_USER_SCENARIOS.md`. Future ideas remain Product Design Improvement
+  Candidates until they are promoted into the public contract, with
+  `make story-juicefs-local` added when the real local JuiceFS profile is
+  release-blocking.

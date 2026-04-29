@@ -73,13 +73,21 @@ type CleanupOptions struct{}
 
 // CleanupPlan is the public library view of a cleanup plan.
 type CleanupPlan struct {
-	PlanID                   string        `json:"plan_id"`
-	CreatedAt                time.Time     `json:"created_at"`
-	ProtectedSavePoints      []SavePointID `json:"protected_save_points"`
-	ProtectedByHistory       int           `json:"protected_by_history"`
-	CandidateCount           int           `json:"candidate_count"`
-	ReclaimableSavePoints    []SavePointID `json:"reclaimable_save_points"`
-	ReclaimableBytesEstimate int64         `json:"reclaimable_bytes_estimate"`
+	PlanID                   string                   `json:"plan_id"`
+	CreatedAt                time.Time                `json:"created_at"`
+	ProtectedSavePoints      []SavePointID            `json:"protected_save_points"`
+	ProtectionGroups         []CleanupProtectionGroup `json:"protection_groups"`
+	ProtectedByHistory       int                      `json:"protected_by_history"`
+	CandidateCount           int                      `json:"candidate_count"`
+	ReclaimableSavePoints    []SavePointID            `json:"reclaimable_save_points"`
+	ReclaimableBytesEstimate int64                    `json:"reclaimable_bytes_estimate"`
+}
+
+// CleanupProtectionGroup explains why save points are protected from cleanup.
+type CleanupProtectionGroup struct {
+	Reason     string        `json:"reason"`
+	Count      int           `json:"count"`
+	SavePoints []SavePointID `json:"save_points"`
 }
 
 func (o *SaveOptions) workspace() string {
@@ -136,8 +144,8 @@ func Open(path string) (*Client, error) {
 	}, nil
 }
 
-// OpenOrInit opens an existing repository, or initializes a new one if none exists.
-// This is the recommended entry point for sandbox-manager integration.
+// OpenOrInit opens an existing JVS repository, or initializes a new one if none exists.
+// It is the usual entry point for applications embedding the file-system version control facade.
 func OpenOrInit(path string, opts InitOptions) (*Client, error) {
 	if _, err := repo.Discover(path); err == nil {
 		return Open(path)
@@ -388,8 +396,8 @@ func (c *Client) EngineType() model.EngineType {
 	return c.engineType
 }
 
-// WorkspacePath returns the filesystem path to a workspace payload directory.
-// This is the path that should be mounted into agent pods as /workspace.
+// WorkspacePath returns the filesystem path to a workspace folder.
+// This is the folder path to open directly or mount into another environment.
 func (c *Client) WorkspacePath(workspaceName string) string {
 	if workspaceName == "" {
 		workspaceName = "main"
@@ -453,11 +461,33 @@ func publicCleanupPlan(plan *model.GCPlan) *CleanupPlan {
 		PlanID:                   plan.PlanID,
 		CreatedAt:                plan.CreatedAt,
 		ProtectedSavePoints:      publicSavePointIDs(plan.ProtectedSet),
-		ProtectedByHistory:       plan.ProtectedByLineage,
+		ProtectionGroups:         publicCleanupProtectionGroups(plan.ProtectionGroups),
+		ProtectedByHistory:       cleanupProtectionGroupCount(plan.ProtectionGroups, model.GCProtectionReasonHistory, plan.ProtectedByLineage),
 		CandidateCount:           plan.CandidateCount,
 		ReclaimableSavePoints:    publicSavePointIDs(plan.ToDelete),
 		ReclaimableBytesEstimate: plan.DeletableBytesEstimate,
 	}
+}
+
+func publicCleanupProtectionGroups(groups []model.GCProtectionGroup) []CleanupProtectionGroup {
+	out := make([]CleanupProtectionGroup, 0, len(groups))
+	for _, group := range groups {
+		out = append(out, CleanupProtectionGroup{
+			Reason:     group.Reason,
+			Count:      group.Count,
+			SavePoints: publicSavePointIDs(group.SavePoints),
+		})
+	}
+	return out
+}
+
+func cleanupProtectionGroupCount(groups []model.GCProtectionGroup, reason string, fallback int) int {
+	for _, group := range groups {
+		if group.Reason == reason {
+			return group.Count
+		}
+	}
+	return fallback
 }
 
 func isNoRepoError(err error) bool {

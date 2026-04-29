@@ -34,9 +34,87 @@ var collectorFsyncDir = fsutil.FsyncDir
 
 type planInputs struct {
 	protectedSet         []model.SnapshotID
+	protectionGroups     []model.GCProtectionGroup
 	protectedByLineage   int
 	protectedByRetention int
 	toDelete             []model.SnapshotID
+}
+
+type protectionBuilder struct {
+	protected map[model.SnapshotID]bool
+	groups    map[string]map[model.SnapshotID]bool
+}
+
+func newProtectionBuilder() *protectionBuilder {
+	return &protectionBuilder{
+		protected: make(map[model.SnapshotID]bool),
+		groups:    make(map[string]map[model.SnapshotID]bool),
+	}
+}
+
+func (b *protectionBuilder) add(reason string, id model.SnapshotID) bool {
+	if id == "" {
+		return false
+	}
+	wasProtected := b.protected[id]
+	b.protected[id] = true
+	if reason != "" {
+		if b.groups[reason] == nil {
+			b.groups[reason] = make(map[model.SnapshotID]bool)
+		}
+		b.groups[reason][id] = true
+	}
+	return !wasProtected
+}
+
+func (b *protectionBuilder) protectedSet() []model.SnapshotID {
+	ids := make([]model.SnapshotID, 0, len(b.protected))
+	for id := range b.protected {
+		ids = append(ids, id)
+	}
+	sortSnapshotIDs(ids)
+	return ids
+}
+
+func (b *protectionBuilder) protectionGroups() []model.GCProtectionGroup {
+	reasons := make([]string, 0, len(b.groups))
+	known := []string{
+		model.GCProtectionReasonHistory,
+		model.GCProtectionReasonOpenView,
+		model.GCProtectionReasonActiveRecovery,
+		model.GCProtectionReasonActiveOperation,
+	}
+	seen := make(map[string]bool, len(known))
+	for _, reason := range known {
+		seen[reason] = true
+		if len(b.groups[reason]) > 0 {
+			reasons = append(reasons, reason)
+		}
+	}
+	var extra []string
+	for reason, ids := range b.groups {
+		if seen[reason] || len(ids) == 0 {
+			continue
+		}
+		extra = append(extra, reason)
+	}
+	sort.Strings(extra)
+	reasons = append(reasons, extra...)
+
+	groups := make([]model.GCProtectionGroup, 0, len(reasons))
+	for _, reason := range reasons {
+		ids := make([]model.SnapshotID, 0, len(b.groups[reason]))
+		for id := range b.groups[reason] {
+			ids = append(ids, id)
+		}
+		sortSnapshotIDs(ids)
+		groups = append(groups, model.GCProtectionGroup{
+			Reason:     reason,
+			Count:      len(ids),
+			SavePoints: ids,
+		})
+	}
+	return groups
 }
 
 // NewCollector creates a new GC collector.
@@ -97,6 +175,7 @@ func (c *Collector) planWithPolicy(policy model.RetentionPolicy) (*model.GCPlan,
 		PlanID:                 uuidutil.NewV4(),
 		CreatedAt:              time.Now().UTC(),
 		ProtectedSet:           inputs.protectedSet,
+		ProtectionGroups:       inputs.protectionGroups,
 		ProtectedByLineage:     inputs.protectedByLineage,
 		ProtectedByRetention:   inputs.protectedByRetention,
 		CandidateCount:         len(inputs.toDelete),
@@ -329,7 +408,7 @@ func (c *Collector) computePlanInputs(policy model.RetentionPolicy) (*planInputs
 }
 
 func (c *Collector) computePlanInputsAllowingReadyMissingDescriptors(policy model.RetentionPolicy, allowReadyMissingDescriptor map[model.SnapshotID]bool) (*planInputs, error) {
-	protectedSet, protectedByLineage, err := c.computeProtectedSet()
+	protectedSet, protectionGroups, protectedByLineage, err := c.computeProtectedSet()
 	if err != nil {
 		return nil, fmt.Errorf("compute protected set: %w", err)
 	}
@@ -403,6 +482,7 @@ func (c *Collector) computePlanInputsAllowingReadyMissingDescriptors(policy mode
 
 	return &planInputs{
 		protectedSet:         protectedSet,
+		protectionGroups:     protectionGroups,
 		protectedByLineage:   protectedByLineage,
 		protectedByRetention: protectedByRetention,
 		toDelete:             toDelete,
@@ -459,7 +539,14 @@ func (c *Collector) revalidatePlan(plan *model.GCPlan) ([]model.SnapshotID, erro
 	currentCandidates := append([]model.SnapshotID(nil), current.toDelete...)
 	sortSnapshotIDs(currentCandidates)
 	if !sameSnapshotIDs(currentComparable, currentCandidates) {
-		return nil, errclass.ErrGCPlanMismatch.WithMessagef("candidate set changed: planned=%v current=%v", currentComparable, currentCandidates)
+		return nil, errclass.ErrGCPlanMismatch.WithMessagef("candidate set changed; run cleanup preview again: planned=%v current=%v", currentComparable, currentCandidates)
+	}
+	currentProtected := append([]model.SnapshotID(nil), current.protectedSet...)
+	sortSnapshotIDs(currentProtected)
+	plannedProtected := append([]model.SnapshotID(nil), plan.ProtectedSet...)
+	sortSnapshotIDs(plannedProtected)
+	if !sameSnapshotIDs(plannedProtected, currentProtected) {
+		return nil, errclass.ErrGCPlanMismatch.WithMessagef("protected set changed; run cleanup preview again: planned=%v current=%v", plannedProtected, currentProtected)
 	}
 	return pending, nil
 }
@@ -517,8 +604,8 @@ func (c *Collector) markPlan(snapshotIDs []model.SnapshotID) error {
 	return nil
 }
 
-func (c *Collector) computeProtectedSet() ([]model.SnapshotID, int, error) {
-	protected := make(map[model.SnapshotID]bool)
+func (c *Collector) computeProtectedSet() ([]model.SnapshotID, []model.GCProtectionGroup, int, error) {
+	protection := newProtectionBuilder()
 	lineageCount := 0
 
 	// 1. All live worktree roots. Latest remains a live restore target when a
@@ -526,7 +613,7 @@ func (c *Collector) computeProtectedSet() ([]model.SnapshotID, int, error) {
 	wtMgr := worktree.NewManager(c.repoRoot)
 	wtList, err := wtMgr.List()
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
 	roots := make(map[model.SnapshotID]bool)
 	directProtected := make(map[model.SnapshotID]bool)
@@ -552,77 +639,84 @@ func (c *Collector) computeProtectedSet() ([]model.SnapshotID, int, error) {
 		if err := id.Validate(); err != nil {
 			continue
 		}
-		protected[id] = true
+		protection.add(model.GCProtectionReasonHistory, id)
 		rootIDs = append(rootIDs, id)
 	}
 	for id := range directProtected {
 		if err := id.Validate(); err != nil {
 			continue
 		}
-		protected[id] = true
+		protection.add(model.GCProtectionReasonHistory, id)
 	}
 	sortSnapshotIDs(rootIDs)
 
 	// 2. Lineage traversal (keep parent chains)
 	for _, id := range rootIDs {
-		lineageCount += c.walkLineage(id, protected)
+		lineageCount += c.walkLineage(id, protection)
 	}
 
 	// 3. All intents (in-progress operations)
 	intentsDir, err := repo.IntentsDirPath(c.repoRoot)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
-			return nil, 0, fmt.Errorf("read intents directory: %w", err)
+			return nil, nil, 0, fmt.Errorf("read intents directory: %w", err)
 		}
 	} else {
 		entries, err := os.ReadDir(intentsDir)
 		if err != nil {
-			return nil, 0, fmt.Errorf("read intents directory: %w", err)
+			return nil, nil, 0, fmt.Errorf("read intents directory: %w", err)
 		}
 		for _, entry := range entries {
 			name := entry.Name()
 			if strings.HasSuffix(name, ".json") {
-				protected[model.SnapshotID(strings.TrimSuffix(name, ".json"))] = true
+				protection.add(model.GCProtectionReasonActiveOperation, model.SnapshotID(strings.TrimSuffix(name, ".json")))
 			}
 		}
 	}
 
 	// 4. Documented active source pins. These are fail-closed: any unreadable
 	// or malformed pin prevents cleanup from planning deletion.
-	pinnedSources, err := sourcepin.NewManager(c.repoRoot).ProtectedSnapshotIDs()
+	pins, err := sourcepin.NewManager(c.repoRoot).List()
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
-	for _, id := range pinnedSources {
-		protected[id] = true
+	for _, pin := range pins {
+		protection.add(protectionReasonForSourcePin(pin), pin.SnapshotID)
 	}
 
 	// 5. Active restore recovery plans are visible recovery state and protect
 	// their source save point even if no supplemental pin exists.
 	recoveryPlans, err := recovery.NewManager(c.repoRoot).List()
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
 	for _, plan := range recoveryPlans {
 		if plan.Status != recovery.StatusActive {
 			continue
 		}
-		protected[plan.SourceSavePoint] = true
+		protection.add(model.GCProtectionReasonActiveRecovery, plan.SourceSavePoint)
 	}
 
-	var result []model.SnapshotID
-	for id := range protected {
-		result = append(result, id)
+	return protection.protectedSet(), protection.protectionGroups(), lineageCount, nil
+}
+
+func protectionReasonForSourcePin(pin model.Pin) string {
+	reason := strings.ToLower(strings.TrimSpace(pin.Reason))
+	switch {
+	case reason == "active read-only view":
+		return model.GCProtectionReasonOpenView
+	case strings.HasPrefix(reason, "active recovery plan"):
+		return model.GCProtectionReasonActiveRecovery
+	default:
+		return model.GCProtectionReasonActiveOperation
 	}
-	sortSnapshotIDs(result)
-	return result, lineageCount, nil
 }
 
-func (c *Collector) walkLineage(snapshotID model.SnapshotID, protected map[model.SnapshotID]bool) int {
-	return c.walkLineageSeen(snapshotID, protected, make(map[model.SnapshotID]bool))
+func (c *Collector) walkLineage(snapshotID model.SnapshotID, protection *protectionBuilder) int {
+	return c.walkLineageSeen(snapshotID, protection, make(map[model.SnapshotID]bool))
 }
 
-func (c *Collector) walkLineageSeen(snapshotID model.SnapshotID, protected map[model.SnapshotID]bool, seen map[model.SnapshotID]bool) int {
+func (c *Collector) walkLineageSeen(snapshotID model.SnapshotID, protection *protectionBuilder, seen map[model.SnapshotID]bool) int {
 	count := 0
 	if err := snapshotID.Validate(); err != nil {
 		return count
@@ -635,13 +729,16 @@ func (c *Collector) walkLineageSeen(snapshotID model.SnapshotID, protected map[m
 	if err != nil {
 		return count
 	}
-	if desc.ParentID != nil && !protected[*desc.ParentID] {
-		protected[*desc.ParentID] = true
-		count = 1 + c.walkLineageSeen(*desc.ParentID, protected, seen)
+	if desc.ParentID != nil {
+		if protection.add(model.GCProtectionReasonHistory, *desc.ParentID) {
+			count++
+		}
+		count += c.walkLineageSeen(*desc.ParentID, protection, seen)
 	}
-	if desc.StartedFrom != nil && !protected[*desc.StartedFrom] {
-		protected[*desc.StartedFrom] = true
-		count++
+	if desc.StartedFrom != nil {
+		if protection.add(model.GCProtectionReasonHistory, *desc.StartedFrom) {
+			count++
+		}
 	}
 	return count
 }

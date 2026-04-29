@@ -11,6 +11,7 @@ import (
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/pkg/color"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
+	"github.com/agentsmith-project/jvs/pkg/fsutil"
 	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
@@ -109,11 +110,24 @@ func savePointError(err error) error {
 		return nil
 	}
 	message := publicSavePointVocabulary(err.Error())
+	if !fsutil.IsCommitUncertain(err) {
+		message = appendSaveFailureHistoryUnchangedMessage(message)
+	}
 	var jvsErr *errclass.JVSError
 	if errors.As(err, &jvsErr) {
 		return &errclass.JVSError{Code: jvsErr.Code, Message: message, Hint: publicSavePointVocabulary(jvsErr.Hint)}
 	}
 	return fmt.Errorf("%s", message)
+}
+
+func appendSaveFailureHistoryUnchangedMessage(message string) string {
+	if !strings.Contains(message, "No save point was created.") {
+		message += ". No save point was created."
+	}
+	if !strings.Contains(message, "History was not changed.") {
+		message += ". History was not changed."
+	}
+	return message
 }
 
 func publicSavePointVocabulary(value string) string {

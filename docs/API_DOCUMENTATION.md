@@ -93,17 +93,24 @@ Public cleanup plan fields use save point terminology:
 type CleanupPlan struct {
     PlanID                  string    `json:"plan_id"`
     CreatedAt               time.Time `json:"created_at"`
-    ProtectedSavePoints     []string  `json:"protected_save_points"`
+    ProtectedSavePoints     []SavePointID `json:"protected_save_points"`
+    ProtectionGroups        []CleanupProtectionGroup `json:"protection_groups"`
     ProtectedByHistory      int       `json:"protected_by_history"`
     CandidateCount          int       `json:"candidate_count"`
-    ReclaimableSavePoints   []string  `json:"reclaimable_save_points"`
+    ReclaimableSavePoints   []SavePointID `json:"reclaimable_save_points"`
     ReclaimableBytesEstimate int64    `json:"reclaimable_bytes_estimate"`
+}
+
+type CleanupProtectionGroup struct {
+    Reason     string        `json:"reason"`
+    Count      int           `json:"count"`
+    SavePoints []SavePointID `json:"save_points"`
 }
 ```
 
 Public JSON fields: `plan_id`, `created_at`, `protected_save_points`,
-`protected_by_history`, `candidate_count`, `reclaimable_save_points`, and
-`reclaimable_bytes_estimate`.
+`protection_groups`, `protected_by_history`, `candidate_count`,
+`reclaimable_save_points`, and `reclaimable_bytes_estimate`.
 
 ### EngineType
 

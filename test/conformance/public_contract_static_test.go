@@ -318,6 +318,20 @@ func TestDocs_TraceabilityNormativeDocsParseBareBlocks(t *testing.T) {
 	}
 }
 
+func TestDocs_TargetUsersIsSupportingResearchNotGAPromise9Normative(t *testing.T) {
+	matrixPromise := markdownSectionByHeading(t,
+		"docs/14_TRACEABILITY_MATRIX.md",
+		readRepoFile(t, "docs/14_TRACEABILITY_MATRIX.md"),
+		"## Promise 9: GA Stories Preserve User Mental Models",
+	)
+	normativeDocs := textBetweenMarkers(t, matrixPromise, "Normative docs:", "Supporting research:")
+	if strings.Contains(normativeDocs, "`docs/TARGET_USERS.md`") {
+		t.Fatalf("docs/TARGET_USERS.md is product research and must not be a Promise 9 normative doc")
+	}
+	supportingResearch := textBetweenMarkers(t, matrixPromise, "Supporting research:", "Evidence:")
+	requireReleaseReadinessText(t, "traceability promise 9 supporting research", supportingResearch, "`docs/TARGET_USERS.md`")
+}
+
 func TestDocs_TraceabilityNormativeDocsUseV0ReleaseVocabulary(t *testing.T) {
 	for _, doc := range traceabilityNormativeDocs(t) {
 		t.Run(doc, func(t *testing.T) {
@@ -612,6 +626,7 @@ func publicCleanupPlanJSONFields() []string {
 		"plan_id",
 		"created_at",
 		"protected_save_points",
+		"protection_groups",
 		"protected_by_history",
 		"candidate_count",
 		"reclaimable_save_points",

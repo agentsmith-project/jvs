@@ -79,6 +79,164 @@ func TestWholeRestoreFailureCreatesRecoveryPlanStatusAndProtectsSource(t *testin
 	assertRecoveryOutputOmitsInternalVocabulary(t, err.Error())
 }
 
+func TestRecoveryStatusShowsActivePlanSafetySummary(t *testing.T) {
+	repoRoot, sourceID, _ := setupPathRecoveryRepo(t)
+	recoveryPlanID := createPathRecoveryFailure(t, sourceID)
+
+	listOut, err := executeCommand(createTestRootCmd(), "recovery", "status")
+	require.NoError(t, err)
+	assert.Contains(t, listOut, "Active recovery plans:")
+	assert.Contains(t, listOut, "Recovery plan: "+recoveryPlanID)
+	assert.Contains(t, listOut, "Status: active")
+	assert.Contains(t, listOut, "Folder: "+repoRoot)
+	assert.Contains(t, listOut, "Workspace: main")
+	assert.Contains(t, listOut, "Source save point: "+sourceID)
+	assert.Contains(t, listOut, "Path: app.txt")
+	assert.Contains(t, listOut, "Recovery backup: available")
+	assert.Contains(t, listOut, "Recommended next command: jvs recovery resume "+recoveryPlanID)
+	assertRecoveryOutputOmitsInternalVocabulary(t, listOut)
+
+	detailOut, err := executeCommand(createTestRootCmd(), "recovery", "status", recoveryPlanID)
+	require.NoError(t, err)
+	assert.Contains(t, detailOut, "Recovery plan: "+recoveryPlanID)
+	assert.Contains(t, detailOut, "Status: active")
+	assert.Contains(t, detailOut, "Folder: "+repoRoot)
+	assert.Contains(t, detailOut, "Workspace: main")
+	assert.Contains(t, detailOut, "Source save point: "+sourceID)
+	assert.Contains(t, detailOut, "Path: app.txt")
+	assert.Contains(t, detailOut, "Recovery backup: available")
+	assert.Contains(t, detailOut, "Recommended next command: jvs recovery resume "+recoveryPlanID)
+	assertRecoveryOutputOmitsInternalVocabulary(t, detailOut)
+
+	listJSON, err := executeCommand(createTestRootCmd(), "--json", "recovery", "status")
+	require.NoError(t, err)
+	env, listData := decodeFacadeDataMap(t, listJSON)
+	require.True(t, env.OK, listJSON)
+	assert.Equal(t, "recovery status", env.Command)
+	plans, ok := listData["plans"].([]any)
+	require.True(t, ok, "recovery status plans should be a list: %#v", listData)
+	require.Len(t, plans, 1)
+	listPlan, ok := plans[0].(map[string]any)
+	require.True(t, ok, "recovery plan should be an object: %#v", plans[0])
+	assertRecoveryJSONPlanSummary(t, listPlan, recoveryPlanID, repoRoot, sourceID, "app.txt")
+
+	detailJSON, err := executeCommand(createTestRootCmd(), "--json", "recovery", "status", recoveryPlanID)
+	require.NoError(t, err)
+	env, detailData := decodeFacadeDataMap(t, detailJSON)
+	require.True(t, env.OK, detailJSON)
+	assert.Equal(t, "recovery status", env.Command)
+	assertRecoveryJSONPlanSummary(t, detailData, recoveryPlanID, repoRoot, sourceID, "app.txt")
+}
+
+func TestRecoveryStatusReportsUnavailableBackup(t *testing.T) {
+	repoRoot, sourceID, _ := setupWholeRecoveryRepo(t)
+	recoveryPlanID := createCrashRecoveryPlanWithMissingBackup(t, repoRoot, sourceID)
+
+	detailOut, err := executeCommand(createTestRootCmd(), "recovery", "status", recoveryPlanID)
+	require.NoError(t, err)
+	assert.Contains(t, detailOut, "Recovery plan: "+recoveryPlanID)
+	assert.Contains(t, detailOut, "Recovery backup: unavailable")
+	assert.NotContains(t, detailOut, "Recommended next command: jvs recovery resume "+recoveryPlanID)
+	assert.Contains(t, detailOut, "Recommended next command: jvs recovery rollback "+recoveryPlanID)
+	assertRecoveryOutputOmitsInternalVocabulary(t, detailOut)
+
+	jsonOut, err := executeCommand(createTestRootCmd(), "--json", "recovery", "status", recoveryPlanID)
+	require.NoError(t, err)
+	env, data := decodeFacadeDataMap(t, jsonOut)
+	require.True(t, env.OK, jsonOut)
+	assert.Equal(t, "recovery status", env.Command)
+	assert.Equal(t, false, data["backup_available"])
+	assert.Equal(t, "jvs recovery rollback "+recoveryPlanID, data["recommended_next_command"])
+}
+
+func TestRecoveryStatusOmitsRecommendationWhenBackupUnavailableAndEvidenceUnsafe(t *testing.T) {
+	repoRoot, sourceID, _ := setupWholeRecoveryRepo(t)
+	recoveryPlanID := createRequiredMissingBackupPlanAfterPayloadMutation(t, repoRoot, sourceID)
+
+	detailOut, err := executeCommand(createTestRootCmd(), "recovery", "status", recoveryPlanID)
+	require.NoError(t, err)
+	assert.Contains(t, detailOut, "Recovery plan: "+recoveryPlanID)
+	assert.Contains(t, detailOut, "Recovery backup: unavailable")
+	assert.NotContains(t, detailOut, "Recommended next command:")
+	assert.NotContains(t, detailOut, "jvs recovery resume "+recoveryPlanID)
+	assert.NotContains(t, detailOut, "jvs recovery rollback "+recoveryPlanID)
+	assertRecoveryOutputOmitsInternalVocabulary(t, detailOut)
+
+	jsonOut, err := executeCommand(createTestRootCmd(), "--json", "recovery", "status", recoveryPlanID)
+	require.NoError(t, err)
+	env, data := decodeFacadeDataMap(t, jsonOut)
+	require.True(t, env.OK, jsonOut)
+	assert.Equal(t, "recovery status", env.Command)
+	assert.Equal(t, false, data["backup_available"])
+	assert.NotContains(t, data, "recommended_next_command")
+}
+
+func TestRecoveryStatusTreatsSemanticallyUnsafeExistingBackupAsUnavailable(t *testing.T) {
+	repoRoot, sourceID, _ := setupPathRecoveryRepo(t)
+	recoveryPlanID := createPathRecoveryPlanWithUnsafeBackupSemantics(t, repoRoot, sourceID)
+
+	detailOut, err := executeCommand(createTestRootCmd(), "recovery", "status", recoveryPlanID)
+	require.NoError(t, err)
+	assert.Contains(t, detailOut, "Recovery plan: "+recoveryPlanID)
+	assert.Contains(t, detailOut, "Recovery backup: unavailable")
+	assert.NotContains(t, detailOut, "Recommended next command:")
+	assert.NotContains(t, detailOut, "jvs recovery resume "+recoveryPlanID)
+	assert.NotContains(t, detailOut, "jvs recovery rollback "+recoveryPlanID)
+	assertRecoveryOutputOmitsInternalVocabulary(t, detailOut)
+
+	jsonOut, err := executeCommand(createTestRootCmd(), "--json", "recovery", "status", recoveryPlanID)
+	require.NoError(t, err)
+	env, data := decodeFacadeDataMap(t, jsonOut)
+	require.True(t, env.OK, jsonOut)
+	assert.Equal(t, "recovery status", env.Command)
+	assert.Equal(t, false, data["backup_available"])
+	assert.NotContains(t, data, "recommended_next_command")
+}
+
+func TestRecoveryStatusTreatsPathBackupMissingRequiredEntryAsUnavailable(t *testing.T) {
+	repoRoot, sourceID, _ := setupPathRecoveryRepo(t)
+	recoveryPlanID := createPathRecoveryPlanWithMissingRequiredBackupEntry(t, repoRoot, sourceID)
+
+	listOut, err := executeCommand(createTestRootCmd(), "recovery", "status")
+	require.NoError(t, err)
+	assert.Contains(t, listOut, "Recovery plan: "+recoveryPlanID)
+	assert.Contains(t, listOut, "Recovery backup: unavailable")
+	assert.NotContains(t, listOut, "Recommended next command:")
+	assert.NotContains(t, listOut, "jvs recovery resume "+recoveryPlanID)
+	assert.NotContains(t, listOut, "jvs recovery rollback "+recoveryPlanID)
+	assertRecoveryOutputOmitsInternalVocabulary(t, listOut)
+
+	detailOut, err := executeCommand(createTestRootCmd(), "recovery", "status", recoveryPlanID)
+	require.NoError(t, err)
+	assert.Contains(t, detailOut, "Recovery plan: "+recoveryPlanID)
+	assert.Contains(t, detailOut, "Recovery backup: unavailable")
+	assert.NotContains(t, detailOut, "Recommended next command:")
+	assert.NotContains(t, detailOut, "jvs recovery resume "+recoveryPlanID)
+	assert.NotContains(t, detailOut, "jvs recovery rollback "+recoveryPlanID)
+	assertRecoveryOutputOmitsInternalVocabulary(t, detailOut)
+
+	listJSON, err := executeCommand(createTestRootCmd(), "--json", "recovery", "status")
+	require.NoError(t, err)
+	env, listData := decodeFacadeDataMap(t, listJSON)
+	require.True(t, env.OK, listJSON)
+	assert.Equal(t, "recovery status", env.Command)
+	plans, ok := listData["plans"].([]any)
+	require.True(t, ok, "recovery status plans should be a list: %#v", listData)
+	require.Len(t, plans, 1)
+	listPlan, ok := plans[0].(map[string]any)
+	require.True(t, ok, "recovery plan should be an object: %#v", plans[0])
+	assert.Equal(t, false, listPlan["backup_available"])
+	assert.NotContains(t, listPlan, "recommended_next_command")
+
+	detailJSON, err := executeCommand(createTestRootCmd(), "--json", "recovery", "status", recoveryPlanID)
+	require.NoError(t, err)
+	env, detailData := decodeFacadeDataMap(t, detailJSON)
+	require.True(t, env.OK, detailJSON)
+	assert.Equal(t, "recovery status", env.Command)
+	assert.Equal(t, false, detailData["backup_available"])
+	assert.NotContains(t, detailData, "recommended_next_command")
+}
+
 func TestRestoreRunCommitUncertainVisibleRecoveryPlanStopsBeforeMutationAndProtectsSource(t *testing.T) {
 	repoRoot, sourceID, originalID := setupWholeRecoveryRepo(t)
 	previewOut, err := executeCommand(createTestRootCmd(), "restore", sourceID)
@@ -184,6 +342,9 @@ func TestWholeRecoveryRollbackRestoresFilesMetadataAndResolvesPlan(t *testing.T)
 	_, err = executeCommand(createTestRootCmd(), "restore", "--run", restorePlanID)
 	require.Error(t, err)
 	recoveryPlanID := recoveryPlanIDFromText(t, err.Error())
+	cleanupWhileActive := cleanupPreviewData(t)
+	assertCleanupFieldContains(t, cleanupWhileActive, "protected_save_points", sourceID)
+	assertCleanupFieldOmits(t, cleanupWhileActive, "reclaimable_save_points", sourceID)
 
 	rollbackOut, err := executeCommand(createTestRootCmd(), "recovery", "rollback", recoveryPlanID)
 	require.NoError(t, err)
@@ -207,6 +368,9 @@ func TestWholeRecoveryRollbackRestoresFilesMetadataAndResolvesPlan(t *testing.T)
 	plan, err := recovery.NewManager(repoRoot).Load(recoveryPlanID)
 	require.NoError(t, err)
 	assert.Equal(t, recovery.StatusResolved, plan.Status)
+	cleanupAfterRollback := cleanupPreviewData(t)
+	assertCleanupFieldOmits(t, cleanupAfterRollback, "protected_save_points", sourceID)
+	assertCleanupFieldContains(t, cleanupAfterRollback, "reclaimable_save_points", sourceID)
 }
 
 func TestRecoveryRollbackResolvesAfterBackupRestoreAppliedButPlanWriteFailed(t *testing.T) {
@@ -649,7 +813,7 @@ func createCrashRecoveryPlanWithMissingBackup(t *testing.T, repoRoot, sourceID s
 		PreWorktreeState:       recovery.WorktreeState{Name: cfg.Name, RealPath: cfg.RealPath, BaseSnapshotID: cfg.BaseSnapshotID, HeadSnapshotID: cfg.HeadSnapshotID, LatestSnapshotID: cfg.LatestSnapshotID, PathSources: cfg.PathSources.Clone(), CreatedAt: cfg.CreatedAt},
 		Backup:                 recovery.Backup{Path: folder + ".restore-backup-missing", Scope: recovery.BackupScopeWhole, State: recovery.BackupStatePending},
 		RecoveryEvidence:       evidence,
-		RecommendedNextCommand: "jvs recovery status " + planID,
+		RecommendedNextCommand: "jvs recovery resume " + planID,
 	}
 	require.NoError(t, recovery.NewManager(repoRoot).Write(&plan))
 	return planID
@@ -685,7 +849,81 @@ func createRequiredMissingBackupPlanAfterPayloadMutation(t *testing.T, repoRoot,
 		PreWorktreeState:       recovery.WorktreeState{Name: cfg.Name, RealPath: cfg.RealPath, BaseSnapshotID: cfg.BaseSnapshotID, HeadSnapshotID: cfg.HeadSnapshotID, LatestSnapshotID: cfg.LatestSnapshotID, PathSources: cfg.PathSources.Clone(), CreatedAt: cfg.CreatedAt},
 		Backup:                 recovery.Backup{Path: folder + ".restore-backup-missing", Scope: recovery.BackupScopeWhole, State: recovery.BackupStateRequired},
 		RecoveryEvidence:       evidence,
-		RecommendedNextCommand: "jvs recovery status " + planID,
+		RecommendedNextCommand: "jvs recovery resume " + planID,
+	}
+	require.NoError(t, recovery.NewManager(repoRoot).Write(&plan))
+	return planID
+}
+
+func createPathRecoveryPlanWithUnsafeBackupSemantics(t *testing.T, repoRoot, sourceID string) string {
+	t.Helper()
+	r, err := repo.Discover(repoRoot)
+	require.NoError(t, err)
+	mgr := worktree.NewManager(repoRoot)
+	cfg, err := mgr.Get("main")
+	require.NoError(t, err)
+	folder, err := mgr.Path("main")
+	require.NoError(t, err)
+	backupPath := folder + ".restore-backup-unsafe"
+	require.NoError(t, os.MkdirAll(backupPath, 0755))
+	evidence, err := restoreplan.PathEvidence(repoRoot, "main", "app.txt")
+	require.NoError(t, err)
+	planID := "RP-" + string(model.NewSnapshotID())
+	now := time.Now().UTC()
+	plan := recovery.Plan{
+		SchemaVersion:          recovery.SchemaVersion,
+		RepoID:                 r.RepoID,
+		PlanID:                 planID,
+		Status:                 recovery.StatusActive,
+		Operation:              recovery.OperationRestorePath,
+		RestorePlanID:          "restore-preview",
+		Workspace:              "main",
+		Folder:                 folder,
+		SourceSavePoint:        model.SnapshotID(sourceID),
+		Path:                   "app.txt",
+		CreatedAt:              now,
+		UpdatedAt:              now,
+		PreWorktreeState:       recovery.WorktreeState{Name: cfg.Name, RealPath: cfg.RealPath, BaseSnapshotID: cfg.BaseSnapshotID, HeadSnapshotID: cfg.HeadSnapshotID, LatestSnapshotID: cfg.LatestSnapshotID, PathSources: cfg.PathSources.Clone(), CreatedAt: cfg.CreatedAt},
+		Backup:                 recovery.Backup{Path: backupPath, Scope: recovery.BackupScopeWhole, State: recovery.BackupStatePending},
+		RecoveryEvidence:       evidence,
+		RecommendedNextCommand: "jvs recovery resume " + planID,
+	}
+	require.NoError(t, recovery.NewManager(repoRoot).Write(&plan))
+	return planID
+}
+
+func createPathRecoveryPlanWithMissingRequiredBackupEntry(t *testing.T, repoRoot, sourceID string) string {
+	t.Helper()
+	r, err := repo.Discover(repoRoot)
+	require.NoError(t, err)
+	mgr := worktree.NewManager(repoRoot)
+	cfg, err := mgr.Get("main")
+	require.NoError(t, err)
+	folder, err := mgr.Path("main")
+	require.NoError(t, err)
+	backupPath := folder + ".restore-backup-missing-entry"
+	require.NoError(t, os.MkdirAll(backupPath, 0755))
+	evidence, err := restoreplan.PathEvidence(repoRoot, "main", "app.txt")
+	require.NoError(t, err)
+	planID := "RP-" + string(model.NewSnapshotID())
+	now := time.Now().UTC()
+	plan := recovery.Plan{
+		SchemaVersion:          recovery.SchemaVersion,
+		RepoID:                 r.RepoID,
+		PlanID:                 planID,
+		Status:                 recovery.StatusActive,
+		Operation:              recovery.OperationRestorePath,
+		RestorePlanID:          "restore-preview",
+		Workspace:              "main",
+		Folder:                 folder,
+		SourceSavePoint:        model.SnapshotID(sourceID),
+		Path:                   "app.txt",
+		CreatedAt:              now,
+		UpdatedAt:              now,
+		PreWorktreeState:       recovery.WorktreeState{Name: cfg.Name, RealPath: cfg.RealPath, BaseSnapshotID: cfg.BaseSnapshotID, HeadSnapshotID: cfg.HeadSnapshotID, LatestSnapshotID: cfg.LatestSnapshotID, PathSources: cfg.PathSources.Clone(), CreatedAt: cfg.CreatedAt},
+		Backup:                 recovery.Backup{Path: backupPath, Scope: recovery.BackupScopePath, State: recovery.BackupStateRequired, Entries: []recovery.BackupEntry{{Path: "app.txt", HadOriginal: true}}},
+		RecoveryEvidence:       evidence,
+		RecommendedNextCommand: "jvs recovery resume " + planID,
 	}
 	require.NoError(t, recovery.NewManager(repoRoot).Write(&plan))
 	return planID
@@ -749,4 +987,41 @@ func assertRecoveryOutputOmitsInternalVocabulary(t *testing.T, value string) {
 	for _, word := range []string{"checkpoint", "snapshot", "worktree", "pin", "gc", "internal"} {
 		assert.False(t, regexp.MustCompile(`\b`+regexp.QuoteMeta(word)+`\b`).MatchString(lower), "output should not expose %q:\n%s", word, value)
 	}
+}
+
+func assertRecoveryJSONPlanSummary(t *testing.T, data map[string]any, planID, folder, sourceID, path string) {
+	t.Helper()
+	assert.Equal(t, planID, data["plan_id"])
+	assert.Equal(t, "active", data["status"])
+	assert.Equal(t, "restore_path", data["operation"])
+	assert.Equal(t, "main", data["workspace"])
+	assert.Equal(t, folder, data["folder"])
+	assert.Equal(t, sourceID, data["source_save_point"])
+	assert.Equal(t, path, data["path"])
+	assert.Equal(t, true, data["backup_available"])
+	assert.Equal(t, "jvs recovery resume "+planID, data["recommended_next_command"])
+}
+
+func cleanupPreviewData(t *testing.T) map[string]any {
+	t.Helper()
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "cleanup", "preview")
+	require.NoError(t, err, stdout)
+	env, data := decodeFacadeDataMap(t, stdout)
+	require.True(t, env.OK, stdout)
+	assert.Equal(t, "cleanup preview", env.Command)
+	return data
+}
+
+func assertCleanupFieldContains(t *testing.T, data map[string]any, field, value string) {
+	t.Helper()
+	values, ok := data[field].([]any)
+	require.True(t, ok, "cleanup field %q should be a list: %#v", field, data[field])
+	assert.Contains(t, values, value)
+}
+
+func assertCleanupFieldOmits(t *testing.T, data map[string]any, field, value string) {
+	t.Helper()
+	values, ok := data[field].([]any)
+	require.True(t, ok, "cleanup field %q should be a list: %#v", field, data[field])
+	assert.NotContains(t, values, value)
 }

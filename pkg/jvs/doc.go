@@ -1,17 +1,17 @@
-// Package jvs provides a high-level library API for JVS (Juicy Versioned Workspaces).
+// Package jvs provides a high-level Go facade for JVS file-system version control.
 //
-// This package is the primary integration point for external consumers such as
-// sandbox-manager. It wraps internal packages into a clean, stable public API.
+// It wraps internal packages into a clean, stable public API for applications
+// that need to save, inspect, restore, and clean up versioned folder state.
 //
 // # Concurrency Safety
 //
 // JVS operations are filesystem-based and follow these concurrency rules:
 //
 //   - Save() is safe when no concurrent writes to the payload directory.
-//     Always save AFTER the agent pod has been deleted (process stopped).
+//     Quiesce writers before saving a folder state.
 //
 //   - Restore() is safe when no concurrent reads from the payload directory.
-//     Always restore BEFORE the agent pod is created.
+//     Quiesce readers and writers before restoring a folder state.
 //
 //   - Multiple Client instances for DIFFERENT repositories are fully independent
 //     and safe to use concurrently.
@@ -20,19 +20,19 @@
 //     mutating operations (Save, Restore, PreviewCleanup, RunCleanup)
 //     concurrently.
 //
-// # Recommended Usage Pattern (sandbox-manager)
+// # Recommended Usage Pattern
 //
-//	// Pod startup: restore workspace before creating pod
-//	client, err := jvs.OpenOrInit(repoPath, jvs.InitOptions{Name: "agent-ws"})
+//	// Open or initialize a managed folder.
+//	client, err := jvs.OpenOrInit(repoPath, jvs.InitOptions{Name: "workspace"})
 //	payloadPath := client.WorkspacePath("main")
+//
+//	// Restore a chosen save point before using the folder.
 //	if latest, _ := client.LatestSavePoint(ctx, "main"); latest != nil {
 //	    client.Restore(ctx, jvs.RestoreOptions{Target: latest.SavePointID.String()})
 //	}
-//	// Mount payloadPath as /workspace in pod via JuiceFS subPath
 //
-//	// Pod shutdown: save after pod is deleted
+//	// Use payloadPath as the application workspace, then save completed work.
 //	client.Save(ctx, jvs.SaveOptions{
-//	    Message: "auto: pod shutdown",
-//	    Tags: []string{"auto", "shutdown"},
+//	    Message: "completed workspace update",
 //	})
 package jvs

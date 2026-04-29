@@ -251,7 +251,7 @@ func (m *Manager) CreateActiveForRestore(preview *restoreplan.Plan, backupPath s
 		RecoveryEvidence:       evidence,
 		CompletedSteps:         []string{"recovery plan created"},
 		PendingSteps:           []string{"restore files", "update workspace metadata", "cleanup recovery backup"},
-		RecommendedNextCommand: "jvs recovery status " + planID,
+		RecommendedNextCommand: "jvs recovery resume " + planID,
 		RestoreOptions:         preview.Options,
 	}
 	if err := m.Write(plan); err != nil {
@@ -419,23 +419,11 @@ func (m *Manager) releaseCleanupProtections(plan *Plan) error {
 }
 
 func (m *Manager) RestoreBackup(plan *Plan) error {
-	if plan == nil {
-		return fmt.Errorf("recovery plan is required")
-	}
-	if err := validatePlan(plan); err != nil {
-		return err
-	}
-	boundary, err := repo.WorktreeManagedPayloadBoundary(m.repoRoot, plan.Workspace)
+	boundary, err := m.validateLiveBackup(plan)
 	if err != nil {
-		return fmt.Errorf("workspace folder: %w", err)
-	}
-	if err := validateBackupSemantics(boundary, plan); err != nil {
 		return err
 	}
-	if err := validateBackupPath(boundary.Root, plan.Folder, plan.Backup.Path); err != nil {
-		return err
-	}
-	if backupState(plan.Backup) != BackupStatePending && !backupPayloadAlreadyAtRecoveryPoint(plan.Backup) {
+	if backupPayloadRestoreRequired(plan.Backup) {
 		switch plan.Backup.Scope {
 		case BackupScopeWhole:
 			if err := restoreWholeBackup(boundary, plan.Backup.Path); err != nil {
@@ -453,6 +441,37 @@ func (m *Manager) RestoreBackup(plan *Plan) error {
 		return fmt.Errorf("restore workspace metadata: %w", err)
 	}
 	return nil
+}
+
+// ValidateLiveBackup checks that a recovery plan's backup exists and is safe to use.
+func (m *Manager) ValidateLiveBackup(plan *Plan) error {
+	_, err := m.validateLiveBackup(plan)
+	return err
+}
+
+func (m *Manager) validateLiveBackup(plan *Plan) (repo.WorktreePayloadBoundary, error) {
+	if plan == nil {
+		return repo.WorktreePayloadBoundary{}, fmt.Errorf("recovery plan is required")
+	}
+	if err := validatePlan(plan); err != nil {
+		return repo.WorktreePayloadBoundary{}, err
+	}
+	boundary, err := repo.WorktreeManagedPayloadBoundary(m.repoRoot, plan.Workspace)
+	if err != nil {
+		return repo.WorktreePayloadBoundary{}, fmt.Errorf("workspace folder: %w", err)
+	}
+	if err := validateBackupSemantics(boundary, plan); err != nil {
+		return repo.WorktreePayloadBoundary{}, err
+	}
+	if err := validateBackupPath(boundary.Root, plan.Folder, plan.Backup.Path); err != nil {
+		return repo.WorktreePayloadBoundary{}, err
+	}
+	if plan.Backup.Scope == BackupScopePath && backupPayloadRestoreRequired(plan.Backup) {
+		if _, err := validatePathBackupRequiredEntries(boundary.Root, plan.Backup.Path, pathBackupEntries(plan.Backup)); err != nil {
+			return repo.WorktreePayloadBoundary{}, err
+		}
+	}
+	return boundary, nil
 }
 
 func CurrentEvidence(repoRoot string, plan *Plan) (string, error) {
@@ -593,31 +612,16 @@ func restoreWholeBackup(boundary repo.WorktreePayloadBoundary, backupPath string
 }
 
 func restorePathBackup(payloadRoot, backupPath string, entries []BackupEntry) error {
-	if len(entries) == 0 {
-		return fmt.Errorf("recovery path is required")
+	entries, err := validatePathBackupRequiredEntries(payloadRoot, backupPath, entries)
+	if err != nil {
+		return err
 	}
-	entries = append([]BackupEntry(nil), entries...)
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 	tempPath := payloadRoot + ".recovery-path-tmp-" + uuidutil.NewV4()[:8]
 	defer os.RemoveAll(tempPath)
-	for i := range entries {
-		clean, err := pathutil.CleanRel(entries[i].Path)
-		if err != nil {
-			return fmt.Errorf("recovery path is not safe: %w", err)
-		}
-		entries[i].Path = clean
-		if err := pathutil.ValidateNoSymlinkParents(payloadRoot, clean); err != nil {
-			return fmt.Errorf("recovery path parent is not safe: %w", err)
-		}
-		if entries[i].HadOriginal {
-			src := filepath.Join(backupPath, clean)
-			if _, err := os.Lstat(src); err != nil {
-				if os.IsNotExist(err) {
-					return fmt.Errorf("recovery backup path %s is missing", clean)
-				}
-				return fmt.Errorf("check recovery backup path %s: %w", clean, err)
-			}
-			if err := restoreBackupClone(src, filepath.Join(tempPath, clean)); err != nil {
+	for _, entry := range entries {
+		clean := entry.Path
+		if entry.HadOriginal {
+			if err := restoreBackupClone(filepath.Join(backupPath, clean), filepath.Join(tempPath, clean)); err != nil {
 				return fmt.Errorf("copy recovery backup path %s: %w", clean, err)
 			}
 		}
@@ -637,6 +641,40 @@ func restorePathBackup(payloadRoot, backupPath string, entries []BackupEntry) er
 		if err := os.Rename(filepath.Join(tempPath, clean), dst); err != nil {
 			return fmt.Errorf("restore path %s: %w", clean, err)
 		}
+	}
+	return nil
+}
+
+func validatePathBackupRequiredEntries(payloadRoot, backupPath string, entries []BackupEntry) ([]BackupEntry, error) {
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("recovery path is required")
+	}
+	entries = append([]BackupEntry(nil), entries...)
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
+	for i := range entries {
+		clean, err := pathutil.CleanRel(entries[i].Path)
+		if err != nil {
+			return nil, fmt.Errorf("recovery path is not safe: %w", err)
+		}
+		entries[i].Path = clean
+		if err := pathutil.ValidateNoSymlinkParents(payloadRoot, clean); err != nil {
+			return nil, fmt.Errorf("recovery path parent is not safe: %w", err)
+		}
+		if entries[i].HadOriginal {
+			if err := validatePathBackupRequiredEntry(backupPath, clean); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return entries, nil
+}
+
+func validatePathBackupRequiredEntry(backupPath, clean string) error {
+	if _, err := os.Lstat(filepath.Join(backupPath, clean)); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("recovery backup path %s is missing", clean)
+		}
+		return fmt.Errorf("check recovery backup path %s: %w", clean, err)
 	}
 	return nil
 }
@@ -977,6 +1015,10 @@ func backupState(backup Backup) BackupState {
 
 func backupPayloadAlreadyAtRecoveryPoint(backup Backup) bool {
 	return backupState(backup) == BackupStateRolledBack || backup.PayloadRolledBack
+}
+
+func backupPayloadRestoreRequired(backup Backup) bool {
+	return backupState(backup) != BackupStatePending && !backupPayloadAlreadyAtRecoveryPoint(backup)
 }
 
 func pathBackupEntries(backup Backup) []BackupEntry {

@@ -1,8 +1,10 @@
 package snapshot
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -285,6 +287,77 @@ func TestCreator_HeadUpdateFailureUnpublishesDescriptorAndPayloadAndKeepsIntent(
 	assert.Empty(t, cfg.LatestSnapshotID)
 }
 
+func TestCreator_SavePointAuditAppendabilityFailureBeforeHistoryUpdateUnpublishesDescriptorAndPayload(t *testing.T) {
+	repoPath := setupCreatorFailureRepo(t)
+	creator := NewCreator(repoPath, model.EngineCopy)
+
+	var stagedSnapshotID model.SnapshotID
+	restoreHook := SetAfterSnapshotPayloadStagedHookForTest(func(snapshotID model.SnapshotID, _ string) error {
+		stagedSnapshotID = snapshotID
+		auditPath := filepath.Join(repoPath, ".jvs", "audit", "audit.jsonl")
+		if err := os.Remove(auditPath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return os.Mkdir(auditPath, 0755)
+	})
+	t.Cleanup(restoreHook)
+
+	desc, err := creator.CreateSavePoint("main", "audit blocked", nil)
+	require.Error(t, err)
+	assert.Nil(t, desc)
+	assert.Contains(t, err.Error(), "audit")
+	require.NotEmpty(t, stagedSnapshotID)
+	assertUnpublishedSaveAttempt(t, repoPath, stagedSnapshotID)
+	intent := requireSingleIntent(t, repoPath)
+	assert.Equal(t, stagedSnapshotID, intent.SnapshotID)
+
+	cfg, cfgErr := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, cfgErr)
+	assert.Empty(t, cfg.HeadSnapshotID)
+	assert.Empty(t, cfg.LatestSnapshotID)
+	assertPublishedSavePointCount(t, repoPath, 0)
+}
+
+func TestCreator_SavePointLateAuditAppendFailureWarnsAfterHistoryUpdate(t *testing.T) {
+	repoPath := setupCreatorFailureRepo(t)
+	creator := NewCreator(repoPath, model.EngineCopy)
+	auditPath := filepath.Join(repoPath, ".jvs", "audit", "audit.jsonl")
+
+	historyUpdated := false
+	baseLatestUpdater := creator.latestUpdater
+	creator.latestUpdater = func(wtMgr *worktree.Manager, worktreeName string, snapshotID model.SnapshotID) error {
+		if err := baseLatestUpdater(wtMgr, worktreeName, snapshotID); err != nil {
+			return err
+		}
+		historyUpdated = true
+		if err := os.Remove(auditPath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return os.Mkdir(auditPath, 0755)
+	}
+
+	var desc *model.Descriptor
+	var err error
+	stderr := captureCreatorFailureStderr(t, func() {
+		desc, err = creator.CreateSavePoint("main", "late audit warning", nil)
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, desc)
+	assert.True(t, historyUpdated, "test must fail audit only after history update succeeds")
+	assert.Contains(t, stderr, "warning: saved save point "+string(desc.SnapshotID))
+	assert.Contains(t, stderr, "could not write audit log")
+
+	cfg, cfgErr := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, cfgErr)
+	assert.Equal(t, desc.SnapshotID, cfg.HeadSnapshotID)
+	assert.Equal(t, desc.SnapshotID, cfg.LatestSnapshotID)
+	assertPublishedSavePointCount(t, repoPath, 1)
+	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(desc.SnapshotID)))
+	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", string(desc.SnapshotID)+".json"))
+	assert.DirExists(t, auditPath)
+}
+
 func requireSingleIntent(t *testing.T, repoPath string) model.IntentRecord {
 	t.Helper()
 
@@ -299,6 +372,29 @@ func requireSingleIntent(t *testing.T, repoPath string) model.IntentRecord {
 	require.NoError(t, json.Unmarshal(data, &intent))
 	require.NotEmpty(t, intent.SnapshotID)
 	return intent
+}
+
+func captureCreatorFailureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stderr = w
+	defer func() {
+		os.Stderr = oldStderr
+	}()
+
+	fn()
+
+	require.NoError(t, w.Close())
+	os.Stderr = oldStderr
+
+	var buf bytes.Buffer
+	_, err = io.Copy(&buf, r)
+	require.NoError(t, err)
+	require.NoError(t, r.Close())
+	return buf.String()
 }
 
 func assertPublishAttemptArtifactsCleaned(t *testing.T, repoPath string, snapshotID model.SnapshotID) {

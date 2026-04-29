@@ -379,6 +379,17 @@ first, then run a reviewed plan. A cleanup run must revalidate its plan before
 deleting anything and must protect live workspace needs, active views, active
 source reads, active operations, and active recovery plans.
 
+Cleanup preview must explain protected save points by stable generic reasons:
+
+- `history`
+- `open_view`
+- `active_recovery`
+- `active_operation`
+
+JSON uses those stable reason tokens. Human output must render them as natural
+labels: workspace history, open views, active recovery plans, and active
+operations.
+
 ### `jvs cleanup preview [--json]`
 
 Create a cleanup plan for save point storage that is no longer needed by
@@ -387,7 +398,7 @@ protected history or active operations. Preview does not delete anything.
 Human output must show:
 
 - `Plan ID`
-- `Protected by history`
+- protected save points grouped by reason
 - `Reclaimable`
 - `Estimated reclaim`
 - the matching `jvs cleanup run --plan-id <plan-id>` command
@@ -397,15 +408,24 @@ Required JSON `data` fields:
 - `plan_id`
 - `created_at`
 - `protected_save_points`
+- `protection_groups`
 - `protected_by_history`
 - `candidate_count`
 - `reclaimable_save_points`
 - `reclaimable_bytes_estimate`
 
+Each `protection_groups` entry contains:
+
+- `reason`
+- `count`
+- `save_points`
+
 ### `jvs cleanup run --plan-id <plan-id> [--json]`
 
 Run a reviewed cleanup plan. Run must reload and revalidate the plan before it
-deletes unneeded save point storage.
+deletes unneeded save point storage. If the protected save point set or
+reclaimable candidate set has changed since preview, run must fail and require a
+fresh `jvs cleanup preview`.
 
 Required JSON `data` fields:
 

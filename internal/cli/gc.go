@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/agentsmith-project/jvs/internal/gc"
+	"github.com/agentsmith-project/jvs/pkg/model"
 	"github.com/agentsmith-project/jvs/pkg/progress"
 )
 
@@ -43,9 +44,10 @@ var cleanupPreviewCmd = &cobra.Command{
 		}
 
 		fmt.Printf("Plan ID: %s\n", plan.PlanID)
-		fmt.Printf("  Protected by history: %d save points\n", plan.ProtectedByLineage)
-		fmt.Printf("  Reclaimable: %d save points\n", len(plan.ToDelete))
-		fmt.Printf("  Estimated reclaim: %d bytes\n", plan.DeletableBytesEstimate)
+		fmt.Println("Protected save points:")
+		printCleanupProtectionGroups(plan.ProtectionGroups)
+		fmt.Printf("Reclaimable: %d save points\n", len(plan.ToDelete))
+		fmt.Printf("Estimated reclaim: %d bytes\n", plan.DeletableBytesEstimate)
 		fmt.Println()
 		fmt.Printf("Run: jvs cleanup run --plan-id %s\n", plan.PlanID)
 		return nil
@@ -104,4 +106,39 @@ func init() {
 	cleanupCmd.AddCommand(cleanupPreviewCmd)
 	cleanupCmd.AddCommand(cleanupRunCmd)
 	rootCmd.AddCommand(cleanupCmd)
+}
+
+func printCleanupProtectionGroups(groups []model.GCProtectionGroup) {
+	if len(groups) == 0 {
+		fmt.Println("  none")
+		return
+	}
+	for _, group := range groups {
+		fmt.Printf("  %s: %d save point%s\n", cleanupProtectionReasonLabel(group.Reason), group.Count, pluralS(group.Count))
+		for _, id := range group.SavePoints {
+			fmt.Printf("    %s\n", id)
+		}
+	}
+}
+
+func cleanupProtectionReasonLabel(reason string) string {
+	switch reason {
+	case model.GCProtectionReasonHistory:
+		return "workspace history"
+	case model.GCProtectionReasonOpenView:
+		return "open views"
+	case model.GCProtectionReasonActiveRecovery:
+		return "active recovery plans"
+	case model.GCProtectionReasonActiveOperation:
+		return "active operations"
+	default:
+		return reason
+	}
+}
+
+func pluralS(count int) string {
+	if count == 1 {
+		return ""
+	}
+	return "s"
 }

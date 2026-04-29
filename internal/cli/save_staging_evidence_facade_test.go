@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,4 +91,88 @@ func TestSaveConcurrentWorkspaceChangeJSONErrorUsesPublicVocabulary(t *testing.T
 	assert.Equal(t, 0, descriptorFileCount(t, repoRoot))
 	assert.Equal(t, 0, snapshotTempCount(t, repoRoot))
 	assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "changed during save")
+}
+
+func TestSaveDefiniteFailureLeavesHistoryUnchangedAndFailedSavePointUnavailable(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
+	firstID := savePointIDFromCLI(t, "first")
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v2"), 0644))
+	before := captureViewMutationSnapshot(t, repoRoot)
+	descriptorCount := descriptorFileCount(t, repoRoot)
+	catalogCount := savePointCatalogCount(t, repoRoot)
+
+	var failedID model.SnapshotID
+	restoreHook := installAuditAppendabilityFailureAfterSaveStagingHook(t, repoRoot, &failedID)
+	t.Cleanup(restoreHook)
+
+	stdout, err := executeCommand(createTestRootCmd(), "save", "-m", "second")
+	require.Error(t, err)
+	require.Empty(t, strings.TrimSpace(stdout))
+	assert.Contains(t, err.Error(), "No save point was created.")
+	assert.Contains(t, err.Error(), "History was not changed.")
+	assertNoOldSavePointVocabulary(t, err.Error())
+	require.NotEmpty(t, failedID)
+	assert.Equal(t, descriptorCount, descriptorFileCount(t, repoRoot))
+	assert.Equal(t, catalogCount, savePointCatalogCount(t, repoRoot))
+	assert.Equal(t, 0, snapshotTempCount(t, repoRoot))
+	assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "v2")
+
+	cfg, cfgErr := repo.LoadWorktreeConfig(repoRoot, "main")
+	require.NoError(t, cfgErr)
+	assert.Equal(t, model.SnapshotID(firstID), cfg.HeadSnapshotID)
+	assert.Equal(t, model.SnapshotID(firstID), cfg.LatestSnapshotID)
+
+	viewOut, viewErr := executeCommand(createTestRootCmd(), "view", string(failedID))
+	if viewErr == nil && strings.TrimSpace(viewOut) != "" {
+		restoreViewWriteBitsForCleanup(t, viewPathFromHumanOutput(t, viewOut))
+	}
+	require.Error(t, viewErr)
+	require.Empty(t, strings.TrimSpace(viewOut))
+	assert.Contains(t, viewErr.Error(), "save point")
+	assert.Contains(t, viewErr.Error(), "No files or history changed.")
+	assertViewOutputOmitsLegacyVocabulary(t, viewErr.Error())
+	before.assertUnchanged(t, repoRoot)
+}
+
+func TestSaveDefiniteFailureJSONReportsHistoryUnchanged(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
+	firstID := savePointIDFromCLI(t, "first")
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v2"), 0644))
+	before := captureViewMutationSnapshot(t, repoRoot)
+
+	var failedID model.SnapshotID
+	restoreHook := installAuditAppendabilityFailureAfterSaveStagingHook(t, repoRoot, &failedID)
+	t.Cleanup(restoreHook)
+
+	jsonOut, stderr, err := executeCommandWithErrorReport(createTestRootCmd(), "--json", "save", "-m", "second")
+	require.Error(t, err)
+	require.Empty(t, strings.TrimSpace(stderr))
+	env := decodeContractEnvelope(t, jsonOut)
+	require.False(t, env.OK, jsonOut)
+	require.NotNil(t, env.Error)
+	assert.Contains(t, env.Error.Message, "No save point was created.")
+	assert.Contains(t, env.Error.Message, "History was not changed.")
+	assertNoOldSavePointVocabulary(t, env.Error.Message)
+	require.NotEmpty(t, failedID)
+	assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "v2")
+
+	cfg, cfgErr := repo.LoadWorktreeConfig(repoRoot, "main")
+	require.NoError(t, cfgErr)
+	assert.Equal(t, model.SnapshotID(firstID), cfg.HeadSnapshotID)
+	assert.Equal(t, model.SnapshotID(firstID), cfg.LatestSnapshotID)
+	before.assertUnchanged(t, repoRoot)
+}
+
+func installAuditAppendabilityFailureAfterSaveStagingHook(t *testing.T, repoRoot string, failedID *model.SnapshotID) func() {
+	t.Helper()
+	return snapshot.SetAfterSnapshotPayloadStagedHookForTest(func(snapshotID model.SnapshotID, _ string) error {
+		*failedID = snapshotID
+		auditPath := filepath.Join(repoRoot, ".jvs", "audit", "audit.jsonl")
+		if err := os.Remove(auditPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return os.Mkdir(auditPath, 0755)
+	})
 }

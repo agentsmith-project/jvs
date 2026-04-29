@@ -23,6 +23,8 @@ Rules:
 - Run binds to a reviewed plan.
 - Run revalidates repository identity, plan identity, source state, and
   protection rules before deleting.
+- Run fails and requires a fresh cleanup preview when either the protected save
+  point set or reclaimable candidate set differs from the reviewed plan.
 - Cleanup protects live workspace needs, active views, active source reads,
   active operations, and active recovery plans.
 - Labels do not protect save points.
@@ -44,6 +46,21 @@ At minimum cleanup protects save points needed by:
 - active restore recovery plans
 - kept save points when keep is available
 
+Protection explanations are grouped by stable generic reason:
+
+- `history`
+- `open_view`
+- `active_recovery`
+- `active_operation`
+
+Each group reports its `reason`, `count`, and protected `save_points`. Reasons
+come from cleanup's structural sources: workspace history/provenance,
+documented active source pins, active read-only view pins, active operation
+intents, and active recovery plan state.
+
+JSON keeps the stable reason tokens. Human cleanup output renders them as
+workspace history, open views, active recovery plans, and active operations.
+
 ## Plan Evidence
 
 Cleanup plan evidence must use save point terminology:
@@ -51,10 +68,10 @@ Cleanup plan evidence must use save point terminology:
 - `plan_id`
 - `created_at`
 - `protected_save_points`
+- `protection_groups`
 - `candidate_count`
 - `reclaimable_save_points`
 - `reclaimable_bytes_estimate`
-- `protections`
 
 Any implementation storage fields with different names are internal storage
 details and must not be used as product vocabulary.
