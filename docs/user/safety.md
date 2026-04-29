@@ -1,23 +1,100 @@
 # Safety
 
-JVS is built around explicit file changes. The safest path is:
+JVS is safest when you treat it as a review-first tool:
 
 ```text
-save -> inspect -> preview restore -> run restore
+save -> inspect -> preview -> run
 ```
 
-## What Save Changes
+The important habit is simple: read the preview, check the folder and path, and
+run only the command JVS prints after `Run:`.
 
-`jvs save -m "message"` creates a new save point from managed files in the
-workspace. It does not rewrite earlier save points.
+## Quick Safety Checklist
 
-JVS control data under `.jvs/` is not saved as workspace content.
+Before a restore, workspace removal, or cleanup:
 
-## What View Changes
+- Run `jvs status` and check that the `Folder` is the folder you meant to use.
+- Run `jvs history` or `jvs history --path <path>` to find the save point you
+  want.
+- Use `jvs view <save> [path]` to inspect saved content before changing files.
+- Prefer path restore when you only need one file or directory.
+- Use `--save-first` when current local changes matter.
+- Use `--discard-unsaved` or `--force` only when current local changes are
+  intentionally disposable.
 
-`jvs view <save>` opens a read-only copy for inspection.
+Seeing `Preview`, `Plan`, `No files were changed`, or a printed `Run:` command
+means JVS has not made the destructive change yet.
 
-It does not change:
+## Commands That Only Read Or Preview
+
+These commands do not change your workspace files:
+
+```bash
+jvs status
+jvs history
+jvs history --path src/config.yaml
+jvs view <save> src/config.yaml
+jvs restore <save>
+jvs restore <save> --path src/config.yaml
+jvs workspace remove experiment
+jvs cleanup preview
+```
+
+What you should see:
+
+- `jvs history` prints save point messages with copyable IDs or short IDs.
+- `jvs view` prints a read-only view path.
+- `jvs restore <save>` prints a plan and a `Run:` command.
+- `jvs workspace remove <name>` says preview only and prints a remove plan.
+- `jvs cleanup preview` prints what save point storage can be cleaned.
+
+If the output says `No files were changed`, that is good. It means you are
+still reviewing.
+
+## Commands That Change Files Or Remove Folders
+
+These commands perform the reviewed action:
+
+```bash
+jvs restore --run <plan-id>
+jvs workspace remove --run <plan-id>
+jvs cleanup run --plan-id <plan-id>
+```
+
+What they change:
+
+| Command | What it can change | What it does not change |
+| --- | --- | --- |
+| `jvs restore --run <plan-id>` | Workspace files in the plan | Save point history |
+| `jvs workspace remove --run <plan-id>` | The selected workspace folder and workspace entry | Save point storage |
+| `jvs cleanup run --plan-id <plan-id>` | Save point storage listed by the cleanup plan | Workspace folders |
+
+Run commands are tied to the preview plan. If the folder changed after preview,
+JVS should stop and ask you to make a fresh preview.
+
+## Save Points And History
+
+`jvs save -m "message"` creates a new save point from the current workspace.
+It does not rewrite older save points.
+
+`jvs save` prints the full save point ID. `jvs history` usually shows enough
+of the ID to copy into commands. If JVS says the ID is ambiguous or
+non-unique, use a longer or full ID; `jvs history --json` includes the full
+`save_point_id` value.
+
+`jvs restore --run <plan-id>` copies files from a save point into your
+workspace. Restore does not change history. After restoring, make a new save if
+you want the recovered state to become the newest save point:
+
+```bash
+jvs save -m "recovered config"
+```
+
+## History And View Are Read-Only
+
+`jvs history` and `jvs history --path <path>` only search.
+
+`jvs view <save> [path]` opens saved content read-only. It does not change:
 
 - workspace files
 - history
@@ -29,63 +106,90 @@ Close views when finished:
 jvs view close <view-id>
 ```
 
-## What Restore Changes
+## Restore With Local Changes
 
-`jvs restore <save>` previews a restore plan. Preview changes nothing.
+When the target folder has local changes, restore does not overwrite them by
+default. Instead, JVS gives a decision preview: it tells you that local changes
+exist and asks you to choose how to proceed.
 
-`jvs restore --run <plan-id>` changes managed files after JVS rechecks the
-folder state. The plan shows how many managed files would be overwritten,
-deleted, or created.
-
-Restore does not change history.
-
-## Unsaved Changes
-
-If managed files have unsaved changes, restore refuses to proceed until you
-choose one option:
+Choose one:
 
 ```bash
 jvs restore <save> --save-first
 jvs restore <save> --discard-unsaved
 ```
 
-Use `--save-first` to protect the folder state before restoring. Use
-`--discard-unsaved` only when the unsaved changes are intentionally disposable.
+Use `--save-first` when the current local changes matter. JVS saves them first,
+then prepares the restore.
 
-## Prefer Path Restore For Small Recovery
+Use `--discard-unsaved` only when you are sure the current local changes can be
+thrown away for this restore.
 
-For one file or directory, use:
+## Path Restore For Small Repairs
+
+For one file or directory, start with path discovery:
 
 ```bash
-jvs restore --path src/config.yaml
+jvs history --path src/config.yaml
+jvs view <save> src/config.yaml
 jvs restore <save> --path src/config.yaml
+jvs restore --run <plan-id>
 ```
 
-Path restore has a smaller impact than whole-folder restore and still uses a
-preview plan.
+Path restore changes only the selected path. If you restore
+`src/config.yaml`, unrelated files such as `src/notes.md` are not restored or
+deleted by that run.
 
-## Workspace Boundaries
+Seeing the requested path in the preview is the key safety check.
 
-JVS manages files inside the registered workspace folder. It refuses unsafe
-workspace overlap and rejects paths that escape the workspace.
+## Workspace Remove Is Not Cleanup
 
-Do not manually copy another `.jvs/` control directory into the folder, and do
-not nest another workspace inside the folder you want to save.
+Use workspace removal when you want to remove a separate workspace folder:
 
-## Health Checks
+```bash
+jvs workspace remove experiment
+jvs workspace remove --run <plan-id>
+```
 
-Use:
+The first command is only a preview. It should show the folder, workspace name,
+local-change status, and `Run:` command.
+
+The run removes the selected workspace folder and workspace entry. It does not
+remove save point storage. To review save point storage cleanup later, use:
+
+```bash
+jvs cleanup preview
+jvs cleanup run --plan-id <plan-id>
+```
+
+The `main` workspace cannot be removed. If you want to stop using JVS for a
+folder, keep a normal backup first and ask for project-specific guidance.
+
+Use `jvs workspace remove <name> --force` only when local changes in that
+workspace are intentionally disposable.
+
+## Cleanup Is Not Workspace Removal
+
+Cleanup is for save point storage that JVS no longer needs:
+
+```bash
+jvs cleanup preview
+jvs cleanup run --plan-id <plan-id>
+```
+
+Cleanup does not delete workspace folders. If `jvs workspace list` shows a
+workspace you no longer want, use `jvs workspace remove <name>` and review its
+plan.
+
+## Health Checks And Backups
+
+Before high-impact work, run:
 
 ```bash
 jvs doctor
 jvs doctor --strict
 ```
 
-`doctor` checks repository health. `--strict` performs deeper integrity checks
-and is useful before high-impact restore work.
-
-## Backups
-
-Save points help with folder recovery, but they are not a replacement for
-backups. Use your normal storage backup process for machine loss, disk loss,
-or account loss.
+Save points help with local folder recovery, but they are not a replacement for
+backups. Use your normal storage backup process for machine loss, disk loss, or
+account loss.

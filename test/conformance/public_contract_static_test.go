@@ -3486,6 +3486,7 @@ func stablePublicDocs() []string {
 		"docs/user/concepts.md",
 		"docs/user/commands.md",
 		"docs/user/examples.md",
+		"docs/user/tutorials.md",
 		"docs/user/faq.md",
 		"docs/user/troubleshooting.md",
 		"docs/user/safety.md",
@@ -3655,6 +3656,7 @@ func activeNonReleaseFacingReferenceDocs() []string {
 
 func activeNonReleaseFacingResearchDocs() []string {
 	return []string{
+		"docs/PRODUCT_GAPS_FOR_NEXT_PLAN.md",
 		"docs/TARGET_USERS.md",
 	}
 }

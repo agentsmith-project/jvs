@@ -29,9 +29,11 @@ jvs init
 
 ## "save point ID is required"
 
-The command needs a save point ID or a unique ID prefix.
+The command needs a save point ID, or a short beginning of one that JVS can
+recognize.
 
-Find one:
+The easiest full ID is the one printed by `jvs save`. To choose from older save
+points, start with:
 
 ```bash
 jvs history
@@ -45,8 +47,23 @@ jvs history --path src/config.yaml
 
 ## "is not a save point ID"
 
-The value is not a known save point ID or unique prefix. Copy an ID from
-`jvs history` and run the command again.
+The value is not a known save point ID, or the short ID is not enough for JVS
+to recognize it. Copy the ID from `jvs save` output, or copy a longer ID from
+`jvs history`, and run the command again.
+
+## "ambiguous" Or "non-unique"
+
+The short ID matches more than one save point. Use more characters from the
+same ID and try again.
+
+If the human history output does not show enough of the ID, run:
+
+```bash
+jvs history --json
+```
+
+Copy the `save_point_id` field for the save point you want. You only need this
+when the shorter ID is not enough.
 
 ## Restore Says No Files Were Changed
 
@@ -59,9 +76,18 @@ jvs restore --run <plan-id>
 
 Run the exact command printed after `Run:`.
 
+What is okay:
+
+- The preview shows the folder you meant to restore.
+- The preview lists files that would be overwritten, created, or deleted.
+- The preview says history will not change.
+- Nothing in your folder changes until `jvs restore --run <plan-id>`.
+
 ## Folder Has Unsaved Changes
 
-Restore refuses to overwrite unsaved work by default.
+Restore refuses to overwrite unsaved work by default. This is a decision
+preview. JVS is asking how you want to protect or discard the current local
+changes.
 
 Choose one:
 
@@ -73,6 +99,14 @@ jvs restore <save> --discard-unsaved
 Use `--save-first` when the existing folder state matters. Use
 `--discard-unsaved` only when you intend to throw away those edits.
 
+What is okay:
+
+- You see choices instead of a restore run.
+- No files change before you choose one of the commands.
+- `--save-first` creates a save point for the current folder before restore.
+
+Be careful: `--discard-unsaved` means the current local changes are disposable.
+
 ## Restore Plan No Longer Runs
 
 The folder changed after preview, or the plan is stale. Create a new preview:
@@ -83,10 +117,13 @@ jvs restore <save>
 
 Then run the new plan ID.
 
+This is a safety stop. JVS binds run commands to the previewed folder state so
+an old plan cannot silently apply to a different folder state.
+
 ## Path Restore Rejects A Path
 
 Path restore accepts workspace-relative paths only. Do not use absolute paths,
-`..`, or paths inside `.jvs/`.
+`..`, or JVS control paths.
 
 Good:
 
@@ -99,8 +136,22 @@ Not accepted:
 ```bash
 jvs restore <save> --path /tmp/config.yaml
 jvs restore <save> --path ../config.yaml
-jvs restore <save> --path .jvs/descriptors
+jvs restore <save> --path .jvs
 ```
+
+## Path Restore Did Not Restore Another File
+
+That is expected. Path restore changes only the target path named in the plan.
+
+Example:
+
+```bash
+jvs restore <save> --path src/config.yaml
+jvs restore --run <plan-id>
+```
+
+If the preview says `src/config.yaml`, files such as `src/notes.md` are not
+restored or deleted by that run. Make a new preview for a different path.
 
 ## A Read-Only View Cannot Be Edited
 
@@ -110,6 +161,10 @@ close the view:
 ```bash
 jvs view close <view-id>
 ```
+
+History and view commands are read-only. If `jvs history` or `jvs view` appears
+to change your files, stop and check whether another command or editor changed
+the folder.
 
 ## New Workspace Folder Already Exists
 
@@ -122,6 +177,89 @@ jvs workspace new experiment-2 --from <save>
 ```
 
 or move/remove the existing folder yourself and retry.
+
+## Workspace Remove Only Printed A Plan
+
+That is expected. Workspace remove is two-step:
+
+```bash
+jvs workspace remove experiment
+jvs workspace remove --run <plan-id>
+```
+
+What is okay:
+
+- The preview says no workspace folder was removed.
+- It shows the `Folder` and `Workspace`.
+- It prints a `Run:` command.
+
+Review the folder path before running the plan.
+
+## Workspace Remove Refuses Because Of Local Changes
+
+JVS is protecting local changes in that workspace. If those changes matter,
+go to that folder and save them first:
+
+```bash
+cd <workspace-folder>
+jvs save -m "before removing workspace"
+```
+
+If the local changes are intentionally disposable, preview removal with:
+
+```bash
+jvs workspace remove experiment --force
+```
+
+Be careful: `--force` means the remove run may throw away current local changes
+in that workspace folder. It still previews first.
+
+## Cannot Remove `main`
+
+The `main` workspace cannot be removed:
+
+```bash
+jvs workspace remove main
+```
+
+This protects the originally adopted folder. If you want to remove a separate
+workspace, first list workspaces and choose the one you created:
+
+```bash
+jvs workspace list
+jvs workspace remove experiment
+```
+
+## Cleanup Did Not Delete A Workspace Folder
+
+That is expected. Cleanup is not workspace removal.
+
+Cleanup only reviews save point storage:
+
+```bash
+jvs cleanup preview
+jvs cleanup run --plan-id <plan-id>
+```
+
+To remove a workspace folder, use:
+
+```bash
+jvs workspace remove experiment
+jvs workspace remove --run <plan-id>
+```
+
+## Workspace Remove Did Not Free Save Point Storage
+
+That is expected. Workspace remove deletes the selected workspace folder and
+workspace entry. It does not delete save point storage.
+
+After removing a workspace, run cleanup separately if you want to review
+storage that may no longer be protected:
+
+```bash
+jvs cleanup preview
+jvs cleanup run --plan-id <plan-id>
+```
 
 ## Another Recovery Plan Blocks Restore
 
@@ -164,9 +302,17 @@ For large restores, use path restore when possible:
 jvs restore <save> --path path/you/need
 ```
 
+If you are trying to free JVS save point storage, start with:
+
+```bash
+jvs cleanup preview
+```
+
+Review the protected and reclaimable save points before running cleanup.
+
 ## Doctor Reports Findings
 
-For runtime leftovers:
+For leftover operation state:
 
 ```bash
 jvs doctor --repair-list

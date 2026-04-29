@@ -1,0 +1,527 @@
+# Tutorials
+
+These tutorials are written as real work stories. They use ordinary folder
+names and public CLI commands, and they assume you are working in a terminal
+from the folder you want JVS to protect.
+
+Use `<save>` for the full save point ID printed by `jvs save`, or for an ID
+copied from `jvs history` when JVS accepts it.
+Use `<plan-id>` for the plan ID printed by a preview command.
+Anything shown in angle brackets is a placeholder, not text to type exactly.
+Replace it with the value JVS printed or with the folder path on your machine:
+
+| Placeholder | Replace it with |
+| --- | --- |
+| `<save>` | A save point ID from `jvs save`, or an ID from `jvs history` that JVS accepts |
+| `<baseline-save>` | The save point ID for the baseline you saved earlier |
+| `<plan-id>` | The plan ID printed by a restore, workspace remove, or cleanup preview |
+| `<view-path>` | The read-only file or folder path printed by `jvs view` |
+| `<view-id>` | The view ID printed by `jvs view` |
+| `<printed-folder>` | The folder path printed by `jvs workspace new` |
+| `<main-folder>` | The original folder you were working in before opening another workspace |
+
+Commands such as `python`, `cp`, `diff`, `head`, and opening an image viewer
+are examples to make the stories concrete. Replace them with your own tools,
+scripts, spreadsheet exports, editors, or design applications. The reusable
+parts are the JVS commands and the preview-before-run habit.
+
+If JVS says a short save point ID is ambiguous or non-unique, use more of the
+same ID. If the history output does not show enough characters, run
+`jvs history --json` and copy the `save_point_id` field for the save point you
+want.
+
+## Data Experiment
+
+### When To Use
+
+Use this when you are trying model inputs, parameters, and result files in the
+same project folder. The goal is to keep a baseline, compare experiment
+states, restore one file or a whole folder, and protect today's work before a
+larger restore.
+
+### Prepare
+
+Start in a folder that has your scripts, input data, configuration files, and
+output folder.
+
+```bash
+mkdir customer-risk-experiment
+cd customer-risk-experiment
+jvs init
+
+mkdir -p data configs outputs
+cp ~/Downloads/customer_sample.csv data/train.csv
+printf "learning_rate: 0.01\nmax_depth: 4\n" > configs/train.yaml
+python prepare.py --input data/train.csv --output data/prepared.csv
+```
+
+Save the baseline before the first training run:
+
+```bash
+jvs status
+jvs save -m "baseline prepared data and default parameters"
+```
+
+### Commands
+
+Run a first experiment and save the result:
+
+```bash
+python train.py --config configs/train.yaml --output outputs/run-001
+jvs status
+jvs save -m "run 001 default parameters"
+```
+
+Change a parameter, run again, and save again:
+
+```bash
+printf "learning_rate: 0.03\nmax_depth: 6\n" > configs/train.yaml
+python train.py --config configs/train.yaml --output outputs/run-002
+jvs save -m "run 002 higher learning rate and depth"
+```
+
+Find the baseline or a specific run:
+
+```bash
+jvs history --grep "baseline"
+jvs history --grep "run 002"
+```
+
+Look at an old configuration before changing anything:
+
+```bash
+jvs view <save> configs/train.yaml
+```
+
+The command prints a read-only path. Open that path in your editor or compare
+it with your working file:
+
+```bash
+diff -u <view-path> configs/train.yaml
+jvs view close <view-id>
+```
+
+Restore only the parameter file from the baseline, while saving today's work
+first:
+
+```bash
+jvs restore <baseline-save> --path configs/train.yaml --save-first
+jvs restore --run <plan-id>
+```
+
+Restore the whole folder to the baseline, again saving today's work first:
+
+```bash
+jvs restore <baseline-save> --save-first
+jvs restore --run <plan-id>
+```
+
+If a restore preview finds unsaved changes and you did not choose
+`--save-first` or `--discard-unsaved`, JVS shows a decision preview. It changes
+no files and does not print a runnable plan. Run the preview again with one of
+the two safety options when you are ready.
+
+### How To Know It Worked
+
+- `jvs history --grep "baseline"` shows the baseline save point.
+- `jvs history --grep "run"` shows each saved experiment run.
+- After a one-file restore, `configs/train.yaml` matches the selected save
+  point, and the rest of the folder is left alone.
+- After a whole-folder restore, `jvs status` reports no unsaved changes.
+- If you used `--save-first`, `jvs history` includes a new save point for the
+  work JVS protected before restore.
+
+### Common Pitfalls
+
+- Do not run a whole-folder restore when you only need one file. Use
+  `--path configs/train.yaml` or `--path outputs/run-002` for a smaller
+  change.
+- Do not use `--discard-unsaved` for experiment work you still need. Use
+  `--save-first` when in doubt.
+- A preview is not the restore. Files change only after `jvs restore --run
+  <plan-id>`.
+- A view is read-only. Copy from it or restore from it; do not treat it as the
+  active project folder.
+
+### Next Step
+
+Write save messages that include the question you were testing, such as
+`run 003 smaller sample and no outlier removal`. That makes
+`jvs history --grep` useful later.
+
+## Data Cleaning And Analysis Recovery
+
+### When To Use
+
+Use this when a cleaning script, spreadsheet export, or manual edit removes a
+file you still need. You remember the file path but not the exact save point.
+
+### Prepare
+
+Set up a small analysis folder and save clean stages as you work:
+
+```bash
+mkdir churn-analysis
+cd churn-analysis
+jvs init
+
+mkdir -p raw cleaned notebooks
+cp ~/Downloads/customers.csv raw/customers.csv
+python clean_customers.py raw/customers.csv cleaned/customers.csv
+jvs save -m "cleaned customer table"
+
+python summarize.py cleaned/customers.csv notebooks/summary.md
+jvs save -m "summary after customer cleanup"
+```
+
+Now simulate the mistake:
+
+```bash
+rm cleaned/customers.csv
+jvs status
+```
+
+### Commands
+
+Find save points that had the missing file:
+
+```bash
+jvs history --path cleaned/customers.csv
+```
+
+Open the file from a likely save point before restoring it:
+
+```bash
+jvs view <save> cleaned/customers.csv
+head <view-path>
+jvs view close <view-id>
+```
+
+Preview the path restore. Because the file was deleted locally, choose the
+safety option that matches your intent. If the deletion was accidental and you
+do not need to keep it, use:
+
+```bash
+jvs restore <save> --path cleaned/customers.csv --discard-unsaved
+```
+
+Review the preview, then run the printed command:
+
+```bash
+jvs restore --run <plan-id>
+```
+
+### How To Know It Worked
+
+- `cleaned/customers.csv` exists again.
+- `jvs status` reports no unsaved changes if the path restore exactly returned
+  the folder to a saved state.
+- `jvs history` is unchanged by restore; it still shows your earlier save
+  points.
+- The preview lists only the selected path, not the whole analysis folder.
+
+### Common Pitfalls
+
+- `jvs history --path cleaned/customers.csv` searches by path. It does not
+  restore anything.
+- `jvs view` is for checking first. It does not put the file back into your
+  folder.
+- If you choose `--discard-unsaved`, local changes at the selected path are
+  disposable for that operation.
+- If another file changed by mistake too, restore that file separately or
+  preview a whole-folder restore and read the impact carefully.
+
+### Next Step
+
+After the file is back, rerun the analysis that depended on it and save the
+repaired state:
+
+```bash
+python summarize.py cleaned/customers.csv notebooks/summary.md
+jvs save -m "repaired customer table and summary"
+```
+
+## Agent Sandbox
+
+### When To Use
+
+Use this when you want an agent, script, or teammate to explore a risky change
+in another real folder while `main` stays available.
+
+### Prepare
+
+Save the state you want the experiment to start from:
+
+```bash
+cd product-notes
+jvs status
+jvs save -m "before agent experiment"
+jvs history --limit 3
+```
+
+Choose the save point ID or short ID from the history output. If JVS says it is
+ambiguous or non-unique, use a longer or full ID.
+
+### Commands
+
+Create a new workspace from that save point:
+
+```bash
+jvs workspace new agent-run-42 --from <save>
+```
+
+JVS prints a folder path. Move into that folder and let the agent or script
+work there:
+
+```bash
+cd <printed-folder>
+./run-agent-task.sh
+jvs status
+jvs save -m "agent run 42 result"
+```
+
+Return to the original folder and confirm it was not changed:
+
+```bash
+cd <main-folder>
+jvs status
+jvs workspace list
+```
+
+When you are done with the experiment folder, preview its removal:
+
+```bash
+jvs workspace remove agent-run-42
+```
+
+Review the folder path and printed `Run:` command, then run it:
+
+```bash
+jvs workspace remove --run <plan-id>
+```
+
+Check that it is gone:
+
+```bash
+jvs workspace list
+```
+
+Storage cleanup is a separate reviewed step. Only do it when you specifically
+want to free space and have read the preview:
+
+```bash
+jvs cleanup preview
+jvs cleanup run --plan-id <plan-id>
+```
+
+### How To Know It Worked
+
+- `jvs workspace list` shows both `main` and `agent-run-42` after creation.
+- The agent writes files under the printed experiment folder, not under
+  `main`.
+- After the remove plan runs, `jvs workspace list` no longer shows
+  `agent-run-42`, and the printed experiment folder path is gone.
+- Cleanup, if you choose to run it, reports completion after its own preview
+  and its own plan ID. A fresh cleanup preview should show less storage to
+  clean, or nothing to clean for that plan.
+
+### Common Pitfalls
+
+- Do not paste the agent's commands into `main` if the goal is isolation.
+- `workspace remove` is preview-first; the preview alone does not delete the
+  folder.
+- If the experiment workspace has unsaved changes, decide whether those files
+  are still needed before using `--force` on the remove preview.
+- Do not treat cleanup as part of workspace removal. It is a separate storage
+  task with a separate review step.
+
+### Next Step
+
+If the experiment produced useful work, copy the files you want back into
+`main` deliberately, or keep the experiment workspace and save more progress
+there.
+
+## Game Or Design Asset Pack
+
+### When To Use
+
+Use this when a folder contains artwork, exported assets, configuration files,
+and notes that should be saved together. This works well for game prototypes,
+UI kits, level packs, sound sets, or brand design folders.
+
+### Prepare
+
+Create the project folder and save the first playable or reviewable state:
+
+```bash
+mkdir city-level-pack
+cd city-level-pack
+jvs init
+
+mkdir -p assets/ui assets/audio configs notes
+cp ~/Downloads/title.png assets/ui/title.png
+cp ~/Downloads/theme.wav assets/audio/theme.wav
+printf "enemy_speed: 1.0\nspawn_rate: 4\n" > configs/balance.yaml
+printf "First pass art direction\n" > notes/art-direction.md
+jvs save -m "first playable city level pack"
+```
+
+### Commands
+
+Save a later art and tuning pass:
+
+```bash
+cp ~/Downloads/title-v2.png assets/ui/title.png
+printf "enemy_speed: 1.2\nspawn_rate: 5\n" > configs/balance.yaml
+jvs save -m "updated title art and balance tuning"
+```
+
+Look at an older asset before deciding what to restore:
+
+```bash
+jvs history --grep "first playable"
+jvs view <save> assets/ui/title.png
+```
+
+Open `<view-path>` in your image viewer. Close the view after checking it:
+
+```bash
+jvs view close <view-id>
+```
+
+Restore only the balance file:
+
+```bash
+jvs restore <save> --path configs/balance.yaml --discard-unsaved
+jvs restore --run <plan-id>
+```
+
+Restore a folder of assets if a batch export went wrong:
+
+```bash
+jvs restore <save> --path assets/ui --discard-unsaved
+jvs restore --run <plan-id>
+```
+
+### How To Know It Worked
+
+- `jvs history` shows named save points for playable or reviewable moments.
+- `jvs view <save> assets/ui/title.png` gives you a read-only file to inspect.
+- A path restore for `configs/balance.yaml` changes that file without replacing
+  the entire project folder.
+- A path restore for `assets/ui` changes only that folder.
+
+### Common Pitfalls
+
+- Do not use cleanup as an undo command. Use `view` and `restore` for old
+  versions.
+- Do not run cleanup just because assets are large. First run `jvs cleanup
+  preview`, read what it says, and continue only if freeing that storage is
+  truly your goal.
+- Asset tools often rewrite several files at once. Run `jvs status` before
+  restore so you know whether there are unsaved changes.
+- If you want to keep a new art pass before returning to an older one, use
+  `--save-first`.
+
+### Next Step
+
+Save review milestones with plain messages, for example
+`review build with final title art`. Designers and producers can then find the
+right save point with `jvs history --grep "review"`.
+
+## Everyday Document Project
+
+### When To Use
+
+Use this for reports, proposals, grant drafts, policy documents, campaign
+copy, meeting packets, or any folder where several ordinary files change
+together over time.
+
+### Prepare
+
+Create or adopt the folder:
+
+```bash
+mkdir spring-report
+cd spring-report
+jvs init
+
+mkdir -p drafts data exports
+printf "# Spring Report\n\nOpening notes.\n" > drafts/report.md
+printf "source,total\nonline,42\n" > data/survey.csv
+jvs save -m "first report outline and survey data"
+```
+
+### Commands
+
+Save useful writing moments:
+
+```bash
+printf "\n## Findings\nCustomers asked for clearer onboarding.\n" >> drafts/report.md
+jvs save -m "added findings section"
+
+printf "\n## Recommendations\nRun a two-week onboarding review.\n" >> drafts/report.md
+jvs save -m "added recommendations"
+```
+
+List the writing history:
+
+```bash
+jvs history
+jvs history --grep "recommendations"
+```
+
+Read an older draft without changing your folder:
+
+```bash
+jvs view <save> drafts/report.md
+```
+
+Open `<view-path>` in your editor or copy a paragraph from it, then close the
+view:
+
+```bash
+jvs view close <view-id>
+```
+
+Restore one document after a bad edit:
+
+```bash
+jvs restore <save> --path drafts/report.md --save-first
+jvs restore --run <plan-id>
+```
+
+Restore the whole folder before sending a package:
+
+```bash
+jvs restore <save> --save-first
+jvs restore --run <plan-id>
+```
+
+### How To Know It Worked
+
+- `jvs history` shows your named writing milestones.
+- `jvs view` gives you a read-only copy of an older draft.
+- A one-document restore changes only that document.
+- A whole-folder restore returns drafts, data, and exports to the selected save
+  point.
+- `--save-first` leaves a save point for the version you had right before the
+  restore.
+
+### Common Pitfalls
+
+- Save before sending a document to someone else. A message like
+  `sent to finance review` is easier to find later than `final`.
+- Do not restore the whole folder when only one draft needs repair.
+- If JVS shows a decision preview because there are unsaved changes, read the
+  next commands and rerun with `--save-first` unless you are sure the changes
+  can be discarded.
+- A restored document is not a new writing milestone until you run `jvs save`.
+
+### Next Step
+
+After the folder is correct, save the shared version:
+
+```bash
+jvs save -m "sent spring report for review"
+```

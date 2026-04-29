@@ -1,6 +1,10 @@
 # Examples
 
 These examples use the save point workflow from the public command surface.
+When a command shows `<save>`, use the full ID printed by `jvs save`, or an ID
+from `jvs history` that JVS accepts. If a short ID is ambiguous, use a longer
+or full ID. If history does not show enough characters, `jvs history --json`
+includes the full `save_point_id` value.
 
 ## Experiment Folder
 
@@ -45,7 +49,7 @@ jvs restore <save> --path config/app.yaml
 jvs restore --run <plan-id>
 ```
 
-Only that managed path is restored. History is unchanged.
+Only that path is restored. History is unchanged.
 
 ## Inspect Before Restoring
 
@@ -116,7 +120,7 @@ jvs restore --run <plan-id> --json
 
 ## Health Check Before A Risky Restore
 
-Before replacing many managed files:
+Before replacing many files:
 
 ```bash
 jvs doctor --strict

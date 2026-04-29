@@ -1,6 +1,11 @@
 # Command Reference
 
-This page follows the public help surface shown by `jvs --help`.
+This page follows the public help surface shown by `jvs --help`. If this is
+your first time using JVS, start with the [Quickstart](quickstart.md), then come
+back here for exact command forms.
+
+For a plain-language map of which commands change files and which commands only
+preview or inspect, see the [User Guide](README.md#what-changes-files).
 
 ## Global Flags
 
@@ -47,14 +52,14 @@ since save point`, and `Unsaved changes`.
 
 ## `jvs save -m "message"`
 
-Create a save point from managed files in the active workspace.
+Create a save point from the active workspace.
 
 ```bash
 jvs save -m "baseline"
 jvs save --message "before migration"
 ```
 
-A message is required. The command prints the new save point ID.
+A message is required. The command prints the new full save point ID.
 
 ## `jvs history`
 
@@ -73,9 +78,14 @@ Flags:
 | Flag | Use |
 | --- | --- |
 | `--limit`, `-n` | Limit displayed save points; `0` means all |
-| `--grep`, `-g` | Filter by message substring |
+| `--grep`, `-g` | Search by message substring |
 | `--path` | Find save points containing a workspace-relative path |
 | `--all` | Show save points across workspaces |
+
+Human history output shows a copyable ID or short ID for each save point. That
+short form is usually enough in commands that ask for `<save>`. If JVS says it
+is ambiguous or non-unique, use more characters from the same ID. If you need
+the full value, run `jvs history --json` and copy the `save_point_id` field.
 
 ## `jvs view <save-point> [path]`
 
@@ -87,12 +97,13 @@ jvs view <save> src/config.yaml
 jvs view close <view-id>
 ```
 
-The save point must be a full ID or a unique ID prefix. View does not change
-workspace files or history.
+The save point must be a full ID or an unambiguous ID prefix. View does not
+change workspace files or history.
 
 ## `jvs restore [save-point] [--path path]`
 
-Create or run a restore plan.
+Create or run a restore plan. `jvs restore <save>` is preview-only; files change
+only when you run `jvs restore --run <plan-id>`.
 
 ```bash
 jvs restore <save>
@@ -121,7 +132,8 @@ Safety flags:
 
 ## `jvs workspace`
 
-Manage workspace folders.
+Manage workspace folders. For the natural meaning of workspace and folder, see
+[Concepts](concepts.md#workspace).
 
 ```bash
 jvs workspace list
@@ -158,7 +170,7 @@ Review the folder path, workspace name, unsaved-change status, and printed
 `workspace remove --run <plan-id>` removes the selected workspace folder and
 workspace entry. It does not remove save point storage. Use
 `jvs cleanup preview`, then `jvs cleanup run --plan-id <plan-id>` for reviewed
-cleanup of unprotected save point storage.
+cleanup of save point storage.
 
 If the workspace has unsaved changes, add `--force` to the preview command
 only when those local changes are intentionally disposable:
@@ -192,8 +204,8 @@ jvs cleanup run --plan-id <plan-id>
 
 Cleanup is two-step. `preview` shows the plan and does not delete anything.
 After you review the plan, `run` rechecks that exact plan before deleting
-unneeded save point storage. Cleanup does not delete workspace folders, user
-cache directories, JVS control data, runtime state, or history.
+unneeded save point storage. Cleanup does not delete workspace folders, your
+files, JVS control data, active recovery information, or history.
 
 | Command | Use |
 | --- | --- |
