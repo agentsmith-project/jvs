@@ -5,6 +5,105 @@ as active reader content for the published GA line. The active product
 vocabulary is folder, workspace, save point, save, history, view, restore,
 recovery plan, doctor, and cleanup.
 
+## v0.4.3 - 2026-04-29
+
+### Highlights
+
+- GA candidate readiness for cleanup public boundary hardening: active docs and
+  conformance checks keep cleanup protection reasons on the stable public
+  surface and avoid leaking internal runtime mechanisms.
+- GA safety and clarity hardening: release-facing docs keep strict doctor,
+  integrity, recovery, and runtime repair guidance explicit before release
+  operations.
+- Migration whole-folder copy hardening: backup and migration examples now
+  fail closed around a fresh destination, use an offline whole-folder copy, and
+  rebuild destination-local runtime state with
+  `jvs doctor --strict --repair-runtime`.
+- Compact shell function guard scope coverage keeps migration guard examples
+  narrow while preserving the v0 boundary against remote transfer behavior.
+- Release-facing identity remains `github.com/agentsmith-project/jvs`; release
+  URLs use the canonical GitHub project, for example
+  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.0`.
+
+### Breaking changes
+
+- None for the stable v0 public CLI contract.
+- This main-branch version bump is a GA candidate/readiness record only; it
+  does not create a final tag, publish release artifacts, or change the on-disk
+  repository layout version.
+
+### Known limitations
+
+- v0 does not include remote push/pull.
+- v0 does not include in-JVS signing commands.
+- v0 does not include public partial-save contracts.
+- v0 does not include compression contracts.
+- v0 does not include merge/rebase.
+- v0 does not include complex retention policy flags.
+- Strict integrity checks can be I/O intensive on large workspaces.
+- Descriptor signing and in-JVS trust policy remain outside the stable v0
+  repository format.
+
+### Risk labels
+
+- `integrity`: descriptor checksum and payload hash detect independent
+  corruption; coordinated descriptor-plus-checksum rewrite remains a v0
+  residual risk.
+- `migration`: non-portable JVS runtime state is destination-local and must be
+  rebuilt at the fresh destination with
+  `jvs doctor --strict --repair-runtime`.
+- `recovery`: restore run remains recoverable through recovery plans, but
+  operators must resolve active plans before starting another restore in the
+  same workspace.
+
+### Migration notes
+
+- Existing repositories do not need an on-disk migration for the `v0.4.3`
+  candidate target; `.jvs/format_version` remains a repository layout version,
+  not the application release version.
+- After upgrading to this candidate, run `jvs doctor --strict` on a
+  representative repo before relying on it for release workflows.
+- For physical backup or storage migration, start with a fresh destination, run
+  an offline whole-folder copy, run
+  `jvs doctor --strict --repair-runtime` at the destination, then run a fresh
+  cleanup preview before any cleanup run.
+- Do not treat non-portable JVS runtime state as authoritative during physical
+  backup or storage migration; rebuild it at the destination before resuming
+  JVS writes.
+- Run the restore drill from `docs/13_OPERATION_RUNBOOK.md`, including
+  preview/run and recovery status/resume/rollback coverage.
+
+### Release evidence
+
+- See the [release evidence ledger](RELEASE_EVIDENCE.md#v043---2026-04-29)
+  for the `v0.4.3` GA candidate readiness record.
+- Evidence class: GA candidate readiness.
+- Candidate target tag: `v0.4.3`
+- Candidate state: not final, not tagged, and not published; the release is
+  pending final tag creation and publication through the normal CI release
+  flow.
+- Source archive boundary: no immutable `v0.4.3` tag snapshot exists yet; when
+  the pending final tag is created, its source archive will record readiness
+  from tag time.
+- publication final evidence remains pending; the future GitHub Release page
+  and post-release main ledger will record workflow run, release state,
+  artifacts, checksums, signing identity, smoke, and coverage facts after the
+  release exists.
+- Readiness scope since `v0.4.2`: cleanup public boundary hardening, GA
+  safety/clarity, migration whole-folder copy fail-closed docs/conformance
+  hardening, and compact shell function guard scope coverage.
+
+### Release artifacts
+
+- No final `v0.4.3` release artifacts are published from this main-branch
+  candidate entry.
+- Artifact plan for the pending final tag remains the standard five platform
+  binaries, matching `.bundle` files, `SHA256SUMS`, and `SHA256SUMS.bundle`.
+- Signing remains outside in-JVS commands and is expected to use the release
+  workflow's Sigstore/cosign v3 bundle flow.
+- Final artifact, checksum, signing, and smoke evidence will be recorded only
+  after CI creates the release from the final tag.
+
 ## v0.4.2 - 2026-04-28
 
 ### Highlights

@@ -2289,9 +2289,9 @@ func TestDocs_V042GAReleaseEvidenceRecordsPublishedRelease(t *testing.T) {
 	const runURL = "https://github.com/agentsmith-project/jvs/actions/runs/25056873829"
 	const releaseURL = "https://github.com/agentsmith-project/jvs/releases/tag/v0.4.2"
 
-	changelogEntry := firstChangelogEntry(readRepoFile(t, "docs/99_CHANGELOG.md"))
+	changelogEntry := changelogEntry(t, readRepoFile(t, "docs/99_CHANGELOG.md"), heading)
 	if !strings.Contains(changelogEntry, heading) {
-		t.Fatalf("latest changelog entry must be the published v0.4.2 GA release heading %q", heading)
+		t.Fatalf("changelog must retain the published v0.4.2 GA release heading %q", heading)
 	}
 	for _, forbidden := range []string{
 		"not final",
@@ -2365,6 +2365,46 @@ func TestDocs_V042GAReleaseEvidenceRecordsPublishedRelease(t *testing.T) {
 	}
 }
 
+func TestDocs_ReleaseEvidenceV043GACandidateReadinessRecordsPendingRelease(t *testing.T) {
+	const heading = "## v0.4.3 - 2026-04-29"
+	const evidenceLink = "RELEASE_EVIDENCE.md#v043---2026-04-29"
+
+	latestHeading := latestChangelogHeading(t)
+	if latestHeading != heading {
+		t.Fatalf("latest changelog entry must be the v0.4.3 GA candidate heading %q, got %q", heading, latestHeading)
+	}
+
+	changelogEntry := changelogEntry(t, readRepoFile(t, "docs/99_CHANGELOG.md"), heading)
+	for _, required := range []string{
+		"GA candidate",
+		evidenceLink,
+		"not final",
+		"not tagged",
+		"not published",
+		"pending final tag",
+		"Candidate target tag: `v0.4.3`",
+	} {
+		requireReleaseReadinessText(t, "v0.4.3 changelog candidate entry", changelogEntry, required)
+	}
+
+	entry := releaseEvidenceEntry(t, readRepoFile(t, "docs/RELEASE_EVIDENCE.md"), heading)
+	requireCandidateReleaseEvidence(t, heading, entry)
+	for _, forbidden := range []struct {
+		name    string
+		pattern *regexp.Regexp
+	}{
+		{name: "PASS status", pattern: releaseEvidenceStatusPassPattern},
+		{name: "release-gate PASS row", pattern: releaseEvidenceGatePassPattern},
+		{name: "published artifact count", pattern: releaseEvidencePublishedArtifactCountPattern},
+		{name: "final tag line", pattern: releaseEvidenceTagPattern},
+		{name: "final tagged commit", pattern: releaseEvidenceCommitPattern},
+	} {
+		if forbidden.pattern.MatchString(entry) {
+			t.Fatalf("v0.4.3 candidate release evidence must not claim %s before final publication", forbidden.name)
+		}
+	}
+}
+
 func TestDocs_ReleaseEvidenceDisclosesSourceArchivePublicationBoundary(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -2407,7 +2447,7 @@ func TestDocs_V042FinalEvidenceDisclosesCandidateTagSourceArchive(t *testing.T) 
 		},
 		releaseEvidenceDisclosureTarget{
 			name: "final changelog entry",
-			body: firstChangelogEntry(readRepoFile(t, "docs/99_CHANGELOG.md")),
+			body: changelogEntry(t, readRepoFile(t, "docs/99_CHANGELOG.md"), finalHeading),
 		},
 	)
 	if len(missing) > 0 {
@@ -6015,6 +6055,11 @@ func canonicalReleaseURLForTag(tag string) string {
 func releaseEvidenceEntry(t *testing.T, ledger, heading string) string {
 	t.Helper()
 	return markdownSectionByHeading(t, "docs/RELEASE_EVIDENCE.md", ledger, heading)
+}
+
+func changelogEntry(t *testing.T, changelog, heading string) string {
+	t.Helper()
+	return markdownSectionByHeading(t, "docs/99_CHANGELOG.md", changelog, heading)
 }
 
 func releaseEvidenceEntryForVersion(t *testing.T, ledger, version string) string {
