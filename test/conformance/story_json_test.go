@@ -5,6 +5,7 @@ package conformance
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -77,6 +78,281 @@ func TestStoryJSON_ManagedFolderSaveRestorePreviewFirst(t *testing.T) {
 		t.Fatalf("restore should leave history head at update and file source at baseline: %#v", statusAfter)
 	}
 	requireHistoryIDs(t, repoPath, []string{updated, baseline, setup})
+}
+
+func TestStoryJSON_DirtyRestoreDecisionPreviewShowsImpactBeforeSafetyChoice(t *testing.T) {
+	t.Run("whole folder", func(t *testing.T) {
+		repoPath, cleanup := initTestRepo(t)
+		defer cleanup()
+
+		createFiles(t, repoPath, map[string]string{
+			"app.txt":  "v1\n",
+			"keep.txt": "keep v1\n",
+		})
+		first := savePoint(t, repoPath, "first")
+		createFiles(t, repoPath, map[string]string{
+			"app.txt":       "v2\n",
+			"generated.txt": "generated v2\n",
+			"keep.txt":      "keep v1\n",
+		})
+		second := savePoint(t, repoPath, "second")
+		historyBefore := []string{second, first}
+
+		createFiles(t, repoPath, map[string]string{
+			"app.txt":       "unsaved local edit\n",
+			"generated.txt": "generated local edit\n",
+		})
+
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "restore", first)
+		if got := readFile(t, repoPath, "app.txt"); got != "unsaved local edit\n" {
+			t.Fatalf("dirty restore decision preview changed app.txt: %q", got)
+		}
+		if got := readFile(t, repoPath, "generated.txt"); got != "generated local edit\n" {
+			t.Fatalf("dirty restore decision preview changed generated.txt: %q", got)
+		}
+		requireHistoryIDs(t, repoPath, historyBefore)
+		if code != 0 {
+			t.Fatalf("dirty restore should show a non-mutating decision preview before safety choice: stdout=%s stderr=%s", stdout, stderr)
+		}
+		requirePureJSONEnvelope(t, stdout, stderr, true)
+		decision := decodeContractDataMap(t, stdout)
+		if decision["mode"] != "decision_preview" || decision["source_save_point"] != first {
+			t.Fatalf("dirty restore decision preview mismatch: %#v", decision)
+		}
+		if decision["history_changed"] != false || decision["files_changed"] != false {
+			t.Fatalf("dirty restore decision preview must not mutate files or history: %#v", decision)
+		}
+		requireNoRunnableRestorePlan(t, decision)
+		requireManagedFilesImpactAtLeast(t, decision, "overwrite", 1)
+		requireManagedFilesImpactAtLeast(t, decision, "delete", 1)
+		if !strings.Contains(stdout, "--discard-unsaved") || !strings.Contains(stdout, "--save-first") {
+			t.Fatalf("dirty restore decision preview should show explicit safety choices: %s", stdout)
+		}
+	})
+
+	t.Run("path", func(t *testing.T) {
+		repoPath, cleanup := initTestRepo(t)
+		defer cleanup()
+
+		createFiles(t, repoPath, map[string]string{
+			"app.txt":   "v1\n",
+			"notes.txt": "notes v1\n",
+		})
+		first := savePoint(t, repoPath, "first")
+		createFiles(t, repoPath, map[string]string{
+			"app.txt":   "v2\n",
+			"notes.txt": "notes v2\n",
+		})
+		second := savePoint(t, repoPath, "second")
+		historyBefore := []string{second, first}
+
+		createFiles(t, repoPath, map[string]string{
+			"app.txt":   "unsaved app edit\n",
+			"notes.txt": "unsaved notes edit\n",
+		})
+
+		stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "restore", first, "--path", "app.txt")
+		if got := readFile(t, repoPath, "app.txt"); got != "unsaved app edit\n" {
+			t.Fatalf("dirty path restore decision preview changed target: %q", got)
+		}
+		if got := readFile(t, repoPath, "notes.txt"); got != "unsaved notes edit\n" {
+			t.Fatalf("dirty path restore decision preview changed neighboring file: %q", got)
+		}
+		requireHistoryIDs(t, repoPath, historyBefore)
+		if code != 0 {
+			t.Fatalf("dirty path restore should show a non-mutating decision preview before safety choice: stdout=%s stderr=%s", stdout, stderr)
+		}
+		requirePureJSONEnvelope(t, stdout, stderr, true)
+		decision := decodeContractDataMap(t, stdout)
+		if decision["mode"] != "decision_preview" || decision["scope"] != "path" || decision["path"] != "app.txt" || decision["source_save_point"] != first {
+			t.Fatalf("dirty path restore decision preview mismatch: %#v", decision)
+		}
+		if decision["history_changed"] != false || decision["files_changed"] != false {
+			t.Fatalf("dirty path restore decision preview must not mutate files or history: %#v", decision)
+		}
+		requireNoRunnableRestorePlan(t, decision)
+		requireManagedFilesImpactAtLeast(t, decision, "overwrite", 1)
+		if !strings.Contains(stdout, "--discard-unsaved") || !strings.Contains(stdout, "--save-first") {
+			t.Fatalf("dirty path restore decision preview should show explicit safety choices: %s", stdout)
+		}
+	})
+}
+
+func TestStoryJSON_DirtyRestoreExplicitSafetyChoicesCreateRunnablePlans(t *testing.T) {
+	t.Run("discard unsaved whole folder", func(t *testing.T) {
+		repoPath, cleanup := initTestRepo(t)
+		defer cleanup()
+
+		createFiles(t, repoPath, map[string]string{
+			"app.txt":       "v1\n",
+			"generated.txt": "generated v1\n",
+		})
+		first := savePoint(t, repoPath, "first")
+		createFiles(t, repoPath, map[string]string{
+			"app.txt":       "v2\n",
+			"generated.txt": "generated v2\n",
+		})
+		second := savePoint(t, repoPath, "second")
+		historyBefore := []string{second, first}
+		createFiles(t, repoPath, map[string]string{
+			"app.txt":       "throw away me\n",
+			"generated.txt": "throw away generated\n",
+		})
+
+		preview := jvsJSONData(t, repoPath, "restore", first, "--discard-unsaved")
+		planID, _ := preview["plan_id"].(string)
+		if preview["mode"] != "preview" || preview["source_save_point"] != first || planID == "" {
+			t.Fatalf("discard-unsaved restore preview mismatch: %#v", preview)
+		}
+		if preview["history_changed"] != false || preview["files_changed"] != false {
+			t.Fatalf("discard-unsaved preview must not mutate files or history: %#v", preview)
+		}
+		requireDiscardUnsavedOption(t, preview["options"])
+		if got := readFile(t, repoPath, "app.txt"); got != "throw away me\n" {
+			t.Fatalf("discard-unsaved preview changed app.txt: %q", got)
+		}
+		requireHistoryIDs(t, repoPath, historyBefore)
+
+		run := jvsJSONData(t, repoPath, "restore", "--run", planID)
+		if run["mode"] != "run" || run["restored_save_point"] != first || run["content_source"] != first {
+			t.Fatalf("discard-unsaved restore run mismatch: %#v", run)
+		}
+		if got := readFile(t, repoPath, "app.txt"); got != "v1\n" {
+			t.Fatalf("discard-unsaved restore run app.txt = %q", got)
+		}
+		requireHistoryIDs(t, repoPath, historyBefore)
+	})
+
+	t.Run("save first path", func(t *testing.T) {
+		repoPath, cleanup := initTestRepo(t)
+		defer cleanup()
+
+		createFiles(t, repoPath, map[string]string{
+			"app.txt":   "v1\n",
+			"notes.txt": "notes v1\n",
+		})
+		first := savePoint(t, repoPath, "first")
+		createFiles(t, repoPath, map[string]string{
+			"app.txt":   "v2\n",
+			"notes.txt": "notes v2\n",
+		})
+		second := savePoint(t, repoPath, "second")
+		createFiles(t, repoPath, map[string]string{
+			"app.txt":   "local app before path restore\n",
+			"notes.txt": "local notes kept outside path restore\n",
+		})
+
+		preview := jvsJSONData(t, repoPath, "restore", first, "--path", "app.txt", "--save-first")
+		planID, _ := preview["plan_id"].(string)
+		if preview["mode"] != "preview" || preview["scope"] != "path" || preview["path"] != "app.txt" || planID == "" {
+			t.Fatalf("save-first path restore preview mismatch: %#v", preview)
+		}
+		if preview["history_changed"] != false || preview["files_changed"] != false {
+			t.Fatalf("save-first path preview must not mutate files or history: %#v", preview)
+		}
+		requireSaveFirstOption(t, preview["options"])
+		requireHistoryIDs(t, repoPath, []string{second, first})
+		if got := readFile(t, repoPath, "app.txt"); got != "local app before path restore\n" {
+			t.Fatalf("save-first path preview changed app.txt: %q", got)
+		}
+
+		run := jvsJSONData(t, repoPath, "restore", "--run", planID)
+		safetySave, _ := run["newest_save_point"].(string)
+		if run["mode"] != "run" || run["restored_path"] != "app.txt" || run["source_save_point"] != first || safetySave == "" {
+			t.Fatalf("save-first path restore run mismatch: %#v", run)
+		}
+		requireDifferentSavePoints(t, safetySave, second)
+		requireHistoryIDs(t, repoPath, []string{safetySave, second, first})
+		if got := readFile(t, repoPath, "app.txt"); got != "v1\n" {
+			t.Fatalf("save-first path restore run app.txt = %q", got)
+		}
+		if got := readFile(t, repoPath, "notes.txt"); got != "local notes kept outside path restore\n" {
+			t.Fatalf("path restore should keep neighboring dirty file: %q", got)
+		}
+
+		viewOut := jvsJSON(t, repoPath, "view", safetySave, "app.txt")
+		viewPath, _ := decodeContractDataMap(t, viewOut)["view_path"].(string)
+		if got := readAbsoluteFile(t, viewPath); got != "local app before path restore\n" {
+			t.Fatalf("save-first safety save did not capture dirty path content: %q", got)
+		}
+		closeView(t, repoPath, viewOut)
+	})
+}
+
+func TestStoryJSON_SaveFirstProtectsCurrentWorkBeforeOlderRestore(t *testing.T) {
+	repoPath, cleanup := initTestRepo(t)
+	defer cleanup()
+
+	createFiles(t, repoPath, map[string]string{
+		"app.txt":  "v1\n",
+		"note.txt": "note v1\n",
+	})
+	first := savePoint(t, repoPath, "first")
+	createFiles(t, repoPath, map[string]string{
+		"app.txt":  "v2\n",
+		"note.txt": "note v2\n",
+	})
+	second := savePoint(t, repoPath, "second")
+	createFiles(t, repoPath, map[string]string{
+		"app.txt":  "local app before older restore\n",
+		"note.txt": "local note before older restore\n",
+	})
+
+	preview := jvsJSONData(t, repoPath, "restore", first, "--save-first")
+	planID, _ := preview["plan_id"].(string)
+	if preview["mode"] != "preview" || preview["source_save_point"] != first || planID == "" {
+		t.Fatalf("save-first restore preview mismatch: %#v", preview)
+	}
+	if preview["history_changed"] != false || preview["files_changed"] != false || preview["expected_newest_save_point"] != second {
+		t.Fatalf("save-first preview should not mutate and should keep expected newest at current head: %#v", preview)
+	}
+	requireSaveFirstOption(t, preview["options"])
+	requireHistoryIDs(t, repoPath, []string{second, first})
+
+	run := jvsJSONData(t, repoPath, "restore", "--run", planID)
+	safetySave, _ := run["newest_save_point"].(string)
+	if run["mode"] != "run" || run["restored_save_point"] != first || run["content_source"] != first {
+		t.Fatalf("save-first restore run mismatch: %#v", run)
+	}
+	requireDifferentSavePoints(t, safetySave, second)
+	if run["history_head"] != safetySave {
+		t.Fatalf("save-first restore should explain safety save as history head: %#v", run)
+	}
+	if run["history_changed"] != false || run["unsaved_changes"] != false || run["files_state"] != "matches_save_point" {
+		t.Fatalf("save-first restore should finish clean without treating restore as history rewrite: %#v", run)
+	}
+	if got := readFile(t, repoPath, "app.txt"); got != "v1\n" {
+		t.Fatalf("save-first restore app.txt = %q", got)
+	}
+	if got := readFile(t, repoPath, "note.txt"); got != "note v1\n" {
+		t.Fatalf("save-first restore note.txt = %q", got)
+	}
+
+	history := jvsJSONData(t, repoPath, "history")
+	requireHistoryIDs(t, repoPath, []string{safetySave, second, first})
+	requireHistoryRecordMessage(t, history, safetySave, "save before restore")
+
+	status := jvsJSONData(t, repoPath, "status")
+	if status["newest_save_point"] != safetySave || status["history_head"] != safetySave || status["content_source"] != first {
+		t.Fatalf("status after save-first restore should distinguish history head from restored content source: %#v", status)
+	}
+	if status["unsaved_changes"] != false || status["files_state"] != "matches_save_point" {
+		t.Fatalf("status after save-first restore should be clean: %#v", status)
+	}
+
+	appView := jvsJSON(t, repoPath, "view", safetySave, "app.txt")
+	appViewPath, _ := decodeContractDataMap(t, appView)["view_path"].(string)
+	if got := readAbsoluteFile(t, appViewPath); got != "local app before older restore\n" {
+		t.Fatalf("safety save should preserve local app work: %q", got)
+	}
+	closeView(t, repoPath, appView)
+
+	noteView := jvsJSON(t, repoPath, "view", safetySave, "note.txt")
+	noteViewPath, _ := decodeContractDataMap(t, noteView)["view_path"].(string)
+	if got := readAbsoluteFile(t, noteViewPath); got != "local note before older restore\n" {
+		t.Fatalf("safety save should preserve local note work: %q", got)
+	}
+	closeView(t, repoPath, noteView)
 }
 
 func TestStoryJSON_ManagedPathRecoveryRestoresOnlyTargetPath(t *testing.T) {

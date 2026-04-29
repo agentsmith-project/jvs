@@ -66,17 +66,29 @@ Examples:
 		}
 
 		var plan *restoreplan.Plan
+		var decisionReason string
 		err = withActiveOperationSourcePin(r.Root, targetID, "restore preview", func() error {
+			if restoreDiscardDirty && restoreIncludeWorking {
+				return fmt.Errorf("--discard-unsaved and --save-first cannot be used together")
+			}
+			engineType := detectEngine(r.Root)
 			if !restoreDiscardDirty && !restoreIncludeWorking {
 				if err := checkRestorePreviewPreDirtyCapacity(r.Root, workspaceName, targetID, ""); err != nil {
 					return err
 				}
-			}
-			if err := rejectUnsavedChangesForRestore(r.Root, workspaceName); err != nil {
-				return err
+				unsavedChanges, err := workspaceDirty(r.Root, workspaceName)
+				if err != nil {
+					return err
+				}
+				if unsavedChanges {
+					decisionReason = "folder has unsaved changes"
+					var err error
+					plan, err = restoreplan.CreateDecisionPreview(r.Root, workspaceName, targetID, engineType)
+					return err
+				}
 			}
 			var err error
-			plan, err = restoreplan.Create(r.Root, workspaceName, targetID, detectEngine(r.Root), restoreplan.Options{
+			plan, err = restoreplan.Create(r.Root, workspaceName, targetID, engineType, restoreplan.Options{
 				DiscardUnsaved: restoreDiscardDirty,
 				SaveFirst:      restoreIncludeWorking,
 			})
@@ -86,6 +98,10 @@ Examples:
 			return restorePointError(err)
 		}
 		result := publicRestorePreviewFromPlan(plan)
+		if decisionReason != "" {
+			result.DecisionReason = decisionReason
+			result.NextCommands = restoreDecisionNextCommands(targetID, "")
+		}
 		if jsonOutput {
 			return outputJSON(result)
 		}
@@ -141,12 +157,13 @@ type publicRestoreResult struct {
 
 type publicRestorePreviewResult struct {
 	Mode                    string                         `json:"mode"`
-	PlanID                  string                         `json:"plan_id"`
+	PlanID                  string                         `json:"plan_id,omitempty"`
 	Scope                   string                         `json:"scope,omitempty"`
 	Folder                  string                         `json:"folder"`
 	Workspace               string                         `json:"workspace"`
 	SourceSavePoint         string                         `json:"source_save_point"`
 	Path                    string                         `json:"path,omitempty"`
+	DecisionReason          string                         `json:"decision_reason,omitempty"`
 	NewestSavePoint         *string                        `json:"newest_save_point"`
 	HistoryHead             *string                        `json:"history_head"`
 	ExpectedNewestSavePoint *string                        `json:"expected_newest_save_point"`
@@ -156,7 +173,8 @@ type publicRestorePreviewResult struct {
 	Options                 restoreplan.Options            `json:"options,omitempty"`
 	HistoryChanged          bool                           `json:"history_changed"`
 	FilesChanged            bool                           `json:"files_changed"`
-	RunCommand              string                         `json:"run_command"`
+	RunCommand              string                         `json:"run_command,omitempty"`
+	NextCommands            []string                       `json:"next_commands,omitempty"`
 }
 
 type publicRestorePathCandidatesResult struct {
@@ -256,6 +274,9 @@ func executeRestorePlanRun(repoRoot, workspaceName, planID string) (restoreRunRe
 		plan, err := restoreplan.Load(repoRoot, planID)
 		if err != nil {
 			return err
+		}
+		if !plan.IsRunnable() {
+			return fmt.Errorf("restore preview requires a safety decision; rerun preview with --save-first or --discard-unsaved. No files were changed.")
 		}
 		result.Scope = plan.EffectiveScope()
 		if result.Scope == restoreplan.ScopePath {
@@ -462,7 +483,12 @@ func runRestorePath(cmd *cobra.Command, args []string, repoRoot, workspaceName s
 	}
 
 	var plan *restoreplan.Plan
+	var decisionReason string
 	err = withActiveOperationSourcePin(repoRoot, targetID, "restore path preview", func() error {
+		if restoreDiscardDirty && restoreIncludeWorking {
+			return fmt.Errorf("--discard-unsaved and --save-first cannot be used together")
+		}
+		engineType := detectEngine(repoRoot)
 		if !restoreIncludeWorking && !restoreDiscardDirty {
 			if err := checkRestorePreviewPreDirtyCapacity(repoRoot, workspaceName, targetID, path); err != nil {
 				return err
@@ -472,11 +498,14 @@ func runRestorePath(cmd *cobra.Command, args []string, repoRoot, workspaceName s
 				return err
 			}
 			if pathDirty {
-				return fmt.Errorf("path has unsaved changes in %s; use --save-first to save them before restore or --discard-unsaved to discard changes in this path", path)
+				decisionReason = fmt.Sprintf("path has unsaved changes in %s", path)
+				var err error
+				plan, err = restoreplan.CreatePathDecisionPreview(repoRoot, workspaceName, targetID, path, engineType)
+				return err
 			}
 		}
 		var err error
-		plan, err = restoreplan.CreatePath(repoRoot, workspaceName, targetID, path, detectEngine(repoRoot), restoreplan.Options{
+		plan, err = restoreplan.CreatePath(repoRoot, workspaceName, targetID, path, engineType, restoreplan.Options{
 			DiscardUnsaved: restoreDiscardDirty,
 			SaveFirst:      restoreIncludeWorking,
 		})
@@ -486,28 +515,15 @@ func runRestorePath(cmd *cobra.Command, args []string, repoRoot, workspaceName s
 		return restorePathError(err, restorePath, path)
 	}
 	result := publicRestorePreviewFromPlan(plan)
+	if decisionReason != "" {
+		result.DecisionReason = decisionReason
+		result.NextCommands = restoreDecisionNextCommands(targetID, path)
+	}
 	if jsonOutput {
 		return outputJSON(result)
 	}
 	printRestorePreviewResult(result)
 	return nil
-}
-
-func rejectUnsavedChangesForRestore(repoRoot, workspaceName string) error {
-	if restoreDiscardDirty && restoreIncludeWorking {
-		return fmt.Errorf("--discard-unsaved and --save-first cannot be used together")
-	}
-	if restoreDiscardDirty || restoreIncludeWorking {
-		return nil
-	}
-	unsavedChanges, err := workspaceDirty(repoRoot, workspaceName)
-	if err != nil {
-		return err
-	}
-	if !unsavedChanges {
-		return nil
-	}
-	return fmt.Errorf("folder has unsaved changes; use --save-first to save them before restore, --discard-unsaved to discard them, or cancel. No files were changed.")
 }
 
 func publicRestoreStatus(repoRoot, workspaceName string, restoredID model.SnapshotID) (publicRestoreResult, error) {
@@ -530,8 +546,12 @@ func publicRestoreStatus(repoRoot, workspaceName string, restoredID model.Snapsh
 }
 
 func publicRestorePreviewFromPlan(plan *restoreplan.Plan) publicRestorePreviewResult {
+	mode := "preview"
+	if plan.DecisionOnly {
+		mode = "decision_preview"
+	}
 	return publicRestorePreviewResult{
-		Mode:                    "preview",
+		Mode:                    mode,
 		PlanID:                  plan.PlanID,
 		Scope:                   plan.EffectiveScope(),
 		Folder:                  plan.Folder,
@@ -606,6 +626,24 @@ func restorePathNextCommands(path string, candidates []publicHistoryPathCandidat
 	return []string{genericRestorePathCommand(path)}
 }
 
+func restoreDecisionNextCommands(sourceID model.SnapshotID, path string) []string {
+	return []string{
+		restoreDecisionCommand(sourceID, path, "--save-first"),
+		restoreDecisionCommand(sourceID, path, "--discard-unsaved"),
+	}
+}
+
+func restoreDecisionCommand(sourceID model.SnapshotID, path, option string) string {
+	source := shellQuoteArg(string(sourceID))
+	if path == "" {
+		return fmt.Sprintf("jvs restore %s %s", source, option)
+	}
+	if strings.HasPrefix(path, "-") {
+		return fmt.Sprintf("jvs restore %s --path=%s %s", source, shellQuoteArg(path), option)
+	}
+	return fmt.Sprintf("jvs restore %s --path %s %s", source, shellQuoteArg(path), option)
+}
+
 func genericRestorePathCommand(path string) string {
 	if strings.HasPrefix(path, "-") {
 		return fmt.Sprintf("jvs restore <save> --path=%s", shellQuoteArg(path))
@@ -667,9 +705,14 @@ func printRestoreResult(result publicRestoreResult) {
 
 func printRestorePreviewResult(result publicRestorePreviewResult) {
 	fmt.Println("Preview only. No files were changed.")
+	if result.DecisionReason != "" {
+		fmt.Printf("Decision needed: %s.\n", result.DecisionReason)
+	}
 	fmt.Printf("Folder: %s\n", result.Folder)
 	fmt.Printf("Workspace: %s\n", result.Workspace)
-	fmt.Printf("Plan: %s\n", result.PlanID)
+	if result.PlanID != "" {
+		fmt.Printf("Plan: %s\n", result.PlanID)
+	}
 	if result.Scope == restoreplan.ScopePath {
 		fmt.Println("Scope: path")
 		fmt.Printf("Path: %s\n", result.Path)
@@ -692,7 +735,16 @@ func printRestorePreviewResult(result publicRestorePreviewResult) {
 	} else {
 		fmt.Printf("Expected folder evidence: %s\n", result.ExpectedFolderEvidence)
 	}
-	fmt.Printf("Run: `%s`\n", result.RunCommand)
+	if result.RunCommand != "" {
+		fmt.Printf("Run: `%s`\n", result.RunCommand)
+		return
+	}
+	if len(result.NextCommands) > 0 {
+		fmt.Println("Rerun preview with one safety option:")
+		for _, command := range result.NextCommands {
+			fmt.Printf("  %s\n", command)
+		}
+	}
 }
 
 func printRestorePreviewImpact(label string, summary restoreplan.ChangeSummary) {

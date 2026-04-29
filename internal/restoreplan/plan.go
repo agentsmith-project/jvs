@@ -72,6 +72,7 @@ type Plan struct {
 	Options                 Options            `json:"options,omitempty"`
 	ManagedFiles            ManagedFilesImpact `json:"managed_files"`
 	RunCommand              string             `json:"run_command"`
+	DecisionOnly            bool               `json:"decision_only,omitempty"`
 }
 
 func (p *Plan) EffectiveScope() string {
@@ -79,6 +80,10 @@ func (p *Plan) EffectiveScope() string {
 		return ScopeWhole
 	}
 	return p.Scope
+}
+
+func (p *Plan) IsRunnable() bool {
+	return p != nil && !p.DecisionOnly && strings.TrimSpace(p.PlanID) != "" && strings.TrimSpace(p.RunCommand) != ""
 }
 
 func SetCapacityGateForTest(gate capacitygate.Gate) func() {
@@ -90,6 +95,27 @@ func SetCapacityGateForTest(gate capacitygate.Gate) func() {
 }
 
 func Create(repoRoot, workspaceName string, sourceID model.SnapshotID, engineType model.EngineType, options Options) (*Plan, error) {
+	plan, err := buildWholePreviewPlan(repoRoot, workspaceName, sourceID, engineType, options)
+	if err != nil {
+		return nil, err
+	}
+	makePlanRunnable(plan)
+	if err := Write(repoRoot, plan); err != nil {
+		return nil, err
+	}
+	return plan, nil
+}
+
+func CreateDecisionPreview(repoRoot, workspaceName string, sourceID model.SnapshotID, engineType model.EngineType) (*Plan, error) {
+	plan, err := buildWholePreviewPlan(repoRoot, workspaceName, sourceID, engineType, Options{})
+	if err != nil {
+		return nil, err
+	}
+	plan.DecisionOnly = true
+	return plan, nil
+}
+
+func buildWholePreviewPlan(repoRoot, workspaceName string, sourceID model.SnapshotID, engineType model.EngineType, options Options) (*Plan, error) {
 	if options.DiscardUnsaved && options.SaveFirst {
 		return nil, fmt.Errorf("--discard-unsaved and --save-first cannot be used together")
 	}
@@ -133,11 +159,9 @@ func Create(repoRoot, workspaceName string, sourceID model.SnapshotID, engineTyp
 	}
 
 	expectedNewest := snapshotIDPtrOrNil(cfg.LatestSnapshotID)
-	planID := uuidutil.NewV4()
 	plan := &Plan{
 		SchemaVersion:           SchemaVersion,
 		RepoID:                  repoID,
-		PlanID:                  planID,
 		CreatedAt:               time.Now().UTC(),
 		Scope:                   ScopeWhole,
 		Folder:                  folder,
@@ -149,15 +173,32 @@ func Create(repoRoot, workspaceName string, sourceID model.SnapshotID, engineTyp
 		ExpectedFolderEvidence:  evidence,
 		Options:                 options,
 		ManagedFiles:            impact,
-		RunCommand:              "jvs restore --run " + planID,
 	}
+	return plan, nil
+}
+
+func CreatePath(repoRoot, workspaceName string, sourceID model.SnapshotID, path string, engineType model.EngineType, options Options) (*Plan, error) {
+	plan, err := buildPathPreviewPlan(repoRoot, workspaceName, sourceID, path, engineType, options)
+	if err != nil {
+		return nil, err
+	}
+	makePlanRunnable(plan)
 	if err := Write(repoRoot, plan); err != nil {
 		return nil, err
 	}
 	return plan, nil
 }
 
-func CreatePath(repoRoot, workspaceName string, sourceID model.SnapshotID, path string, engineType model.EngineType, options Options) (*Plan, error) {
+func CreatePathDecisionPreview(repoRoot, workspaceName string, sourceID model.SnapshotID, path string, engineType model.EngineType) (*Plan, error) {
+	plan, err := buildPathPreviewPlan(repoRoot, workspaceName, sourceID, path, engineType, Options{})
+	if err != nil {
+		return nil, err
+	}
+	plan.DecisionOnly = true
+	return plan, nil
+}
+
+func buildPathPreviewPlan(repoRoot, workspaceName string, sourceID model.SnapshotID, path string, engineType model.EngineType, options Options) (*Plan, error) {
 	if options.DiscardUnsaved && options.SaveFirst {
 		return nil, fmt.Errorf("--discard-unsaved and --save-first cannot be used together")
 	}
@@ -205,11 +246,9 @@ func CreatePath(repoRoot, workspaceName string, sourceID model.SnapshotID, path 
 	}
 
 	expectedNewest := snapshotIDPtrOrNil(cfg.LatestSnapshotID)
-	planID := uuidutil.NewV4()
 	plan := &Plan{
 		SchemaVersion:           SchemaVersion,
 		RepoID:                  repoID,
-		PlanID:                  planID,
 		CreatedAt:               time.Now().UTC(),
 		Scope:                   ScopePath,
 		Folder:                  folder,
@@ -222,12 +261,14 @@ func CreatePath(repoRoot, workspaceName string, sourceID model.SnapshotID, path 
 		ExpectedPathEvidence:    pathEvidence,
 		Options:                 options,
 		ManagedFiles:            impact,
-		RunCommand:              "jvs restore --run " + planID,
-	}
-	if err := Write(repoRoot, plan); err != nil {
-		return nil, err
 	}
 	return plan, nil
+}
+
+func makePlanRunnable(plan *Plan) {
+	planID := uuidutil.NewV4()
+	plan.PlanID = planID
+	plan.RunCommand = "jvs restore --run " + planID
 }
 
 func Write(repoRoot string, plan *Plan) error {

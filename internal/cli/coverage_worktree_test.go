@@ -129,18 +129,25 @@ func TestInitCommandJSON(t *testing.T) {
 	})
 }
 
-// TestWorkspaceRemoveForce tests public workspace remove with force flag.
+// TestWorkspaceRemoveForce tests that force creates a reviewed remove plan.
 func TestWorkspaceRemoveForce(t *testing.T) {
-	setupCoverageRepo(t, "wsforceremove")
+	repoPath, _ := setupCoverageRepo(t, "wsforceremove")
 	assert.NoError(t, os.WriteFile("remove-base.txt", []byte("remove"), 0644))
 	savePointID := createRootTestSavePoint(t, "remove base")
 
 	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "toberemoved", "--from", savePointID)
 	require.NoError(t, err, stdout)
 
-	t.Run("Remove workspace", func(t *testing.T) {
-		stdout, err := executeCommand(createTestRootCmd(), "workspace", "remove", "--force", "toberemoved")
+	t.Run("Force previews before removing workspace", func(t *testing.T) {
+		stdout, err := executeCommand(createTestRootCmd(), "--json", "workspace", "remove", "--force", "toberemoved")
+		assert.NoError(t, err)
+		preview := decodeWorkspaceRemovePreview(t, stdout)
+		assert.Equal(t, "preview", preview.Mode)
+		assert.DirExists(t, filepath.Join(repoPath, "worktrees", "toberemoved"))
+
+		stdout, err = executeCommand(createTestRootCmd(), "workspace", "remove", "--run", preview.PlanID)
 		assert.NoError(t, err)
 		assert.Contains(t, stdout, "Removed workspace")
+		assert.NoDirExists(t, filepath.Join(repoPath, "worktrees", "toberemoved"))
 	})
 }

@@ -22,7 +22,6 @@ import (
 var (
 	historyLimit      int
 	historyNoteFilter string
-	historyTagFilter  string
 	historyAll        bool
 	historyPath       string
 )
@@ -125,7 +124,7 @@ func historyPathFlagChanged(cmd *cobra.Command) bool {
 
 func validateHistoryPathFlagCombination(cmd *cobra.Command) error {
 	var unsupported []string
-	for _, name := range []string{"all", "grep", "tag", "limit"} {
+	for _, name := range []string{"all", "grep", "limit"} {
 		flag := cmd.Flags().Lookup(name)
 		if flag != nil && flag.Changed {
 			unsupported = append(unsupported, "--"+name)
@@ -345,7 +344,6 @@ func loadSavePointHistory(repoRoot, workspaceName string) (*model.WorktreeConfig
 	if historyAll {
 		savePoints, err := snapshot.Find(repoRoot, snapshot.FilterOptions{
 			NoteContains: historyNoteFilter,
-			HasTag:       historyTagFilter,
 		})
 		if err != nil {
 			return nil, nil, fmt.Errorf("list save points: %w", err)
@@ -368,10 +366,6 @@ func loadSavePointHistory(repoRoot, workspaceName string) (*model.WorktreeConfig
 			currentID = desc.ParentID
 			continue
 		}
-		if historyTagFilter != "" && !hasTag(desc, historyTagFilter) {
-			currentID = desc.ParentID
-			continue
-		}
 		savePoints = append(savePoints, desc)
 		currentID = desc.ParentID
 	}
@@ -385,20 +379,10 @@ func limitSavePoints(savePoints []*model.Descriptor) []*model.Descriptor {
 	return savePoints[:historyLimit]
 }
 
-func hasTag(desc *model.Descriptor, tag string) bool {
-	for _, t := range desc.Tags {
-		if t == tag {
-			return true
-		}
-	}
-	return false
-}
-
 func init() {
 	historyCmd.Flags().IntVarP(&historyLimit, "limit", "n", 0, "limit number of save points (0 = all)")
 	historyCmd.Flags().StringVarP(&historyNoteFilter, "grep", "g", "", "filter by message substring")
 	historyCmd.Flags().StringVar(&historyPath, "path", "", "find save points that contain a workspace-relative path")
-	historyCmd.Flags().StringVar(&historyTagFilter, "tag", "", "filter by tag")
 	historyCmd.Flags().BoolVar(&historyAll, "all", false, "show save points from all workspaces")
 	rootCmd.AddCommand(historyCmd)
 }

@@ -82,8 +82,8 @@ Acceptance criteria:
 - `jvs view <save> <path>` lets the user inspect the saved path read-only.
 - Path restore preview changes no files and reports the exact path.
 - Path restore run changes only the requested managed path.
-- Unrelated cache-like or unmanaged files are not restored or deleted by a path
-  restore for another path.
+- Unrelated paths outside the requested path, such as `managed/notes.txt` or
+  `cache/tmp.bin`, are not restored or deleted by a path restore.
 - A later save records the recovered folder state as a normal save point.
 
 Current coverage:
@@ -300,8 +300,9 @@ jvs cleanup run --plan-id <plan-id>
 jvs doctor --strict
 ```
 
-Expected behavior: cleanup is preview-first. It protects workspace history,
-open views, active recovery plans, and active operations.
+Expected behavior: cleanup is preview-first. It only plans deletion of
+unprotected save point storage, and it protects workspace history, open views,
+active recovery plans, and active operations.
 
 Acceptance criteria:
 
@@ -314,6 +315,9 @@ Acceptance criteria:
 - Active views and recovery plans protect their referenced save points.
 - Cleanup does not rewrite durable history, workspace provenance, or audit
   history.
+- Cleanup does not delete workspace folders, user cache directories, JVS
+  control data, or runtime state; it does not prune history or apply a
+  retention policy.
 
 Current coverage:
 
@@ -327,8 +331,8 @@ public contract.
 
 - Guided selection could help users pick a save point or path candidate
   without turning messages, labels, or tags into restore targets.
-- Configurable unmanaged-path policies could make local cache separation more
-  explicit, while preserving the rule that only managed files are payload.
+- Future payload-boundary features are outside GA; there are no configurable
+  ignore rules or glob policies in GA.
 - Domain-specific presets, templates, or workflow bundles are explicitly out
   of the GA plan. They can be reconsidered only if they compile to the generic
   capabilities above and do not change payload, view, restore, recovery, or
@@ -341,6 +345,8 @@ public contract.
 - `jvs view` is read-only.
 - `jvs history --path` is the discovery path for one file or directory.
 - `jvs workspace new <name> --from <save>` creates a separate real folder.
+- Workspace removal must preview first, run only a reviewed plan, and leave
+  save point storage deletion to cleanup.
 - JVS control data and runtime state are never user payload.
 - `jvs recovery status`, `jvs recovery resume`, and `jvs recovery rollback`
   are the public path for interrupted restore.

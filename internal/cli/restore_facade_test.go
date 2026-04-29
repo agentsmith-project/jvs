@@ -121,34 +121,43 @@ func TestRestoreJSONUsesSavePointSchema(t *testing.T) {
 	assertRestoreJSONOmitsLegacyFields(t, data)
 }
 
-func TestRestoreDirtyRefusalUsesUnsavedChangesVocabulary(t *testing.T) {
+func TestRestoreDirtyDecisionPreviewUsesUnsavedChangesVocabulary(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
 	firstID := savePointIDFromCLI(t, "first")
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("local edit"), 0644))
+	plansBefore := restorePlanFileCount(t, repoRoot)
 
 	stdout, err := executeCommand(createTestRootCmd(), "restore", firstID)
-	require.Error(t, err)
-	require.Empty(t, stdout)
-	assert.Contains(t, err.Error(), "unsaved changes")
-	assert.Contains(t, err.Error(), "--save-first")
-	assert.Contains(t, err.Error(), "--discard-unsaved")
-	assert.Contains(t, err.Error(), "No files were changed.")
-	assertRestoreOutputOmitsLegacyVocabulary(t, err.Error())
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "Decision needed: folder has unsaved changes.")
+	assert.Contains(t, stdout, "--save-first")
+	assert.Contains(t, stdout, "--discard-unsaved")
+	assert.Contains(t, stdout, "No files were changed.")
+	assert.NotContains(t, stdout, "Plan: ")
+	assert.NotContains(t, stdout, "Run: `jvs restore --run")
+	assertRestoreOutputOmitsLegacyVocabulary(t, strings.ReplaceAll(stdout, repoRoot, ""))
 
 	content, readErr := os.ReadFile(filepath.Join(repoRoot, "app.txt"))
 	require.NoError(t, readErr)
 	require.Equal(t, "local edit", string(content))
+	require.Equal(t, plansBefore, restorePlanFileCount(t, repoRoot))
 
 	jsonOut, stderr, exitCode := runContractSubprocess(t, repoRoot, "--json", "restore", firstID)
-	require.NotZero(t, exitCode)
+	require.Zero(t, exitCode)
 	require.Empty(t, strings.TrimSpace(stderr))
 	env := decodeContractEnvelope(t, jsonOut)
-	require.False(t, env.OK, jsonOut)
-	require.NotNil(t, env.Error)
-	assert.Contains(t, env.Error.Message, "unsaved changes")
-	assert.Contains(t, env.Error.Message, "No files were changed.")
-	assertRestoreOutputOmitsLegacyVocabulary(t, env.Error.Message)
+	require.True(t, env.OK, jsonOut)
+	require.Nil(t, env.Error)
+	_, data := decodeFacadeDataMap(t, jsonOut)
+	require.Equal(t, "decision_preview", data["mode"])
+	require.NotContains(t, data, "plan_id")
+	require.NotContains(t, data, "run_command")
+	nextCommands, ok := data["next_commands"].([]any)
+	require.True(t, ok, "next_commands should be an array: %#v", data["next_commands"])
+	assert.Contains(t, nextCommands, "jvs restore "+firstID+" --save-first")
+	assert.Contains(t, nextCommands, "jvs restore "+firstID+" --discard-unsaved")
+	require.Equal(t, plansBefore, restorePlanFileCount(t, repoRoot))
 }
 
 func TestRestoreRejectsOldRefsAndFuzzyInputsWithoutMutation(t *testing.T) {

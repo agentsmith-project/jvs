@@ -143,6 +143,115 @@ func requireDiscardUnsavedOption(t *testing.T, raw any) {
 	}
 }
 
+func requireSaveFirstOption(t *testing.T, raw any) {
+	t.Helper()
+	options, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("restore options should be an object: %#v", raw)
+	}
+	if options["save_first"] != true {
+		t.Fatalf("restore preview should record save_first safety choice: %#v", options)
+	}
+}
+
+func requireNoRunnableRestorePlan(t *testing.T, data map[string]any) {
+	t.Helper()
+	if planID, _ := data["plan_id"].(string); planID != "" {
+		t.Fatalf("dirty decision preview should not create a runnable restore plan before a safety choice: %#v", data)
+	}
+	if runCommand, _ := data["run_command"].(string); runCommand != "" {
+		t.Fatalf("dirty decision preview should not print a run command before a safety choice: %#v", data)
+	}
+}
+
+func requireManagedFilesImpactAtLeast(t *testing.T, data map[string]any, bucket string, minCount int) {
+	t.Helper()
+	managedFiles, ok := data["managed_files"].(map[string]any)
+	if !ok {
+		t.Fatalf("restore preview should expose managed_files impact: %#v", data["managed_files"])
+	}
+	summary, ok := managedFiles[bucket].(map[string]any)
+	if !ok {
+		t.Fatalf("restore preview managed_files.%s should be an object: %#v", bucket, managedFiles[bucket])
+	}
+	count, ok := summary["count"].(float64)
+	if !ok {
+		t.Fatalf("restore preview managed_files.%s.count should be numeric: %#v", bucket, summary["count"])
+	}
+	if int(count) < minCount {
+		t.Fatalf("restore preview managed_files.%s.count = %d, want at least %d in %#v", bucket, int(count), minCount, data)
+	}
+}
+
+func requireHistoryRecordMessage(t *testing.T, history map[string]any, savePointID, wantMessage string) {
+	t.Helper()
+	raw, ok := history["save_points"].([]any)
+	if !ok {
+		t.Fatalf("history save_points should be an array: %#v", history["save_points"])
+	}
+	for _, item := range raw {
+		record, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("history save point should be an object: %#v", item)
+		}
+		if record["save_point_id"] == savePointID {
+			if record["message"] != wantMessage {
+				t.Fatalf("history save point %s message = %#v, want %q in %#v", savePointID, record["message"], wantMessage, record)
+			}
+			return
+		}
+	}
+	t.Fatalf("history missing save point %s in %#v", savePointID, raw)
+}
+
+func requireJSONStringArrayContains(t *testing.T, raw any, want string) {
+	t.Helper()
+	if !stringSliceContains(jsonStringArray(t, raw), want) {
+		t.Fatalf("JSON string array missing %q: %#v", want, raw)
+	}
+}
+
+func requireJSONStringArrayNotContains(t *testing.T, raw any, want string) {
+	t.Helper()
+	if stringSliceContains(jsonStringArray(t, raw), want) {
+		t.Fatalf("JSON string array should not contain %q: %#v", want, raw)
+	}
+}
+
+func cleanupProtectionSavePointsForReason(t *testing.T, preview map[string]any, reason string) []string {
+	t.Helper()
+	groups, ok := preview["protection_groups"].([]any)
+	if !ok {
+		t.Fatalf("cleanup preview protection_groups should be an array: %#v", preview["protection_groups"])
+	}
+	for _, item := range groups {
+		group, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("cleanup protection group should be an object: %#v", item)
+		}
+		if group["reason"] == reason {
+			return jsonStringArray(t, group["save_points"])
+		}
+	}
+	return nil
+}
+
+func requireCleanupProtectionContainsSavePoint(t *testing.T, preview map[string]any, reason, savePointID string) {
+	t.Helper()
+	savePoints := cleanupProtectionSavePointsForReason(t, preview, reason)
+	if !stringSliceContains(savePoints, savePointID) {
+		t.Fatalf("cleanup protection reason %q missing save point %s: %#v", reason, savePointID, preview["protection_groups"])
+	}
+}
+
+func requireCleanupProtectionOmitsSavePoint(t *testing.T, preview map[string]any, reason, savePointID string) {
+	t.Helper()
+	savePoints := cleanupProtectionSavePointsForReason(t, preview, reason)
+	if stringSliceContains(savePoints, savePointID) {
+		t.Fatalf("cleanup protection reason %q should not include save point %s: %#v", reason, savePointID, preview["protection_groups"])
+	}
+}
+
 func restorePlanIDFromHumanPreview(t *testing.T, stdout string) string {
 	t.Helper()
 	match := regexp.MustCompile("(?m)^Plan: ([A-Za-z0-9._:-]+)$").FindStringSubmatch(stdout)
@@ -178,6 +287,39 @@ func requirePathMissing(t *testing.T, root, name string) {
 	}
 }
 
+func requireAbsolutePathExists(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("%s should exist: %v", path, err)
+	}
+}
+
+func requireAbsolutePathMissing(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); err == nil {
+		t.Fatalf("%s should not exist", path)
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+}
+
+func jsonStringArray(t *testing.T, raw any) []string {
+	t.Helper()
+	items, ok := raw.([]any)
+	if !ok {
+		t.Fatalf("value should be a JSON string array: %#v", raw)
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		value, ok := item.(string)
+		if !ok {
+			t.Fatalf("array item should be a string: %#v", item)
+		}
+		out = append(out, value)
+	}
+	return out
+}
+
 func sameCleanPath(left, right string) bool {
 	leftAbs, leftErr := filepath.Abs(left)
 	rightAbs, rightErr := filepath.Abs(right)
@@ -197,4 +339,13 @@ func sameStringSlice(left, right []string) bool {
 		}
 	}
 	return true
+}
+
+func stringSliceContains(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }

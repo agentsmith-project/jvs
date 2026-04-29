@@ -35,7 +35,7 @@ feasible, and error messages.
 | `workspace` | The JVS name for a managed real folder. `main` is the default. |
 | `JVS project` | The control data and workspace registry for save points. |
 | `managed file` | A workspace file captured by save and managed by restore. |
-| `ignored/unmanaged file` | Excluded or control-plane data; not saved, restored, or deleted by restore. |
+| `JVS control/runtime state` | Non-payload data used by JVS for control and active operations; not saved, viewed, restored, or deleted as user payload. |
 | `save point` | An immutable saved copy of managed files plus creation facts. |
 | `save` | Create a save point from the active workspace. |
 | `history` | List save points or find candidates. |
@@ -75,7 +75,7 @@ The adopted folder remains the user's working folder. JVS control data lives in
 Invariants:
 
 - Workspace folders are real directories.
-- JVS control data is ignored/unmanaged.
+- JVS control data and runtime state are not user payload.
 - A save point captures exactly one workspace's managed files.
 - Published save point content and creation facts are immutable.
 - Restore copies content into a workspace; it does not rewrite history.
@@ -170,6 +170,11 @@ Rules:
 Workspace selection is done by changing directories or using `--workspace`.
 JVS does not virtualize the shell working directory.
 
+Workspace removal is a preview-first reviewed-plan flow in the public
+contract. Running a reviewed removal plan removes only the selected workspace
+folder and registry entry, protects unsaved work, leaves save point storage
+unchanged, and leaves deletion of unprotected save point storage to cleanup.
+
 ## Recovery
 
 Restore recovery is a public workflow.
@@ -208,7 +213,8 @@ writes resume.
 
 ## Cleanup
 
-Public product language is cleanup. Cleanup is two-stage:
+Public product language is cleanup. Cleanup is two-stage reviewed deletion of
+unprotected save point storage:
 
 ```text
 cleanup preview -> cleanup run
@@ -220,9 +226,12 @@ Required semantics:
 - Run binds to a reviewed plan and revalidates before deletion.
 - Cleanup protects workspace history, open views, active recovery plans, and
   active operations.
+- Cleanup does not delete workspace folders, user cache directories, JVS
+  control data, or runtime state; it does not prune history or apply a
+  retention policy.
 - Labels do not protect save points.
-- Deleting a save point must preserve enough tombstone/audit information for
-  later view/restore errors.
+- Deleting save point storage must preserve enough tombstone/audit information
+  for later view/restore errors.
 
 ## Engine Transparency
 
@@ -321,7 +330,7 @@ Deliverables:
 - Cleanup run semantics.
 - Size impact and protection reasons.
 - Tombstone/deleted-save behavior.
-- Active view/source/recovery protection.
+- Active view/recovery/operation protection.
 
 Gate:
 

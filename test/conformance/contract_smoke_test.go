@@ -158,13 +158,45 @@ func TestContract_WorkspaceAndCleanupUseCurrentPublicCommands(t *testing.T) {
 	if decodeContractDataMap(t, renameOut)["workspace"] != "renamed-feature" {
 		t.Fatalf("workspace rename data mismatch: %s", renameOut)
 	}
+	renamedPathOut, stderr, code := runJVSInRepo(t, repoPath, "--json", "workspace", "path", "renamed-feature")
+	if code != 0 {
+		t.Fatalf("workspace path after rename failed: stdout=%s stderr=%s", renamedPathOut, stderr)
+	}
+	featurePath, _ = decodeContractDataMap(t, renamedPathOut)["path"].(string)
+	if featurePath == "" {
+		t.Fatalf("workspace path after rename missing path: %s", renamedPathOut)
+	}
 
 	removeOut, stderr, code := runJVSInRepo(t, repoPath, "--json", "workspace", "remove", "renamed-feature", "--force")
 	if code != 0 {
-		t.Fatalf("workspace remove failed: stdout=%s stderr=%s", removeOut, stderr)
+		t.Fatalf("workspace remove preview failed: stdout=%s stderr=%s", removeOut, stderr)
 	}
-	if decodeContractDataMap(t, removeOut)["status"] != "removed" {
-		t.Fatalf("workspace remove data mismatch: %s", removeOut)
+	removePreview := decodeContractDataMap(t, removeOut)
+	removePlanID, _ := removePreview["plan_id"].(string)
+	if removePreview["mode"] != "preview" ||
+		removePlanID == "" ||
+		removePreview["folder"] != featurePath ||
+		removePreview["folder_removed"] != false ||
+		removePreview["files_changed"] != false ||
+		removePreview["run_command"] != "jvs workspace remove --run "+removePlanID ||
+		removePreview["save_point_storage_removed"] != false {
+		t.Fatalf("workspace remove preview data mismatch: %#v", removePreview)
+	}
+
+	removeRunOut, stderr, code := runJVSInRepo(t, repoPath, "--json", "workspace", "remove", "--run", removePlanID)
+	if code != 0 {
+		t.Fatalf("workspace remove run failed: stdout=%s stderr=%s", removeRunOut, stderr)
+	}
+	removeRun := decodeContractDataMap(t, removeRunOut)
+	if removeRun["status"] != "removed" ||
+		removeRun["folder_removed"] != true ||
+		removeRun["workspace_metadata_removed"] != true ||
+		removeRun["save_point_storage_removed"] != false {
+		t.Fatalf("workspace remove run data mismatch: %#v", removeRun)
+	}
+	removedPathOut, stderr, code := runJVSInRepo(t, repoPath, "--json", "workspace", "path", "renamed-feature")
+	if code == 0 {
+		t.Fatalf("workspace remove run left workspace metadata: stdout=%s stderr=%s", removedPathOut, stderr)
 	}
 
 	previewOut, stderr, code := runJVSInRepo(t, repoPath, "--json", "cleanup", "preview")
@@ -234,6 +266,10 @@ func TestContract_PublicHelpOnlyAdvertisesGACommands(t *testing.T) {
 			t.Fatalf("root help exposes legacy public command %q:\n%s", legacy, rootHelp)
 		}
 	}
+	historyTagOut, historyTagErr, historyTagCode := runJVS(t, conformanceRepoRoot, "history", "--tag", "v1")
+	if historyTagCode == 0 || !strings.Contains(historyTagErr+historyTagOut, "unknown flag: --tag") {
+		t.Fatalf("history --tag must be unavailable public surface: stdout=%s stderr=%s code=%d", historyTagOut, historyTagErr, historyTagCode)
+	}
 
 	workspaceHelp, stderr, code := runJVS(t, conformanceRepoRoot, "workspace", "--help")
 	if code != 0 {
@@ -287,6 +323,18 @@ func TestContract_PublicHelpOnlyAdvertisesGACommands(t *testing.T) {
 		{"recovery help", recoveryHelp},
 	} {
 		assertContractHelpOmitsLegacyPublicVocabulary(t, surface.name, surface.help)
+	}
+}
+
+func TestHistoryHelpDoesNotAdvertiseTag(t *testing.T) {
+	historyHelp, stderr, code := runJVS(t, conformanceRepoRoot, "history", "--help")
+	if code != 0 {
+		t.Fatalf("history help failed: stdout=%s stderr=%s", historyHelp, stderr)
+	}
+	for _, forbidden := range []string{"--tag", "history --tag"} {
+		if strings.Contains(historyHelp, forbidden) {
+			t.Fatalf("history help advertises non-GA tag surface %q:\n%s", forbidden, historyHelp)
+		}
 	}
 }
 

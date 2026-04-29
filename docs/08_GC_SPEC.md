@@ -5,9 +5,11 @@
 The repository filename is retained for manifest stability only. Public docs,
 help, examples, JSON, and release notes use `cleanup`.
 
-Public product language is cleanup. Cleanup is review-first deletion of
+Public product language is cleanup. Cleanup is reviewed deletion of
 unprotected save point storage. It is not a normal user path for creating,
-viewing, or restoring work.
+viewing, or restoring work. Cleanup does not delete workspace folders, user
+cache directories, JVS control data, or runtime state; it does not prune
+workspace history or apply a retention policy.
 
 ## Public Cleanup Contract
 
@@ -30,8 +32,8 @@ Rules:
 - Labels do not protect save points.
 - Kept save points and direct explanatory sources are protected when the public
   keep contract is promoted.
-- Deleted save points require tombstone/audit information so later view or
-  restore attempts can produce a `deleted-save` style error.
+- Deleted save point storage requires tombstone/audit information so later view
+  or restore attempts can produce a `deleted-save` style error.
 
 ## Protected Save Points
 

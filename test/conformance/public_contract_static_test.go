@@ -177,6 +177,92 @@ func TestDocs_HistoryJSONExamplesUseEnvelope(t *testing.T) {
 	}
 }
 
+func TestDocs_HistoryTagIsNotGAPublicSurface(t *testing.T) {
+	for _, doc := range historyTagPublicSurfaceDocs() {
+		t.Run(doc, func(t *testing.T) {
+			scanPublicDocLines(t, doc, func(lineNo int, line string) {
+				lower := strings.ToLower(line)
+				if strings.Contains(lower, "--tag") {
+					t.Fatalf("%s:%d exposes non-GA history tag flag:\n%s", doc, lineNo, line)
+				}
+				for _, fragment := range []string{
+					"history --tag",
+					"jvs history --tag",
+					"tags are discovery filters",
+					"tag lifecycle",
+				} {
+					if strings.Contains(lower, fragment) {
+						t.Fatalf("%s:%d exposes history tag lifecycle/discovery surface %q:\n%s", doc, lineNo, fragment, line)
+					}
+				}
+			})
+		})
+	}
+}
+
+func TestDocs_CleanupDoesNotPromiseHistoryPruningOrWorkspaceDeletion(t *testing.T) {
+	for _, doc := range cleanupPublicSurfaceDocs() {
+		t.Run(doc, func(t *testing.T) {
+			body := releaseFacingClaimBody(t, doc)
+			lowerBody := strings.ToLower(body)
+			for _, required := range []string{
+				"save point storage",
+				"reviewed",
+			} {
+				if !strings.Contains(lowerBody, required) {
+					t.Fatalf("%s must describe cleanup as reviewed deletion of save point storage; missing %q", doc, required)
+				}
+			}
+
+			scanPublicDocLines(t, doc, func(lineNo int, line string) {
+				lower := strings.ToLower(line)
+				if !strings.Contains(lower, "cleanup") {
+					return
+				}
+				for _, forbidden := range []string{
+					"history pruning",
+					"prune history",
+					"prunes history",
+					"workspace deletion",
+					"delete workspace folders",
+					"deletes workspace folders",
+					"cache cleanup",
+					"clean cache",
+					"retention policy",
+					"retention rules",
+				} {
+					if strings.Contains(lower, forbidden) && !cleanupLineNegatesPromise(lower) {
+						t.Fatalf("%s:%d lets cleanup imply history pruning, retention, cache cleanup, or workspace deletion via %q:\n%s",
+							doc, lineNo, forbidden, line)
+					}
+				}
+			})
+		})
+	}
+}
+
+func TestDocs_UserCommandsDocumentsWorkspaceManagement(t *testing.T) {
+	doc := "docs/user/commands.md"
+	body := readRepoFile(t, doc)
+	section := markdownSectionByHeading(t, doc, body, "## `jvs workspace`")
+	for _, required := range []string{
+		"jvs workspace list",
+		"jvs workspace path [name]",
+		"jvs workspace rename <old> <new>",
+		"jvs workspace new <name> --from <save>",
+		"jvs workspace remove <name>",
+		"jvs workspace remove --run <plan-id>",
+		"preview-first",
+		"does not remove save point storage",
+		"jvs cleanup preview",
+	} {
+		requireReleaseReadinessText(t, "workspace command documentation", section, required)
+	}
+	if strings.Contains(strings.ToLower(section), "worktree") {
+		t.Fatalf("%s workspace command section leaks old worktree vocabulary:\n%s", doc, section)
+	}
+}
+
 func TestDocs_ReleaseBlockingManifestIncludesPublicDocs(t *testing.T) {
 	docs := releaseBlockingContractDocs()
 	for _, want := range []string{
@@ -198,7 +284,7 @@ func TestDocs_ReleaseBlockingManifestIncludesPublicDocs(t *testing.T) {
 		"SECURITY.md",
 		"docs/SIGNING.md",
 	} {
-		if !stringSliceContains(docs, want) {
+		if !staticStringSliceContains(docs, want) {
 			t.Fatalf("release-blocking docs manifest must include %s", want)
 		}
 	}
@@ -207,10 +293,10 @@ func TestDocs_ReleaseBlockingManifestIncludesPublicDocs(t *testing.T) {
 func TestDocs_ReleaseBlockingManifestIncludesLinkedActiveMarkdownDocs(t *testing.T) {
 	docs := releaseBlockingContractDocs()
 	for _, link := range activePublicMarkdownDocLinks(t) {
-		if stringSliceContains(nonReleaseFacingDocs(), link.target) {
+		if staticStringSliceContains(nonReleaseFacingDocs(), link.target) {
 			continue
 		}
-		if !stringSliceContains(docs, link.target) {
+		if !staticStringSliceContains(docs, link.target) {
 			t.Fatalf("release-blocking docs manifest must include markdown doc %s linked from active public doc %s", link.target, link.source)
 		}
 	}
@@ -219,7 +305,7 @@ func TestDocs_ReleaseBlockingManifestIncludesLinkedActiveMarkdownDocs(t *testing
 func TestDocs_PublicCommandManifestCoversReleaseBlockingDocs(t *testing.T) {
 	commandDocs := publicCommandDocs()
 	for _, doc := range releaseBlockingContractDocs() {
-		if !stringSliceContains(commandDocs, doc) {
+		if !staticStringSliceContains(commandDocs, doc) {
 			t.Fatalf("public command docs manifest must cover release-blocking doc %s", doc)
 		}
 	}
@@ -228,10 +314,10 @@ func TestDocs_PublicCommandManifestCoversReleaseBlockingDocs(t *testing.T) {
 func TestDocs_ActivePublicManifestCoversReleaseBlockingDocs(t *testing.T) {
 	activeDocs := activePublicContractDocs()
 	for _, doc := range releaseBlockingContractDocs() {
-		if stringSliceContains(nonReleaseFacingDocs(), doc) {
+		if staticStringSliceContains(nonReleaseFacingDocs(), doc) {
 			continue
 		}
-		if !stringSliceContains(activeDocs, doc) {
+		if !staticStringSliceContains(activeDocs, doc) {
 			t.Fatalf("active public docs manifest must cover release-blocking doc %s", doc)
 		}
 	}
@@ -324,7 +410,7 @@ func TestDocs_AllMarkdownDocsAreReleaseClassified(t *testing.T) {
 	classified = append(classified, activeNonReleaseFacingResearchDocs()...)
 	classified = append(classified, activeNonReleaseFacingExampleDocs()...)
 	for _, doc := range markdownDocsUnder(t, "docs") {
-		if !stringSliceContains(classified, doc) {
+		if !staticStringSliceContains(classified, doc) {
 			t.Fatalf("%s must be active release-facing, active non-release-facing, or explicitly archived/non-release-facing", doc)
 		}
 	}
@@ -350,7 +436,7 @@ func TestDocs_AllMarkdownAvoidsLegacyPublicDesignSurface(t *testing.T) {
 func TestDocs_TraceabilityNormativeDocsAreReleaseBlocking(t *testing.T) {
 	docs := releaseBlockingContractDocs()
 	for _, doc := range traceabilityNormativeDocs(t) {
-		if !stringSliceContains(docs, doc) {
+		if !staticStringSliceContains(docs, doc) {
 			t.Fatalf("release-blocking docs manifest must include traceability normative doc %s", doc)
 		}
 	}
@@ -362,11 +448,11 @@ func TestDocs_TraceabilityNormativeDocsParseBareBlocks(t *testing.T) {
 		"docs/02_CLI_SPEC.md",
 		"docs/12_RELEASE_POLICY.md",
 	} {
-		if !stringSliceContains(docs, want) {
+		if !staticStringSliceContains(docs, want) {
 			t.Fatalf("traceability normative docs must include %s from bare Normative docs blocks, got %v", want, docs)
 		}
 	}
-	if stringSliceContains(docs, "docs/21_SAVE_POINT_WORKSPACE_SEMANTICS.md") {
+	if staticStringSliceContains(docs, "docs/21_SAVE_POINT_WORKSPACE_SEMANTICS.md") {
 		t.Fatalf("supporting non-release-facing reference must not be counted as a traceability normative doc: %v", docs)
 	}
 }
@@ -386,10 +472,10 @@ func TestDocs_TargetUsersIsSupportingResearchNotGAPromise9Normative(t *testing.T
 }
 
 func TestDocs_TargetUsersIsSupportingResearchNotReleaseBlocking(t *testing.T) {
-	if stringSliceContains(releaseBlockingContractDocs(), "docs/TARGET_USERS.md") {
+	if staticStringSliceContains(releaseBlockingContractDocs(), "docs/TARGET_USERS.md") {
 		t.Fatalf("docs/TARGET_USERS.md is supporting product research and must not be release-blocking")
 	}
-	if !stringSliceContains(nonReleaseFacingDocs(), "docs/TARGET_USERS.md") {
+	if !staticStringSliceContains(nonReleaseFacingDocs(), "docs/TARGET_USERS.md") {
 		t.Fatalf("docs/TARGET_USERS.md must be classified as non-release-facing product research")
 	}
 }
@@ -1838,10 +1924,10 @@ func TestDocs_PublicCommandExamplesUseStableCommands(t *testing.T) {
 func TestDocs_DomainQuickstartsAreNonNormativeExamples(t *testing.T) {
 	docs := publicCommandDocs()
 	for _, doc := range domainQuickstartDocs() {
-		if stringSliceContains(docs, doc) {
+		if staticStringSliceContains(docs, doc) {
 			t.Fatalf("%s is a domain example and must not be covered by release-facing public command docs contract", doc)
 		}
-		if !stringSliceContains(nonReleaseFacingDocs(), doc) {
+		if !staticStringSliceContains(nonReleaseFacingDocs(), doc) {
 			t.Fatalf("%s must be classified as a non-release-facing non-normative example", doc)
 		}
 	}
@@ -1915,7 +2001,7 @@ func TestDocs_PublicCommandFieldSetsFindInlineJVSCommands(t *testing.T) {
 	}
 
 	for _, want := range []string{"save", "cleanup preview", "workspace new"} {
-		if !stringSliceContains(paths, want) {
+		if !staticStringSliceContains(paths, want) {
 			t.Fatalf("public command scanner missed inline command path %q; got %v", want, paths)
 		}
 	}
@@ -3574,7 +3660,7 @@ func nonReleaseFacingDocs() []string {
 func activePublicContractDocs() []string {
 	var docs []string
 	for _, doc := range releaseBlockingContractDocs() {
-		if stringSliceContains(nonReleaseFacingDocs(), doc) {
+		if staticStringSliceContains(nonReleaseFacingDocs(), doc) {
 			continue
 		}
 		docs = appendUniqueString(docs, doc)
@@ -3584,6 +3670,49 @@ func activePublicContractDocs() []string {
 
 func publicCommandDocs() []string {
 	return releaseBlockingContractDocs()
+}
+
+func historyTagPublicSurfaceDocs() []string {
+	return []string{
+		"docs/02_CLI_SPEC.md",
+		"docs/03_WORKTREE_SPEC.md",
+		"docs/08_GC_SPEC.md",
+		"docs/20_USER_SCENARIOS.md",
+		"docs/PRODUCT_PLAN.md",
+		"docs/user/commands.md",
+		"docs/user/concepts.md",
+		"docs/user/safety.md",
+		"docs/user/faq.md",
+		"docs/user/quickstart.md",
+		"docs/user/examples.md",
+		"docs/user/troubleshooting.md",
+	}
+}
+
+func cleanupPublicSurfaceDocs() []string {
+	return []string{
+		"docs/02_CLI_SPEC.md",
+		"docs/08_GC_SPEC.md",
+		"docs/20_USER_SCENARIOS.md",
+		"docs/PRODUCT_PLAN.md",
+		"docs/user/commands.md",
+	}
+}
+
+func cleanupLineNegatesPromise(lowerLine string) bool {
+	for _, marker := range []string{
+		"does not",
+		"do not",
+		"must not",
+		"is not",
+		"not ",
+		"separate",
+	} {
+		if strings.Contains(lowerLine, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func fuzzCommandDocs() []string {
@@ -6123,7 +6252,7 @@ func firstChangelogEntry(changelog string) string {
 	return strings.Join(lines[start:end], "\n")
 }
 
-func stringSliceContains(values []string, want string) bool {
+func staticStringSliceContains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
 			return true
@@ -6133,7 +6262,7 @@ func stringSliceContains(values []string, want string) bool {
 }
 
 func appendUniqueString(values []string, value string) []string {
-	if stringSliceContains(values, value) {
+	if staticStringSliceContains(values, value) {
 		return values
 	}
 	return append(values, value)

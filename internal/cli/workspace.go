@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -15,6 +16,7 @@ import (
 
 var (
 	workspaceRemoveForce bool
+	workspaceRemoveRunID string
 	workspaceNewFromRef  string
 )
 
@@ -234,28 +236,50 @@ var workspaceRenameCmd = &cobra.Command{
 }
 
 var workspaceRemoveCmd = &cobra.Command{
-	Use:   "remove <name>",
+	Use:   "remove <name> | remove --run <plan-id>",
 	Short: "Remove a workspace",
-	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		r, err := discoverRequiredRepo()
 		if err != nil {
 			return err
 		}
-		name := args[0]
-		mgr := worktree.NewManager(r.Root)
-		_, err = validateWorkspaceRemoval(r.Root, name, workspaceRemoveForce)
+
+		runPlanID, runRequested, err := workspaceRemoveRunFlag(cmd)
 		if err != nil {
 			return err
 		}
-		if err := mgr.Remove(name); err != nil {
+		if runRequested {
+			if len(args) != 0 {
+				return fmt.Errorf("workspace remove --run accepts only a plan ID")
+			}
+			if workspaceRemoveForceFlagChanged(cmd) {
+				return fmt.Errorf("workspace remove --run options are fixed by the preview plan; run preview again to change --force. No workspace was removed.")
+			}
+			result, err := executeWorkspaceRemovePlan(r.Root, runPlanID)
+			if err != nil {
+				return err
+			}
+			recordResolvedTarget(r.Root, result.Workspace)
+			if jsonOutput {
+				return outputJSON(result)
+			}
+			printWorkspaceRemoveRunResult(result)
+			return nil
+		}
+
+		if len(args) != 1 {
+			return fmt.Errorf("workspace name is required")
+		}
+		plan, err := createWorkspaceRemovePlan(r.Root, args[0], workspaceRemoveForce)
+		if err != nil {
 			return err
 		}
-		recordResolvedTarget(r.Root, name)
+		recordResolvedTarget(r.Root, plan.Workspace)
+		result := publicWorkspaceRemovePreviewFromPlan(plan)
 		if jsonOutput {
-			return outputJSON(map[string]string{"workspace": name, "status": "removed"})
+			return outputJSON(result)
 		}
-		fmt.Printf("Removed workspace '%s'\n", name)
+		printWorkspaceRemovePreviewResult(result)
 		return nil
 	},
 }
@@ -265,6 +289,9 @@ func validateWorkspaceRemoval(repoRoot, name string, force bool) (*model.Worktre
 	if err != nil {
 		return nil, missingWorkspaceError(name)
 	}
+	if cfg.Name == "main" {
+		return nil, fmt.Errorf("cannot remove main workspace")
+	}
 	if force {
 		return cfg, nil
 	}
@@ -273,7 +300,7 @@ func validateWorkspaceRemoval(repoRoot, name string, force bool) (*model.Worktre
 		return nil, err
 	}
 	if dirty {
-		return nil, fmt.Errorf("workspace %q has unsaved changes; use --force to remove", name)
+		return nil, fmt.Errorf("workspace %q has unsaved changes; use --force to preview a remove plan that discards them", name)
 	}
 	if cfg.IsDetached() {
 		return nil, workspaceRemoveCurrentDiffersError(name)
@@ -282,13 +309,62 @@ func validateWorkspaceRemoval(repoRoot, name string, force bool) (*model.Worktre
 }
 
 func workspaceRemoveCurrentDiffersError(name string) error {
-	return fmt.Errorf("workspace %q is not at its newest save point; use --force to remove", name)
+	return fmt.Errorf("workspace %q is not at its newest save point; use --force to preview a remove plan that discards it", name)
+}
+
+func workspaceRemoveRunFlag(cmd *cobra.Command) (string, bool, error) {
+	flag := cmd.Flags().Lookup("run")
+	if flag == nil || !flag.Changed {
+		return "", false, nil
+	}
+	planID := strings.TrimSpace(flag.Value.String())
+	if planID == "" {
+		return "", true, fmt.Errorf("--run requires a workspace remove plan ID")
+	}
+	return planID, true, nil
+}
+
+func workspaceRemoveForceFlagChanged(cmd *cobra.Command) bool {
+	flag := cmd.Flags().Lookup("force")
+	return flag != nil && flag.Changed
+}
+
+func printWorkspaceRemovePreviewResult(result publicWorkspaceRemovePreviewResult) {
+	fmt.Println("Preview only. No workspace folder was removed.")
+	fmt.Printf("Folder: %s\n", result.Folder)
+	fmt.Printf("Workspace: %s\n", result.Workspace)
+	fmt.Printf("Plan: %s\n", result.PlanID)
+	fmt.Printf("Files state: %s\n", result.FilesState)
+	fmt.Printf("Newest save point: %s\n", formatStatusSavePoint(result.NewestSavePoint))
+	fmt.Printf("Content source: %s\n", formatStatusSavePoint(result.ContentSource))
+	if result.UnsavedChanges {
+		fmt.Println("Unsaved changes: yes")
+	} else {
+		fmt.Println("Unsaved changes: no")
+	}
+	if result.Options.RemovesUnsavedWork {
+		fmt.Println("Run will discard unsaved changes.")
+	}
+	fmt.Println("Workspace folder will be removed.")
+	fmt.Println("Workspace metadata will be removed.")
+	fmt.Println("Save point storage will not be removed.")
+	fmt.Printf("Cleanup: %s\n", result.CleanupPreviewRun)
+	fmt.Printf("Run: `%s`\n", result.RunCommand)
+}
+
+func printWorkspaceRemoveRunResult(result publicWorkspaceRemoveRunResult) {
+	fmt.Printf("Removed workspace '%s'\n", result.Workspace)
+	fmt.Println("Workspace folder removed: yes")
+	fmt.Println("Workspace metadata removed: yes")
+	fmt.Println("Save point storage removed: no")
+	fmt.Printf("Cleanup: %s\n", result.CleanupPreviewRun)
 }
 
 func init() {
 	workspaceCmd.SetUsageTemplate(workspacePublicUsageTemplate)
 	workspaceNewCmd.Flags().StringVar(&workspaceNewFromRef, "from", "", "save point ID to copy into the new workspace")
-	workspaceRemoveCmd.Flags().BoolVarP(&workspaceRemoveForce, "force", "f", false, "force removal when folder files differ from the newest save point")
+	workspaceRemoveCmd.Flags().BoolVarP(&workspaceRemoveForce, "force", "f", false, "preview removal even when folder files differ from the newest save point")
+	workspaceRemoveCmd.Flags().StringVar(&workspaceRemoveRunID, "run", "", "execute a workspace remove preview plan")
 	workspaceCmd.AddCommand(workspaceNewCmd)
 	workspaceCmd.AddCommand(workspaceListCmd)
 	workspaceCmd.AddCommand(workspacePathCmd)

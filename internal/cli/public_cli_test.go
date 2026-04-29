@@ -165,7 +165,7 @@ func TestPublicCLIStatusTreatsRootReadyAsDirtyOrReserved(t *testing.T) {
 }
 
 func TestPublicCLIDirtyRestoreRequiresExplicitChoice(t *testing.T) {
-	setupPublicCLIRepo(t, "dirtyrestore")
+	repoPath, _ := setupPublicCLIRepo(t, "dirtyrestore")
 
 	require.NoError(t, os.WriteFile("file.txt", []byte("v1"), 0644))
 	first := createCheckpointForPublicCLI(t, "first")
@@ -174,14 +174,37 @@ func TestPublicCLIDirtyRestoreRequiresExplicitChoice(t *testing.T) {
 
 	_ = runPublicRestoreJSON(t, first)
 	require.NoError(t, os.WriteFile("file.txt", []byte("local edit"), 0644))
+	statusBefore := readStatusForPublicCLI(t)
+	historyBefore, err := runPublicCLI(t, "--json", "history")
+	require.NoError(t, err, historyBefore)
+	plansBefore := restorePlanFileCount(t, repoPath)
 
-	stdout, err := runPublicCLI(t, "restore", second)
-	require.Error(t, err)
-	assert.Empty(t, stdout)
-	assert.Contains(t, err.Error(), "unsaved changes")
-	assert.Contains(t, err.Error(), "--save-first")
-	assert.Contains(t, err.Error(), "--discard-unsaved")
-	assert.Contains(t, err.Error(), "No files were changed.")
+	stdout, err := runPublicCLI(t, "--json", "restore", second)
+	require.NoError(t, err, stdout)
+
+	var preview map[string]any
+	decodePublicData(t, stdout, &preview)
+	assert.Equal(t, "decision_preview", preview["mode"])
+	assert.Equal(t, second, preview["source_save_point"])
+	assert.Equal(t, second, preview["newest_save_point"])
+	assert.Equal(t, second, preview["history_head"])
+	assert.Equal(t, false, preview["history_changed"])
+	assert.Equal(t, false, preview["files_changed"])
+	assert.NotContains(t, preview, "plan_id")
+	assert.NotContains(t, preview, "run_command")
+	nextCommands, ok := preview["next_commands"].([]any)
+	require.True(t, ok, "decision preview should expose next_commands: %#v", preview)
+	assert.Contains(t, nextCommands, "jvs restore "+second+" --save-first")
+	assert.Contains(t, nextCommands, "jvs restore "+second+" --discard-unsaved")
+
+	content, err := os.ReadFile("file.txt")
+	require.NoError(t, err)
+	assert.Equal(t, "local edit", string(content))
+	assert.Equal(t, statusBefore, readStatusForPublicCLI(t))
+	historyAfter, err := runPublicCLI(t, "--json", "history")
+	require.NoError(t, err, historyAfter)
+	assert.JSONEq(t, string(decodeContractEnvelope(t, historyBefore).Data), string(decodeContractEnvelope(t, historyAfter).Data))
+	assert.Equal(t, plansBefore, restorePlanFileCount(t, repoPath))
 
 	restored := runPublicRestoreJSON(t, second, "--discard-unsaved")
 	assert.Equal(t, second, restored["restored_save_point"])
@@ -341,6 +364,14 @@ func TestPublicCLIWorkspaceRemoveRejectsUnsavedChangesByDefault(t *testing.T) {
 	assert.FileExists(t, featureFile)
 
 	stdout, err = runPublicCLI(t, "--json", "workspace", "remove", "feature", "--force")
+	require.NoError(t, err, stdout)
+	var preview map[string]any
+	decodePublicData(t, stdout, &preview)
+	planID, ok := preview["plan_id"].(string)
+	require.True(t, ok, "workspace remove preview should expose plan_id: %#v", preview)
+	assert.DirExists(t, filepath.Join(repoPath, "worktrees", "feature"))
+
+	stdout, err = runPublicCLI(t, "--json", "workspace", "remove", "--run", planID)
 	require.NoError(t, err, stdout)
 	assert.NoDirExists(t, filepath.Join(repoPath, "worktrees", "feature"))
 }
@@ -612,6 +643,12 @@ func TestPublicCLIDoctorAndCleanupJSONHideInternalContractFields(t *testing.T) {
 	createCheckpointForPublicCLI(t, "feature")
 	require.NoError(t, os.Chdir(mainPath))
 	stdout, err = runPublicCLI(t, "--json", "workspace", "remove", "old-feature", "--force")
+	require.NoError(t, err, stdout)
+	var removePreview map[string]any
+	decodePublicData(t, stdout, &removePreview)
+	removePlanID, ok := removePreview["plan_id"].(string)
+	require.True(t, ok, "workspace remove preview should expose plan_id: %#v", removePreview)
+	stdout, err = runPublicCLI(t, "--json", "workspace", "remove", "--run", removePlanID)
 	require.NoError(t, err, stdout)
 	makeAllDescriptorsOldForPublicCLI(t, repoPath)
 

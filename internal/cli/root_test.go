@@ -257,7 +257,18 @@ func TestWorkspaceCommand_ListPathAndRemove(t *testing.T) {
 	env = decodeContractEnvelope(t, stdout)
 	require.True(t, env.OK, stdout)
 	assert.Equal(t, "workspace remove", env.Command)
-	assert.NoDirExists(t, filepath.Join(filepath.Dir(repoPath), "feature"))
+	var preview map[string]any
+	require.NoError(t, json.Unmarshal(env.Data, &preview), stdout)
+	planID, ok := preview["plan_id"].(string)
+	require.True(t, ok, "workspace remove preview should expose plan_id: %#v", preview)
+	assert.DirExists(t, pathData["path"])
+
+	stdout, err = executeCommand(createTestRootCmd(), "--json", "workspace", "remove", "--run", planID)
+	require.NoError(t, err, stdout)
+	env = decodeContractEnvelope(t, stdout)
+	require.True(t, env.OK, stdout)
+	assert.Equal(t, "workspace remove", env.Command)
+	assert.NoDirExists(t, pathData["path"])
 }
 
 func TestRootCommand_JSONFlag(t *testing.T) {
@@ -600,10 +611,10 @@ func createTestRootCmd() *cobra.Command {
 	resolvedWorkspace = ""
 	jsonErrorEmitted = false
 	workspaceRemoveForce = false
+	workspaceRemoveRunID = ""
 	workspaceNewFromRef = ""
 	historyLimit = 0
 	historyNoteFilter = ""
-	historyTagFilter = ""
 	historyAll = false
 	historyPath = ""
 	saveMessage = ""

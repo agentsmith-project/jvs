@@ -39,11 +39,14 @@ The adopted workspace may be the repository root folder itself. Additional
 workspace folders are implementation-owned real directories selected through
 `jvs workspace new` and `--workspace`.
 
-Workspace payload folders must not contain JVS control data. Save, restore,
-view, and cleanup logic must treat JVS control data as ignored/unmanaged.
+Workspace payload folders must not contain JVS control data or runtime state.
+Save, restore, view, and cleanup logic must treat that data as outside user
+payload.
 
 ## Removal And Cleanup Boundary
 
 Workspace removal is not part of the public root-help workflow. Any future
-removal flow must preview first, protect unsaved work, and leave save point
-deletion to reviewed cleanup.
+removal flow must preview first, protect unsaved work, run only a reviewed
+plan, remove only the selected workspace folder and workspace registry entry,
+leave save point storage unchanged, and leave deletion of unprotected save
+point storage to reviewed cleanup.

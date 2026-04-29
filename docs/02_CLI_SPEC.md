@@ -94,8 +94,8 @@ Public commands that accept `<save>` require one concrete save point:
 - a unique save point ID prefix
 
 Labels, messages, and tags are not restore or view targets in the save point
-contract. Search and filtering commands may return candidates, but the user or
-automation must choose an explicit save point ID before a mutating operation.
+contract. Search commands may return candidates, but the user or automation
+must choose an explicit save point ID before a mutating operation.
 
 ## Setup
 
@@ -158,7 +158,7 @@ Create a save point for the active workspace. A message is required, either as
 Rules:
 
 - The save captures the workspace managed files, excluding JVS control data and
-  ignored/unmanaged files.
+  runtime state. GA has no configurable ignore rules.
 - Save must hold the workspace mutation lock.
 - Capacity and staging checks must fail before publishing a partial save point.
 - If the workspace was created with `workspace new --from`, the first save has
@@ -178,12 +178,12 @@ Required JSON `data` fields:
 - `restored_paths` when applicable
 - `unsaved_changes`
 
-### `jvs history [--path <path>] [-n <limit>] [--grep <text>] [--tag <tag>] [--all] [--json]`
+### `jvs history [--path <path>] [-n <limit>] [--grep <text>] [--all] [--json]`
 
 Show save points for the active workspace. `--path` searches for save points
 that contain a workspace-relative path and returns candidates without changing
-files. `--grep` and `--tag` are discovery filters only; neither messages nor
-tags become restore/view targets.
+files. `--grep` filters by message substring. Messages and tags are not
+restore/view targets.
 
 Required JSON `data` fields:
 
@@ -350,6 +350,54 @@ Required JSON `data` fields:
 - `original_workspace_unchanged`
 - `unsaved_changes`
 
+### `jvs workspace remove <name>`
+
+Workspace removal is a preview-first reviewed-plan flow in the public spec.
+Preview must change no files, protect unsaved work, and show the selected
+workspace folder and registry change. Run must bind to a reviewed plan and
+remove only the selected workspace folder and workspace registry entry. Save
+point storage is unchanged; deleting unprotected save point storage is a
+separate reviewed cleanup flow.
+
+Required preview JSON `data` fields:
+
+- `mode: "preview"`
+- `plan_id`
+- `workspace`
+- `folder`
+- `newest_save_point`
+- `content_source`
+- `expected_newest_save_point`
+- `expected_content_source`
+- `expected_folder_evidence`
+- `unsaved_changes`
+- `files_state`
+- `options`
+- `folder_removed: false`
+- `files_changed: false`
+- `workspace_metadata_removed: false`
+- `save_point_storage_removed: false`
+- `run_command`
+- `cleanup_preview_run`
+
+Required run JSON `data` fields:
+
+- `mode: "run"`
+- `plan_id`
+- `status: "removed"`
+- `workspace`
+- `folder`
+- `newest_save_point`
+- `content_source`
+- `unsaved_changes`
+- `files_state`
+- `folder_removed: true`
+- `files_changed: true`
+- `workspace_metadata_removed: true`
+- `save_point_storage_removed: false`
+- `cleanup_command`
+- `cleanup_preview_run`
+
 ## Doctor
 
 ### `jvs doctor [--strict] [--repair-runtime] [--repair-list] [--json]`
@@ -379,6 +427,9 @@ audit history as an automatic repair.
 first, then run a reviewed plan. A cleanup run must revalidate its plan before
 deleting anything and must protect the stable reasons: workspace history, open
 views, active recovery plans, and active operations.
+Cleanup only deletes unprotected save point storage. It must not delete
+workspace folders, user cache directories, JVS control data, or runtime state;
+it must not prune workspace history or apply a retention policy.
 Stable cleanup reasons: workspace history; open views; active recovery plans;
 active operations.
 

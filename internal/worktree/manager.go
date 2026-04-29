@@ -558,11 +558,17 @@ func (l *renameRollbackLedger) rollback(cause error) error {
 	return cause
 }
 
-// Remove deletes a worktree. Fails if the worktree is main.
+// Remove deletes a workspace. Fails if the workspace is main.
 func (m *Manager) Remove(name string) error {
-	return repo.WithMutationLock(m.repoRoot, "worktree remove", func() error {
+	return repo.WithMutationLock(m.repoRoot, "workspace remove", func() error {
 		return m.remove(name)
 	})
+}
+
+// RemoveLocked performs Remove while the caller already holds the repository
+// mutation lock.
+func (m *Manager) RemoveLocked(name string) error {
+	return m.remove(name)
 }
 
 func (m *Manager) remove(name string) error {
@@ -570,7 +576,7 @@ func (m *Manager) remove(name string) error {
 		return err
 	}
 	if name == "main" {
-		return errors.New("cannot remove main worktree")
+		return errors.New("cannot remove main workspace")
 	}
 
 	cfg, err := repo.LoadWorktreeConfig(m.repoRoot, name)

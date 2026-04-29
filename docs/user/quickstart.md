@@ -98,7 +98,7 @@ jvs restore <save> --path notes.md
 jvs restore --run <plan-id>
 ```
 
-Ignored or unmanaged files are kept.
+Unrelated paths outside the requested path are kept.
 
 ## 7. Create Another Workspace
 

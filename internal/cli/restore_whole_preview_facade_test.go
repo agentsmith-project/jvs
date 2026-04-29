@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/agentsmith-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/internal/restoreplan"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
@@ -194,24 +195,99 @@ func TestRestoreWholeRunRejectsChangedFolderEvidenceWithoutMutation(t *testing.T
 	before.assertUnchanged(t, repoRoot)
 }
 
-func TestRestoreWholeDirtyDefaultRefusesWithoutPlan(t *testing.T) {
-	repoRoot := setupAdoptedSaveFacadeRepo(t)
-	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
-	firstID := savePointIDFromCLI(t, "first")
+func TestRestoreDirtyFolderShowsDecisionPreviewWithoutPlan(t *testing.T) {
+	repoRoot, firstID, secondID := setupWholeRestoreImpactRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("local edit"), 0644))
 	plansBefore := restorePlanFileCount(t, repoRoot)
 
 	stdout, err := executeCommand(createTestRootCmd(), "restore", firstID)
-	require.Error(t, err)
-	require.Empty(t, stdout)
-	assert.Contains(t, err.Error(), "unsaved changes")
-	assert.Contains(t, err.Error(), "--save-first")
-	assert.Contains(t, err.Error(), "--discard-unsaved")
-	assert.Contains(t, err.Error(), "cancel")
-	assert.Contains(t, err.Error(), "No files were changed.")
-	assertRestoreOutputOmitsLegacyVocabulary(t, err.Error())
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	require.NotEmpty(t, lines)
+	assert.Equal(t, "Preview only. No files were changed.", lines[0])
+	assert.Contains(t, stdout, "Decision needed: folder has unsaved changes.")
+	assert.Contains(t, stdout, "Folder: "+repoRoot)
+	assert.Contains(t, stdout, "Workspace: main")
+	assert.NotContains(t, stdout, "Plan: ")
+	assert.Contains(t, stdout, "Source save point: "+firstID)
+	assert.Contains(t, stdout, "Managed files to overwrite: 1")
+	assert.Contains(t, stdout, "app.txt")
+	assert.Contains(t, stdout, "Managed files to delete: 1")
+	assert.Contains(t, stdout, "workspace-only.txt")
+	assert.Contains(t, stdout, "Managed files to create: 1")
+	assert.Contains(t, stdout, "only-source.txt")
+	assert.Contains(t, stdout, "History will not change.")
+	assert.Contains(t, stdout, "Newest save point is still "+secondID+".")
+	assert.Contains(t, stdout, "Expected folder evidence: ")
+	assert.Contains(t, stdout, "Rerun preview with one safety option:")
+	assert.Contains(t, stdout, "jvs restore "+firstID+" --save-first")
+	assert.Contains(t, stdout, "jvs restore "+firstID+" --discard-unsaved")
+	assert.NotContains(t, stdout, "Run: `jvs restore --run")
+	assertRestoreOutputOmitsLegacyVocabulary(t, strings.ReplaceAll(stdout, repoRoot, ""))
 	assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "local edit")
 	assert.Equal(t, plansBefore, restorePlanFileCount(t, repoRoot))
+}
+
+func TestRestoreDirtyDecisionPreviewDoesNotMutateFilesOrHistory(t *testing.T) {
+	repoRoot, firstID, secondID := setupWholeRestoreImpactRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("local edit"), 0644))
+	before := captureViewMutationSnapshot(t, repoRoot)
+	plansBefore := restorePlanFileCount(t, repoRoot)
+
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "restore", firstID)
+	require.NoError(t, err)
+
+	env, data := decodeFacadeDataMap(t, stdout)
+	require.True(t, env.OK, stdout)
+	require.Equal(t, "restore", env.Command)
+	require.Equal(t, "decision_preview", data["mode"])
+	require.Equal(t, repoRoot, data["folder"])
+	require.Equal(t, "main", data["workspace"])
+	require.Equal(t, firstID, data["source_save_point"])
+	require.Equal(t, secondID, data["newest_save_point"])
+	require.Equal(t, secondID, data["history_head"])
+	require.Equal(t, secondID, data["expected_newest_save_point"])
+	require.NotEmpty(t, data["expected_folder_evidence"])
+	require.Equal(t, false, data["history_changed"])
+	require.Equal(t, false, data["files_changed"])
+	require.NotContains(t, data, "plan_id")
+	require.NotContains(t, data, "run_command")
+	nextCommands, ok := data["next_commands"].([]any)
+	require.True(t, ok, "next_commands should be an array: %#v", data["next_commands"])
+	assert.Contains(t, nextCommands, "jvs restore "+firstID+" --save-first")
+	assert.Contains(t, nextCommands, "jvs restore "+firstID+" --discard-unsaved")
+	assertRestorePreviewImpact(t, data, "overwrite", 1, "app.txt")
+	assertRestoreJSONOmitsLegacyFields(t, data)
+	assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "local edit")
+	assert.Equal(t, plansBefore, restorePlanFileCount(t, repoRoot))
+	before.assertUnchanged(t, repoRoot)
+}
+
+func TestRestoreDirtyDecisionPreviewPlanCannotRun(t *testing.T) {
+	repoRoot, firstID, secondID := setupWholeRestoreImpactRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("local edit"), 0644))
+
+	decisionPlan, err := restoreplan.CreateDecisionPreview(repoRoot, "main", model.SnapshotID(firstID), detectEngine(repoRoot))
+	require.NoError(t, err)
+	decisionPlan.PlanID = "decision-preview"
+	decisionPlan.RunCommand = ""
+	require.NoError(t, restoreplan.Write(repoRoot, decisionPlan))
+	before := captureViewMutationSnapshot(t, repoRoot)
+
+	stdout, err := executeCommand(createTestRootCmd(), "restore", "--run", "decision-preview")
+	require.Error(t, err)
+	require.Empty(t, stdout)
+	assert.Contains(t, err.Error(), "requires a safety decision")
+	assert.Contains(t, err.Error(), "--save-first")
+	assert.Contains(t, err.Error(), "--discard-unsaved")
+	assert.Contains(t, err.Error(), "No files were changed.")
+	assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "local edit")
+
+	cfg, err := repo.LoadWorktreeConfig(repoRoot, "main")
+	require.NoError(t, err)
+	require.Equal(t, model.SnapshotID(secondID), cfg.HeadSnapshotID)
+	require.Equal(t, model.SnapshotID(secondID), cfg.LatestSnapshotID)
+	before.assertUnchanged(t, repoRoot)
 }
 
 func TestRestoreWholeDiscardUnsavedPreviewThenRun(t *testing.T) {

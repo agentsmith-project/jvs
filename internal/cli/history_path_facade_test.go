@@ -127,7 +127,6 @@ func TestHistoryPathRejectsUnsupportedFiltersWithoutMutation(t *testing.T) {
 		args []string
 	}{
 		{name: "grep", args: []string{"history", "--path", "file.txt", "--grep", "base"}},
-		{name: "tag", args: []string{"history", "--path", "file.txt", "--tag", "v1"}},
 		{name: "all", args: []string{"history", "--path", "file.txt", "--all"}},
 		{name: "limit", args: []string{"history", "--path", "file.txt", "--limit", "1"}},
 	}
@@ -140,6 +139,27 @@ func TestHistoryPathRejectsUnsupportedFiltersWithoutMutation(t *testing.T) {
 			assert.Contains(t, err.Error(), "history --path only searches path candidates in this workspace")
 			assert.Contains(t, err.Error(), "No files were changed.")
 			assertNoOldSavePointVocabulary(t, err.Error())
+			before.assertUnchanged(t, repoRoot)
+		})
+	}
+}
+
+func TestHistoryRejectsTagFlagAsUnknownPublicSurface(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "file.txt"), []byte("v1"), 0644))
+	_ = savePointIDFromCLI(t, "baseline")
+	before := captureViewMutationSnapshot(t, repoRoot)
+
+	for _, args := range [][]string{
+		{"history", "--tag", "v1"},
+		{"history", "--path", "file.txt", "--tag", "v1"},
+	} {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			stdout, err := executeCommand(createTestRootCmd(), args...)
+
+			require.Error(t, err)
+			require.Empty(t, stdout)
+			assert.Contains(t, err.Error(), "unknown flag: --tag")
 			before.assertUnchanged(t, repoRoot)
 		})
 	}

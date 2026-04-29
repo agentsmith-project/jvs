@@ -449,6 +449,8 @@ func TestManager_CannotRemoveMain(t *testing.T) {
 
 	err := mgr.Remove("main")
 	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot remove main workspace")
+	assert.NotContains(t, err.Error(), "worktree")
 }
 
 func TestManager_Create_AlreadyExists(t *testing.T) {
