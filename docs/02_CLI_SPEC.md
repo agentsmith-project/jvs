@@ -396,7 +396,8 @@ operations.
 ### `jvs cleanup preview [--json]`
 
 Create a cleanup plan for save point storage that is no longer needed by
-protected history or active operations. Preview does not delete anything.
+workspace history, open views, active recovery plans, or active operations.
+Preview does not delete anything.
 
 Human output must show:
 

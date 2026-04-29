@@ -91,10 +91,7 @@ var cleanupRunCmd = &cobra.Command{
 		}
 
 		if err := collector.Run(cleanupPlanID); err != nil {
-			if jsonOutput {
-				return err
-			}
-			return fmt.Errorf("%v", err)
+			return err
 		}
 
 		if jsonOutput {

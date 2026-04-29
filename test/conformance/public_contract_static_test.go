@@ -63,6 +63,21 @@ type markdownCodeBlock struct {
 	text      string
 }
 
+type shellCopyCommand struct {
+	command     string
+	stepIndex   int
+	lineIndex   int
+	source      string
+	destination string
+}
+
+type shellCommandStep struct {
+	index     int
+	lineIndex int
+	fields    []string
+	opAfter   string
+}
+
 func TestDocs_PublicTerminologyContract(t *testing.T) {
 	for _, doc := range activePublicContractDocs() {
 		t.Run(doc, func(t *testing.T) {
@@ -549,9 +564,8 @@ func TestDocs_MigrationFlowDocumentsExecutableColdWholeFolderCopy(t *testing.T) 
 		"ordinary filesystem copy",
 		"managed folder/repository as a whole",
 		"fresh destination path",
-		"test ! -e /mnt/dst/myrepo",
-		"mkdir -p /mnt/dst",
-		"cp -a /mnt/src/myrepo /mnt/dst/myrepo",
+		"destination path must not exist",
+		"fails before copying",
 		"do not overlay",
 		"jvs doctor --strict --repair-runtime",
 		"fresh cleanup preview",
@@ -563,14 +577,6 @@ func TestDocs_MigrationFlowDocumentsExecutableColdWholeFolderCopy(t *testing.T) 
 		"## Migration Flow",
 	)
 	assertNoPathShapedRuntimeMechanisms(t, "docs/18_MIGRATION_AND_BACKUP.md migration flow", migrationFlow)
-	for _, forbidden := range []string{
-		"mkdir -p /mnt/dst/myrepo",
-		"cp -a /mnt/src/myrepo/. /mnt/dst/myrepo/",
-	} {
-		if strings.Contains(migrationFlow, forbidden) {
-			t.Fatalf("docs/18_MIGRATION_AND_BACKUP.md migration flow must not use overlay-prone copy step %q:\n%s", forbidden, migrationFlow)
-		}
-	}
 }
 
 func TestDocs_MigrationCopyExamplesFailClosedBeforeCopy(t *testing.T) {
@@ -580,6 +586,15 @@ func TestDocs_MigrationCopyExamplesFailClosedBeforeCopy(t *testing.T) {
 	} {
 		t.Run(doc, func(t *testing.T) {
 			body := releaseFacingClaimBody(t, doc)
+			for _, required := range []string{
+				"fresh destination",
+				"destination path must not exist",
+				"managed folder/repository as a whole",
+				"jvs doctor --strict --repair-runtime",
+				"fresh cleanup preview",
+			} {
+				requireReleaseReadinessText(t, "migration copy contract "+doc, body, required)
+			}
 			blocks := migrationWholeFolderCopyCodeBlocks(body)
 			if len(blocks) == 0 {
 				t.Fatalf("%s must include an executable whole-folder copy example", doc)
@@ -591,6 +606,19 @@ func TestDocs_MigrationCopyExamplesFailClosedBeforeCopy(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDocs_CLICleanupPreviewSummaryUsesStableProtectionReasons(t *testing.T) {
+	doc := "docs/02_CLI_SPEC.md"
+	body := readRepoFile(t, doc)
+	section := markdownSectionByHeadingAny(t, doc, body, "### `jvs cleanup preview [--json]`")
+	intro := section
+	if marker := strings.Index(intro, "Human output must show:"); marker >= 0 {
+		intro = intro[:marker]
+	}
+	for _, required := range stableCleanupProtectionNaturalTerms() {
+		requireReleaseReadinessText(t, "cleanup preview summary stable reason "+required, intro, required)
 	}
 }
 
@@ -653,6 +681,145 @@ func TestDocs_CleanupProtectionVocabularyUsesStableReasons(t *testing.T) {
 				for _, required := range stableCleanupProtectionNaturalTerms() {
 					requireReleaseReadinessText(t, "cleanup protection vocabulary "+doc, block.text, required)
 				}
+			}
+		})
+	}
+}
+
+func TestDocs_MigrationCopyFailClosedGuardUsesGenericDestinations(t *testing.T) {
+	genericPathBlock := `
+test ! -e /backup/jvs-repo &&
+mkdir -p /backup &&
+cp -a /data/jvs-repo /backup/jvs-repo
+`
+	if !migrationCopyBlockFailsClosed(genericPathBlock) {
+		t.Fatalf("migration copy fail-closed guard must accept generic destination paths:\n%s", genericPathBlock)
+	}
+
+	singleLineChainedBlock := `
+test ! -e "$dst" && mkdir -p "$parent" && cp -a "$src" "$dst"
+`
+	if !migrationCopyBlockFailsClosed(singleLineChainedBlock) {
+		t.Fatalf("migration copy fail-closed guard must accept one-line chained checks:\n%s", singleLineChainedBlock)
+	}
+
+	setEBlock := `
+set -euo pipefail
+test ! -e "$destination"
+mkdir -p "$destination_parent"
+cp --archive "$source" "$destination"
+`
+	if !migrationCopyBlockFailsClosed(setEBlock) {
+		t.Fatalf("migration copy fail-closed guard must accept set -e with generic variables:\n%s", setEBlock)
+	}
+
+	explicitExitBlock := `
+if test -e "$destination"; then
+  echo "destination exists" >&2
+  exit 1
+fi
+mkdir -p "$destination_parent"
+cp -R "$source" "$destination"
+`
+	if !migrationCopyBlockFailsClosed(explicitExitBlock) {
+		t.Fatalf("migration copy fail-closed guard must accept explicit exit with generic variables:\n%s", explicitExitBlock)
+	}
+
+	bracketOrExitBlock := `
+[ ! -e "$dst" ] || exit 1
+mkdir -p "$parent"
+cp -R "$src" "$dst"
+`
+	if !migrationCopyBlockFailsClosed(bracketOrExitBlock) {
+		t.Fatalf("migration copy fail-closed guard must accept bracket checks with explicit exit:\n%s", bracketOrExitBlock)
+	}
+
+	sudoCopyBlock := `
+set -e
+test ! -e "$dst"
+mkdir -p "$parent"
+sudo cp --archive "$src" "$dst"
+`
+	if !migrationCopyBlockFailsClosed(sudoCopyBlock) {
+		t.Fatalf("migration copy fail-closed guard must accept privileged filesystem copy commands:\n%s", sudoCopyBlock)
+	}
+
+	rsyncCopyBlock := `
+[ ! -e "$dst" ] || exit 1
+mkdir -p "$parent"
+rsync --archive "$src" "$dst"
+`
+	if !migrationCopyBlockFailsClosed(rsyncCopyBlock) {
+		t.Fatalf("migration copy fail-closed guard must accept reasonable filesystem copy commands:\n%s", rsyncCopyBlock)
+	}
+
+	rsyncOverlaySourceBlock := `
+test ! -e "$dst" && mkdir -p "$parent" && rsync --archive "$src/" "$dst"
+`
+	if migrationCopyBlockFailsClosed(rsyncOverlaySourceBlock) {
+		t.Fatalf("migration copy fail-closed guard must reject rsync source-directory-content operands:\n%s", rsyncOverlaySourceBlock)
+	}
+
+	unchainedBlock := `
+test ! -e /backup/jvs-repo
+mkdir -p /backup
+cp -a /data/jvs-repo /backup/jvs-repo
+`
+	if migrationCopyBlockFailsClosed(unchainedBlock) {
+		t.Fatalf("migration copy fail-closed guard must reject unchained checks without set -e:\n%s", unchainedBlock)
+	}
+
+	wrongDestinationBlock := `
+test ! -e /other/jvs-repo &&
+mkdir -p /backup &&
+cp -a /data/jvs-repo /backup/jvs-repo
+`
+	if migrationCopyBlockFailsClosed(wrongDestinationBlock) {
+		t.Fatalf("migration copy fail-closed guard must reject checks for a different destination:\n%s", wrongDestinationBlock)
+	}
+
+	overlayBlock := `
+test ! -e /backup/jvs-repo &&
+mkdir -p /backup &&
+cp -a /data/jvs-repo/. /backup/jvs-repo/
+`
+	if migrationCopyBlockFailsClosed(overlayBlock) {
+		t.Fatalf("migration copy fail-closed guard must reject overlay-style copy operands:\n%s", overlayBlock)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		block string
+	}{
+		{
+			name: "precreated destination",
+			block: `
+test ! -e "$dst" &&
+mkdir -p "$dst" &&
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "masked set -e check",
+			block: `
+set -e
+test ! -e "$dst" || true
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+		{
+			name: "echoed exit token",
+			block: `
+[ ! -e "$dst" ] || echo exit
+mkdir -p "$parent"
+cp -a "$src" "$dst"
+`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if migrationCopyBlockFailsClosed(tc.block) {
+				t.Fatalf("migration copy fail-closed guard must reject %s:\n%s", tc.name, tc.block)
 			}
 		})
 	}
@@ -2686,6 +2853,7 @@ func releaseFacingMigrationRuntimeFlowDocs() []string {
 
 func forbiddenCleanupProtectionVocabulary() []string {
 	return []string{
+		"active source protection",
 		"active source reads",
 		"source reads",
 		"view/source reads",
@@ -3465,10 +3633,7 @@ func markdownFencedCodeBlocks(body string) []markdownCodeBlock {
 func migrationWholeFolderCopyCodeBlocks(body string) []markdownCodeBlock {
 	var blocks []markdownCodeBlock
 	for _, block := range markdownFencedCodeBlocks(body) {
-		lower := strings.ToLower(block.text)
-		if strings.Contains(lower, "cp -a ") &&
-			strings.Contains(lower, "/mnt/src/myrepo") &&
-			strings.Contains(lower, "/mnt/dst/myrepo") {
+		if len(migrationCopyCommands(meaningfulShellLines(block.text))) > 0 {
 			blocks = append(blocks, block)
 		}
 	}
@@ -3477,31 +3642,226 @@ func migrationWholeFolderCopyCodeBlocks(body string) []markdownCodeBlock {
 
 func migrationCopyBlockFailsClosed(block string) bool {
 	lines := meaningfulShellLines(block)
-	cpLine := -1
-	testLine := -1
-	for i, line := range lines {
-		if cpLine < 0 && strings.Contains(line, "cp -a ") && strings.Contains(line, "/mnt/src/myrepo") && strings.Contains(line, "/mnt/dst/myrepo") {
-			cpLine = i
-		}
-		if testLine < 0 && strings.Contains(line, "test ! -e ") && strings.Contains(line, "/mnt/dst/myrepo") {
-			testLine = i
-		}
-	}
-	if cpLine < 0 || testLine < 0 || testLine > cpLine {
+	steps := shellCommandSteps(lines)
+	commands := migrationCopyCommandsFromSteps(steps)
+	if len(commands) == 0 {
 		return false
 	}
-	if shellBlockHasSetEBefore(lines, testLine) {
-		return true
-	}
-	if shellBlockHasExplicitDestinationExitBeforeCopy(lines, cpLine) {
-		return true
-	}
-	for i := testLine; i < cpLine; i++ {
-		if !strings.HasSuffix(strings.TrimSpace(lines[i]), "&&") {
+	for _, command := range commands {
+		if !migrationCopyCommandFailsClosed(steps, command) {
 			return false
 		}
 	}
 	return true
+}
+
+func migrationCopyCommandFailsClosed(steps []shellCommandStep, command shellCopyCommand) bool {
+	if migrationCopyCommandUsesOverlayOperands(command) {
+		return false
+	}
+	if shellBlockCreatesCopyDestinationBeforeCopy(steps, command.stepIndex, command.destination) {
+		return false
+	}
+
+	if shellBlockHasExplicitDestinationExitBeforeCopy(steps, command.stepIndex, command.destination) {
+		return true
+	}
+
+	testStep := shellDestinationNonexistenceCheckStep(steps, command.stepIndex, command.destination)
+	if testStep < 0 {
+		return false
+	}
+	if shellNonexistenceCheckHasOrExitBeforeCopy(steps, testStep, command.stepIndex) {
+		return true
+	}
+	if shellBlockHasSetEBefore(steps, testStep) && shellStepIsStandaloneErrexitGuard(steps, testStep) {
+		return true
+	}
+	return shellBlockHasChainedAndBetween(steps, testStep, command.stepIndex)
+}
+
+func migrationCopyCommands(lines []string) []shellCopyCommand {
+	return migrationCopyCommandsFromSteps(shellCommandSteps(lines))
+}
+
+func migrationCopyCommandsFromSteps(steps []shellCommandStep) []shellCopyCommand {
+	var commands []shellCopyCommand
+	for _, step := range steps {
+		if command, ok := migrationCopyCommand(step.fields); ok {
+			command.stepIndex = step.index
+			command.lineIndex = step.lineIndex
+			commands = append(commands, command)
+		}
+	}
+	return commands
+}
+
+func migrationCopyCommand(fields []string) (shellCopyCommand, bool) {
+	fields = shellCommandInvocationFields(fields)
+	if len(fields) == 0 {
+		return shellCopyCommand{}, false
+	}
+	switch fields[0] {
+	case "cp":
+		return migrationCpCommand(fields)
+	case "rsync":
+		return migrationRsyncCommand(fields)
+	default:
+		return shellCopyCommand{}, false
+	}
+}
+
+func migrationCpCommand(fields []string) (shellCopyCommand, bool) {
+	operands := shellCommandOperands(fields[1:])
+	if len(operands) < 2 {
+		return shellCopyCommand{}, false
+	}
+	if !copyFieldsIncludeWholeFolderCopyFlag(fields[1:]) {
+		return shellCopyCommand{}, false
+	}
+	return shellCopyCommand{
+		command:     fields[0],
+		source:      operands[len(operands)-2],
+		destination: operands[len(operands)-1],
+	}, true
+}
+
+func migrationRsyncCommand(fields []string) (shellCopyCommand, bool) {
+	operands := shellCommandOperands(fields[1:])
+	if len(operands) < 2 {
+		return shellCopyCommand{}, false
+	}
+	if !copyFieldsIncludeWholeFolderCopyFlag(fields[1:]) {
+		return shellCopyCommand{}, false
+	}
+	return shellCopyCommand{
+		command:     fields[0],
+		source:      operands[len(operands)-2],
+		destination: operands[len(operands)-1],
+	}, true
+}
+
+func shellCommandInvocationFields(fields []string) []string {
+	for len(fields) > 0 {
+		switch fields[0] {
+		case "command", "builtin":
+			fields = fields[1:]
+		case "env":
+			fields = fields[1:]
+			for len(fields) > 0 && (strings.Contains(fields[0], "=") || strings.HasPrefix(fields[0], "-")) {
+				fields = fields[1:]
+			}
+		case "sudo":
+			fields = trimSudoCommandPrefix(fields)
+		default:
+			return fields
+		}
+	}
+	return fields
+}
+
+func trimSudoCommandPrefix(fields []string) []string {
+	fields = fields[1:]
+	for len(fields) > 0 {
+		field := fields[0]
+		if field == "--" {
+			return fields[1:]
+		}
+		if !strings.HasPrefix(field, "-") {
+			return fields
+		}
+		fields = fields[1:]
+		if sudoOptionTakesValue(field) && len(fields) > 0 {
+			fields = fields[1:]
+		}
+	}
+	return fields
+}
+
+func sudoOptionTakesValue(field string) bool {
+	return field == "-u" || field == "--user" ||
+		field == "-g" || field == "--group" ||
+		field == "-h" || field == "--host" ||
+		field == "-p" || field == "--prompt"
+}
+
+func copyFieldsIncludeWholeFolderCopyFlag(fields []string) bool {
+	hasWholeFolderCopyFlag := false
+	for _, field := range fields {
+		if field == "--" {
+			break
+		}
+		if field == "--archive" || field == "--recursive" {
+			hasWholeFolderCopyFlag = true
+			continue
+		}
+		if strings.HasPrefix(field, "--") {
+			continue
+		}
+		if strings.HasPrefix(field, "-") &&
+			(strings.Contains(field, "a") || strings.Contains(field, "R") || strings.Contains(field, "r")) {
+			hasWholeFolderCopyFlag = true
+		}
+	}
+	return hasWholeFolderCopyFlag
+}
+
+func shellCommandOperands(fields []string) []string {
+	var operands []string
+	for _, field := range fields {
+		cleaned := cleanShellField(field)
+		if cleaned == "" || cleaned == "&&" || cleaned == ";" {
+			continue
+		}
+		if cleaned == "--" {
+			continue
+		}
+		if strings.HasPrefix(cleaned, "-") {
+			continue
+		}
+		operands = append(operands, cleaned)
+	}
+	return operands
+}
+
+func migrationCopyCommandUsesOverlayOperands(command shellCopyCommand) bool {
+	source := normalizeShellPathToken(command.source)
+	destination := normalizeShellPathToken(command.destination)
+	return copyCommandSourceCopiesDirectoryContents(command.command, source) || strings.HasSuffix(destination, "/")
+}
+
+func copyCommandSourceCopiesDirectoryContents(command, source string) bool {
+	switch command {
+	case "rsync":
+		return strings.HasSuffix(source, "/") ||
+			strings.HasSuffix(strings.TrimRight(source, "/"), "/.")
+	case "cp":
+		return strings.HasSuffix(strings.TrimRight(source, "/"), "/.")
+	default:
+		return false
+	}
+}
+
+func shellBlockCreatesCopyDestinationBeforeCopy(steps []shellCommandStep, copyStep int, destination string) bool {
+	for i := 0; i < copyStep; i++ {
+		if shellStepCreatesDirectory(steps[i], destination) {
+			return true
+		}
+	}
+	return false
+}
+
+func shellStepCreatesDirectory(step shellCommandStep, destination string) bool {
+	fields := shellCommandInvocationFields(shellTrimReservedCommandPrefixes(step.fields))
+	if len(fields) == 0 || fields[0] != "mkdir" {
+		return false
+	}
+	for _, operand := range shellCommandOperands(fields[1:]) {
+		if shellPathTokensSameDirectory(operand, destination) {
+			return true
+		}
+	}
+	return false
 }
 
 func meaningfulShellLines(block string) []string {
@@ -3516,23 +3876,270 @@ func meaningfulShellLines(block string) []string {
 	return lines
 }
 
-func shellBlockHasSetEBefore(lines []string, limit int) bool {
-	for i := 0; i <= limit && i < len(lines); i++ {
-		line := lines[i]
-		if line == "set -e" ||
-			strings.HasPrefix(line, "set -e ") ||
-			strings.Contains(line, "set -euo pipefail") ||
-			strings.Contains(line, "set -o errexit") {
+func shellCommandSteps(lines []string) []shellCommandStep {
+	var steps []shellCommandStep
+	for lineIndex, line := range lines {
+		var fields []string
+		for _, token := range shellLineTokens(line) {
+			if shellControlOperator(token) {
+				if len(fields) > 0 {
+					steps = append(steps, shellCommandStep{
+						index:     len(steps),
+						lineIndex: lineIndex,
+						fields:    fields,
+						opAfter:   token,
+					})
+					fields = nil
+					continue
+				}
+				if len(steps) > 0 {
+					steps[len(steps)-1].opAfter = token
+				}
+				continue
+			}
+			fields = append(fields, token)
+		}
+		if len(fields) > 0 {
+			steps = append(steps, shellCommandStep{
+				index:     len(steps),
+				lineIndex: lineIndex,
+				fields:    fields,
+			})
+		}
+	}
+	return steps
+}
+
+func shellBlockHasSetEBefore(steps []shellCommandStep, limit int) bool {
+	for i := 0; i <= limit && i < len(steps); i++ {
+		if shellStepEnablesErrexit(steps[i]) {
 			return true
 		}
 	}
 	return false
 }
 
-func shellBlockHasExplicitDestinationExitBeforeCopy(lines []string, cpLine int) bool {
-	joined := strings.Join(lines[:cpLine], "\n")
-	return strings.Contains(joined, "test -e /mnt/dst/myrepo") &&
-		strings.Contains(joined, "exit 1")
+func shellStepEnablesErrexit(step shellCommandStep) bool {
+	line := strings.Join(step.fields, " ")
+	return line == "set -e" ||
+		strings.HasPrefix(line, "set -e ") ||
+		strings.Contains(line, "set -euo pipefail") ||
+		strings.Contains(line, "set -o errexit")
+}
+
+func shellBlockHasExplicitDestinationExitBeforeCopy(steps []shellCommandStep, copyStep int, destination string) bool {
+	for i := 0; i < copyStep; i++ {
+		if !shellFieldsHaveDestinationExistsCheck(steps[i].fields, destination) {
+			continue
+		}
+		for j := i; j < copyStep; j++ {
+			if shellStepHasExplicitExit(steps[j]) {
+				return true
+			}
+			if shellStepIsFi(steps[j]) {
+				break
+			}
+		}
+	}
+	return false
+}
+
+func shellDestinationNonexistenceCheckStep(steps []shellCommandStep, limit int, destination string) int {
+	for i := 0; i < limit; i++ {
+		if shellStepIsDestinationNonexistenceCheck(steps[i], destination) {
+			return i
+		}
+	}
+	return -1
+}
+
+func shellLineHasDestinationNonexistenceCheck(line, destination string) bool {
+	return shellFieldsHaveDestinationNonexistenceCheck(shellCommandFields(line), destination)
+}
+
+func shellStepIsDestinationNonexistenceCheck(step shellCommandStep, destination string) bool {
+	return shellFieldsHaveDestinationNonexistenceCheck(step.fields, destination)
+}
+
+func shellFieldsHaveDestinationNonexistenceCheck(fields []string, destination string) bool {
+	fields = shellCommandInvocationFields(fields)
+	if len(fields) >= 4 && fields[0] == "test" && fields[1] == "!" && fields[2] == "-e" &&
+		shellPathTokenEqual(fields[3], destination) {
+		return true
+	}
+	if len(fields) >= 4 && (fields[0] == "[" || fields[0] == "[[") && fields[1] == "!" && fields[2] == "-e" &&
+		shellPathTokenEqual(fields[3], destination) {
+		return true
+	}
+	return false
+}
+
+func shellLineHasDestinationExistsCheck(line, destination string) bool {
+	return shellFieldsHaveDestinationExistsCheck(shellCommandFields(line), destination)
+}
+
+func shellFieldsHaveDestinationExistsCheck(fields []string, destination string) bool {
+	for i := 0; i+2 < len(fields); i++ {
+		if fields[i] == "test" && fields[i+1] == "-e" && shellPathTokenEqual(fields[i+2], destination) {
+			return true
+		}
+		if (fields[i] == "[" || fields[i] == "[[") && fields[i+1] == "-e" &&
+			i+2 < len(fields) && shellPathTokenEqual(fields[i+2], destination) {
+			return true
+		}
+	}
+	return false
+}
+
+func shellLineHasExplicitExit(line string) bool {
+	return shellFieldsHaveExplicitExit(shellCommandFields(line))
+}
+
+func shellStepHasExplicitExit(step shellCommandStep) bool {
+	return shellFieldsHaveExplicitExit(step.fields)
+}
+
+func shellFieldsHaveExplicitExit(fields []string) bool {
+	fields = shellCommandInvocationFields(shellTrimReservedCommandPrefixes(fields))
+	return len(fields) > 0 && fields[0] == "exit"
+}
+
+func shellNonexistenceCheckHasOrExitBeforeCopy(steps []shellCommandStep, start, end int) bool {
+	return start+1 < end && steps[start].opAfter == "||" && shellStepHasExplicitExit(steps[start+1])
+}
+
+func shellStepIsStandaloneErrexitGuard(steps []shellCommandStep, index int) bool {
+	if index < 0 || index >= len(steps) {
+		return false
+	}
+	if steps[index].opAfter == "&&" || steps[index].opAfter == "||" {
+		return false
+	}
+	return index == 0 || (steps[index-1].opAfter != "&&" && steps[index-1].opAfter != "||")
+}
+
+func shellBlockHasChainedAndBetween(steps []shellCommandStep, start, end int) bool {
+	for i := start; i < end; i++ {
+		if steps[i].opAfter != "&&" {
+			return false
+		}
+	}
+	return true
+}
+
+func shellStepIsFi(step shellCommandStep) bool {
+	return len(step.fields) == 1 && step.fields[0] == "fi"
+}
+
+func shellCommandFields(line string) []string {
+	tokens := shellLineTokens(line)
+	fields := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		if shellControlOperator(token) {
+			continue
+		}
+		fields = append(fields, token)
+	}
+	return fields
+}
+
+func shellLineTokens(line string) []string {
+	var tokens []string
+	for _, field := range strings.Fields(line) {
+		for _, token := range splitShellControlOperators(field) {
+			if shellControlOperator(token) {
+				tokens = append(tokens, token)
+				continue
+			}
+			cleaned := cleanShellField(token)
+			if cleaned == "" {
+				continue
+			}
+			tokens = append(tokens, cleaned)
+		}
+	}
+	return tokens
+}
+
+func splitShellControlOperators(field string) []string {
+	var tokens []string
+	for field != "" {
+		index, operator := firstShellControlOperator(field)
+		switch {
+		case index < 0:
+			tokens = append(tokens, field)
+			field = ""
+		case index == 0:
+			tokens = append(tokens, operator)
+			field = field[len(operator):]
+		default:
+			tokens = append(tokens, field[:index])
+			field = field[index:]
+		}
+	}
+	return tokens
+}
+
+func firstShellControlOperator(field string) (int, string) {
+	firstIndex := -1
+	firstOperator := ""
+	for _, operator := range []string{"&&", "||", ";"} {
+		if index := strings.Index(field, operator); index >= 0 && (firstIndex < 0 || index < firstIndex) {
+			firstIndex = index
+			firstOperator = operator
+		}
+	}
+	return firstIndex, firstOperator
+}
+
+func shellControlOperator(token string) bool {
+	return token == "&&" || token == "||" || token == ";"
+}
+
+func cleanShellField(field string) string {
+	field = strings.TrimSpace(field)
+	field = strings.TrimRight(field, ";")
+	field = strings.TrimSuffix(field, "&&")
+	field = strings.TrimSuffix(field, "||")
+	return strings.TrimSpace(field)
+}
+
+func shellPathTokenEqual(left, right string) bool {
+	return normalizeShellPathToken(left) == normalizeShellPathToken(right)
+}
+
+func shellPathTokensSameDirectory(left, right string) bool {
+	return normalizeShellDirectoryToken(left) == normalizeShellDirectoryToken(right)
+}
+
+func normalizeShellPathToken(token string) string {
+	token = cleanShellField(token)
+	token = strings.Trim(token, `"'`)
+	token = strings.TrimSuffix(token, "]]")
+	token = strings.TrimSuffix(token, "]")
+	token = strings.TrimSuffix(token, ";")
+	token = strings.TrimSuffix(token, "&&")
+	return strings.TrimSpace(token)
+}
+
+func normalizeShellDirectoryToken(token string) string {
+	token = normalizeShellPathToken(token)
+	if token == "/" {
+		return token
+	}
+	return strings.TrimRight(token, "/")
+}
+
+func shellTrimReservedCommandPrefixes(fields []string) []string {
+	for len(fields) > 0 {
+		switch fields[0] {
+		case "then", "do":
+			fields = fields[1:]
+		default:
+			return fields
+		}
+	}
+	return fields
 }
 
 func releaseFacingSyncGuidanceBlocks(body string) []markdownCodeBlock {

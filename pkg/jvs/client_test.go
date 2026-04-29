@@ -3,10 +3,12 @@ package jvs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/agentsmith-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -86,6 +88,33 @@ func TestPublicCleanupPlanRejectsUnknownProtectionReason(t *testing.T) {
 	require.Nil(t, plan)
 	require.ErrorContains(t, err, "cleanup protection reason")
 	assert.NotContains(t, err.Error(), "lineage")
+}
+
+func TestCleanupFacadeErrorAsIsExposeOnlyPublicCleanupClass(t *testing.T) {
+	dir := t.TempDir()
+	client, err := Init(dir, InitOptions{Name: "client-test", EngineType: model.EngineCopy})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "app.txt"), []byte("baseline"), 0644))
+	savePoint, err := client.Save(context.Background(), SaveOptions{Message: "baseline"})
+	require.NoError(t, err)
+
+	readyPath := filepath.Join(client.RepoRoot(), ".jvs", "snapshots", string(savePoint.SavePointID), ".READY")
+	require.NoError(t, os.WriteFile(readyPath, []byte("{not json"), 0644))
+
+	_, err = client.PreviewCleanup(context.Background(), CleanupOptions{})
+	require.Error(t, err)
+
+	var jvsErr *errclass.JVSError
+	require.True(t, errors.As(err, &jvsErr), "cleanup facade error should expose a public JVSError")
+	assert.Equal(t, errclass.ErrGCPlanMismatch.Code, jvsErr.Code)
+	assert.Contains(t, jvsErr.Message, "save point storage")
+	assert.True(t, errors.Is(err, errclass.ErrGCPlanMismatch), "cleanup facade error should match the public cleanup class")
+	assert.False(t, errors.Is(err, &errclass.JVSError{Code: "E_READY_INVALID"}), "cleanup facade error must not match internal readiness classes")
+
+	assert.Contains(t, err.Error(), "save point storage")
+	assert.NotContains(t, err.Error(), "publish state")
+	assert.NotContains(t, err.Error(), "READY")
+	assert.NotContains(t, err.Error(), ".jvs")
 }
 
 func clientProtectionGroupByReason(groups []CleanupProtectionGroup, reason CleanupProtectionReason) *CleanupProtectionGroup {

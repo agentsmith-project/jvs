@@ -1154,6 +1154,38 @@ func TestCollector_LoadPlanRejectsRepoMismatch(t *testing.T) {
 	assert.NotContains(t, err.Error(), repoPath)
 }
 
+func TestRemoveRuntimePlansRemovesTopLevelPlansAndAtomicTempResidue(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	gcDir := filepath.Join(repoPath, ".jvs", "gc")
+	require.NoError(t, os.MkdirAll(gcDir, 0755))
+
+	plan := &model.GCPlan{
+		PlanID:    "stale-plan",
+		CreatedAt: time.Now().UTC(),
+	}
+	writeGCPlan(t, repoPath, plan)
+	tempResidue := filepath.Join(gcDir, ".jvs-tmp-stale-plan")
+	require.NoError(t, os.WriteFile(tempResidue, []byte(`{"partial":true}`), 0644))
+	childDir := filepath.Join(gcDir, ".jvs-tmp-child")
+	require.NoError(t, os.MkdirAll(childDir, 0755))
+	tombstoneID := model.SnapshotID("1708300800000-deadbeef")
+	writeTombstone(t, repoPath, model.Tombstone{
+		SnapshotID: tombstoneID,
+		DeletedAt:  time.Now().UTC(),
+		GCState:    model.GCStateCommitted,
+	})
+	tombstonePath := filepath.Join(gcDir, "tombstones", string(tombstoneID)+".json")
+
+	cleaned, err := gc.RemoveRuntimePlans(repoPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, cleaned)
+	assert.NoFileExists(t, filepath.Join(gcDir, "stale-plan.json"))
+	assert.NoFileExists(t, tempResidue)
+	assert.DirExists(t, childDir)
+	assert.FileExists(t, tombstonePath)
+}
+
 func TestCollector_Plan_WritePlanError(t *testing.T) {
 	// This test is hard to implement without mocking
 	// In real scenarios, writePlan only fails on disk I/O errors

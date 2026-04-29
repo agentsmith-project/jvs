@@ -105,16 +105,34 @@ type CleanupProtectionGroup struct {
 }
 
 type cleanupFacadeError struct {
-	message string
-	cause   error
+	public *errclass.JVSError
+	cause  error
 }
 
 func (e *cleanupFacadeError) Error() string {
-	return e.message
+	if e.public != nil {
+		if e.public.Message != "" {
+			return e.public.Message
+		}
+		return e.public.Code
+	}
+	if e.cause != nil {
+		return e.cause.Error()
+	}
+	return "cleanup failed"
 }
 
 func (e *cleanupFacadeError) Is(target error) bool {
-	return errors.Is(e.cause, target)
+	return e.public != nil && errors.Is(e.public, target)
+}
+
+func (e *cleanupFacadeError) As(target any) bool {
+	targetJVS, ok := target.(**errclass.JVSError)
+	if !ok || e.public == nil {
+		return false
+	}
+	*targetJVS = e.public
+	return true
 }
 
 func (o *SaveOptions) workspace() string {
@@ -548,14 +566,13 @@ func publicCleanupFacadeError(err error) error {
 	if err == nil {
 		return nil
 	}
-	message := err.Error()
 	var jvsErr *errclass.JVSError
-	if errors.As(err, &jvsErr) && jvsErr.Message != "" {
-		message = jvsErr.Message
+	if !errors.As(err, &jvsErr) {
+		jvsErr = errclass.ErrGCPlanMismatch.WithMessage(err.Error())
 	}
 	return &cleanupFacadeError{
-		message: message,
-		cause:   err,
+		public: jvsErr,
+		cause:  err,
 	}
 }
 

@@ -1066,13 +1066,29 @@ func RemoveRuntimePlans(repoRoot string) (int, error) {
 	cleaned := 0
 	for _, entry := range entries {
 		name := entry.Name()
-		if !strings.HasSuffix(name, ".json") {
+		if entry.IsDir() {
 			continue
 		}
-		planID := strings.TrimSuffix(name, ".json")
-		path, err := repo.GCPlanPathForDelete(repoRoot, planID)
-		if err != nil {
-			return cleaned, err
+		path := ""
+		switch {
+		case strings.HasSuffix(name, ".json"):
+			planID := strings.TrimSuffix(name, ".json")
+			var err error
+			path, err = repo.GCPlanPathForDelete(repoRoot, planID)
+			if err != nil {
+				return cleaned, err
+			}
+		case strings.HasPrefix(name, ".jvs-tmp-"):
+			info, err := entry.Info()
+			if err != nil {
+				return cleaned, err
+			}
+			if !info.Mode().IsRegular() {
+				continue
+			}
+			path = filepath.Join(gcDir, name)
+		default:
+			continue
 		}
 		if err := os.Remove(path); err != nil {
 			if os.IsNotExist(err) {

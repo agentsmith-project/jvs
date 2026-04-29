@@ -46,7 +46,8 @@ Discovery output lists candidates and next commands. It never changes files.
 A restore preview:
 
 1. resolves the source save point
-2. registers active source protection while reading the source
+2. registers the restore preview as an active operation while reading the save
+   point
 3. refuses relevant unsaved changes unless `--save-first` or
    `--discard-unsaved` was selected
 4. checks source integrity and write capacity
@@ -68,7 +69,8 @@ Run behavior:
 
 1. load the restore plan
 2. refuse if the workspace has an active recovery plan
-3. register active source protection
+3. register the restore run as an active operation while materializing the save
+   point
 4. revalidate the expected workspace/path evidence and newest save point
 5. check source integrity and write capacity again
 6. create a recovery plan and backup before replacing files

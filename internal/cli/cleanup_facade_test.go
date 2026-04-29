@@ -135,6 +135,30 @@ func TestCleanupPreviewJSONDamagedReadyUsesPublicLanguage(t *testing.T) {
 	assertPublicCleanupErrorOmitsInternalActiveOperationVocabulary(t, env.Error.Code)
 }
 
+func TestCleanupRunHumanDamagedReadyUsesPublicLanguage(t *testing.T) {
+	isolateContractCLIState(t)
+	repoRoot := setupCurrentContractRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("baseline"), 0644))
+	savePointID := savePointForContract(t, "baseline")
+
+	previewOut, err := executeCommand(createTestRootCmd(), "--json", "cleanup", "preview")
+	require.NoError(t, err, previewOut)
+	previewData := decodeContractDataMap(t, previewOut)
+	planID, ok := previewData["plan_id"].(string)
+	require.True(t, ok, "cleanup preview should expose plan_id: %#v", previewData)
+	require.NotEmpty(t, planID)
+
+	corruptCLIReadyMarker(t, repoRoot, savePointID)
+
+	stdout, stderr, err := executeCommandWithErrorReport(createTestRootCmd(), "cleanup", "run", "--plan-id", planID)
+	require.Error(t, err)
+	assert.Empty(t, stdout)
+	assert.Contains(t, stderr, "save point storage")
+	assert.Contains(t, stderr, "doctor --strict")
+	assertPublicCleanupErrorOmitsInternalActiveOperationVocabulary(t, stderr)
+	assert.NotContains(t, stderr, "E_READY_INVALID")
+}
+
 func TestPublicCleanupRejectsUnknownProtectionReason(t *testing.T) {
 	_, err := publicCleanup(&model.GCPlan{
 		ProtectionGroups: []model.GCProtectionGroup{

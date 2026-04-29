@@ -109,8 +109,9 @@ Use the offline whole-folder copy procedure in
 5. Run `jvs doctor --strict`.
 6. Create final save points for critical workspaces.
 7. Use ordinary filesystem copy of the managed folder/repository as a whole,
-   while writers remain stopped. The fresh destination path must not exist; do not
-   overlay a non-empty destination:
+   while writers remain stopped. The fresh destination path must not exist; this
+   example fails before copying if that path already exists. Do not overlay a
+   non-empty destination:
    ```bash
    test ! -e /mnt/dst/myrepo &&
    mkdir -p /mnt/dst &&
