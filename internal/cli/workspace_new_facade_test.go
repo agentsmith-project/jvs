@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -17,6 +18,126 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestWorkspaceNewCreatesRelativeExplicitFolderFromSavePoint(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
+	sourceID := savePointIDFromCLI(t, "source")
+	targetFolder := filepath.Join(filepath.Dir(repoRoot), "exp")
+
+	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "../exp", "--from", sourceID[:8])
+	require.NoError(t, err)
+	assertLineOrder(t, stdout, []string{
+		"Folder: " + targetFolder,
+		"Workspace: exp",
+		"Started from save point: " + sourceID,
+		"Newest save point: none",
+		"Original workspace unchanged.",
+	})
+
+	assertFileContent(t, filepath.Join(targetFolder, "app.txt"), "v1")
+	cfg, err := worktree.NewManager(repoRoot).Get("exp")
+	require.NoError(t, err)
+	assert.Equal(t, model.SnapshotID(sourceID), cfg.HeadSnapshotID)
+	assert.Empty(t, cfg.LatestSnapshotID)
+	assert.Equal(t, model.SnapshotID(sourceID), cfg.StartedFromSnapshotID)
+	path, err := worktree.NewManager(repoRoot).Path("exp")
+	require.NoError(t, err)
+	assert.Equal(t, targetFolder, path)
+}
+
+func TestWorkspaceNewCreatesAbsoluteExplicitFolderWithName(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
+	sourceID := savePointIDFromCLI(t, "source")
+	targetFolder := filepath.Join(t.TempDir(), "client-review-files")
+
+	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", targetFolder, "--from", sourceID, "--name", "review")
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "Folder: "+targetFolder)
+	assert.Contains(t, stdout, "Workspace: review")
+
+	assertFileContent(t, filepath.Join(targetFolder, "app.txt"), "v1")
+	cfg, err := worktree.NewManager(repoRoot).Get("review")
+	require.NoError(t, err)
+	assert.Equal(t, targetFolder, cfg.RealPath)
+	path, err := worktree.NewManager(repoRoot).Path("review")
+	require.NoError(t, err)
+	assert.Equal(t, targetFolder, path)
+}
+
+func TestWorkspaceNewRejectsFolderInsideExistingWorkspace(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
+	sourceID := savePointIDFromCLI(t, "source")
+
+	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "./inside", "--from", sourceID)
+	require.Error(t, err)
+	require.Empty(t, stdout)
+	assert.Contains(t, err.Error(), "inside an existing workspace")
+	assert.NoDirExists(t, filepath.Join(repoRoot, "inside"))
+}
+
+func TestWorkspaceNewRejectsExistingFolder(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
+	sourceID := savePointIDFromCLI(t, "source")
+	targetFolder := filepath.Join(filepath.Dir(repoRoot), "existing")
+	require.NoError(t, os.Mkdir(targetFolder, 0755))
+
+	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", targetFolder, "--from", sourceID)
+	require.Error(t, err)
+	require.Empty(t, stdout)
+	assert.Contains(t, err.Error(), "already exists")
+}
+
+func TestWorkspaceListShowsFoldersPointersWithoutDirtyScan(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
+	sourceID := savePointIDFromCLI(t, "source")
+	_, err := executeCommand(createTestRootCmd(), "workspace", "new", "../exp", "--from", sourceID)
+	require.NoError(t, err)
+	expFolder := filepath.Join(filepath.Dir(repoRoot), "exp")
+	require.NoError(t, os.WriteFile(filepath.Join(expFolder, "app.txt"), []byte("unsaved edit"), 0644))
+
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "workspace", "list")
+	require.NoError(t, err)
+	records := decodeWorkspaceListRecords(t, stdout)
+
+	main := workspaceListRecordByName(t, records, "main")
+	assert.Equal(t, true, main["current"])
+	assert.Equal(t, repoRoot, main["folder"])
+	assert.Equal(t, sourceID, main["content_source"])
+	assert.Equal(t, sourceID, main["newest_save_point"])
+	assert.Equal(t, sourceID, main["history_head"])
+	assert.NotContains(t, main, "unsaved_changes")
+
+	exp := workspaceListRecordByName(t, records, "exp")
+	assert.Equal(t, false, exp["current"])
+	assert.Equal(t, expFolder, exp["folder"])
+	assert.Equal(t, sourceID, exp["content_source"])
+	assert.Equal(t, sourceID, exp["started_from_save_point"])
+	assert.NotContains(t, exp, "unsaved_changes")
+}
+
+func TestWorkspaceListStatusShowsUnsavedChanges(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
+	sourceID := savePointIDFromCLI(t, "source")
+	_, err := executeCommand(createTestRootCmd(), "workspace", "new", "../exp", "--from", sourceID)
+	require.NoError(t, err)
+	expFolder := filepath.Join(filepath.Dir(repoRoot), "exp")
+	require.NoError(t, os.WriteFile(filepath.Join(expFolder, "app.txt"), []byte("unsaved edit"), 0644))
+
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "workspace", "list", "--status")
+	require.NoError(t, err)
+	records := decodeWorkspaceListRecords(t, stdout)
+
+	main := workspaceListRecordByName(t, records, "main")
+	assert.Equal(t, false, main["unsaved_changes"])
+	exp := workspaceListRecordByName(t, records, "exp")
+	assert.Equal(t, true, exp["unsaved_changes"])
+}
+
 func TestWorkspaceNewFromSavePointCreatesIndependentStartedWorkspace(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
@@ -24,7 +145,7 @@ func TestWorkspaceNewFromSavePointCreatesIndependentStartedWorkspace(t *testing.
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("main changed"), 0644))
 	sourcePrefix := sourceID[:8]
 
-	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "exp", "--from", sourcePrefix)
+	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "../exp", "--from", sourcePrefix)
 	require.NoError(t, err)
 	assertLineOrder(t, stdout, []string{
 		"Folder: ",
@@ -62,7 +183,7 @@ func TestWorkspaceNewStatusHistoryAndFirstSaveUseStartedFromLineage(t *testing.T
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
 	sourceID := savePointIDFromCLI(t, "source")
-	_, err := executeCommand(createTestRootCmd(), "workspace", "new", "exp", "--from", sourceID)
+	_, err := executeCommand(createTestRootCmd(), "workspace", "new", "../exp", "--from", sourceID)
 	require.NoError(t, err)
 
 	statusOut, err := executeCommand(createTestRootCmd(), "--workspace", "exp", "status")
@@ -85,9 +206,12 @@ func TestWorkspaceNewStatusHistoryAndFirstSaveUseStartedFromLineage(t *testing.T
 
 	historyOut, err := executeCommand(createTestRootCmd(), "--workspace", "exp", "history")
 	require.NoError(t, err)
-	assert.Contains(t, historyOut, "No save points yet.")
+	assert.NotContains(t, historyOut, "No save points yet.")
 	assert.Contains(t, historyOut, "Workspace started from "+sourceID)
-	assertWorkspaceNewOutputOmitsOldVocabulary(t, historyOut)
+	assert.Contains(t, historyOut, "Current pointer: "+sourceID)
+	assert.Contains(t, historyOut, "Workspace has not created its own save point yet.")
+	assert.Contains(t, historyOut, "source")
+	assertNoCheckpointSnapshotWorktreeVocabulary(t, historyOut)
 
 	saveOut, err := executeCommand(createTestRootCmd(), "--workspace", "exp", "--json", "save", "-m", "exp first")
 	require.NoError(t, err)
@@ -118,7 +242,7 @@ func TestWorkspaceNewStatusHistoryAndFirstSaveUseStartedFromLineage(t *testing.T
 	humanRepoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(humanRepoRoot, "app.txt"), []byte("v1"), 0644))
 	humanSourceID := savePointIDFromCLI(t, "source")
-	_, err = executeCommand(createTestRootCmd(), "workspace", "new", "humanexp", "--from", humanSourceID)
+	_, err = executeCommand(createTestRootCmd(), "workspace", "new", "../humanexp", "--from", humanSourceID)
 	require.NoError(t, err)
 	humanSaveOut, err := executeCommand(createTestRootCmd(), "--workspace", "humanexp", "save", "-m", "exp first")
 	require.NoError(t, err)
@@ -132,7 +256,7 @@ func TestWorkspaceNewFromSavePointFailureDoesNotCreateWorkspace(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
 		sourceID := savePointIDFromCLI(t, "source")
 
-		stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "main", "--from", sourceID)
+		stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "../main", "--from", sourceID)
 		require.Error(t, err)
 		require.Empty(t, stdout)
 		assertWorkspaceNewOutputOmitsOldVocabulary(t, err.Error())
@@ -143,7 +267,7 @@ func TestWorkspaceNewFromSavePointFailureDoesNotCreateWorkspace(t *testing.T) {
 	t.Run("invalid save point ref", func(t *testing.T) {
 		repoRoot := setupAdoptedSaveFacadeRepo(t)
 
-		stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "exp", "--from", "notasave")
+		stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "../exp", "--from", "notasave")
 		require.Error(t, err)
 		require.Empty(t, stdout)
 		assert.Contains(t, err.Error(), "save point ID")
@@ -157,7 +281,7 @@ func TestWorkspaceNewFromSavePointFailureDoesNotCreateWorkspace(t *testing.T) {
 		sourceID := savePointIDFromCLI(t, "source")
 		require.NoError(t, os.Remove(filepath.Join(repoRoot, repo.JVSDirName, "snapshots", sourceID, ".READY")))
 
-		stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "exp", "--from", sourceID)
+		stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "../exp", "--from", sourceID)
 		require.Error(t, err)
 		require.Empty(t, stdout)
 		assertWorkspaceNewOutputOmitsOldVocabulary(t, err.Error())
@@ -179,7 +303,7 @@ func TestWorkspaceNewCapacityFailureDoesNotCreateWorkspaceOrPin(t *testing.T) {
 	restoreCapacity := installCapacityGateHooks(capacitygate.Gate{Meter: meter, SafetyMarginBytes: 0})
 	t.Cleanup(restoreCapacity)
 
-	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "exp", "--from", sourceID)
+	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "../exp", "--from", sourceID)
 	require.Error(t, err)
 	require.Empty(t, strings.TrimSpace(stdout))
 	assert.Greater(t, meter.checks, 0)
@@ -200,7 +324,7 @@ func TestWorkspaceNewCapacityFailureDoesNotCreateWorkspaceOrPin(t *testing.T) {
 	assert.Equal(t, beforeMainCfg, afterMainCfg)
 
 	t.Setenv(testCapacityAvailableEnv, "0")
-	jsonOut, stderr, exitCode := runContractSubprocess(t, repoRoot, "--json", "workspace", "new", "jsonexp", "--from", sourceID)
+	jsonOut, stderr, exitCode := runContractSubprocess(t, repoRoot, "--json", "workspace", "new", "../jsonexp", "--from", sourceID)
 	require.NotZero(t, exitCode, stderr)
 	env := decodeContractEnvelope(t, jsonOut)
 	require.NotNil(t, env.Error)
@@ -236,7 +360,7 @@ func TestWorkspaceNewCapacityIncludesSourceHashTempFilesystem(t *testing.T) {
 	restoreCapacity := installCapacityGateHooks(capacitygate.Gate{Meter: meter, SafetyMarginBytes: 1})
 	t.Cleanup(restoreCapacity)
 
-	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "exp", "--from", sourceID)
+	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "../exp", "--from", sourceID)
 	require.Error(t, err)
 	require.Empty(t, strings.TrimSpace(stdout))
 	var jvsErr *errclass.JVSError
@@ -298,7 +422,7 @@ func TestWorkspaceNewRejectsTaintedSourcePayloadBeforePublish(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, os.Chdir(repoRoot))
-	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "exp", "--from", desc.SnapshotID.String())
+	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "../exp", "--from", desc.SnapshotID.String())
 	require.Error(t, err)
 	require.Empty(t, strings.TrimSpace(stdout))
 	assert.Contains(t, err.Error(), "control data")
@@ -330,10 +454,10 @@ func TestWorkspacePublicDiscoveryUsesCleanVocabulary(t *testing.T) {
 
 	listJSON, err := executeCommand(createTestRootCmd(), "--json", "workspace", "list")
 	require.NoError(t, err)
-	assertWorkspaceNewOutputOmitsOldVocabulary(t, listJSON)
 	assert.NotContains(t, listJSON, "base_checkpoint")
-	assert.NotContains(t, listJSON, "current")
 	assert.NotContains(t, listJSON, "latest")
+	assert.Contains(t, listJSON, "current")
+	assert.Contains(t, listJSON, "history_head")
 
 	_, err = worktree.NewManager(repoRoot).Get("main")
 	require.NoError(t, err)
@@ -351,6 +475,7 @@ func assertWorkspaceMissing(t *testing.T, repoRoot, name string) {
 	_, err := worktree.NewManager(repoRoot).Get(name)
 	require.Error(t, err)
 	assert.NoDirExists(t, filepath.Join(repoRoot, repo.JVSDirName, "worktrees", name))
+	assert.NoDirExists(t, filepath.Join(repoRoot, name))
 	assert.NoDirExists(t, filepath.Join(repoRoot, "worktrees", name))
 	assert.NoDirExists(t, filepath.Join(filepath.Dir(repoRoot), name))
 }
@@ -358,6 +483,7 @@ func assertWorkspaceMissing(t *testing.T, repoRoot, name string) {
 func assertWorkspaceNewNoStaging(t *testing.T, repoRoot, name string) {
 	t.Helper()
 	for _, pattern := range []string{
+		filepath.Join(repoRoot, "."+name+".staging-*"),
 		filepath.Join(repoRoot, "worktrees", "."+name+".staging-*"),
 		filepath.Join(filepath.Dir(repoRoot), "."+name+".staging-*"),
 	} {
@@ -393,7 +519,27 @@ func assertLineOrder(t *testing.T, value string, lines []string) {
 func assertWorkspaceNewOutputOmitsOldVocabulary(t *testing.T, value string) {
 	t.Helper()
 	lower := strings.ToLower(value)
-	for _, word := range []string{"checkpoint", "snapshot", "worktree", "current", "latest", "head", "detached", "fork", "commit"} {
+	for _, word := range []string{"checkpoint", "snapshot", "worktree", "latest", "detached", "fork", "commit"} {
 		assert.NotContains(t, lower, word)
 	}
+}
+
+func decodeWorkspaceListRecords(t *testing.T, stdout string) []map[string]any {
+	t.Helper()
+	env := decodeContractEnvelope(t, stdout)
+	require.True(t, env.OK, stdout)
+	var records []map[string]any
+	require.NoError(t, json.Unmarshal(env.Data, &records), stdout)
+	return records
+}
+
+func workspaceListRecordByName(t *testing.T, records []map[string]any, name string) map[string]any {
+	t.Helper()
+	for _, record := range records {
+		if record["workspace"] == name {
+			return record
+		}
+	}
+	t.Fatalf("workspace %q not found in %#v", name, records)
+	return nil
 }

@@ -259,7 +259,7 @@ temporary direction you may throw away.
 Create it from a save point:
 
 ```bash
-jvs workspace new experiment --from <save>
+jvs workspace new ../experiment --from <save>
 ```
 
 JVS prints the new folder path:
@@ -272,7 +272,7 @@ Workspace: experiment
 Move into that folder for the risky work:
 
 ```bash
-cd /path/to/experiment
+cd "$(jvs workspace path experiment)"
 jvs status
 ```
 

@@ -102,8 +102,8 @@ folder directly.
 Workflow:
 
 ```bash
-jvs workspace new generic-copy --from <save>
-cd <printed-folder>
+jvs workspace new ../generic-copy --from <save>
+cd "$(jvs workspace path generic-copy)"
 jvs status
 jvs save -m "generic copy first save"
 ```
@@ -114,7 +114,8 @@ history stay unchanged.
 
 Acceptance criteria:
 
-- `jvs workspace new <name> --from <save>` creates a separate real folder.
+- `jvs workspace new <folder> --from <save>` creates a separate real folder at
+  the explicit target path.
 - The source workspace is unchanged.
 - The printed folder carries only the control information needed for command
   targeting; that information is not user payload.
@@ -344,7 +345,7 @@ public contract.
   safety choice.
 - `jvs view` is read-only.
 - `jvs history --path` is the discovery path for one file or directory.
-- `jvs workspace new <name> --from <save>` creates a separate real folder.
+- `jvs workspace new <folder> --from <save>` creates a separate real folder.
 - Workspace removal must preview first, run only a reviewed plan, and leave
   save point storage deletion to cleanup.
 - JVS control data and runtime state are never user payload.

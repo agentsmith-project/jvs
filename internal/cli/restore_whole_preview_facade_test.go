@@ -349,7 +349,7 @@ func TestRestoreWholeSaveFirstPreviewThenRunCreatesSafetySaveThenRestores(t *tes
 	require.Equal(t, false, runData["unsaved_changes"])
 	assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "v1")
 
-	historyOut, err := executeCommand(createTestRootCmd(), "history")
+	historyOut, err := executeCommand(createTestRootCmd(), "history", "to", newest)
 	require.NoError(t, err)
 	assert.Contains(t, historyOut, "save before restore")
 

@@ -255,7 +255,7 @@ Next: create a second workspace for experiments.
 Use a save point as the starting place for another real folder:
 
 ```bash
-jvs workspace new experiment --from <baseline-save>
+jvs workspace new ../experiment --from <baseline-save>
 ```
 
 Look for:
@@ -266,10 +266,14 @@ Workspace: experiment
 Started from save point: <baseline-save>
 ```
 
+The command uses a folder path, not just a workspace name. Here
+`../experiment` says exactly where the new folder should be created. The
+workspace name defaults to the final folder name, `experiment`.
+
 Move into the printed folder:
 
 ```bash
-cd /path/to/experiment
+cd "$(jvs workspace path experiment)"
 jvs status
 ```
 

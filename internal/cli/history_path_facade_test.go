@@ -127,7 +127,6 @@ func TestHistoryPathRejectsUnsupportedFiltersWithoutMutation(t *testing.T) {
 		args []string
 	}{
 		{name: "grep", args: []string{"history", "--path", "file.txt", "--grep", "base"}},
-		{name: "all", args: []string{"history", "--path", "file.txt", "--all"}},
 		{name: "limit", args: []string{"history", "--path", "file.txt", "--limit", "1"}},
 	}
 

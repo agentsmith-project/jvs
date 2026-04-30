@@ -31,9 +31,9 @@ Before any pre-release or v0 tag:
    `recovery`, and `doctor`.
 3. Restore preview/run/recovery tests pass for whole-workspace and path
    restore.
-4. Workspace creation tests prove `workspace new --from <save>` starts a new
-   history with `newest_save_point: null` and records
-   `started_from_save_point`.
+4. Workspace creation tests prove `workspace new <folder> --from <save>` uses
+   an explicit target folder, starts a new history with
+   `newest_save_point: null`, and records `started_from_save_point`.
 5. Regression tests pass for previously fixed destructive-operation safety
    bugs.
 6. Fuzz targets pass for public parsers, names, save point IDs, and structured
@@ -80,7 +80,8 @@ release input.
   target state.
 - Restore failures produce either no file changes or an active recovery plan
   with status/resume/rollback.
-- `workspace new --from <save>` does not inherit source history.
+- `workspace new <folder> --from <save>` does not inherit source history and
+  does not infer the target path from a workspace name.
 - Cleanup documentation describes preview-first, reviewed deletion of
   unprotected save point storage.
 - Repo and workspace targeting is tested from folders, nested paths, explicit

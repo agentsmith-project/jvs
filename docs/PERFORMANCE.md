@@ -15,7 +15,7 @@ constant-time claims.
 | `jvs view <save> [path]` | engine-dependent materialization | source read and temporary view setup |
 | restore preview | O(source + target metadata) | impact calculation and expected evidence |
 | restore run | engine-dependent write path | revalidation, backup, materialization |
-| `jvs workspace new <name> --from <save>` | engine-dependent materialization | source read and new workspace creation |
+| `jvs workspace new <folder> --from <save>` | engine-dependent materialization | source read and new workspace creation |
 | `jvs doctor --strict` | O(repository state + integrity checks selected) | layout checks, descriptor reads, audit, payload verification when strict requires it |
 
 ## Engine Classes
@@ -47,7 +47,7 @@ time jvs save -m "benchmark"
 time jvs history
 time jvs restore <save>
 time jvs restore --run <plan-id>
-time jvs workspace new bench --from <save>
+time jvs workspace new ../bench --from <save>
 time jvs doctor --strict
 ```
 

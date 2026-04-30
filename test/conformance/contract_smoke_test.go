@@ -4,6 +4,7 @@ package conformance
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -125,12 +126,13 @@ func TestContract_WorkspaceAndCleanupUseCurrentPublicCommands(t *testing.T) {
 	createFiles(t, repoPath, map[string]string{"notes.txt": "base\n"})
 	base := savePoint(t, repoPath, "base")
 
-	stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "workspace", "new", "feature", "--from", base)
+	stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "workspace", "new", "../feature", "--from", base)
 	if code != 0 {
 		t.Fatalf("workspace new failed: stdout=%s stderr=%s", stdout, stderr)
 	}
 	created := decodeContractDataMap(t, stdout)
-	if created["workspace"] != "feature" || created["started_from_save_point"] != base {
+	featureFolder := filepath.Join(filepath.Dir(repoPath), "feature")
+	if created["workspace"] != "feature" || created["folder"] != featureFolder || created["started_from_save_point"] != base {
 		t.Fatalf("workspace new data mismatch: %#v", created)
 	}
 

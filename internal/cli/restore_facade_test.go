@@ -308,7 +308,7 @@ func TestRestoreSaveFirstUsesSavePointVocabulary(t *testing.T) {
 	require.Equal(t, false, data["history_changed"])
 	assertRestoreJSONOmitsLegacyFields(t, data)
 
-	historyOut, err := executeCommand(createTestRootCmd(), "history")
+	historyOut, err := executeCommand(createTestRootCmd(), "history", "to", newest)
 	require.NoError(t, err)
 	assert.Contains(t, historyOut, "save before restore")
 	assertRestoreOutputOmitsLegacyVocabulary(t, historyOut)

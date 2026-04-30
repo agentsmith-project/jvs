@@ -387,7 +387,7 @@ func TestWriteWorkspaceLocatorRejectsMalformedExistingRepoRoot(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			before := writeRepoTestWorkspaceLocator(t, workspace, tc.repoRoot)
 
-			err := repo.WriteWorkspaceLocator(workspace, repoPath)
+			err := repo.WriteWorkspaceLocator(workspace, repoPath, "feature")
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "repo_root")
 
@@ -398,14 +398,99 @@ func TestWriteWorkspaceLocatorRejectsMalformedExistingRepoRoot(t *testing.T) {
 	}
 }
 
-func writeRepoTestWorkspaceLocator(t *testing.T, dir, repoRoot string) []byte {
+func TestWriteWorkspaceLocatorIncludesRepoIdentityAndWorkspaceName(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "testrepo")
+	r, err := repo.Init(repoPath, "testrepo")
+	require.NoError(t, err)
+	workspace := filepath.Join(dir, "workspace")
+	require.NoError(t, os.MkdirAll(workspace, 0755))
+
+	require.NoError(t, repo.WriteWorkspaceLocator(workspace, repoPath, "feature"))
+
+	data, err := os.ReadFile(filepath.Join(workspace, repo.JVSDirName))
+	require.NoError(t, err)
+	var locator map[string]any
+	require.NoError(t, json.Unmarshal(data, &locator))
+	assert.Equal(t, "jvs-workspace", locator["type"])
+	assert.Equal(t, float64(repo.FormatVersion), locator["format_version"])
+	assert.Equal(t, repoPath, locator["repo_root"])
+	assert.Equal(t, r.RepoID, locator["repo_id"])
+	assert.Equal(t, "feature", locator["workspace_name"])
+}
+
+func TestDiscoverWorktreeFromExternalLocatorUsesLocatorWorkspaceName(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "testrepo")
+	r, err := repo.Init(repoPath, "testrepo")
+	require.NoError(t, err)
+	workspace := filepath.Join(dir, "workspace")
+	nested := filepath.Join(workspace, "nested")
+	require.NoError(t, os.MkdirAll(nested, 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(repoPath, ".jvs", "worktrees", "feature"), 0755))
+	require.NoError(t, repo.WriteWorktreeConfig(repoPath, "feature", &model.WorktreeConfig{
+		Name:     "feature",
+		RealPath: workspace,
+	}))
+	require.NoError(t, repo.WriteWorkspaceLocator(workspace, repoPath, "feature"))
+
+	discovered, workspaceName, err := repo.DiscoverWorktree(nested)
+	require.NoError(t, err)
+	assert.Equal(t, r.Root, discovered.Root)
+	assert.Equal(t, "feature", workspaceName)
+}
+
+func TestDiscoverWorktreeLocatorWorkspaceMismatchFailsClearly(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "testrepo")
+	r, err := repo.Init(repoPath, "testrepo")
+	require.NoError(t, err)
+	workspace := filepath.Join(dir, "workspace")
+	require.NoError(t, os.MkdirAll(workspace, 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(repoPath, ".jvs", "worktrees", "feature"), 0755))
+	require.NoError(t, repo.WriteWorktreeConfig(repoPath, "feature", &model.WorktreeConfig{
+		Name:     "feature",
+		RealPath: workspace,
+	}))
+	writeRepoTestWorkspaceLocator(t, workspace, repoPath, r.RepoID, "missing")
+
+	_, _, err = repo.DiscoverWorktree(workspace)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "locator")
+	assert.Contains(t, err.Error(), "workspace")
+	assert.Contains(t, err.Error(), "registry")
+}
+
+func TestDiscoverWorktreeLocatorRepoIDMismatchFailsClearly(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "testrepo")
+	_, err := repo.Init(repoPath, "testrepo")
+	require.NoError(t, err)
+	workspace := filepath.Join(dir, "workspace")
+	require.NoError(t, os.MkdirAll(workspace, 0755))
+	writeRepoTestWorkspaceLocator(t, workspace, repoPath, "wrong-repo-id", "feature")
+
+	_, _, err = repo.DiscoverWorktree(workspace)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "locator")
+	assert.Contains(t, err.Error(), "repo_id")
+}
+
+func writeRepoTestWorkspaceLocator(t *testing.T, dir, repoRoot string, fields ...string) []byte {
 	t.Helper()
 
-	data, err := json.Marshal(map[string]any{
+	locator := map[string]any{
 		"type":           "jvs-workspace",
 		"format_version": repo.FormatVersion,
 		"repo_root":      repoRoot,
-	})
+	}
+	if len(fields) > 0 {
+		locator["repo_id"] = fields[0]
+	}
+	if len(fields) > 1 {
+		locator["workspace_name"] = fields[1]
+	}
+	data, err := json.Marshal(locator)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, repo.JVSDirName), data, 0644))
 	return data

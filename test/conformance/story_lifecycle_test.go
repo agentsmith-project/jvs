@@ -82,7 +82,7 @@ func TestStoryJSON_WorkspaceRemoveIsPreviewFirstAndKeepsSavePointStorageForClean
 
 	createFiles(t, repoPath, map[string]string{"README.md": "main\n"})
 	base := savePoint(t, repoPath, "main base")
-	created := jvsJSONData(t, repoPath, "workspace", "new", "experiment", "--from", base)
+	created := jvsJSONData(t, repoPath, "workspace", "new", "../experiment", "--from", base)
 	workspacePath, _ := created["folder"].(string)
 	if workspacePath == "" {
 		t.Fatalf("workspace new missing folder: %#v", created)
@@ -157,7 +157,7 @@ func TestStoryJSON_CleanupPreviewProtectsOpenReadOnlyViewUntilClosed(t *testing.
 
 	createFiles(t, repoPath, map[string]string{"README.md": "main\n"})
 	base := savePoint(t, repoPath, "main base")
-	created := jvsJSONData(t, repoPath, "workspace", "new", "view-check", "--from", base)
+	created := jvsJSONData(t, repoPath, "workspace", "new", "../view-check", "--from", base)
 	workspacePath, _ := created["folder"].(string)
 	if workspacePath == "" {
 		t.Fatalf("workspace new missing folder: %#v", created)

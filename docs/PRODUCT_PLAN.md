@@ -79,8 +79,8 @@ Invariants:
 - A save point captures exactly one workspace's managed files.
 - Published save point content and creation facts are immutable.
 - Restore copies content into a workspace; it does not rewrite history.
-- `workspace new --from <save>` starts a new workspace from source content but
-  does not inherit the source history.
+- `workspace new <folder> --from <save>` starts a new workspace from source
+  content at an explicit target folder but does not inherit the source history.
 - JVS does not implement push, pull, merge, rebase, or server-side auth.
 
 ## Visible Public CLI
@@ -90,7 +90,9 @@ The visible root help surface is organized around the save point user journey:
 ```bash
 jvs init [folder]
 jvs save -m "message"
-jvs history [--path <path>]
+jvs history [--path <path>] [--limit <n>|-n <n>]
+jvs history to <save>
+jvs history from [<save>]
 jvs view <save> [path]
 jvs restore <save>
 jvs restore <save> --path <path>
@@ -98,7 +100,7 @@ jvs restore --run <plan-id>
 jvs recovery status [plan]
 jvs recovery resume <plan>
 jvs recovery rollback <plan>
-jvs workspace new <name> --from <save>
+jvs workspace new <folder> --from <save> [--name <name>]
 jvs status
 jvs doctor [--strict] [--repair-runtime] [--repair-list]
 ```
@@ -125,8 +127,12 @@ Rules:
 - Save records provenance from workspace creation and restore when applicable.
 - Save point IDs in machine output are full IDs.
 
-`jvs history` lists save points for the workspace. `history --path <path>`
-returns candidates and next commands; it does not mutate files.
+`jvs history` lists save points for the workspace. `history to <save>` shows
+history ending at a save point. `history from [<save>]` shows history starting
+from a save point, or from the active workspace's current pointer when omitted.
+`--limit`/`-n` control display length, and `--limit 0` means no limit.
+`history --path <path>` returns candidates and next commands; it does not mutate
+files.
 
 `jvs view <save> [path]` opens a read-only view. Active views protect their
 source save point from cleanup while active.
@@ -156,11 +162,14 @@ Rules:
 ## Workspaces
 
 ```bash
-jvs workspace new <name> --from <save>
+jvs workspace new <folder> --from <save> [--name <name>]
 ```
 
 Rules:
 
+- `<folder>` is the explicit target path and must not already exist.
+- The workspace name defaults to the target folder basename; `--name <name>`
+  overrides it.
 - The new workspace is a real folder.
 - Source content is copied from the save point.
 - The original workspace is unchanged.

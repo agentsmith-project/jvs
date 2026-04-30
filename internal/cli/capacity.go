@@ -155,13 +155,17 @@ func checkRestoreRunCapacity(repoRoot, workspaceName string, plan *restoreplan.P
 	return err
 }
 
-func checkWorkspaceNewCapacity(repoRoot, workspaceName string, sourceID model.SnapshotID) error {
+func checkWorkspaceNewCapacity(repoRoot string, req worktree.StartedFromSnapshotRequest) error {
 	mgr := worktree.NewManager(repoRoot)
-	folder, err := mgr.PlannedStartedFromPath(workspaceName)
+	folder, err := mgr.PlannedStartedFromWorkspace(req)
 	if err != nil {
 		return err
 	}
-	state, err := restoreplan.InspectSourceReadOnly(repoRoot, sourceID)
+	workspaceName := req.Name
+	if workspaceName == "" {
+		workspaceName = filepath.Base(folder)
+	}
+	state, err := restoreplan.InspectSourceReadOnly(repoRoot, req.SnapshotID)
 	if err != nil {
 		return err
 	}
@@ -179,7 +183,7 @@ func checkWorkspaceNewCapacity(repoRoot, workspaceName string, sourceID model.Sn
 		Operation:       "workspace new",
 		Folder:          folder,
 		Workspace:       workspaceName,
-		SourceSavePoint: string(sourceID),
+		SourceSavePoint: string(req.SnapshotID),
 		Components:      components,
 		FailureMessages: []string{"No workspace was created.", "No files were changed."},
 	})

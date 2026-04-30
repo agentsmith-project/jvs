@@ -208,7 +208,7 @@ func TestWorkspaceCommand_RenameUsesWorkspaceNames(t *testing.T) {
 	require.NoError(t, os.WriteFile("file.txt", []byte("baseline"), 0644))
 
 	saveID := createRootTestSavePoint(t, "baseline")
-	newOut, err := executeCommand(createTestRootCmd(), "--json", "workspace", "new", "feature", "--from", saveID)
+	newOut, err := executeCommand(createTestRootCmd(), "--json", "workspace", "new", "../feature", "--from", saveID)
 	require.NoError(t, err, newOut)
 
 	stdout, err := executeCommand(createTestRootCmd(), "--json", "workspace", "rename", "feature", "renamed-feature")
@@ -235,7 +235,7 @@ func TestWorkspaceCommand_ListPathAndRemove(t *testing.T) {
 	require.NoError(t, os.WriteFile("file.txt", []byte("baseline"), 0644))
 	saveID := createRootTestSavePoint(t, "baseline")
 
-	stdout, err := executeCommand(createTestRootCmd(), "--json", "workspace", "new", "feature", "--from", saveID)
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "workspace", "new", "../feature", "--from", saveID)
 	require.NoError(t, err, stdout)
 
 	stdout, err = executeCommand(createTestRootCmd(), "workspace", "list")
@@ -613,9 +613,10 @@ func createTestRootCmd() *cobra.Command {
 	workspaceRemoveForce = false
 	workspaceRemoveRunID = ""
 	workspaceNewFromRef = ""
-	historyLimit = 0
+	workspaceNewName = ""
+	workspaceListStatus = false
+	historyLimit = defaultHistoryLimit
 	historyNoteFilter = ""
-	historyAll = false
 	historyPath = ""
 	saveMessage = ""
 	restoreInteractive = false

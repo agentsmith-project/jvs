@@ -25,6 +25,14 @@ type Manager struct {
 	repoRoot string
 }
 
+// StartedFromSnapshotRequest describes a new workspace folder whose initial
+// files come from a save point.
+type StartedFromSnapshotRequest struct {
+	Name       string
+	Folder     string
+	SnapshotID model.SnapshotID
+}
+
 var (
 	writeWorktreeConfig = repo.WriteWorktreeConfig
 	renamePath          = fsutil.RenameNoReplaceAndSync
@@ -113,10 +121,17 @@ func (m *Manager) CreateFromSnapshot(name string, snapshotID model.SnapshotID, c
 // CreateStartedFromSnapshot creates a new workspace whose files come from a
 // save point, without inheriting that save point as workspace history.
 func (m *Manager) CreateStartedFromSnapshot(name string, snapshotID model.SnapshotID, cloneFunc func(src, dst string) error) (*model.WorktreeConfig, error) {
+	return nil, errclass.ErrUsage.WithMessage("workspace folder is required; use explicit workspace folder creation")
+}
+
+// CreateStartedFromSnapshotAt creates a new workspace at an explicit folder.
+// If req.Name is empty, the workspace name is derived from req.Folder's
+// basename.
+func (m *Manager) CreateStartedFromSnapshotAt(req StartedFromSnapshotRequest, cloneFunc func(src, dst string) error) (*model.WorktreeConfig, error) {
 	var cfg *model.WorktreeConfig
 	err := repo.WithMutationLock(m.repoRoot, "workspace new from save point", func() error {
 		var err error
-		cfg, err = m.createStartedFromSnapshotLocked(name, snapshotID, cloneFunc)
+		cfg, err = m.createStartedFromSnapshotLocked(req, cloneFunc)
 		return err
 	})
 	return cfg, err
@@ -125,23 +140,26 @@ func (m *Manager) CreateStartedFromSnapshot(name string, snapshotID model.Snapsh
 // PlannedStartedFromPath returns the workspace folder that CreateStartedFromSnapshot
 // would publish, without creating staging, payload, or metadata paths.
 func (m *Manager) PlannedStartedFromPath(name string) (string, error) {
+	return "", errclass.ErrUsage.WithMessage("workspace folder is required; use an explicit workspace folder")
+}
+
+// PlannedStartedFromWorkspace returns the explicit workspace folder after
+// validating the requested name, target, and current workspace registry.
+func (m *Manager) PlannedStartedFromWorkspace(req StartedFromSnapshotRequest) (string, error) {
+	name, folder, err := normalizeStartedFromRequest(req)
+	if err != nil {
+		return "", err
+	}
 	if err := pathutil.ValidateName(name); err != nil {
 		return "", err
 	}
 	if _, err := m.configPathForNewWorktree(name); err != nil {
 		return "", err
 	}
-	externalPath, useExternal, err := m.externalStartedFromPayloadPath(name)
-	if err != nil {
+	if err := m.validateExternalPayloadTarget(folder); err != nil {
 		return "", err
 	}
-	if useExternal {
-		if err := m.validateExternalPayloadTarget(externalPath); err != nil {
-			return "", err
-		}
-		return externalPath, nil
-	}
-	return m.plannedMissingPayloadTarget(name)
+	return folder, nil
 }
 
 func (m *Manager) createMaterializedSnapshotWorktree(name string, snapshotID model.SnapshotID, cloneFunc func(src, dst string) error) (*model.WorktreeConfig, error) {
@@ -223,7 +241,12 @@ func (m *Manager) createMaterializedSnapshotWorktreeLocked(name string, snapshot
 	return cfg, nil
 }
 
-func (m *Manager) createStartedFromSnapshotLocked(name string, snapshotID model.SnapshotID, cloneFunc func(src, dst string) error) (*model.WorktreeConfig, error) {
+func (m *Manager) createStartedFromSnapshotLocked(req StartedFromSnapshotRequest, cloneFunc func(src, dst string) error) (*model.WorktreeConfig, error) {
+	name, folder, err := normalizeStartedFromRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	snapshotID := req.SnapshotID
 	if err := pathutil.ValidateName(name); err != nil {
 		return nil, err
 	}
@@ -239,7 +262,7 @@ func (m *Manager) createStartedFromSnapshotLocked(name string, snapshotID model.
 	}
 	opts := snapshotpayload.OptionsFromDescriptor(desc)
 
-	payloadPath, stagingPath, realPath, err := m.prepareStartedFromPayloadStaging(name)
+	payloadPath, stagingPath, err := m.prepareStartedFromPayloadStaging(name, folder)
 	if err != nil {
 		return nil, err
 	}
@@ -272,13 +295,19 @@ func (m *Manager) createStartedFromSnapshotLocked(name string, snapshotID model.
 	}
 	cleanupStaging = false
 
-	if realPath != "" {
-		if err := repo.WriteWorkspaceLocator(payloadPath, m.repoRoot); err != nil {
-			if cleanupErr := cleanupNewWorkspaceResidue(payloadPath, configPath); cleanupErr != nil {
-				return nil, fmt.Errorf("write workspace locator: %w; additionally failed to cleanup workspace: %v", err, cleanupErr)
-			}
-			return nil, fmt.Errorf("write workspace locator: %w", err)
+	realPath, err := existingPhysicalPath(payloadPath)
+	if err != nil {
+		if cleanupErr := cleanupNewWorkspaceResidue(payloadPath, configPath); cleanupErr != nil {
+			return nil, fmt.Errorf("resolve workspace folder: %w; additionally failed to cleanup workspace: %v", err, cleanupErr)
 		}
+		return nil, fmt.Errorf("resolve workspace folder: %w", err)
+	}
+
+	if err := repo.WriteWorkspaceLocator(payloadPath, m.repoRoot, name); err != nil {
+		if cleanupErr := cleanupNewWorkspaceResidue(payloadPath, configPath); cleanupErr != nil {
+			return nil, fmt.Errorf("write workspace locator: %w; additionally failed to cleanup workspace: %v", err, cleanupErr)
+		}
+		return nil, fmt.Errorf("write workspace locator: %w", err)
 	}
 
 	if err := m.prepareConfigDir(configPath); err != nil {
@@ -787,36 +816,27 @@ func (m *Manager) prepareMissingPayloadStaging(name string) (string, string, err
 	return "", "", fmt.Errorf("allocate payload staging path")
 }
 
-func (m *Manager) prepareStartedFromPayloadStaging(name string) (payloadPath, stagingPath, realPath string, err error) {
-	externalPath, useExternal, err := m.externalStartedFromPayloadPath(name)
+func normalizeStartedFromRequest(req StartedFromSnapshotRequest) (name, folder string, err error) {
+	if strings.TrimSpace(req.Folder) == "" {
+		return "", "", errclass.ErrUsage.WithMessage("workspace folder is required")
+	}
+	folder, err = filepath.Abs(req.Folder)
 	if err != nil {
-		return "", "", "", err
+		return "", "", fmt.Errorf("resolve workspace folder: %w", err)
 	}
-	if !useExternal {
-		payloadPath, stagingPath, err := m.prepareMissingPayloadStaging(name)
-		return payloadPath, stagingPath, "", err
+	folder = filepath.Clean(folder)
+	name = req.Name
+	if name == "" {
+		name = filepath.Base(folder)
 	}
-
-	payloadPath, stagingPath, err = m.prepareExternalPayloadStaging(name, externalPath)
-	if err != nil {
-		return "", "", "", err
+	if err := pathutil.ValidateName(name); err != nil {
+		return "", "", err
 	}
-	return payloadPath, stagingPath, payloadPath, nil
+	return name, folder, nil
 }
 
-func (m *Manager) externalStartedFromPayloadPath(name string) (string, bool, error) {
-	cfg, err := repo.LoadWorktreeConfig(m.repoRoot, "main")
-	if err != nil {
-		return "", false, fmt.Errorf("load main workspace: %w", err)
-	}
-	if cfg.RealPath == "" || !sameCleanAbsPath(cfg.RealPath, m.repoRoot) {
-		return "", false, nil
-	}
-	path, err := filepath.Abs(filepath.Join(filepath.Dir(m.repoRoot), name))
-	if err != nil {
-		return "", false, err
-	}
-	return filepath.Clean(path), true, nil
+func (m *Manager) prepareStartedFromPayloadStaging(name, folder string) (payloadPath, stagingPath string, err error) {
+	return m.prepareExternalPayloadStaging(name, folder)
 }
 
 func (m *Manager) prepareExternalPayloadStaging(name, payloadPath string) (string, string, error) {
@@ -859,6 +879,9 @@ func (m *Manager) validateNewWorkspacePayloadPath(payloadPath string) error {
 	if err != nil {
 		return err
 	}
+	if err := m.rejectNewWorkspacePayloadInControlDir(candidateLexical, candidatePhysical); err != nil {
+		return err
+	}
 
 	configs, err := m.List()
 	if err != nil {
@@ -885,28 +908,30 @@ func (m *Manager) validateNewWorkspacePayloadPath(payloadPath string) error {
 	return nil
 }
 
-func (m *Manager) plannedMissingPayloadTarget(name string) (string, error) {
-	payloadPath, err := repo.WorktreePayloadPath(m.repoRoot, name)
+func (m *Manager) rejectNewWorkspacePayloadInControlDir(candidateLexical, candidatePhysical string) error {
+	controlLexical, err := filepath.Abs(filepath.Join(m.repoRoot, repo.JVSDirName))
 	if err != nil {
-		return "", err
+		return fmt.Errorf("resolve repo control directory: %w", err)
 	}
-	rel, err := repoRelativePath(m.repoRoot, payloadPath)
+	controlLexical = filepath.Clean(controlLexical)
+	controlPhysical, err := filepath.EvalSymlinks(controlLexical)
 	if err != nil {
-		return "", err
+		return fmt.Errorf("resolve repo control directory: %w", err)
 	}
-	if err := pathutil.ValidateNoSymlinkParents(m.repoRoot, rel); err != nil {
-		return "", fmt.Errorf("validate payload path: %w", err)
+	controlPhysical = filepath.Clean(controlPhysical)
+
+	insideLexical, err := pathContains(controlLexical, candidateLexical)
+	if err != nil {
+		return err
 	}
-	parent := filepath.Dir(payloadPath)
-	if err := validateExistingRealDir(parent); err != nil {
-		return "", fmt.Errorf("validate payload parent: %w", err)
+	insidePhysical, err := pathContains(controlPhysical, candidatePhysical)
+	if err != nil {
+		return err
 	}
-	if _, err := os.Lstat(payloadPath); err == nil {
-		return "", fmt.Errorf("payload path already exists: %s", payloadPath)
-	} else if !os.IsNotExist(err) {
-		return "", fmt.Errorf("stat payload path: %w", err)
+	if insideLexical || insidePhysical {
+		return fmt.Errorf("workspace folder points into repo control directory: %s", candidateLexical)
 	}
-	return payloadPath, nil
+	return nil
 }
 
 func physicalPathForMissingLeaf(path string) (string, error) {
@@ -916,6 +941,18 @@ func physicalPathForMissingLeaf(path string) (string, error) {
 		return "", fmt.Errorf("resolve workspace parent: %w", err)
 	}
 	return filepath.Join(physicalParent, filepath.Base(path)), nil
+}
+
+func existingPhysicalPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	physical, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(physical), nil
 }
 
 func pathsOverlap(a, b string) bool {

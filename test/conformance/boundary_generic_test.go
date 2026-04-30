@@ -91,7 +91,7 @@ func TestBoundaryJSON_WorkspaceLocatorStaysControlData(t *testing.T) {
 	})
 	base := savePoint(t, repoPath, "main baseline")
 
-	created := jvsJSONData(t, repoPath, "workspace", "new", "generic-copy", "--from", base)
+	created := jvsJSONData(t, repoPath, "workspace", "new", "../generic-copy", "--from", base)
 	workspacePath, _ := created["folder"].(string)
 	if workspacePath == "" {
 		t.Fatalf("workspace new missing folder: %#v", created)

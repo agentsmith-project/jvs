@@ -43,7 +43,7 @@ history, view, restore, workspace new, recovery, and doctor.
 | --- | --- |
 | Large binary folder state | Save points capture managed files in the workspace. |
 | Safe recovery | Restore is preview-first and history is kept. |
-| Variant work | `jvs workspace new <name> --from <save>` creates another real folder. |
+| Variant work | `jvs workspace new <folder> --from <save>` creates another real folder. |
 | Health checks | `jvs doctor` reports repository health. |
 
 JVS does not provide file locking, binary merge, source hosting, or a
@@ -111,8 +111,8 @@ jvs init
 cp -r /baseline/agent/* .
 BASELINE=$(jvs save -m "agent baseline" --json | jq -r '.data.save_point_id')
 
-jvs workspace new run-1 --from "$BASELINE"
-cd <printed-folder>
+jvs workspace new ../run-1 --from "$BASELINE"
+cd "$(jvs workspace path run-1)"
 python agent.py --seed 1 --output results.json
 jvs save -m "run 1 result"
 ```

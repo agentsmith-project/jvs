@@ -13,6 +13,7 @@ import (
 )
 
 type workspaceStatus struct {
+	Repo                 string                     `json:"repo"`
 	Folder               string                     `json:"folder"`
 	Workspace            string                     `json:"workspace"`
 	NewestSavePoint      *string                    `json:"newest_save_point"`
@@ -48,9 +49,15 @@ whether the folder has unsaved changes.`,
 }
 
 func printWorkspaceStatus(status workspaceStatus) {
+	fmt.Printf("Repo: %s\n", status.Repo)
 	fmt.Printf("Folder: %s\n", status.Folder)
 	fmt.Printf("Workspace: %s\n", status.Workspace)
+	fmt.Printf("Content source: %s\n", formatStatusSavePoint(status.ContentSource))
 	fmt.Printf("Newest save point: %s\n", formatStatusSavePoint(status.NewestSavePoint))
+	fmt.Printf("History head: %s\n", formatStatusSavePoint(status.HistoryHead))
+	if status.StartedFromSavePoint != nil {
+		fmt.Printf("Started from save point: %s\n", formatStatusSavePoint(status.StartedFromSavePoint))
+	}
 	switch status.FilesState {
 	case "not_saved":
 		fmt.Println("Not saved yet.")
@@ -61,7 +68,7 @@ func printWorkspaceStatus(status workspaceStatus) {
 	case "restored_then_changed":
 		fmt.Printf("Files were last restored from: %s\n", formatStatusSavePoint(status.ContentSource))
 	case "started_from_save_point":
-		fmt.Printf("Started from save point: %s\n", formatStatusSavePoint(status.StartedFromSavePoint))
+		fmt.Printf("Files match save point: %s\n", formatStatusSavePoint(status.ContentSource))
 	}
 	if status.UnsavedChanges {
 		fmt.Println("Unsaved changes: yes")
@@ -107,6 +114,7 @@ func buildWorkspaceStatus(repoRoot, workspaceName string) (workspaceStatus, erro
 	contentSource := statusStringPointer(cfg.HeadSnapshotID)
 	startedFrom := statusStringPointer(cfg.StartedFromSnapshotID)
 	return workspaceStatus{
+		Repo:                 repoRoot,
 		Folder:               folder,
 		Workspace:            workspaceName,
 		NewestSavePoint:      historyHead,

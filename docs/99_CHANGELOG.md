@@ -223,10 +223,10 @@ recovery plan, doctor, and cleanup.
   files; `jvs restore --run <restore-plan-id>` revalidates and applies the
   reviewed restore plan; `jvs recovery status|resume|rollback` closes
   interrupted restore workflows.
-- `jvs workspace new <name> --from <save>` creates another real workspace from
-  a save point, leaves the source workspace unchanged, starts with
-  `Newest save point: none`, and records `started_from_save_point` on first
-  save.
+- `jvs workspace new <folder> --from <save>` creates another real workspace
+  folder at an explicit path, leaves the source workspace unchanged, starts
+  with `Newest save point: none`, and records `started_from_save_point` on
+  first save. `--name <name>` only overrides the default workspace name.
 - `jvs cleanup preview` creates a reviewed deletion plan for unprotected save
   point storage; `jvs cleanup run --plan-id <plan>` revalidates and runs the
   reviewed plan.
@@ -240,8 +240,8 @@ recovery plan, doctor, and cleanup.
   public user surface.
 - Restore examples must use preview/run and the public safety flags
   `--save-first` and `--discard-unsaved`.
-- Workspace creation examples must use `jvs workspace new <name> --from
-  <save>`.
+- Workspace creation examples must use `jvs workspace new <folder> --from
+  <save>` with an explicit folder path.
 
 ### Known limitations
 

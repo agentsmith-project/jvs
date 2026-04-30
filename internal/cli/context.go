@@ -231,13 +231,16 @@ func canonicalPhysicalRepoRoot(path string) (string, error) {
 }
 
 func resolveOptionalWorkspace(r *repo.Repo, start string) (string, error) {
+	currentWorkspace, err := workspaceFromPath(r.Root, start)
+	if err != nil {
+		return "", err
+	}
 	if targetWorkspaceName != "" {
 		return resolveNamedWorkspace(r.Root, targetWorkspaceName)
 	}
 
-	workspace, err := workspaceFromPath(r.Root, start)
-	if err != nil || workspace != "" {
-		return workspace, err
+	if currentWorkspace != "" {
+		return currentWorkspace, nil
 	}
 	if targetRepoPath != "" {
 		if _, err := repo.LoadWorktreeConfig(r.Root, "main"); err == nil {

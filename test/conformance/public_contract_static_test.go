@@ -52,6 +52,7 @@ var runtimeRepairActionIDPattern = regexp.MustCompile("`((?:clean|rebind)_[A-Za-
 var staleMigrationRuntimeExcludePattern = regexp.MustCompile(`(?i)\bexclud(?:e|es|ed|ing)\b[^.\n]*(?:runtime\s+(?:cleanup\s+)?state|(?:runtime\s+)?cleanup\s+plan\s+files?)|(?:runtime\s+(?:cleanup\s+)?state|(?:runtime\s+)?cleanup\s+plan\s+files?)[^.\n]*\bexclud(?:e|es|ed|ing)\b`)
 var staleMigrationSyncVocabularyPattern = regexp.MustCompile(`(?i)\b(?:sync|syncs|synced|syncing|synchroni[sz](?:e|es|ed|ing|ation))\b`)
 var userDocTypedPlaceholderPattern = regexp.MustCompile(`<[a-z][a-z0-9]*(?:-[a-z0-9]+)+>`)
+var implicitWorkspaceNewBareNamePattern = regexp.MustCompile(`\bjvs\s+workspace\s+new\s+[A-Za-z0-9][A-Za-z0-9_-]*\s+--from\b`)
 
 type unsupportedPublicCLIExampleRule struct {
 	name        string
@@ -250,7 +251,8 @@ func TestDocs_UserCommandsDocumentsWorkspaceManagement(t *testing.T) {
 		"jvs workspace list",
 		"jvs workspace path [name]",
 		"jvs workspace rename <old> <new>",
-		"jvs workspace new <name> --from <save>",
+		"jvs workspace new <folder> --from <save>",
+		"--name <name>",
 		"jvs workspace remove <name>",
 		"jvs workspace remove --run <remove-plan-id>",
 		"preview-first",
@@ -264,6 +266,66 @@ func TestDocs_UserCommandsDocumentsWorkspaceManagement(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(section), "worktree") {
 		t.Fatalf("%s workspace command section leaks old worktree vocabulary:\n%s", doc, section)
+	}
+}
+
+func TestDocs_PublicDocsUseExplicitWorkspaceNewFolderSyntax(t *testing.T) {
+	for _, doc := range activePublicContractDocs() {
+		if doc == "CONTRIBUTING.md" {
+			continue
+		}
+		t.Run(doc, func(t *testing.T) {
+			scanPublicDocLines(t, doc, func(lineNo int, line string) {
+				if strings.Contains(line, "jvs workspace new <name> --from") {
+					t.Fatalf("%s:%d teaches old implicit workspace-name folder creation; use <folder> and --name only as an override:\n%s", doc, lineNo, line)
+				}
+				if implicitWorkspaceNewBareNamePattern.MatchString(line) {
+					t.Fatalf("%s:%d teaches workspace creation with a bare name-shaped folder; use an explicit path such as ../experiment:\n%s", doc, lineNo, line)
+				}
+			})
+		})
+	}
+}
+
+func TestDocs_PublicDocsDoNotTeachHistoryAll(t *testing.T) {
+	for _, doc := range activePublicContractDocs() {
+		if doc == "CONTRIBUTING.md" {
+			continue
+		}
+		t.Run(doc, func(t *testing.T) {
+			scanPublicDocLines(t, doc, func(lineNo int, line string) {
+				if strings.Contains(line, "jvs history --all") {
+					t.Fatalf("%s:%d teaches removed history --all; use history to/from and --limit/-n:\n%s", doc, lineNo, line)
+				}
+			})
+		})
+	}
+}
+
+func TestDocs_UserDocsTeachWorkspaceFolderAndHistoryDirections(t *testing.T) {
+	combined := ""
+	for _, doc := range []string{
+		"docs/user/README.md",
+		"docs/user/quickstart.md",
+		"docs/user/concepts.md",
+		"docs/user/commands.md",
+		"docs/user/examples.md",
+		"docs/user/tutorials.md",
+		"docs/user/faq.md",
+		"docs/user/troubleshooting.md",
+		"docs/user/best-practices.md",
+	} {
+		combined += "\n" + readRepoFile(t, doc)
+	}
+	for _, required := range []string{
+		"jvs workspace new <folder> --from <save>",
+		"jvs workspace new ../experiment --from",
+		"jvs history to <save>",
+		"jvs history from [<save>]",
+		"--limit",
+		"--limit 0",
+	} {
+		requireReleaseReadinessText(t, "user workspace/history documentation", combined, required)
 	}
 }
 
@@ -2049,7 +2111,7 @@ func TestDocs_CLISpecVisiblePublicCommandsIncludeCleanupSurface(t *testing.T) {
 }
 
 func TestDocs_PublicCommandFieldSetsFindInlineJVSCommands(t *testing.T) {
-	line := "Use `jvs save -m baseline`, then `jvs cleanup preview`, then `jvs workspace new exp --from abc123`."
+	line := "Use `jvs save -m baseline`, then `jvs cleanup preview`, then `jvs workspace new ../exp --from abc123`."
 	fieldSets := publicDocCommandFieldSets(line)
 	var paths []string
 	for _, fields := range fieldSets {
@@ -3785,6 +3847,7 @@ func archivedNonReleaseFacingDocs() []string {
 func activeNonReleaseFacingDesignDocs() []string {
 	return []string{
 		"docs/21_SAVE_POINT_WORKSPACE_SEMANTICS.md",
+		"docs/22_WORKSPACE_EXPLICIT_PATH_BEHAVIOR.md",
 	}
 }
 

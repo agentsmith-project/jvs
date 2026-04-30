@@ -677,18 +677,18 @@ ambiguous or non-unique, use a longer or full ID.
 Create a new workspace from that save point:
 
 ```bash
-jvs workspace new agent-run-42 --from <save>
+jvs workspace new ../agent-run-42 --from <save>
 ```
 
-JVS prints a folder path. Move into that folder and let the agent or script
+JVS prints a folder path. Move into that workspace and let the agent or script
 work there:
 
 Replace `./run-agent-task.sh` with the agent, script, or manual edit you want
-to isolate. The important part is that it runs in `<printed-folder>`, not in
+to isolate. The important part is that it runs in `agent-run-42`, not in
 `<main-folder>`.
 
 ```bash
-cd <printed-folder>
+cd "$(jvs workspace path agent-run-42)"
 ./run-agent-task.sh
 jvs status
 jvs save -m "agent run 42 result"

@@ -41,6 +41,8 @@ type workspaceLocatorFile struct {
 	Type          string `json:"type"`
 	FormatVersion int    `json:"format_version"`
 	RepoRoot      string `json:"repo_root"`
+	RepoID        string `json:"repo_id"`
+	WorkspaceName string `json:"workspace_name"`
 }
 
 var (
@@ -385,19 +387,47 @@ func resolvePhysicalInitTarget(abs string) (string, error) {
 
 // Discover walks up from cwd to find the repo root (directory containing .jvs/).
 func Discover(cwd string) (*Repo, error) {
-	path := cwd
+	discovered, err := discoverRepoEvidence(cwd)
+	if err != nil {
+		return nil, err
+	}
+	return discovered.repo, nil
+}
+
+type repoDiscoveryEvidence struct {
+	repo        *Repo
+	locator     *workspaceLocatorFile
+	locatorPath string
+}
+
+func discoverRepoEvidence(cwd string) (*repoDiscoveryEvidence, error) {
+	path, err := filepath.Abs(cwd)
+	if err != nil {
+		return nil, err
+	}
+	path = filepath.Clean(path)
+	if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		path = filepath.Dir(path)
+	}
+
 	for {
 		jvsDir := filepath.Join(path, JVSDirName)
 		if info, err := os.Stat(jvsDir); err == nil && info.IsDir() {
-			return loadRepoAtRoot(path)
+			r, err := loadRepoAtRoot(path)
+			if err != nil {
+				return nil, err
+			}
+			return &repoDiscoveryEvidence{repo: r}, nil
 		}
-		if r, ok, err := discoverWorkspaceLocator(jvsDir); ok || err != nil {
-			return r, err
+		if r, locator, ok, err := discoverWorkspaceLocator(jvsDir); ok || err != nil {
+			if err != nil {
+				return nil, err
+			}
+			return &repoDiscoveryEvidence{repo: r, locator: &locator, locatorPath: jvsDir}, nil
 		}
 
 		parent := filepath.Dir(path)
 		if parent == path {
-			// Reached root without finding .jvs/
 			return nil, fmt.Errorf("%w: no JVS repository found (no .jvs/ in parent directories)", ErrControlRepoNotFound)
 		}
 		path = parent
@@ -507,20 +537,26 @@ func loadRepoAtRoot(root string) (*Repo, error) {
 	}, nil
 }
 
-func discoverWorkspaceLocator(path string) (*Repo, bool, error) {
+func discoverWorkspaceLocator(path string) (*Repo, workspaceLocatorFile, bool, error) {
 	locator, ok, err := readWorkspaceLocator(path)
 	if !ok || err != nil {
-		return nil, ok, err
+		return nil, workspaceLocatorFile{}, ok, err
 	}
 	repoRoot, err := cleanExistingWorkspaceLocatorRepoRoot(locator.RepoRoot)
 	if err != nil {
-		return nil, true, fmt.Errorf("invalid JVS workspace locator %s: %w", path, err)
+		return nil, workspaceLocatorFile{}, true, fmt.Errorf("invalid JVS workspace locator %s: %w", path, err)
 	}
 	r, err := loadRepoAtRoot(repoRoot)
 	if err != nil {
-		return nil, true, fmt.Errorf("JVS workspace locator %s points to an invalid repository: %w", path, err)
+		return nil, workspaceLocatorFile{}, true, fmt.Errorf("JVS workspace locator %s points to an invalid repository: %w", path, err)
 	}
-	return r, true, nil
+	if strings.TrimSpace(r.RepoID) == "" {
+		return nil, workspaceLocatorFile{}, true, fmt.Errorf("JVS workspace locator %s points to repository without repo_id", path)
+	}
+	if locator.RepoID != r.RepoID {
+		return nil, workspaceLocatorFile{}, true, fmt.Errorf("JVS workspace locator %s repo_id mismatch: locator has %s, repository has %s", path, locator.RepoID, r.RepoID)
+	}
+	return r, locator, true, nil
 }
 
 func readWorkspaceLocator(path string) (workspaceLocatorFile, bool, error) {
@@ -559,6 +595,12 @@ func readWorkspaceLocator(path string) (workspaceLocatorFile, bool, error) {
 		return workspaceLocatorFile{}, true, fmt.Errorf("invalid JVS workspace locator repo_root: %w", err)
 	}
 	locator.RepoRoot = repoRoot
+	if strings.TrimSpace(locator.RepoID) == "" {
+		return workspaceLocatorFile{}, true, fmt.Errorf("invalid JVS workspace locator repo_id: repo_id is required")
+	}
+	if err := pathutil.ValidateName(locator.WorkspaceName); err != nil {
+		return workspaceLocatorFile{}, true, fmt.Errorf("invalid JVS workspace locator workspace_name: %w", err)
+	}
 	return locator, true, nil
 }
 
@@ -582,9 +624,18 @@ func cleanExistingWorkspaceLocatorRepoRoot(raw string) (string, error) {
 
 // DiscoverWorktree discovers the repo and maps cwd to a worktree name.
 func DiscoverWorktree(cwd string) (*Repo, string, error) {
-	r, err := Discover(cwd)
+	discovered, err := discoverRepoEvidence(cwd)
 	if err != nil {
 		return nil, "", err
+	}
+	r := discovered.repo
+
+	if discovered.locator != nil {
+		name, err := registeredWorktreeFromLocator(r.Root, cwd, *discovered.locator, discovered.locatorPath)
+		if err != nil {
+			return nil, "", err
+		}
+		return r, name, nil
 	}
 
 	name, err := registeredWorktreeFromPath(r.Root, cwd)
@@ -592,6 +643,31 @@ func DiscoverWorktree(cwd string) (*Repo, string, error) {
 		return nil, "", err
 	}
 	return r, name, nil
+}
+
+func registeredWorktreeFromLocator(repoRoot, cwd string, locator workspaceLocatorFile, locatorPath string) (string, error) {
+	cfg, err := LoadWorktreeConfig(repoRoot, locator.WorkspaceName)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("JVS workspace locator %s points to workspace %q, but the repository registry does not contain that workspace; run doctor or repair", locatorPath, locator.WorkspaceName)
+		}
+		return "", fmt.Errorf("JVS workspace locator %s points to workspace %q, but the repository registry could not be read: %w", locatorPath, locator.WorkspaceName, err)
+	}
+	if cfg.Name != locator.WorkspaceName {
+		return "", fmt.Errorf("JVS workspace locator %s points to workspace %q, but the repository registry has config name %q", locatorPath, locator.WorkspaceName, cfg.Name)
+	}
+	payloadPath, err := WorktreePayloadPath(repoRoot, locator.WorkspaceName)
+	if err != nil {
+		return "", fmt.Errorf("JVS workspace locator %s points to workspace %q, but the repository registry is inconsistent: %w", locatorPath, locator.WorkspaceName, err)
+	}
+	inside, err := pathContainsPhysicalPath(payloadPath, cwd)
+	if err != nil {
+		return "", err
+	}
+	if !inside {
+		return "", fmt.Errorf("JVS workspace locator %s points to workspace %q, but current folder is not inside registered workspace folder %s", locatorPath, locator.WorkspaceName, payloadPath)
+	}
+	return locator.WorkspaceName, nil
 }
 
 func registeredWorktreeFromPath(repoRoot, cwd string) (string, error) {
@@ -762,7 +838,10 @@ func WriteWorktreeConfig(repoRoot, name string, cfg *model.WorktreeConfig) error
 
 // WriteWorkspaceLocator makes an external workspace discover its owning
 // repository when users run jvs from inside that workspace folder.
-func WriteWorkspaceLocator(workspaceRoot, repoRoot string) error {
+func WriteWorkspaceLocator(workspaceRoot, repoRoot, workspaceName string) error {
+	if err := pathutil.ValidateName(workspaceName); err != nil {
+		return err
+	}
 	workspaceRoot, err := existingPhysicalPath(workspaceRoot)
 	if err != nil {
 		return fmt.Errorf("resolve workspace folder: %w", err)
@@ -771,13 +850,23 @@ func WriteWorkspaceLocator(workspaceRoot, repoRoot string) error {
 	if err != nil {
 		return fmt.Errorf("resolve repository root: %w", err)
 	}
+	r, err := loadRepoAtRoot(repoRoot)
+	if err != nil {
+		return fmt.Errorf("load repository root: %w", err)
+	}
+	if strings.TrimSpace(r.RepoID) == "" {
+		return fmt.Errorf("repository root has no repo_id: %s", repoRoot)
+	}
 	locatorPath := filepath.Join(workspaceRoot, JVSDirName)
 	if existing, ok, err := readWorkspaceLocator(locatorPath); err != nil {
 		return err
 	} else if ok {
 		existingRoot, err := cleanExistingWorkspaceLocatorRepoRoot(existing.RepoRoot)
-		if err == nil && existingRoot == repoRoot {
+		if err == nil && existingRoot == repoRoot && existing.RepoID == r.RepoID && existing.WorkspaceName == workspaceName {
 			return nil
+		}
+		if existing.WorkspaceName != workspaceName {
+			return fmt.Errorf("workspace already contains JVS locator bound to repo %s workspace %s", existing.RepoRoot, existing.WorkspaceName)
 		}
 	}
 	if info, err := os.Lstat(locatorPath); err == nil {
@@ -795,6 +884,8 @@ func WriteWorkspaceLocator(workspaceRoot, repoRoot string) error {
 		Type:          workspaceLocatorType,
 		FormatVersion: FormatVersion,
 		RepoRoot:      repoRoot,
+		RepoID:        r.RepoID,
+		WorkspaceName: workspaceName,
 	}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal JVS workspace locator: %w", err)
@@ -829,7 +920,14 @@ func WorkspaceLocatorMatchesRepo(workspaceRoot, repoRoot string) (bool, error) {
 	if err != nil {
 		return false, nil
 	}
-	return locatorRoot == expectedRoot, nil
+	if locatorRoot != expectedRoot {
+		return false, nil
+	}
+	r, err := loadRepoAtRoot(expectedRoot)
+	if err != nil {
+		return false, err
+	}
+	return locator.RepoID == r.RepoID, nil
 }
 
 // LoadWorktreeConfig loads a worktree config.
@@ -1303,6 +1401,13 @@ func workspaceLocatorBelongsToRepo(locatorPath, repoRoot string) (bool, error) {
 	}
 	if locatorRepoRoot != repoRoot {
 		return false, fmt.Errorf("JVS workspace locator points at %s, not repository %s", locatorRepoRoot, repoRoot)
+	}
+	r, err := loadRepoAtRoot(repoRoot)
+	if err != nil {
+		return false, err
+	}
+	if locator.RepoID != r.RepoID {
+		return false, fmt.Errorf("JVS workspace locator repo_id does not match repository %s", repoRoot)
 	}
 	return true, nil
 }

@@ -185,7 +185,7 @@ func TestMigrationPhysicalCopyRepairRuntimeRebindsExternalWorkspaceWhenSourceSti
 
 	createFiles(t, sourceRepo, map[string]string{"app.txt": "v1\n", "keep.txt": "kept\n"})
 	base := savePoint(t, sourceRepo, "baseline before workspace")
-	stdout, stderr, code := runJVSInRepo(t, sourceRepo, "--json", "workspace", "new", "feature", "--from", base)
+	stdout, stderr, code := runJVSInRepo(t, sourceRepo, "--json", "workspace", "new", "../feature", "--from", base)
 	if code != 0 {
 		t.Fatalf("workspace new failed: stdout=%s stderr=%s", stdout, stderr)
 	}
@@ -224,7 +224,7 @@ func TestMigrationPhysicalCopyRepairRuntimeRewritesCopiedExternalWorkspaceLocato
 
 	createFiles(t, sourceRepo, map[string]string{"app.txt": "v1\n", "keep.txt": "kept\n"})
 	base := savePoint(t, sourceRepo, "baseline before workspace")
-	stdout, stderr, code := runJVSInRepo(t, sourceRepo, "--json", "workspace", "new", "feature", "--from", base)
+	stdout, stderr, code := runJVSInRepo(t, sourceRepo, "--json", "workspace", "new", "../feature", "--from", base)
 	if code != 0 {
 		t.Fatalf("workspace new failed: stdout=%s stderr=%s", stdout, stderr)
 	}
@@ -281,7 +281,7 @@ func TestMigrationPhysicalCopyRepairRuntimeKeepsExternalWorkspaceUnhealthyWhenSo
 
 	createFiles(t, sourceRepo, map[string]string{"app.txt": "v1\n", "keep.txt": "kept\n"})
 	base := savePoint(t, sourceRepo, "baseline before workspace")
-	stdout, stderr, code := runJVSInRepo(t, sourceRepo, "--json", "workspace", "new", "feature", "--from", base)
+	stdout, stderr, code := runJVSInRepo(t, sourceRepo, "--json", "workspace", "new", "../feature", "--from", base)
 	if code != 0 {
 		t.Fatalf("workspace new failed: stdout=%s stderr=%s", stdout, stderr)
 	}
@@ -308,7 +308,7 @@ func TestMigrationPhysicalCopyRepairRuntimeKeepsExternalWorkspaceUnhealthyWhenSo
 
 	createFiles(t, sourceRepo, map[string]string{"app.txt": "v1\n", "keep.txt": "kept\n"})
 	base := savePoint(t, sourceRepo, "baseline before workspace")
-	stdout, stderr, code := runJVSInRepo(t, sourceRepo, "--json", "workspace", "new", "feature", "--from", base)
+	stdout, stderr, code := runJVSInRepo(t, sourceRepo, "--json", "workspace", "new", "../feature", "--from", base)
 	if code != 0 {
 		t.Fatalf("workspace new failed: stdout=%s stderr=%s", stdout, stderr)
 	}

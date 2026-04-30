@@ -63,7 +63,7 @@ jvs recovery rollback <plan>
 Workspace creation:
 
 ```bash
-jvs workspace new <name> --from <save>
+jvs workspace new <folder> --from <save> [--name <name>]
 ```
 
 Health:
@@ -97,9 +97,11 @@ A save point captures managed files from exactly one workspace. It excludes:
 
 ## Workspace Creation
 
-`workspace new --from <save>` copies source content into a new real workspace.
-It does not inherit the source history. The first save in the new workspace
-records `started_from_save_point`.
+`workspace new <folder> --from <save>` copies source content into a new real
+workspace folder chosen by the user. The target folder must not already exist.
+The workspace name defaults to the target folder basename and may be overridden
+with `--name <name>`. It does not inherit the source history. The first save in
+the new workspace records `started_from_save_point`.
 
 ## Cleanup
 

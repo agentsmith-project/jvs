@@ -135,7 +135,7 @@ command again.
 Use `workspace new`:
 
 ```bash
-jvs workspace new experiment --from <save>
+jvs workspace new ../experiment --from <save>
 ```
 
 The command prints the new folder path. The original workspace is unchanged.

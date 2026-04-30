@@ -173,8 +173,10 @@ new restore runs in that workspace until `jvs recovery resume` or
 
 ## Workspace Lifecycle
 
-`jvs workspace new <name> --from <save>` creates a real workspace folder from
-source save point content.
+`jvs workspace new <folder> --from <save> [--name <name>]` creates a real
+workspace folder from source save point content. The folder path is explicit,
+must not already exist, and is not inferred from the workspace name. The
+workspace name defaults to the folder basename unless `--name` overrides it.
 
 Rules:
 

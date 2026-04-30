@@ -90,13 +90,13 @@ jvs view close <view-id>
 Start another real folder from a known save point:
 
 ```bash
-jvs workspace new investigation --from <save>
+jvs workspace new ../investigation --from <save>
 ```
 
 JVS prints the new folder path. Move into that folder and save its own progress:
 
 ```bash
-cd <printed-folder>
+cd "$(jvs workspace path investigation)"
 python reproduce_issue.py
 jvs save -m "reproduced issue"
 ```

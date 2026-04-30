@@ -107,10 +107,10 @@ func TestHistoryCommandJSONUsesSavePointSchema(t *testing.T) {
 	require.NotEmpty(t, first["save_point_id"])
 	require.Equal(t, "baseline", first["message"])
 	assertNoLegacyJSONFields(t, first)
-	assertNoOldSavePointVocabulary(t, string(env.Data))
+	assertNoCheckpointSnapshotWorktreeVocabulary(t, string(env.Data))
 }
 
-func TestHistoryCommandUsesNewestSavePointAfterRestoreState(t *testing.T) {
+func TestHistoryCommandUsesCurrentPointerAfterRestoreState(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
 	firstOut, err := executeCommand(createTestRootCmd(), "--json", "save", "-m", "first")
@@ -129,22 +129,21 @@ func TestHistoryCommandUsesNewestSavePointAfterRestoreState(t *testing.T) {
 	require.NoError(t, err)
 	_, data := decodeFacadeDataMap(t, stdout)
 	require.Equal(t, string(secondID), data["newest_save_point"])
+	require.Equal(t, string(firstID), data["current_pointer"])
 	savePoints, ok := data["save_points"].([]any)
 	require.True(t, ok, "save_points should be an array: %#v", data["save_points"])
-	require.Len(t, savePoints, 2)
+	require.Len(t, savePoints, 1)
 	firstListed := savePoints[0].(map[string]any)
-	secondListed := savePoints[1].(map[string]any)
-	require.Equal(t, string(secondID), firstListed["save_point_id"])
-	require.Equal(t, "second", firstListed["message"])
-	require.Equal(t, string(firstID), secondListed["save_point_id"])
-	require.Equal(t, "first", secondListed["message"])
-	assertNoOldSavePointVocabulary(t, string(decodeContractEnvelope(t, stdout).Data))
+	require.Equal(t, string(firstID), firstListed["save_point_id"])
+	require.Equal(t, "first", firstListed["message"])
+	assertNoCheckpointSnapshotWorktreeVocabulary(t, string(decodeContractEnvelope(t, stdout).Data))
 
 	human, err := executeCommand(createTestRootCmd(), "history")
 	require.NoError(t, err)
-	assert.Contains(t, human, "second")
 	assert.Contains(t, human, "first")
-	assertNoOldSavePointVocabulary(t, human)
+	assert.NotContains(t, human, "second")
+	assert.Contains(t, human, "Current pointer: "+string(firstID))
+	assertNoCheckpointSnapshotWorktreeVocabulary(t, human)
 }
 
 func TestSaveCommandAfterRestoreCreatesNewSavePointFromNewestParent(t *testing.T) {

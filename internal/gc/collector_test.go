@@ -942,7 +942,11 @@ func TestCollector_Plan_ProtectsWorkspaceStartedFromSourceBeforeAndAfterFirstSav
 	repoPath := setupTestRepo(t)
 	sourceID := createRemovedWorktreeSnapshots(t, repoPath, "source", 1)[0]
 	wtMgr := worktree.NewManager(repoPath)
-	_, err := wtMgr.CreateStartedFromSnapshot("exp", sourceID, func(src, dst string) error {
+	_, err := wtMgr.CreateStartedFromSnapshotAt(worktree.StartedFromSnapshotRequest{
+		Name:       "exp",
+		Folder:     filepath.Join(filepath.Dir(repoPath), "exp"),
+		SnapshotID: sourceID,
+	}, func(src, dst string) error {
 		_, err := engine.CloneToNew(engine.NewCopyEngine(), src, dst)
 		return err
 	})

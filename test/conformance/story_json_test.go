@@ -328,7 +328,7 @@ func TestStoryJSON_SaveFirstProtectsCurrentWorkBeforeOlderRestore(t *testing.T) 
 		t.Fatalf("save-first restore note.txt = %q", got)
 	}
 
-	history := jvsJSONData(t, repoPath, "history")
+	history := jvsJSONData(t, repoPath, "history", "to", safetySave)
 	requireHistoryIDs(t, repoPath, []string{safetySave, second, first})
 	requireHistoryRecordMessage(t, history, safetySave, "save before restore")
 
@@ -591,7 +591,7 @@ func TestStoryJSON_WorkspaceFromSavePointIsolation(t *testing.T) {
 	base := savePoint(t, repoPath, "workspace baseline")
 	createFiles(t, repoPath, map[string]string{"src/app.txt": "main local work\n"})
 
-	created := jvsJSONData(t, repoPath, "workspace", "new", "copy-a", "--from", base)
+	created := jvsJSONData(t, repoPath, "workspace", "new", "../copy-a", "--from", base)
 	copyPath, _ := created["folder"].(string)
 	if created["workspace"] != "copy-a" || created["started_from_save_point"] != base || copyPath == "" {
 		t.Fatalf("workspace new JSON mismatch: %#v", created)
@@ -620,8 +620,11 @@ func TestStoryJSON_WorkspaceFromSavePointIsolation(t *testing.T) {
 		t.Fatalf("new workspace status mismatch: %#v", copyStatus)
 	}
 	copyHistory := jvsJSONData(t, copyPath, "history")
-	if got := savePointIDsFromHistory(t, copyHistory); len(got) != 0 {
-		t.Fatalf("new workspace should not inherit main history, got %v", got)
+	if got := savePointIDsFromHistory(t, copyHistory); !sameStringSlice(got, []string{base}) {
+		t.Fatalf("new workspace current pointer history = %v, want started-from source [%s]", got, base)
+	}
+	if copyHistory["newest_save_point"] != nil || copyHistory["started_from_save_point"] != base {
+		t.Fatalf("new workspace should keep an empty own history head while pointing at its source: %#v", copyHistory)
 	}
 
 	createFiles(t, copyPath, map[string]string{"src/app.txt": "copy workspace edit\n"})
@@ -649,7 +652,7 @@ func TestStoryJSON_TargetingMainFromNonTargetCWD(t *testing.T) {
 
 	createFiles(t, repoPath, map[string]string{"README.md": "main baseline\n"})
 	mainBase := savePoint(t, repoPath, "main baseline")
-	created := jvsJSONData(t, repoPath, "workspace", "new", "copy-b", "--from", mainBase)
+	created := jvsJSONData(t, repoPath, "workspace", "new", "../copy-b", "--from", mainBase)
 	copyPath, _ := created["folder"].(string)
 	createFiles(t, copyPath, map[string]string{"README.md": "copy workspace work\n"})
 

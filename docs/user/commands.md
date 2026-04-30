@@ -39,8 +39,8 @@ Behavior:
 
 ## `jvs status`
 
-Show the active folder, workspace, newest save point, file source, and unsaved
-changes.
+Show the active folder, workspace, current pointer, newest save point, file
+source, started-from save point when known, and unsaved changes.
 
 ```bash
 jvs status
@@ -67,20 +67,29 @@ List save points for the active workspace.
 
 ```bash
 jvs history
+jvs history to <save>
+jvs history from [<save>]
 jvs history --limit 10
+jvs history -n 10
+jvs history --limit 0
 jvs history --grep "baseline"
 jvs history --path src/config.yaml
-jvs history --all
 ```
 
 Flags:
 
 | Flag | Use |
 | --- | --- |
-| `--limit`, `-n` | Limit displayed save points; `0` means all |
+| `--limit`, `-n` | Limit displayed save points; `0` means no limit |
 | `--grep`, `-g` | Search by message substring |
 | `--path` | Find save points containing a workspace-relative path |
-| `--all` | Show save points across workspaces |
+
+Direction commands:
+
+| Command | Use |
+| --- | --- |
+| `jvs history to <save>` | Show the path of history ending at a save point |
+| `jvs history from [<save>]` | Show history starting from a save point; omit `<save>` to start from the active workspace's current position |
 
 Human history output shows a copyable ID or short ID for each save point. That
 short form is usually enough in commands that ask for `<save>`. If JVS says it
@@ -137,9 +146,11 @@ Manage workspace folders. For the natural meaning of workspace and folder, see
 
 ```bash
 jvs workspace list
+jvs workspace list --status
 jvs workspace path [name]
 jvs workspace rename <old> <new>
-jvs workspace new experiment --from <save>
+jvs workspace new ../experiment --from <save>
+jvs workspace new ../experiment --from <save> --name test-copy
 jvs workspace remove experiment
 jvs workspace remove --run <remove-plan-id>
 ```
@@ -148,20 +159,32 @@ Common commands:
 
 | Command | Use |
 | --- | --- |
-| `jvs workspace list` | Show known workspaces |
+| `jvs workspace list` | Show known workspaces, their folders, current pointer, newest save point, and source save point when known |
+| `jvs workspace list --status` | Also check whether listed workspaces have unsaved changes |
 | `jvs workspace path [name]` | Print the folder path for a workspace |
 | `jvs workspace rename <old> <new>` | Rename a workspace |
-| `jvs workspace new <name> --from <save>` | Create another workspace folder from a save point |
+| `jvs workspace new <folder> --from <save>` | Create another workspace folder at a path you choose |
 | `jvs workspace remove <name>` | Preview removal of a workspace folder |
 | `jvs workspace remove --run <remove-plan-id>` | Run a reviewed remove plan |
 
+For `workspace new`, `<folder>` is the target folder path. The folder must not
+already exist. The workspace name defaults to the folder name; use
+`--name <name>` only when you want a different workspace name.
+
 `workspace new` prints:
 
-- `Folder`: where the new real folder is.
+- `Folder`: the absolute path to the new real folder.
 - `Workspace`: the new workspace name.
 - `Started from save point`: the source save point.
 
 The original workspace is unchanged.
+
+To move into a workspace folder, ask JVS for the path and let your shell change
+directories:
+
+```bash
+cd "$(jvs workspace path experiment)"
+```
 
 `workspace remove` is preview-first. The preview does not delete the folder.
 Review the folder path, workspace name, unsaved-change status, and printed

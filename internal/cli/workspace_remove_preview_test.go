@@ -190,9 +190,9 @@ func setupWorkspaceRemoveRepo(t *testing.T, repoName, workspaceName string) (rep
 	repoPath, mainPath = setupCoverageRepo(t, repoName)
 	require.NoError(t, os.WriteFile("remove-base.txt", []byte("remove"), 0644))
 	savePointID = createRootTestSavePoint(t, "remove base")
-	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", workspaceName, "--from", savePointID)
+	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "../"+workspaceName, "--from", savePointID)
 	require.NoError(t, err, stdout)
-	workspacePath = filepath.Join(repoPath, "worktrees", workspaceName)
+	workspacePath = filepath.Join(repoPath, workspaceName)
 	return repoPath, mainPath, savePointID, workspacePath
 }
 

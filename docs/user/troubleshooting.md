@@ -173,7 +173,7 @@ the folder.
 Fix:
 
 ```bash
-jvs workspace new experiment-2 --from <save>
+jvs workspace new ../experiment-2 --from <save>
 ```
 
 or move/remove the existing folder yourself and retry.

@@ -84,6 +84,22 @@ func writeDoctorTestWorkspaceLocator(t *testing.T, dir, repoRoot string) []byte 
 	return data
 }
 
+func createDoctorTestStartedWorkspace(t *testing.T, repoPath, name string, snapshotID model.SnapshotID) string {
+	t.Helper()
+
+	folder := filepath.Join(filepath.Dir(repoPath), name)
+	_, err := worktree.NewManager(repoPath).CreateStartedFromSnapshotAt(worktree.StartedFromSnapshotRequest{
+		Name:       name,
+		Folder:     folder,
+		SnapshotID: snapshotID,
+	}, func(src, dst string) error {
+		_, err := engine.CloneToNew(engine.NewCopyEngine(), src, dst)
+		return err
+	})
+	require.NoError(t, err)
+	return folder
+}
+
 func copyDoctorTestTree(t *testing.T, src, dst string) {
 	t.Helper()
 
@@ -498,13 +514,7 @@ func TestDoctorRepairRuntimeRebindsCopiedExternalWorkspaceWhenContentMatches(t *
 
 	desc, err := snapshot.NewCreator(source, model.EngineCopy).CreateSavePoint("main", "baseline", nil)
 	require.NoError(t, err)
-	_, err = worktree.NewManager(source).CreateStartedFromSnapshot("feature", desc.SnapshotID, func(src, dst string) error {
-		_, err := engine.CloneToNew(engine.NewCopyEngine(), src, dst)
-		return err
-	})
-	require.NoError(t, err)
-
-	sourceFeature := filepath.Join(filepath.Dir(source), "feature")
+	sourceFeature := createDoctorTestStartedWorkspace(t, source, "feature", desc.SnapshotID)
 	copied := filepath.Join(base, "restored", "project")
 	copiedFeature := filepath.Join(filepath.Dir(copied), "feature")
 	copyDoctorTestTree(t, source, copied)
@@ -547,13 +557,7 @@ func TestDoctorRepairRuntimeRewritesCopiedExternalWorkspaceLocatorWhenSourceOffl
 
 	desc, err := snapshot.NewCreator(source, model.EngineCopy).CreateSavePoint("main", "baseline", nil)
 	require.NoError(t, err)
-	_, err = worktree.NewManager(source).CreateStartedFromSnapshot("feature", desc.SnapshotID, func(src, dst string) error {
-		_, err := engine.CloneToNew(engine.NewCopyEngine(), src, dst)
-		return err
-	})
-	require.NoError(t, err)
-
-	sourceFeature := filepath.Join(filepath.Dir(source), "feature")
+	sourceFeature := createDoctorTestStartedWorkspace(t, source, "feature", desc.SnapshotID)
 	copied := filepath.Join(base, "restored", "project")
 	copiedFeature := filepath.Join(filepath.Dir(copied), "feature")
 	copyDoctorTestTree(t, source, copied)
@@ -594,13 +598,7 @@ func TestDoctorRepairRuntimeRejectsMalformedExternalWorkspaceLocatorEvidence(t *
 
 			desc, err := snapshot.NewCreator(source, model.EngineCopy).CreateSavePoint("main", "baseline", nil)
 			require.NoError(t, err)
-			_, err = worktree.NewManager(source).CreateStartedFromSnapshot("feature", desc.SnapshotID, func(src, dst string) error {
-				_, err := engine.CloneToNew(engine.NewCopyEngine(), src, dst)
-				return err
-			})
-			require.NoError(t, err)
-
-			sourceFeature := filepath.Join(filepath.Dir(source), "feature")
+			sourceFeature := createDoctorTestStartedWorkspace(t, source, "feature", desc.SnapshotID)
 			copied := filepath.Join(base, "restored", "project")
 			copiedFeature := filepath.Join(filepath.Dir(copied), "feature")
 			copyDoctorTestTree(t, source, copied)
@@ -634,13 +632,7 @@ func TestDoctorRepairRuntimeRebindsCopiedExternalWorkspaceWhenSourceStillExistsA
 
 	desc, err := snapshot.NewCreator(source, model.EngineCopy).CreateSavePoint("main", "baseline", nil)
 	require.NoError(t, err)
-	_, err = worktree.NewManager(source).CreateStartedFromSnapshot("feature", desc.SnapshotID, func(src, dst string) error {
-		_, err := engine.CloneToNew(engine.NewCopyEngine(), src, dst)
-		return err
-	})
-	require.NoError(t, err)
-
-	sourceFeature := filepath.Join(filepath.Dir(source), "feature")
+	sourceFeature := createDoctorTestStartedWorkspace(t, source, "feature", desc.SnapshotID)
 	copied := filepath.Join(base, "restored", "project")
 	copiedFeature := filepath.Join(filepath.Dir(copied), "feature")
 	copyDoctorTestTree(t, source, copied)
@@ -678,13 +670,7 @@ func TestDoctorRepairRuntimeKeepsCopiedExternalWorkspaceUnhealthyWhenDestination
 
 	desc, err := snapshot.NewCreator(source, model.EngineCopy).CreateSavePoint("main", "baseline", nil)
 	require.NoError(t, err)
-	_, err = worktree.NewManager(source).CreateStartedFromSnapshot("feature", desc.SnapshotID, func(src, dst string) error {
-		_, err := engine.CloneToNew(engine.NewCopyEngine(), src, dst)
-		return err
-	})
-	require.NoError(t, err)
-
-	sourceFeature := filepath.Join(filepath.Dir(source), "feature")
+	sourceFeature := createDoctorTestStartedWorkspace(t, source, "feature", desc.SnapshotID)
 	copied := filepath.Join(base, "restored", "project")
 	copiedFeature := filepath.Join(filepath.Dir(copied), "feature")
 	copyDoctorTestTree(t, source, copied)
@@ -723,13 +709,7 @@ func TestDoctorRepairRuntimeSkipsCopiedExternalWorkspaceWhenDestinationContentDi
 
 	desc, err := snapshot.NewCreator(source, model.EngineCopy).CreateSavePoint("main", "baseline", nil)
 	require.NoError(t, err)
-	_, err = worktree.NewManager(source).CreateStartedFromSnapshot("feature", desc.SnapshotID, func(src, dst string) error {
-		_, err := engine.CloneToNew(engine.NewCopyEngine(), src, dst)
-		return err
-	})
-	require.NoError(t, err)
-
-	sourceFeature := filepath.Join(filepath.Dir(source), "feature")
+	sourceFeature := createDoctorTestStartedWorkspace(t, source, "feature", desc.SnapshotID)
 	copied := filepath.Join(base, "restored", "project")
 	copiedFeature := filepath.Join(filepath.Dir(copied), "feature")
 	copyDoctorTestTree(t, source, copied)

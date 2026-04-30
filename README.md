@@ -47,7 +47,7 @@ plan.
 | Save a whole working folder | `jvs save -m "message"` captures managed files as a save point |
 | Recover from a bad edit | `jvs history`, `jvs view`, and preview-first `jvs restore` help you choose and apply a save point |
 | Keep real directories | A workspace is a normal folder; your tools keep using normal filesystem paths |
-| Try another line of work | `jvs workspace new <name> --from <save>` creates another real folder from a save point |
+| Try another line of work | `jvs workspace new ../experiment --from <save>` creates another real folder from a save point |
 | Diagnose trouble | `jvs doctor` and `jvs recovery` report health and interrupted restore plans |
 
 ## Install
@@ -72,14 +72,16 @@ go install github.com/agentsmith-project/jvs/cmd/jvs@<VERSION>
 | Command | What it does |
 | --- | --- |
 | `jvs init [folder]` | Adopt a folder and prepare JVS control data |
-| `jvs status` | Show the active folder, workspace, newest save point, and unsaved changes |
+| `jvs status` | Show the active folder, workspace, current pointer, newest save point, and unsaved changes |
 | `jvs save -m "message"` | Create a save point for managed files in the active workspace |
-| `jvs history` | List save points for the active workspace |
+| `jvs history` | List recent save points for the active workspace |
+| `jvs history to <save>` | Show history ending at a save point |
+| `jvs history from [<save>]` | Show history starting from a save point, or from the active workspace when omitted |
 | `jvs history --path <path>` | Find save points that contain a workspace-relative path |
 | `jvs view <save> [path]` | Open a read-only view of a save point or a path inside it |
 | `jvs restore <save> [--path <path>]` | Preview a restore plan |
 | `jvs restore --run <restore-plan-id>` | Execute a restore plan after JVS rechecks the folder |
-| `jvs workspace new <name> --from <save>` | Create another workspace folder from a save point |
+| `jvs workspace new <folder> --from <save>` | Create another workspace folder at a path you choose |
 | `jvs recovery status` | Show active restore recovery plans |
 | `jvs doctor [--strict]` | Check repository health |
 

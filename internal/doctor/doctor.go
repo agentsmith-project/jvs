@@ -346,7 +346,7 @@ func (d *Doctor) repairRebindWorkspacePaths() RepairResult {
 			continue
 		}
 		if cfg.Name != "main" {
-			if err := repo.WriteWorkspaceLocator(candidate, d.repoRoot); err != nil {
+			if err := repo.WriteWorkspaceLocator(candidate, d.repoRoot, cfg.Name); err != nil {
 				failed++
 				reasons = append(reasons, fmt.Sprintf("%s locator: %v", cfg.Name, err))
 				continue

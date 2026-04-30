@@ -186,7 +186,11 @@ func TestManager_CreateStartedFromPublishFailureLeavesNoWorkspaceOrMetadataResid
 		renamePath = oldRename
 	})
 
-	_, err := mgr.CreateStartedFromSnapshot(name, snapshotID, copyFailureTestSnapshotTree)
+	_, err := mgr.CreateStartedFromSnapshotAt(StartedFromSnapshotRequest{
+		Name:       name,
+		Folder:     payloadPath,
+		SnapshotID: snapshotID,
+	}, copyFailureTestSnapshotTree)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "publish workspace folder")
 	assert.NoDirExists(t, payloadPath)
@@ -218,7 +222,11 @@ func TestManager_CreateStartedFromPublishCommitUncertainLeavesNoOrphanWorkspace(
 		renamePath = oldRename
 	})
 
-	_, err := mgr.CreateStartedFromSnapshot(name, snapshotID, copyFailureTestSnapshotTree)
+	_, err := mgr.CreateStartedFromSnapshotAt(StartedFromSnapshotRequest{
+		Name:       name,
+		Folder:     payloadPath,
+		SnapshotID: snapshotID,
+	}, copyFailureTestSnapshotTree)
 	require.Error(t, err)
 	assert.True(t, fsutil.IsCommitUncertain(err), "publish commit-uncertain state must remain detectable")
 	assertNoFailureTestStagingPayloads(t, repoPath, name)
@@ -252,7 +260,11 @@ func TestManager_CreateStartedFromConfigWriteFailureRemovesWorkspaceAndMetadataR
 		writeWorktreeConfig = oldWrite
 	})
 
-	_, err := mgr.CreateStartedFromSnapshot(name, snapshotID, copyFailureTestSnapshotTree)
+	_, err := mgr.CreateStartedFromSnapshotAt(StartedFromSnapshotRequest{
+		Name:       name,
+		Folder:     payloadPath,
+		SnapshotID: snapshotID,
+	}, copyFailureTestSnapshotTree)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "write config")
 	assert.NoDirExists(t, payloadPath)
@@ -280,7 +292,11 @@ func TestManager_CreateStartedFromUncertainConfigWriteKeepsVisibleWorkspace(t *t
 		writeWorktreeConfig = oldWrite
 	})
 
-	_, err := mgr.CreateStartedFromSnapshot(name, snapshotID, copyFailureTestSnapshotTree)
+	_, err := mgr.CreateStartedFromSnapshotAt(StartedFromSnapshotRequest{
+		Name:       name,
+		Folder:     payloadPath,
+		SnapshotID: snapshotID,
+	}, copyFailureTestSnapshotTree)
 	require.Error(t, err)
 	assert.True(t, fsutil.IsCommitUncertain(err), "uncertain config write must remain detectable")
 	assert.DirExists(t, payloadPath)

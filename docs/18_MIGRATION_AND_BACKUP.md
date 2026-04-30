@@ -137,7 +137,7 @@ authoritative product state. Rebuild it on the destination with
    ```
 5. Create a new workspace from an older save point:
    ```bash
-   jvs workspace new restore-drill --from <older-save>
+   jvs workspace new ../restore-drill --from <older-save>
    ```
 6. In the new workspace, run `jvs status` and confirm:
    - `Started from save point` is the source save point

@@ -42,6 +42,34 @@ func TestStatusFacadeAfterSaveShowsFilesMatchNewest(t *testing.T) {
 	assertStatusHumanOmitsLegacyVocabulary(t, stdout)
 }
 
+func TestStatusShowsRepoFolderWorkspacePointers(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
+	saveID := savePointIDFromCLI(t, "baseline")
+	_, err := executeCommand(createTestRootCmd(), "workspace", "new", "../exp", "--from", saveID)
+	require.NoError(t, err)
+	expFolder := filepath.Join(filepath.Dir(repoRoot), "exp")
+
+	stdout, err := executeCommand(createTestRootCmd(), "--workspace", "exp", "status")
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "Repo: "+repoRoot)
+	assert.Contains(t, stdout, "Folder: "+expFolder)
+	assert.Contains(t, stdout, "Workspace: exp")
+	assert.Contains(t, stdout, "Content source: "+saveID)
+	assert.Contains(t, stdout, "History head: none")
+	assert.Contains(t, stdout, "Started from save point: "+saveID)
+
+	jsonOut, err := executeCommand(createTestRootCmd(), "--json", "--workspace", "exp", "status")
+	require.NoError(t, err)
+	_, data := decodeFacadeDataMap(t, jsonOut)
+	assert.Equal(t, repoRoot, data["repo"])
+	assert.Equal(t, expFolder, data["folder"])
+	assert.Equal(t, "exp", data["workspace"])
+	assert.Equal(t, saveID, data["content_source"])
+	assert.Nil(t, data["history_head"])
+	assert.Equal(t, saveID, data["started_from_save_point"])
+}
+
 func TestStatusFacadeAfterEditShowsChangedSinceSavePoint(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))

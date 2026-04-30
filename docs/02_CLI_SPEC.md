@@ -129,8 +129,9 @@ Required JSON `data` fields include:
 
 ### `jvs status [--json]`
 
-Show the active folder, workspace, newest save point, file source, restored
-paths, and whether the folder has unsaved changes.
+Show the active folder, workspace, current pointer, newest save point, file
+source, restored paths, source save point when applicable, and whether the
+folder has unsaved changes.
 
 Required JSON `data` fields:
 
@@ -144,9 +145,10 @@ Required JSON `data` fields:
 - `files_state`
 - `path_sources` when applicable
 
-Human output must prefer public status words such as `Newest save point`,
-`Files match save point`, `Files changed since save point`, `Files were last
-restored from`, `Started from save point`, and `Unsaved changes`.
+Human output must prefer public status words such as `Folder`, `Workspace`,
+`Current save point`, `Newest save point`, `Files match save point`, `Files
+changed since save point`, `Files were last restored from`, `Started from save
+point`, and `Unsaved changes`.
 
 ## Save And History
 
@@ -161,8 +163,9 @@ Rules:
   runtime state. GA has no configurable file filtering.
 - Save must hold the workspace mutation lock.
 - Capacity and staging checks must fail before publishing a partial save point.
-- If the workspace was created with `workspace new --from`, the first save has
-  no inherited history parent and records `started_from_save_point`.
+- If the workspace was created with `workspace new <folder> --from <save>`,
+  the first save has no inherited history parent and records
+  `started_from_save_point`.
 - If files were restored before saving, the new save records whole-workspace or
   path provenance so later status and cleanup protection can explain it.
 
@@ -178,12 +181,22 @@ Required JSON `data` fields:
 - `restored_paths` when applicable
 - `unsaved_changes`
 
-### `jvs history [--path <path>] [-n <limit>] [--grep <text>] [--all] [--json]`
+### `jvs history [--path <path>] [--limit <n>|-n <n>] [--grep <text>] [--json]`
 
 Show save points for the active workspace. `--path` searches for save points
 that contain a workspace-relative path and returns candidates without changing
-files. `--grep` filters by message substring. Messages and tags are not
-restore/view targets.
+files. `--grep` filters by message substring. `--limit` and `-n` limit displayed
+save points; `--limit 0` means no limit. Messages and tags are not restore/view
+targets.
+
+### `jvs history to <save> [--limit <n>|-n <n>] [--json]`
+
+Show the history path ending at one concrete save point.
+
+### `jvs history from [<save>] [--limit <n>|-n <n>] [--json]`
+
+Show history starting from a save point. When `<save>` is omitted, start from
+the active workspace's current pointer.
 
 Required JSON `data` fields:
 
@@ -323,12 +336,17 @@ backup state is resolved, and recovery cleanup protection is released.
 
 ## Workspace Creation
 
-### `jvs workspace new <name> --from <save> [--json]`
+### `jvs workspace new <folder> --from <save> [--name <name>] [--json]`
 
-Create another real workspace from a save point.
+Create another real workspace folder from a save point.
 
 Rules:
 
+- `<folder>` is the explicit target path for the new real folder.
+- Relative folders are resolved from the command's current directory.
+- The target folder must not already exist.
+- The workspace name defaults to the target folder basename.
+- `--name <name>` overrides the default workspace name.
 - `--from` is required and must resolve to one save point ID.
 - The new workspace starts with managed files copied from the source save
   point.
@@ -336,6 +354,7 @@ Rules:
 - The new workspace does not inherit the source history.
 - `Newest save point` for the new workspace is `none` until its first save.
 - The first save in the new workspace records `started_from_save_point`.
+- Human output must print an absolute `Folder`.
 
 Required JSON `data` fields:
 
@@ -349,6 +368,19 @@ Required JSON `data` fields:
 - `history_head`
 - `original_workspace_unchanged`
 - `unsaved_changes`
+
+### `jvs workspace list [--status] [--json]`
+
+Show known workspaces. Human output must show each workspace name, absolute
+folder, current pointer, newest save point, and `Started from save point` when
+known. With `--status`, it also checks whether each workspace has unsaved
+changes.
+
+### `jvs workspace path [name]`
+
+Print the folder path for a workspace so users can jump with shell commands
+such as `cd "$(jvs workspace path <name>)"`. JVS cannot change the caller's
+shell directory after a command finishes.
 
 ### `jvs workspace remove <name>`
 

@@ -39,10 +39,12 @@ when a JVS command asks which workspace you mean.
 You can create another workspace from a save point:
 
 ```bash
-jvs workspace new experiment --from <save>
+jvs workspace new ../experiment --from <save>
 ```
 
-That creates another real folder. The original workspace is unchanged.
+That creates another real folder at `../experiment`. The workspace name
+defaults to the folder name, so this one is named `experiment`. The original
+workspace is unchanged.
 
 ## Save Point
 
@@ -61,7 +63,7 @@ of it that JVS accepts, in commands such as:
 ```bash
 jvs view <save>
 jvs restore <save>
-jvs workspace new experiment --from <save>
+jvs workspace new ../experiment --from <save>
 ```
 
 Save points are not edited in place. If you restore old files and then save
@@ -88,6 +90,18 @@ only remember a file or folder you want back, ask for candidates:
 jvs history --path notes.md
 jvs restore --path notes.md
 ```
+
+When you want a narrower view of history, use:
+
+```bash
+jvs history to <save>
+jvs history from [<save>]
+jvs history --limit 20
+jvs history --limit 0
+```
+
+`--limit 0` means no limit. `jvs history from` without a save point starts from
+the active workspace's current position.
 
 ## View
 

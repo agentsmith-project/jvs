@@ -90,7 +90,7 @@ func TestLocatorSecurityRepoFlagExternalWorkspaceLocatorFallback(t *testing.T) {
 
 	createFiles(t, repoPath, map[string]string{"app.txt": "v1\n"})
 	base := savePoint(t, repoPath, "baseline before workspace")
-	stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "workspace", "new", "feature", "--from", base)
+	stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "workspace", "new", "../feature", "--from", base)
 	if code != 0 {
 		t.Fatalf("workspace new failed: stdout=%s stderr=%s", stdout, stderr)
 	}
@@ -111,6 +111,42 @@ func TestLocatorSecurityRepoFlagExternalWorkspaceLocatorFallback(t *testing.T) {
 	status := decodeContractDataMap(t, stdout)
 	if status["folder"] != featurePath {
 		t.Fatalf("--repo external workspace status folder = %#v, want %q\n%s", status["folder"], featurePath, stdout)
+	}
+}
+
+func TestLocatorSecurityExplicitWorkspaceCannotBypassExternalLocatorRepoMismatch(t *testing.T) {
+	repoA, cleanupA := initTestRepo(t)
+	defer cleanupA()
+	repoB, cleanupB := initTestRepo(t)
+	defer cleanupB()
+
+	createFiles(t, repoA, map[string]string{"app.txt": "repo a\n"})
+	base := savePoint(t, repoA, "repo a base")
+	stdout, stderr, code := runJVSInRepo(t, repoA, "--json", "workspace", "new", "../feature", "--from", base)
+	if code != 0 {
+		t.Fatalf("workspace new failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	featurePath := filepath.Join(filepath.Dir(repoA), "feature")
+
+	stdout, stderr, code = runJVS(t, featurePath, "--json", "--repo", repoB, "--workspace", "main", "status")
+	if code == 0 {
+		t.Fatalf("explicit --workspace bypassed external locator repo mismatch: stdout=%s stderr=%s", stdout, stderr)
+	}
+	env := requirePureJSONEnvelope(t, stdout, stderr, false)
+	if env.Error == nil || env.Error.Code != "E_TARGET_MISMATCH" {
+		t.Fatalf("external locator mismatch error = %#v, want E_TARGET_MISMATCH\n%s", env.Error, stdout)
+	}
+	if !strings.Contains(env.Error.Message, repoA) || !strings.Contains(env.Error.Message, repoB) {
+		t.Fatalf("external locator mismatch should mention both repos: %#v", env.Error)
+	}
+
+	stdout, stderr, code = runJVS(t, featurePath, "--json", "--repo", repoA, "--workspace", "main", "status")
+	if code != 0 {
+		t.Fatalf("same-repo explicit workspace target failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	status := decodeContractDataMap(t, stdout)
+	if status["workspace"] != "main" || status["folder"] != repoA {
+		t.Fatalf("same-repo explicit workspace should target main clearly: %#v", status)
 	}
 }
 
@@ -207,7 +243,7 @@ func TestLocatorSecurityMalformedWorkspaceLocatorIsNotRepairEvidence(t *testing.
 
 			createFiles(t, sourceRepo, map[string]string{"app.txt": "v1\n"})
 			base := savePoint(t, sourceRepo, "baseline before workspace")
-			stdout, stderr, code := runJVSInRepo(t, sourceRepo, "--json", "workspace", "new", "feature", "--from", base)
+			stdout, stderr, code := runJVSInRepo(t, sourceRepo, "--json", "workspace", "new", "../feature", "--from", base)
 			if code != 0 {
 				t.Fatalf("workspace new failed: stdout=%s stderr=%s", stdout, stderr)
 			}
@@ -252,10 +288,19 @@ func TestLocatorSecurityMalformedWorkspaceLocatorIsNotRepairEvidence(t *testing.
 func writeConformanceWorkspaceLocator(t *testing.T, dir, repoRoot string) []byte {
 	t.Helper()
 
+	repoID := "malformed-repo-id"
+	if repoRoot != "" && filepath.IsAbs(repoRoot) {
+		data, err := os.ReadFile(filepath.Join(repoRoot, ".jvs", "repo_id"))
+		if err == nil {
+			repoID = strings.TrimSpace(string(data))
+		}
+	}
 	data, err := json.Marshal(map[string]any{
 		"type":           "jvs-workspace",
 		"format_version": 1,
 		"repo_root":      repoRoot,
+		"repo_id":        repoID,
+		"workspace_name": "main",
 	})
 	if err != nil {
 		t.Fatalf("marshal locator: %v", err)

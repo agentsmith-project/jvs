@@ -9,8 +9,12 @@ help, examples, JSON, and release notes use `workspace`.
 
 - A workspace is a real folder.
 - The default workspace is `main`.
-- `jvs workspace new <name> --from <save>` creates a new real workspace from a
-  source save point.
+- `jvs workspace new <folder> --from <save> [--name <name>]` creates a new
+  real workspace folder from a source save point.
+- `<folder>` is the explicit target path, must not already exist, and is not
+  inferred from the workspace name.
+- The workspace name defaults to the target folder basename; `--name <name>`
+  overrides it.
 - The source workspace is unchanged.
 - The new workspace starts with no save point history:
   `newest_save_point` and `history_head` are null until its first save.
@@ -36,8 +40,9 @@ do not define user behavior or public vocabulary.
 ## Workspace Folders
 
 The adopted workspace may be the repository root folder itself. Additional
-workspace folders are implementation-owned real directories selected through
-`jvs workspace new` and `--workspace`.
+workspace folders are user-selected real directories created through
+`jvs workspace new <folder> --from <save>` and targeted by changing directories
+or using `--workspace`.
 
 Workspace payload folders must not contain JVS control data or runtime state.
 Save, restore, view, and cleanup logic must treat that data as outside user

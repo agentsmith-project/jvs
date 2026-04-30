@@ -75,13 +75,20 @@ UX.
 
 ### Workspace Creation
 
-- `jvs workspace new <name> --from <save>` creates a real workspace folder.
+- `jvs workspace new <folder> --from <save> [--name <name>]` creates a real
+  workspace folder at the explicit target path.
+- The target folder must not already exist; the workspace name defaults to the
+  target folder basename unless `--name <name>` is provided.
+- Human output prints the absolute `Folder`.
 - The source workspace is unchanged.
 - After entering the printed workspace folder, `jvs status` and `jvs save`
   target that workspace directly without requiring `--workspace <name>`.
 - The new workspace has no newest save point until first save.
 - Status and JSON record `started_from_save_point`.
 - First save in the new workspace starts a new history and records provenance.
+- `jvs workspace list` shows workspace folders, current pointer, newest save
+  point, and started-from save point; `jvs workspace list --status` also checks
+  unsaved changes.
 
 ### Doctor And Runtime Repair
 

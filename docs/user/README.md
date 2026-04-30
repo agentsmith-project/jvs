@@ -56,7 +56,7 @@ treat as important moments.
 | `jvs save -m "message"` | Creates a save point. Your files stay as they are. |
 | `jvs restore <save>` | Preview only. No files change. |
 | `jvs restore --run <restore-plan-id>` | Changes files in the workspace according to the previewed restore plan. |
-| `jvs workspace new <name> --from <save>` | Creates another real folder from a save point. |
+| `jvs workspace new <folder> --from <save>` | Creates another real folder at the path you choose. |
 | `jvs workspace remove <name>` | Preview only. The workspace folder is not removed. |
 | `jvs workspace remove --run <remove-plan-id>` | Removes that workspace folder and its workspace entry. Save point storage stays. |
 | `jvs cleanup preview` | Preview only. No storage is removed. |

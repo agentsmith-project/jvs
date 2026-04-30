@@ -230,7 +230,7 @@ func TestSaveWithLargeContent(t *testing.T) {
 func TestWorkspaceNewFromNonExistentSavePoint(t *testing.T) {
 	setupCoverageRepo(t, "testrepo")
 
-	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "feature", "--from", "nonexistent-save-point")
+	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "../feature", "--from", "nonexistent-save-point")
 	assert.Error(t, err)
 	assert.Empty(t, stdout)
 }
@@ -432,7 +432,7 @@ func TestWorkspaceCommands(t *testing.T) {
 
 	t.Run("Workspace new from save point", func(t *testing.T) {
 		cmd4 := createTestRootCmd()
-		stdout, err := executeCommand(cmd4, "workspace", "new", "test-workspace", "--from", savePointID)
+		stdout, err := executeCommand(cmd4, "workspace", "new", "../test-workspace", "--from", savePointID)
 		assert.NoError(t, err)
 		assert.Contains(t, stdout, "test-workspace")
 	})

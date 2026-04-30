@@ -61,7 +61,11 @@ func requireHistoryIDs(t *testing.T, repoPath string, want []string) {
 
 func requireHistoryIDsInCWD(t *testing.T, cwd string, want []string) {
 	t.Helper()
-	got := savePointIDsFromHistory(t, jvsJSONData(t, cwd, "history"))
+	args := []string{"history"}
+	if len(want) > 0 {
+		args = append(args, "to", want[0])
+	}
+	got := savePointIDsFromHistory(t, jvsJSONData(t, cwd, args...))
 	if !sameStringSlice(got, want) {
 		t.Fatalf("history IDs in %s = %v, want %v", cwd, got, want)
 	}
