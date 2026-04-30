@@ -1,10 +1,20 @@
 # Examples
 
 These examples use the save point workflow from the public command surface.
-When a command shows `<save>`, use the full ID printed by `jvs save`, or an ID
-from `jvs history` that JVS accepts. If a short ID is ambiguous, use a longer
-or full ID. If history does not show enough characters, `jvs history --json`
-includes the full `save_point_id` value.
+Anything shown in angle brackets is a placeholder, not text to type exactly:
+
+| Placeholder | Replace it with |
+| --- | --- |
+| `<save>` | A save point ID from `jvs save`, or an ID from `jvs history` that JVS accepts |
+| `<baseline-save>` | The save point ID for the baseline state you saved earlier |
+| `<restore-plan-id>` | The plan ID printed by the restore preview you just reviewed |
+| `<view-path>` | The read-only file or folder path printed by `jvs view` |
+| `<view-id>` | The view ID printed by `jvs view` |
+| `<printed-folder>` | The folder path printed by `jvs workspace new` |
+
+If a short save point ID is ambiguous, use a longer or full ID. If history does
+not show enough characters, `jvs history --json` includes the full
+`save_point_id` value.
 
 The JVS commands are reusable as written. Project commands such as copying
 files, running scripts, editing files, or opening tools are examples only;

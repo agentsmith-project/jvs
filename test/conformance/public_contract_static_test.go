@@ -51,6 +51,7 @@ var documentedCleanupProtectionReasonPattern = regexp.MustCompile(`(?m)^\s*(Clea
 var runtimeRepairActionIDPattern = regexp.MustCompile("`((?:clean|rebind)_[A-Za-z0-9_]+)`")
 var staleMigrationRuntimeExcludePattern = regexp.MustCompile(`(?i)\bexclud(?:e|es|ed|ing)\b[^.\n]*(?:runtime\s+(?:cleanup\s+)?state|(?:runtime\s+)?cleanup\s+plan\s+files?)|(?:runtime\s+(?:cleanup\s+)?state|(?:runtime\s+)?cleanup\s+plan\s+files?)[^.\n]*\bexclud(?:e|es|ed|ing)\b`)
 var staleMigrationSyncVocabularyPattern = regexp.MustCompile(`(?i)\b(?:sync|syncs|synced|syncing|synchroni[sz](?:e|es|ed|ing|ation))\b`)
+var userDocTypedPlaceholderPattern = regexp.MustCompile(`<[a-z][a-z0-9]*(?:-[a-z0-9]+)+>`)
 
 type unsupportedPublicCLIExampleRule struct {
 	name        string
@@ -273,6 +274,23 @@ func TestDocs_UserDocsUseTypedPlanIDPlaceholders(t *testing.T) {
 				if strings.Contains(line, "<plan-id>") {
 					t.Fatalf("%s:%d uses generic <plan-id>; user docs must distinguish <restore-plan-id>, <remove-plan-id>, and <cleanup-plan-id>:\n%s", doc, lineNo+1, line)
 				}
+			}
+		})
+	}
+}
+
+func TestDocs_UserWorkflowPagesExplainTypedPlaceholders(t *testing.T) {
+	for _, doc := range userWorkflowPlaceholderDocs() {
+		t.Run(doc, func(t *testing.T) {
+			body := readRepoFile(t, doc)
+			for _, placeholder := range userDocTypedPlaceholders(body) {
+				if canonical, ok := userDocCanonicalWorkflowPlaceholderAlias(placeholder); ok {
+					t.Fatalf("%s uses typed placeholder %s; use %s for the same workflow value", doc, placeholder, canonical)
+				}
+				if userDocExplainsPlaceholder(body, placeholder) || userDocLinksPlaceholderExplanation(t, doc, body, placeholder) {
+					continue
+				}
+				t.Fatalf("%s uses typed placeholder %s but does not explain it or link to a user-doc explanation", doc, placeholder)
 			}
 		})
 	}
@@ -3210,6 +3228,99 @@ func markdownDocsUnder(t *testing.T, dir string) []string {
 		t.Fatalf("walk %s: %v", dir, err)
 	}
 	return docs
+}
+
+func userWorkflowPlaceholderDocs() []string {
+	return []string{
+		"docs/user/quickstart.md",
+		"docs/user/examples.md",
+		"docs/user/tutorials.md",
+	}
+}
+
+func userDocCanonicalWorkflowPlaceholderAlias(placeholder string) (string, bool) {
+	switch placeholder {
+	case "<printed-view-path>":
+		return "<view-path>", true
+	default:
+		return "", false
+	}
+}
+
+func userDocTypedPlaceholders(body string) []string {
+	var placeholders []string
+	for _, placeholder := range userDocTypedPlaceholderPattern.FindAllString(body, -1) {
+		placeholders = appendUniqueString(placeholders, placeholder)
+	}
+	return placeholders
+}
+
+func userDocExplainsPlaceholder(body, placeholder string) bool {
+	for _, line := range markdownNonFencedCodeLines(body) {
+		if userDocPlaceholderExplanationLine(line, placeholder) {
+			return true
+		}
+	}
+	return false
+}
+
+func userDocLinksPlaceholderExplanation(t *testing.T, sourceDoc, body, placeholder string) bool {
+	t.Helper()
+	for _, match := range markdownDocLinkPattern.FindAllStringSubmatch(body, -1) {
+		target := markdownDocLinkTarget(t, sourceDoc, match[1])
+		if target == "" || !strings.HasPrefix(target, "docs/user/") {
+			continue
+		}
+		if userDocExplainsPlaceholder(readRepoFile(t, target), placeholder) {
+			return true
+		}
+	}
+	return false
+}
+
+func markdownNonFencedCodeLines(body string) []string {
+	var lines []string
+	inFence := false
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+func userDocPlaceholderExplanationLine(line, placeholder string) bool {
+	trimmed := strings.TrimSpace(line)
+	if !strings.Contains(trimmed, placeholder) {
+		return false
+	}
+	if strings.HasPrefix(trimmed, "|") && strings.Count(trimmed, "|") >= 3 {
+		return true
+	}
+	lower := strings.ToLower(trimmed)
+	for _, marker := range []string{
+		"means",
+		"use ",
+		"replace",
+		"printed by",
+		"printed from",
+		"folder path",
+		"original folder",
+		"view path",
+		"view id",
+		"plan id",
+		"save point id",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func allDocsContractMarkdownDocs(t *testing.T) []string {

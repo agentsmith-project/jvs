@@ -7,6 +7,20 @@ for you.
 The commands use a new folder named `myproject`. If you already have a folder,
 move into it and start at step 1 with `jvs init`.
 
+The commands below also use placeholders. Anything shown in angle brackets is
+not text to type exactly; replace it with the value JVS printed or with a path
+on your machine:
+
+| Placeholder | Replace it with |
+| --- | --- |
+| `<save>` | A save point ID from `jvs save`, or an ID from `jvs history` that JVS accepts |
+| `<baseline-save>` | The save point ID for the baseline you save in step 2 |
+| `<view-path>` | The read-only file or folder path printed by `jvs view` |
+| `<view-id>` | The view ID printed by `jvs view` |
+| `<restore-plan-id>` | The plan ID printed by the restore preview you just reviewed |
+| `<remove-plan-id>` | The plan ID printed by the workspace remove preview you just reviewed |
+| `<cleanup-plan-id>` | The plan ID printed by the cleanup preview you just reviewed |
+
 ## 1. Prepare A Folder
 
 ```bash
@@ -126,7 +140,7 @@ JVS prints a `View:` line and a `View path:` line. Open the view path with
 your editor or a normal command:
 
 ```bash
-cat <printed-view-path>
+cat <view-path>
 ```
 
 What to know:
