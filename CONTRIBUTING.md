@@ -233,7 +233,7 @@ Previously, users could save after restoring from an older source without clear
 provenance. Now `jvs save` keeps restored-source provenance explicit.
 
 Users can inspect candidates with `jvs history`, then continue in another
-workspace with `jvs workspace new <name> --from <save>`.
+workspace folder with `jvs workspace new ../experiment --from <save>`.
 
 Closes #145
 ```

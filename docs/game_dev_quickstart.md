@@ -85,13 +85,13 @@ This restores only that managed path and keeps history unchanged.
 Create another real folder from a save point:
 
 ```bash
-jvs workspace new hero-variant --from <save>
+jvs workspace new ../hero-variant --from <save>
 ```
 
 JVS prints the new folder path:
 
 ```bash
-cd <printed-folder>
+cd "$(jvs workspace path hero-variant)"
 # Work on the variant.
 jvs save -m "hero armored variant"
 ```

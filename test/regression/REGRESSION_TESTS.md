@@ -66,7 +66,7 @@ Regression tests must use current public commands and JSON fields:
 
 - Create save points with `jvs save -m "message"`.
 - Read saved entries with `jvs history`.
-- Create workspaces with `jvs workspace new <name> --from <save>`.
+- Create workspaces with `jvs workspace new <folder> --from <save>`.
 - Restore with preview first: `jvs restore <save>`, then `jvs restore --run <plan-id>`.
 - Clean up with `jvs cleanup preview`, then `jvs cleanup run --plan-id <plan-id>`.
 - Use JSON envelope fields such as `save_point_id`, `newest_save_point`,

@@ -74,15 +74,15 @@ done
 Create a separate real folder from the baseline for each worker:
 
 ```bash
-jvs workspace new run-a --from "$BASELINE"
-jvs workspace new run-b --from "$BASELINE"
+jvs workspace new ../agent-run-a --from "$BASELINE"
+jvs workspace new ../agent-run-b --from "$BASELINE"
 ```
 
 The command prints each folder path. Start one agent process per folder and
 save results inside that folder:
 
 ```bash
-cd <printed-folder>
+cd "$(jvs workspace path agent-run-a)"
 python agent.py --variant A --output results.json
 jvs save -m "variant A result"
 ```

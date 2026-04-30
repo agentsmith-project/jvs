@@ -439,7 +439,8 @@ func TestRegression_WorkspaceNewFromSavePoint(t *testing.T) {
 	createFiles(t, repoPath, map[string]string{"original.txt": "content"})
 	savePointID := createRegressionSavePoint(t, repoPath, "original save point")
 
-	stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "workspace", "new", "feature-branch", "--from", savePointID)
+	featureFolder := filepath.Join(filepath.Dir(repoPath), "feature-branch")
+	stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "workspace", "new", featureFolder, "--from", savePointID)
 
 	require.Equal(t, 0, code, "workspace new should succeed\nstdout=%s\nstderr=%s", stdout, stderr)
 	var created regressionWorkspaceNewData
@@ -447,6 +448,7 @@ func TestRegression_WorkspaceNewFromSavePoint(t *testing.T) {
 	assert.Equal(t, "new", created.Mode)
 	assert.Equal(t, "created", created.Status)
 	assert.Equal(t, "feature-branch", created.Workspace)
+	assert.Equal(t, featureFolder, created.Folder)
 	assert.Equal(t, savePointID, created.StartedFromSavePoint)
 	assert.Equal(t, savePointID, created.ContentSource)
 	assert.Nil(t, created.NewestSavePoint, "new workspace should not have its own newest save point yet")
@@ -542,9 +544,12 @@ func TestRegression_CanSaveNewWorkspace(t *testing.T) {
 	createFiles(t, repoPath, map[string]string{"baseline.txt": "base"})
 	baseID := createRegressionSavePoint(t, repoPath, "baseline")
 
-	stdout, _ := runJVSJSONInRepo(t, repoPath, "workspace", "new", "fresh", "--from", baseID)
+	freshFolder := filepath.Join(filepath.Dir(repoPath), "fresh")
+	stdout, _ := runJVSJSONInRepo(t, repoPath, "workspace", "new", freshFolder, "--from", baseID)
 	var fresh regressionWorkspaceNewData
 	requireRegressionJSONData(t, stdout, &fresh)
+	assert.Equal(t, "fresh", fresh.Workspace)
+	assert.Equal(t, freshFolder, fresh.Folder)
 
 	createFiles(t, fresh.Folder, map[string]string{"hello.txt": "world"})
 
