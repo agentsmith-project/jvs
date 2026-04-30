@@ -15,6 +15,7 @@ If you are new to JVS, read these in order:
 | Read | Why |
 | --- | --- |
 | [Quickstart](quickstart.md) | A guided first run with commands, what to look for, and what to do next |
+| [Best Practices](best-practices.md) | Daily habits for saving, viewing, restoring, using workspaces, and cleanup |
 | [Concepts](concepts.md) | Plain-English meanings of folder, workspace, save point, history, view, restore, and cleanup |
 | [Safety](safety.md) | What changes files, what is preview-only, and how JVS avoids surprising you |
 | [Command Reference](commands.md) | A compact lookup once you know what you want to do |
@@ -34,6 +35,7 @@ Then keep these nearby:
 | Goal | Go to |
 | --- | --- |
 | Start using JVS in a folder | [Quickstart: Prepare a folder](quickstart.md#1-prepare-a-folder) |
+| Learn the everyday JVS routine | [Best Practices](best-practices.md) |
 | Save your current work | [Quickstart: Save a baseline](quickstart.md#2-save-a-baseline) |
 | Find an earlier save point | [Quickstart: Check history](quickstart.md#4-check-history) |
 | Look at old files without changing anything | [Quickstart: View a save point](quickstart.md#5-view-a-save-point-without-changing-files) |

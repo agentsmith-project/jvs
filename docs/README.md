@@ -18,6 +18,7 @@ The release-facing user path is:
 | --- | --- |
 | [User Docs](user/README.md) | User documentation index |
 | [Quickstart](user/quickstart.md) | First folder, first save point, first restore |
+| [Best Practices](user/best-practices.md) | Daily habits for saving, previewing, restoring, workspaces, and cleanup |
 | [Concepts](user/concepts.md) | Product vocabulary and mental model |
 | [Command Reference](user/commands.md) | Public command reference |
 | [Examples](user/examples.md) | Common workflows |

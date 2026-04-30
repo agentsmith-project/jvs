@@ -267,8 +267,8 @@ func TestDocs_UserCommandsDocumentsWorkspaceManagement(t *testing.T) {
 	}
 }
 
-func TestDocs_UserDocsUseTypedPlanIDPlaceholders(t *testing.T) {
-	for _, doc := range markdownDocsUnder(t, "docs/user") {
+func TestDocs_UserFacingDocsUseTypedPlanIDPlaceholders(t *testing.T) {
+	for _, doc := range userFacingPlanPlaceholderDocs(t) {
 		t.Run(doc, func(t *testing.T) {
 			for lineNo, line := range strings.Split(readRepoFile(t, doc), "\n") {
 				if strings.Contains(line, "<plan-id>") {
@@ -2507,13 +2507,13 @@ func TestDocs_V042GAReleaseEvidenceRecordsPublishedRelease(t *testing.T) {
 	}
 }
 
-func TestDocs_ReleaseEvidenceV043GACandidateReadinessRecordsPendingRelease(t *testing.T) {
-	const heading = "## v0.4.3 - 2026-04-29"
-	const evidenceLink = "RELEASE_EVIDENCE.md#v043---2026-04-29"
+func TestDocs_ReleaseEvidenceV044GACandidateReadinessRecordsPendingRelease(t *testing.T) {
+	const heading = "## v0.4.4 - 2026-04-30"
+	const evidenceLink = "RELEASE_EVIDENCE.md#v044---2026-04-30"
 
 	latestHeading := latestChangelogHeading(t)
 	if latestHeading != heading {
-		t.Fatalf("latest changelog entry must be the v0.4.3 GA candidate heading %q, got %q", heading, latestHeading)
+		t.Fatalf("latest changelog entry must be the v0.4.4 GA candidate heading %q, got %q", heading, latestHeading)
 	}
 
 	changelogEntry := changelogEntry(t, readRepoFile(t, "docs/99_CHANGELOG.md"), heading)
@@ -2524,9 +2524,14 @@ func TestDocs_ReleaseEvidenceV043GACandidateReadinessRecordsPendingRelease(t *te
 		"not tagged",
 		"not published",
 		"pending final tag",
-		"Candidate target tag: `v0.4.3`",
+		"Candidate target tag: `v0.4.4`",
+		"Best Practices",
+		"non-technical",
+		"workflow placeholder",
+		"portability",
+		"backup workflow",
 	} {
-		requireReleaseReadinessText(t, "v0.4.3 changelog candidate entry", changelogEntry, required)
+		requireReleaseReadinessText(t, "v0.4.4 changelog candidate entry", changelogEntry, required)
 	}
 
 	entry := releaseEvidenceEntry(t, readRepoFile(t, "docs/RELEASE_EVIDENCE.md"), heading)
@@ -2542,7 +2547,7 @@ func TestDocs_ReleaseEvidenceV043GACandidateReadinessRecordsPendingRelease(t *te
 		{name: "final tagged commit", pattern: releaseEvidenceCommitPattern},
 	} {
 		if forbidden.pattern.MatchString(entry) {
-			t.Fatalf("v0.4.3 candidate release evidence must not claim %s before final publication", forbidden.name)
+			t.Fatalf("v0.4.4 candidate release evidence must not claim %s before final publication", forbidden.name)
 		}
 	}
 }
@@ -3230,9 +3235,19 @@ func markdownDocsUnder(t *testing.T, dir string) []string {
 	return docs
 }
 
+func userFacingPlanPlaceholderDocs(t *testing.T) []string {
+	t.Helper()
+	docs := []string{"README.md"}
+	for _, doc := range markdownDocsUnder(t, "docs/user") {
+		docs = appendUniqueString(docs, doc)
+	}
+	return docs
+}
+
 func userWorkflowPlaceholderDocs() []string {
 	return []string{
 		"docs/user/quickstart.md",
+		"docs/user/best-practices.md",
 		"docs/user/examples.md",
 		"docs/user/tutorials.md",
 	}
@@ -3609,6 +3624,7 @@ func stablePublicDocs() []string {
 		"docs/README.md",
 		"docs/user/README.md",
 		"docs/user/quickstart.md",
+		"docs/user/best-practices.md",
 		"docs/user/concepts.md",
 		"docs/user/commands.md",
 		"docs/user/examples.md",
@@ -4125,6 +4141,7 @@ func savePointUserGuideDocs() []string {
 	return []string{
 		"docs/user/README.md",
 		"docs/user/quickstart.md",
+		"docs/user/best-practices.md",
 		"docs/user/concepts.md",
 		"docs/user/commands.md",
 		"docs/user/examples.md",

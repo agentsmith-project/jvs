@@ -123,3 +123,22 @@ tutorial fixture that exercises common filesystem version-control flows without
 depending on a domain-specific toolchain.
 
 GA blocker: No.
+
+## User-Facing Portability And Backup Workflow
+
+Problem: users can use ordinary backup and copy tools with JVS folders, but the
+product does not yet provide a first-class, user-facing workflow for moving a
+JVS folder, confirming that save point history came with it, or explaining what
+was preserved after a copy.
+
+Why it affects user mind: non-technical users think in terms of "I backed up
+my project" or "I moved this folder to another machine." They may not know
+which parts of the folder are needed for JVS history, or what to check before
+trusting the copied folder.
+
+Possible improvement direction: explore a simple public portability check or
+guided backup/move explanation that confirms folder identity, save point
+history availability, and next safe commands without becoming a developer
+migration runbook.
+
+GA blocker: No.

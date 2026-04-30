@@ -5,6 +5,114 @@ as active reader content for the published GA line. The active product
 vocabulary is folder, workspace, save point, save, history, view, restore,
 recovery plan, doctor, and cleanup.
 
+## v0.4.4 - 2026-04-30
+
+### Highlights
+
+- GA candidate readiness for user documentation discoverability: the user docs
+  index and release-facing docs index now point new users to Best Practices as
+  the everyday routine after Quickstart.
+- More non-technical tutorials cover client delivery packages, media sorting
+  sessions, and course or research materials, so users can practice save,
+  view, path restore, and preview/run workflows without adopting a developer
+  or data-science scenario first.
+- Workflow placeholder clarity is now guarded by conformance: workflow pages
+  must explain typed placeholders or link to a user-doc explanation, and
+  `<view-path>` remains the canonical placeholder for the path printed by
+  `jvs view`.
+- Product gap tracking now records a future user-facing portability and backup
+  workflow so ordinary folder move/copy expectations stay visible without
+  changing the v0 GA surface.
+- Release-facing identity remains `github.com/agentsmith-project/jvs`; release
+  URLs use the canonical GitHub project, for example
+  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.0`.
+
+### Breaking changes
+
+- None for the stable v0 public CLI contract.
+- This main-branch version bump is a GA candidate/readiness record only; it
+  does not create a final tag, publish release artifacts, or change the on-disk
+  repository layout version.
+
+### Known limitations
+
+- v0 does not include remote push/pull.
+- v0 does not include in-JVS signing commands.
+- v0 does not include public partial-save contracts.
+- v0 does not include compression contracts.
+- v0 does not include merge/rebase.
+- v0 does not include complex retention policy flags.
+- v0 does not yet include a first-class user-facing portability or backup
+  workflow.
+- Strict integrity checks can be I/O intensive on large workspaces.
+- Descriptor signing and in-JVS trust policy remain outside the stable v0
+  repository format.
+
+### Risk labels
+
+- `integrity`: descriptor checksum and payload hash detect independent
+  corruption; coordinated descriptor-plus-checksum rewrite remains a v0
+  residual risk.
+- `migration`: non-portable JVS runtime state is destination-local and must be
+  rebuilt at the fresh destination with
+  `jvs doctor --strict --repair-runtime`.
+- `recovery`: restore run remains recoverable through recovery plans, but
+  operators must resolve active plans before starting another restore in the
+  same workspace.
+- `usability`: user workflows rely on clear placeholder names and
+  preview-before-run habits, so user-doc workflow pages now carry explicit
+  placeholder explanations and conformance coverage.
+
+### Migration notes
+
+- Existing repositories do not need an on-disk migration for the `v0.4.4`
+  candidate target; `.jvs/format_version` remains a repository layout version,
+  not the application release version.
+- After upgrading to this candidate, run `jvs doctor --strict` on a
+  representative repo before relying on it for release workflows.
+- For physical backup or storage migration, start with a fresh destination, run
+  an offline whole-folder copy, run
+  `jvs doctor --strict --repair-runtime` at the destination, then run a fresh
+  cleanup preview before any cleanup run.
+- Do not treat non-portable JVS runtime state as authoritative during physical
+  backup or storage migration; rebuild it at the destination before resuming
+  JVS writes.
+- User-facing portability and backup workflow remains a documented product gap,
+  not a new v0 CLI promise.
+- Run the restore drill from `docs/13_OPERATION_RUNBOOK.md`, including
+  preview/run and recovery status/resume/rollback coverage.
+
+### Release evidence
+
+- See the [release evidence ledger](RELEASE_EVIDENCE.md#v044---2026-04-30)
+  for the `v0.4.4` GA candidate readiness record.
+- Evidence class: GA candidate readiness.
+- Candidate target tag: `v0.4.4`
+- Candidate state: not final, not tagged, and not published; the release is
+  pending final tag creation and publication through the normal CI release
+  flow.
+- Source archive boundary: no immutable `v0.4.4` tag snapshot exists yet; when
+  the pending final tag is created, its source archive will record readiness
+  from tag time.
+- publication final evidence remains pending; the future GitHub Release page
+  and post-release main ledger will record workflow run, release state,
+  artifacts, checksums, signing identity, smoke, and coverage facts after the
+  release exists.
+- Readiness scope since `v0.4.3`: Best Practices user entry, non-technical
+  tutorials, workflow placeholder conformance, user-doc index updates, and the
+  portability and backup workflow product gap record.
+
+### Release artifacts
+
+- No final `v0.4.4` release artifacts are published from this main-branch
+  candidate entry.
+- Artifact plan for the pending final tag remains the standard five platform
+  binaries, matching `.bundle` files, `SHA256SUMS`, and `SHA256SUMS.bundle`.
+- Signing remains outside in-JVS commands and is expected to use the release
+  workflow's Sigstore/cosign v3 bundle flow.
+- Final artifact, checksum, signing, and smoke evidence will be recorded only
+  after CI creates the release from the final tag.
+
 ## v0.4.3 - 2026-04-29
 
 ### Highlights
@@ -112,9 +220,9 @@ recovery plan, doctor, and cleanup.
   lead with `init`, `save`, `history`, `view`, `restore`, `workspace new`,
   `cleanup`, `recovery`, `status`, and `doctor`.
 - Restore is preview-first: `jvs restore <save>` creates a plan and changes no
-  files; `jvs restore --run <plan-id>` revalidates and applies the reviewed
-  plan; `jvs recovery status|resume|rollback` closes interrupted restore
-  workflows.
+  files; `jvs restore --run <restore-plan-id>` revalidates and applies the
+  reviewed restore plan; `jvs recovery status|resume|rollback` closes
+  interrupted restore workflows.
 - `jvs workspace new <name> --from <save>` creates another real workspace from
   a save point, leaves the source workspace unchanged, starts with
   `Newest save point: none`, and records `started_from_save_point` on first

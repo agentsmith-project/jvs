@@ -40,6 +40,20 @@ same ID. If the history output does not show enough characters, run
 `jvs history --json` and copy the `save_point_id` field for the save point you
 want.
 
+## Choose A Tutorial
+
+| Start with | Good fit | Main JVS practice |
+| --- | --- | --- |
+| [Practice: Copyable Document Folder](#practice-copyable-document-folder) | You want a safe copyable first run | Save, decision preview, path restore with `--save-first` |
+| [Client Delivery Package](#client-delivery-package) | Reports, contracts, exports, or delivery folders | View a saved file, restore one file or one delivery folder |
+| [Media Sorting Session](#media-sorting-session) | Photos, video, audio, captions, or selected media folders | Save import/select milestones, restore one subfolder |
+| [Course Or Research Materials Pack](#course-or-research-materials-pack) | Lessons, readings, slides, handouts, or research packets | Find a file with `history --path`, restore a file or folder |
+| [Data Experiment](#data-experiment) | Model runs, parameters, input data, or generated results | Save baselines, inspect old config, restore with `--save-first` |
+| [Data Cleaning And Analysis Recovery](#data-cleaning-and-analysis-recovery) | Cleaned tables, analysis files, or accidental deletes | Find a missing file, view it, restore one path |
+| [Agent Sandbox](#agent-sandbox) | Risky agent, script, or teammate experiments | Create another workspace, remove it, keep cleanup separate |
+| [Game Or Design Asset Pack](#game-or-design-asset-pack) | Binary assets, art exports, audio, config, and notes | Save asset milestones, view old assets, restore one asset folder |
+| [Everyday Document Project](#everyday-document-project) | Reports, proposals, campaign copy, or ordinary writing | Save writing milestones, view old drafts, restore a file or folder |
+
 ## Practice: Copyable Document Folder
 
 ### When To Use
@@ -121,6 +135,296 @@ jvs restore --run <restore-plan-id>
 Try the same pattern in one of your own folders: save, make a harmless edit,
 preview a path restore, then decide whether to use `--save-first` or
 `--discard-unsaved`.
+
+## Client Delivery Package
+
+### When To Use
+
+Use this when one folder contains drafts, source notes, exported files, and the
+package you plan to send to a client, reviewer, or partner. The goal is to
+recover from a mistaken overwrite without rolling back every draft.
+
+### Prepare
+
+This story uses small text files to stand in for PDFs, spreadsheets, and signed
+documents. Replace the `printf` lines with exports from your word processor,
+spreadsheet, contract tool, or design application.
+
+```bash
+mkdir client-delivery-pack
+cd client-delivery-pack
+jvs init
+
+mkdir -p drafts source exports delivery
+printf "Report draft v1\n" > drafts/report.md
+printf "Contract terms v1\n" > drafts/contract.md
+printf "Survey rows v1\n" > source/survey.csv
+printf "Client report PDF v1\n" > delivery/report.pdf
+printf "Contract PDF v1\n" > delivery/contract.pdf
+jvs save -m "client packet baseline"
+```
+
+### Commands
+
+Make a second package and save it:
+
+```bash
+printf "Report draft v2 with chart notes\n" > drafts/report.md
+printf "Client report PDF v2\n" > delivery/report.pdf
+printf "Contract PDF v2\n" > delivery/contract.pdf
+jvs save -m "client review packet v2"
+```
+
+Simulate an accidental overwrite right before delivery:
+
+```bash
+printf "Wrong report from another client\n" > delivery/report.pdf
+jvs status
+```
+
+Find a save point that has the delivery file:
+
+```bash
+jvs history --path delivery/report.pdf
+jvs view <save> delivery/report.pdf
+```
+
+Open `<view-path>` with your normal PDF viewer or editor. When you have checked
+that it is the right report, close the view:
+
+```bash
+jvs view close <view-id>
+```
+
+Restore only the delivery report while protecting the accidental overwrite in
+case you need to inspect it later:
+
+```bash
+jvs restore <save> --path delivery/report.pdf --save-first
+jvs restore --run <restore-plan-id>
+```
+
+If a whole delivery folder was exported incorrectly, preview that folder
+instead:
+
+```bash
+jvs restore <save> --path delivery --save-first
+jvs restore --run <restore-plan-id>
+```
+
+### How To Know It Worked
+
+- `delivery/report.pdf` is back to the selected saved version.
+- `drafts/report.md` and `source/survey.csv` were not rolled back by the
+  one-file restore.
+- `jvs history` includes the save point created by `--save-first`.
+- `jvs status` reports no unsaved changes after the restore finishes.
+
+### Common Pitfalls
+
+- Do not restore the whole folder when only the delivery export is wrong.
+  Start with `--path delivery/report.pdf` or `--path delivery`.
+- A file extension such as `.pdf` does not change the JVS workflow. JVS restores
+  files by path.
+- Keep save messages specific, such as `client review packet v2`, so
+  `jvs history --grep "client"` is useful later.
+- Do not reuse a restore plan ID after previewing a different path.
+
+### Next Step
+
+Before sending the packet, save the exact delivered state:
+
+```bash
+jvs save -m "sent client delivery package"
+```
+
+## Media Sorting Session
+
+### When To Use
+
+Use this when you are organizing photos, video clips, audio takes, captions, or
+exported edits. The goal is to save import and selection milestones, then
+recover one subfolder after a mistaken delete or batch export.
+
+### Prepare
+
+This story uses placeholder text files with media-like names so the commands
+can run anywhere. Replace them with files imported from your camera, recorder,
+phone, or editing software.
+
+```bash
+mkdir media-sorting-session
+cd media-sorting-session
+jvs init
+
+mkdir -p import selects edits audio delivery
+printf "raw photo 001\n" > import/photo-001.jpg
+printf "raw photo 002\n" > import/photo-002.jpg
+printf "video clip 001\n" > import/clip-001.mov
+printf "room audio 001\n" > audio/room-001.wav
+jvs save -m "raw media import"
+```
+
+### Commands
+
+Create a first selection and save it:
+
+```bash
+cp import/photo-001.jpg selects/hero-photo.jpg
+cp import/clip-001.mov selects/opening-clip.mov
+printf "Crop hero-photo tighter\n" > edits/edit-notes.md
+jvs save -m "first media selects"
+```
+
+Simulate a mistake where the selected media folder is removed:
+
+```bash
+rm -f selects/hero-photo.jpg selects/opening-clip.mov
+jvs status
+```
+
+Find and inspect the saved selection folder:
+
+```bash
+jvs history --path selects
+jvs view <save> selects
+```
+
+Open `<view-path>` in your file browser or media tool. Close the view when you
+are done checking:
+
+```bash
+jvs view close <view-id>
+```
+
+Restore only the selection folder:
+
+```bash
+jvs restore <save> --path selects --discard-unsaved
+jvs restore --run <restore-plan-id>
+```
+
+### How To Know It Worked
+
+- The `selects` folder contains the selected files again.
+- Files under `import`, `audio`, and `edits` were not replaced by the path
+  restore.
+- `jvs history` still shows the raw import and first selection save points.
+- `jvs status` reports no unsaved changes if the restore exactly returned the
+  selected folder to the saved state.
+
+### Common Pitfalls
+
+- Do not use cleanup to recover media. Use `history`, `view`, and `restore`.
+- Restore a folder such as `selects` when the mistake is limited to that
+  folder.
+- Use `--save-first` instead of `--discard-unsaved` if the removed or replaced
+  files might still be useful.
+- Large media folders can make preview impact summaries feel important; read
+  them before running the restore plan.
+
+### Next Step
+
+After the selection is correct again, save the reviewed state:
+
+```bash
+jvs save -m "media selects restored and reviewed"
+```
+
+## Course Or Research Materials Pack
+
+### When To Use
+
+Use this when a folder contains lesson drafts, readings, slides, handouts,
+research notes, and a final package. The goal is to reorganize freely while
+still being able to find an older lesson, reading list, or handout folder.
+
+### Prepare
+
+This story uses simple text files as stand-ins for slides, PDFs, and handouts.
+Replace them with exports from your teaching, research, or document tools.
+
+```bash
+mkdir course-materials-pack
+cd course-materials-pack
+jvs init
+
+mkdir -p drafts readings slides handouts final
+printf "Workshop outline v1\n" > drafts/outline.md
+printf "Reading list v1\n" > readings/list.md
+printf "Slide deck v1\n" > slides/session-1.txt
+printf "Checklist v1\n" > handouts/checklist.md
+jvs save -m "course outline and starter materials"
+```
+
+### Commands
+
+Reorganize the materials and save the first complete package:
+
+```bash
+printf "Workshop outline v2 with exercises\n" > drafts/outline.md
+printf "Slide deck v2 with activity\n" > slides/session-1.txt
+printf "Participant checklist v2\n" > handouts/checklist.md
+printf "Final packet v1\n" > final/packet.txt
+jvs save -m "first complete course packet"
+```
+
+Make another reorganization that accidentally removes an older reading list:
+
+```bash
+rm readings/list.md
+printf "Final packet v2 without reading list\n" > final/packet.txt
+jvs status
+```
+
+Find the save point that still had the reading list:
+
+```bash
+jvs history --path readings/list.md
+jvs view <save> readings/list.md
+```
+
+Open `<view-path>` in your editor. If it is the reading list you need, close
+the view and restore just that file:
+
+```bash
+jvs view close <view-id>
+jvs restore <save> --path readings/list.md --save-first
+jvs restore --run <restore-plan-id>
+```
+
+Restore a whole handouts folder if a batch export replaced it:
+
+```bash
+jvs restore <save> --path handouts --save-first
+jvs restore --run <restore-plan-id>
+```
+
+### How To Know It Worked
+
+- `readings/list.md` exists again after the one-file restore.
+- A handouts restore changes only the `handouts` folder.
+- `final/packet.txt` is not replaced unless you restore the whole folder or
+  choose `--path final`.
+- `jvs history` includes the save point created by `--save-first`.
+
+### Common Pitfalls
+
+- Do not assume the newest final packet is the source for every older handout.
+  Use `history --path` for the file or folder you care about.
+- If you are unsure which save point is right, use `jvs view` before restoring.
+- A restored reading or handout is not a new course milestone until you run
+  `jvs save`.
+- Use one path restore per mistake when several folders were reorganized in
+  different ways.
+
+### Next Step
+
+After the course materials are correct, save the version you will distribute:
+
+```bash
+jvs save -m "course packet ready to distribute"
+```
 
 ## Data Experiment
 

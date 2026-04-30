@@ -32,12 +32,13 @@ jvs history
 # Pick a save point ID from history.
 jvs view <save> notes.txt
 jvs restore <save> --discard-unsaved
-jvs restore --run <plan-id>
+jvs restore --run <restore-plan-id>
 ```
 
 Restore is preview-first: `jvs restore <save>` prints a plan and the exact
-`jvs restore --run <plan-id>` command. No folder files change until you run
-the plan.
+`Run:` line. Use the restore plan ID from that preview in
+`jvs restore --run <restore-plan-id>`. No folder files change until you run the
+plan.
 
 ## Why JVS?
 
@@ -77,7 +78,7 @@ go install github.com/agentsmith-project/jvs/cmd/jvs@<VERSION>
 | `jvs history --path <path>` | Find save points that contain a workspace-relative path |
 | `jvs view <save> [path]` | Open a read-only view of a save point or a path inside it |
 | `jvs restore <save> [--path <path>]` | Preview a restore plan |
-| `jvs restore --run <plan-id>` | Execute a restore plan after JVS rechecks the folder |
+| `jvs restore --run <restore-plan-id>` | Execute a restore plan after JVS rechecks the folder |
 | `jvs workspace new <name> --from <save>` | Create another workspace folder from a save point |
 | `jvs recovery status` | Show active restore recovery plans |
 | `jvs doctor [--strict]` | Check repository health |
@@ -104,6 +105,7 @@ Start with the [User Docs](docs/user/README.md):
 | Document | Description |
 | --- | --- |
 | [Quickstart](docs/user/quickstart.md) | First save point and first restore |
+| [Best Practices](docs/user/best-practices.md) | Daily habits for saving, previewing, restoring, workspaces, and cleanup |
 | [Concepts](docs/user/concepts.md) | Folder, workspace, save point, history, view, restore, and recovery |
 | [Command Reference](docs/user/commands.md) | Release-facing command surface |
 | [Examples](docs/user/examples.md) | Practical workflows |
