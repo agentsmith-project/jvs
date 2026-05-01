@@ -646,6 +646,341 @@ func TestStoryJSON_WorkspaceFromSavePointIsolation(t *testing.T) {
 	requireHistoryIDs(t, repoPath, []string{base})
 }
 
+func TestStoryJSON_WorkspaceListStatusAcrossMultipleExplicitFolders(t *testing.T) {
+	repoPath, cleanup := initTestRepo(t)
+	defer cleanup()
+
+	createFiles(t, repoPath, map[string]string{
+		"brief.md":    "baseline brief\n",
+		"src/app.txt": "main baseline\n",
+	})
+	base := savePoint(t, repoPath, "multi workspace baseline")
+	reviewPath := filepath.Join(filepath.Dir(repoPath), "review-a")
+	cleanPath := filepath.Join(filepath.Dir(repoPath), "clean-b")
+
+	reviewCreated := jvsJSONData(t, repoPath, "workspace", "new", "../review-a", "--from", base)
+	cleanCreated := jvsJSONData(t, repoPath, "workspace", "new", "../clean-b", "--from", base)
+	if reviewCreated["workspace"] != "review-a" || reviewCreated["folder"] != reviewPath || reviewCreated["started_from_save_point"] != base {
+		t.Fatalf("review workspace creation mismatch: %#v", reviewCreated)
+	}
+	if cleanCreated["workspace"] != "clean-b" || cleanCreated["folder"] != cleanPath || cleanCreated["started_from_save_point"] != base {
+		t.Fatalf("clean workspace creation mismatch: %#v", cleanCreated)
+	}
+
+	createFiles(t, reviewPath, map[string]string{
+		"analysis/notes.txt": "unsaved review notes\n",
+		"src/app.txt":        "review workspace dirty edit\n",
+	})
+
+	reviewPathOut := jvsJSONData(t, repoPath, "workspace", "path", "review-a")
+	cleanPathOut := jvsJSONData(t, repoPath, "workspace", "path", "clean-b")
+	if reviewPathOut["path"] != reviewPath || cleanPathOut["path"] != cleanPath {
+		t.Fatalf("workspace path should return cd-able explicit folders: review=%#v clean=%#v", reviewPathOut, cleanPathOut)
+	}
+	reviewStatus := jvsJSONData(t, reviewPath, "status")
+	if reviewStatus["workspace"] != "review-a" || reviewStatus["folder"] != reviewPath || reviewStatus["unsaved_changes"] != true {
+		t.Fatalf("cd into dirty review workspace should target itself and show unsaved work: %#v", reviewStatus)
+	}
+	cleanStatus := jvsJSONData(t, cleanPath, "status")
+	if cleanStatus["workspace"] != "clean-b" || cleanStatus["folder"] != cleanPath || cleanStatus["unsaved_changes"] != false {
+		t.Fatalf("cd into clean workspace should target itself and remain clean: %#v", cleanStatus)
+	}
+
+	listDefault := jvsJSONValue(t, repoPath, "workspace", "list")
+	mainDefault := workspaceListRecord(t, listDefault, "main")
+	reviewDefault := workspaceListRecord(t, listDefault, "review-a")
+	cleanDefault := workspaceListRecord(t, listDefault, "clean-b")
+	if mainDefault["current"] != true || mainDefault["folder"] != repoPath || mainDefault["content_source"] != base || mainDefault["newest_save_point"] != base || mainDefault["history_head"] != base {
+		t.Fatalf("default list should show main folder and pointers without unrelated fields: %#v", mainDefault)
+	}
+	if reviewDefault["current"] != false || reviewDefault["folder"] != reviewPath || reviewDefault["content_source"] != base || reviewDefault["newest_save_point"] != nil || reviewDefault["history_head"] != nil || reviewDefault["started_from_save_point"] != base {
+		t.Fatalf("default list should show review folder/source without own history: %#v", reviewDefault)
+	}
+	if cleanDefault["current"] != false || cleanDefault["folder"] != cleanPath || cleanDefault["content_source"] != base || cleanDefault["newest_save_point"] != nil || cleanDefault["history_head"] != nil || cleanDefault["started_from_save_point"] != base {
+		t.Fatalf("default list should show clean folder/source without own history: %#v", cleanDefault)
+	}
+	for _, record := range []map[string]any{mainDefault, reviewDefault, cleanDefault} {
+		if _, ok := record["unsaved_changes"]; ok {
+			t.Fatalf("default workspace list should not force dirty status: %#v", record)
+		}
+	}
+
+	listWithStatus := jvsJSONValue(t, repoPath, "workspace", "list", "--status")
+	mainWithStatus := workspaceListRecord(t, listWithStatus, "main")
+	reviewWithStatus := workspaceListRecord(t, listWithStatus, "review-a")
+	cleanWithStatus := workspaceListRecord(t, listWithStatus, "clean-b")
+	if mainWithStatus["unsaved_changes"] != false || reviewWithStatus["unsaved_changes"] != true || cleanWithStatus["unsaved_changes"] != false {
+		t.Fatalf("workspace list --status should distinguish dirty and clean folders: main=%#v review=%#v clean=%#v", mainWithStatus, reviewWithStatus, cleanWithStatus)
+	}
+}
+
+func TestStoryJSON_WorkspaceFolderRestoreLoopKeepsMainIsolated(t *testing.T) {
+	repoPath, cleanup := initTestRepo(t)
+	defer cleanup()
+
+	createFiles(t, repoPath, map[string]string{
+		"app.txt":  "base app\n",
+		"note.txt": "base note\n",
+	})
+	base := savePoint(t, repoPath, "workspace restore base")
+	createFiles(t, repoPath, map[string]string{
+		"app.txt": "main local work after base\n",
+	})
+	workspacePath := filepath.Join(filepath.Dir(repoPath), "restore-loop")
+	created := jvsJSONData(t, repoPath, "workspace", "new", "../restore-loop", "--from", base)
+	if created["workspace"] != "restore-loop" || created["folder"] != workspacePath || created["started_from_save_point"] != base {
+		t.Fatalf("workspace creation mismatch: %#v", created)
+	}
+
+	createFiles(t, workspacePath, map[string]string{
+		"app.txt":              "workspace saved edit\n",
+		"workspace/result.txt": "first workspace result\n",
+	})
+	workspaceSave := savePointFromCWD(t, workspacePath, "workspace first result")
+	workspaceHistory := jvsJSONData(t, workspacePath, "history")
+	if got := savePointIDsFromHistory(t, workspaceHistory); !sameStringSlice(got, []string{workspaceSave}) {
+		t.Fatalf("workspace history IDs = %v, want [%s]", got, workspaceSave)
+	}
+	mainHistory := jvsJSONData(t, repoPath, "history")
+	if got := savePointIDsFromHistory(t, mainHistory); !sameStringSlice(got, []string{base}) {
+		t.Fatalf("main history IDs = %v, want [%s]", got, base)
+	}
+	if got := readFile(t, repoPath, "app.txt"); got != "main local work after base\n" {
+		t.Fatalf("workspace save changed main folder: %q", got)
+	}
+
+	preview := jvsJSONData(t, workspacePath, "restore", base)
+	planID, _ := preview["plan_id"].(string)
+	if preview["mode"] != "preview" || preview["workspace"] != "restore-loop" || preview["folder"] != workspacePath || preview["source_save_point"] != base || planID == "" {
+		t.Fatalf("workspace restore preview should target the current workspace folder: %#v", preview)
+	}
+	if preview["history_changed"] != false || preview["files_changed"] != false {
+		t.Fatalf("workspace restore preview should not mutate files or history: %#v", preview)
+	}
+	if got := readFile(t, workspacePath, "app.txt"); got != "workspace saved edit\n" {
+		t.Fatalf("workspace restore preview changed file: %q", got)
+	}
+
+	restored := jvsJSONData(t, workspacePath, "restore", "--run", planID)
+	if restored["mode"] != "run" || restored["workspace"] != "restore-loop" || restored["folder"] != workspacePath || restored["restored_save_point"] != base || restored["content_source"] != base {
+		t.Fatalf("workspace restore run should target workspace and restore base: %#v", restored)
+	}
+	if restored["newest_save_point"] != workspaceSave || restored["history_head"] != workspaceSave || restored["history_changed"] != false || restored["files_changed"] != true {
+		t.Fatalf("workspace restore run should keep workspace history head while moving content source: %#v", restored)
+	}
+	if got := readFile(t, workspacePath, "app.txt"); got != "base app\n" {
+		t.Fatalf("workspace restore did not recover base app: %q", got)
+	}
+	requirePathMissing(t, workspacePath, "workspace/result.txt")
+	if got := readFile(t, repoPath, "app.txt"); got != "main local work after base\n" {
+		t.Fatalf("workspace restore changed main folder: %q", got)
+	}
+	requireHistoryIDs(t, repoPath, []string{base})
+
+	statusAfterRestore := jvsJSONData(t, workspacePath, "status")
+	if statusAfterRestore["workspace"] != "restore-loop" || statusAfterRestore["folder"] != workspacePath || statusAfterRestore["content_source"] != base || statusAfterRestore["newest_save_point"] != workspaceSave || statusAfterRestore["history_head"] != workspaceSave {
+		t.Fatalf("workspace status after restore should distinguish current source from history head: %#v", statusAfterRestore)
+	}
+
+	createFiles(t, workspacePath, map[string]string{
+		"app.txt":              "workspace work after restore\n",
+		"workspace/result.txt": "second workspace result\n",
+	})
+	afterRestoreSave := savePointFromCWD(t, workspacePath, "workspace after restore")
+	workspaceHistory = jvsJSONData(t, workspacePath, "history")
+	if got := savePointIDsFromHistory(t, workspaceHistory); !sameStringSlice(got, []string{afterRestoreSave, workspaceSave}) {
+		t.Fatalf("workspace history IDs after restore save = %v, want [%s %s]", got, afterRestoreSave, workspaceSave)
+	}
+	mainHistory = jvsJSONData(t, repoPath, "history")
+	if got := savePointIDsFromHistory(t, mainHistory); !sameStringSlice(got, []string{base}) {
+		t.Fatalf("main history IDs after workspace save = %v, want [%s]", got, base)
+	}
+	if got := readFile(t, repoPath, "app.txt"); got != "main local work after base\n" {
+		t.Fatalf("workspace save after restore changed main folder: %q", got)
+	}
+
+	finalStatus := jvsJSONData(t, workspacePath, "status")
+	if finalStatus["workspace"] != "restore-loop" || finalStatus["content_source"] != afterRestoreSave || finalStatus["newest_save_point"] != afterRestoreSave || finalStatus["history_head"] != afterRestoreSave || finalStatus["started_from_save_point"] != base {
+		t.Fatalf("save after workspace restore should stay in workspace history: %#v", finalStatus)
+	}
+}
+
+func TestStoryJSON_WorkspaceExplicitFolderTrackingAndCurrentPointer(t *testing.T) {
+	repoPath, cleanup := initTestRepo(t)
+	defer cleanup()
+
+	createFiles(t, repoPath, map[string]string{
+		"brief.md":    "baseline brief\n",
+		"src/app.txt": "main baseline\n",
+	})
+	base := savePoint(t, repoPath, "analysis baseline")
+	createFiles(t, repoPath, map[string]string{"src/app.txt": "main continues independently\n"})
+
+	created := jvsJSONData(t, repoPath, "workspace", "new", "../analysis-run", "--from", base)
+	analysisPath := filepath.Join(filepath.Dir(repoPath), "analysis-run")
+	if created["workspace"] != "analysis-run" || created["folder"] != analysisPath || created["started_from_save_point"] != base {
+		t.Fatalf("workspace new should report explicit folder and source save point: %#v", created)
+	}
+	if got := readFile(t, analysisPath, "src/app.txt"); got != "main baseline\n" {
+		t.Fatalf("new workspace content = %q, want baseline", got)
+	}
+	if got := readFile(t, repoPath, "src/app.txt"); got != "main continues independently\n" {
+		t.Fatalf("workspace creation changed main folder: %q", got)
+	}
+
+	path := jvsJSONData(t, repoPath, "workspace", "path", "analysis-run")
+	if path["path"] != analysisPath {
+		t.Fatalf("workspace path should return explicit folder: %#v", path)
+	}
+
+	statusBeforeSave := jvsJSONData(t, analysisPath, "status")
+	if statusBeforeSave["workspace"] != "analysis-run" || statusBeforeSave["folder"] != analysisPath {
+		t.Fatalf("cd into workspace should naturally target that workspace: %#v", statusBeforeSave)
+	}
+	if statusBeforeSave["content_source"] != base || statusBeforeSave["newest_save_point"] != nil || statusBeforeSave["history_head"] != nil || statusBeforeSave["started_from_save_point"] != base {
+		t.Fatalf("new workspace should point at source before first save without owning history: %#v", statusBeforeSave)
+	}
+
+	listBeforeSave := jvsJSONValue(t, repoPath, "workspace", "list")
+	mainBefore := workspaceListRecord(t, listBeforeSave, "main")
+	analysisBefore := workspaceListRecord(t, listBeforeSave, "analysis-run")
+	if mainBefore["folder"] != repoPath || mainBefore["content_source"] != base || mainBefore["newest_save_point"] != base {
+		t.Fatalf("workspace list should show main folder and pointer: %#v", mainBefore)
+	}
+	if analysisBefore["folder"] != analysisPath || analysisBefore["content_source"] != base || analysisBefore["newest_save_point"] != nil || analysisBefore["started_from_save_point"] != base {
+		t.Fatalf("workspace list should show new workspace source and empty own history: %#v", analysisBefore)
+	}
+
+	historyBeforeSave := jvsJSONData(t, repoPath, "history", "from", base)
+	if historyBeforeSave["direction"] != "from" || historyBeforeSave["start_save_point"] != base {
+		t.Fatalf("history from base should describe descendants from that save point: %#v", historyBeforeSave)
+	}
+	requireHistoryWorkspacePointer(t, historyBeforeSave, "main", base)
+	requireHistoryWorkspacePointer(t, historyBeforeSave, "analysis-run", base)
+
+	createFiles(t, analysisPath, map[string]string{
+		"analysis/result.txt": "analysis result\n",
+		"src/app.txt":         "analysis edit\n",
+	})
+	analysisSave := savePointFromCWD(t, analysisPath, "analysis result")
+	analysisHistory := jvsJSONData(t, analysisPath, "history")
+	if got := savePointIDsFromHistory(t, analysisHistory); !sameStringSlice(got, []string{analysisSave}) {
+		t.Fatalf("analysis workspace history IDs = %v, want [%s]", got, analysisSave)
+	}
+	mainHistory := jvsJSONData(t, repoPath, "history")
+	if got := savePointIDsFromHistory(t, mainHistory); !sameStringSlice(got, []string{base}) {
+		t.Fatalf("main history IDs = %v, want [%s]", got, base)
+	}
+	if got := readFile(t, repoPath, "src/app.txt"); got != "main continues independently\n" {
+		t.Fatalf("workspace save changed main folder: %q", got)
+	}
+
+	statusAfterSave := jvsJSONData(t, analysisPath, "status")
+	if statusAfterSave["content_source"] != analysisSave || statusAfterSave["newest_save_point"] != analysisSave || statusAfterSave["history_head"] != analysisSave || statusAfterSave["started_from_save_point"] != base {
+		t.Fatalf("workspace first save should move current pointer to its new save point: %#v", statusAfterSave)
+	}
+
+	listAfterSave := jvsJSONValue(t, analysisPath, "workspace", "list")
+	mainAfter := workspaceListRecord(t, listAfterSave, "main")
+	analysisAfter := workspaceListRecord(t, listAfterSave, "analysis-run")
+	if mainAfter["folder"] != repoPath || mainAfter["content_source"] != base || mainAfter["newest_save_point"] != base {
+		t.Fatalf("main list record should stay on base after workspace save: %#v", mainAfter)
+	}
+	if analysisAfter["folder"] != analysisPath || analysisAfter["content_source"] != analysisSave || analysisAfter["newest_save_point"] != analysisSave || analysisAfter["history_head"] != analysisSave {
+		t.Fatalf("analysis list record should move pointer to first save: %#v", analysisAfter)
+	}
+
+	historyAfterSave := jvsJSONData(t, repoPath, "history", "from", base)
+	if got := savePointIDsFromHistory(t, historyAfterSave); !sameStringSlice(got, []string{base, analysisSave}) {
+		t.Fatalf("history from base IDs = %v, want base then analysis save", got)
+	}
+	requireHistoryEdge(t, historyAfterSave, base, analysisSave, "started_from")
+	requireHistoryWorkspacePointer(t, historyAfterSave, "main", base)
+	requireHistoryWorkspacePointer(t, historyAfterSave, "analysis-run", analysisSave)
+
+	workspaceHistoryFromSource := jvsJSONData(t, analysisPath, "history", "from")
+	if workspaceHistoryFromSource["direction"] != "from" || workspaceHistoryFromSource["start_save_point"] != base {
+		t.Fatalf("history from inside workspace should start from its source when no save point is provided: %#v", workspaceHistoryFromSource)
+	}
+	if got := savePointIDsFromHistory(t, workspaceHistoryFromSource); !sameStringSlice(got, []string{base, analysisSave}) {
+		t.Fatalf("workspace history from source IDs = %v, want base then analysis save", got)
+	}
+	requireHistoryEdge(t, workspaceHistoryFromSource, base, analysisSave, "started_from")
+	requireHistoryWorkspacePointer(t, workspaceHistoryFromSource, "analysis-run", analysisSave)
+}
+
+func TestStoryJSON_WorkspaceNewRequiresExplicitFolderOutsideExistingWorkspace(t *testing.T) {
+	repoPath, cleanup := initTestRepo(t)
+	defer cleanup()
+
+	createFiles(t, repoPath, map[string]string{"notes.txt": "baseline\n"})
+	base := savePoint(t, repoPath, "explicit folder baseline")
+
+	stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "workspace", "new", "analysis-run", "--from", base)
+	if code == 0 {
+		t.Fatalf("bare name-shaped workspace target should be rejected, not treated as a safe default: stdout=%s stderr=%s", stdout, stderr)
+	}
+	requirePureJSONEnvelope(t, stdout, stderr, false)
+	if _, err := os.Stat(filepath.Join(repoPath, "analysis-run")); err == nil {
+		t.Fatalf("rejected bare name-shaped workspace target created a folder inside main workspace")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat rejected workspace target: %v", err)
+	}
+	pathOut, pathErr, pathCode := runJVSInRepo(t, repoPath, "--json", "workspace", "path", "analysis-run")
+	if pathCode == 0 {
+		t.Fatalf("rejected workspace should not appear in registry: stdout=%s stderr=%s", pathOut, pathErr)
+	}
+
+	stdout, stderr, code = runJVSInRepo(t, repoPath, "--json", "workspace", "new", "nested/analysis-run", "--from", base)
+	if code == 0 {
+		t.Fatalf("workspace target inside existing workspace should be rejected: stdout=%s stderr=%s", stdout, stderr)
+	}
+	requirePureJSONEnvelope(t, stdout, stderr, false)
+	if _, err := os.Stat(filepath.Join(repoPath, "nested", "analysis-run")); err == nil {
+		t.Fatalf("rejected nested workspace target created a folder inside main workspace")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat rejected nested workspace target: %v", err)
+	}
+
+	created := jvsJSONData(t, repoPath, "workspace", "new", "../analysis-run", "--from", base)
+	analysisPath := filepath.Join(filepath.Dir(repoPath), "analysis-run")
+	if created["workspace"] != "analysis-run" || created["folder"] != analysisPath {
+		t.Fatalf("explicit sibling folder should create workspace naturally: %#v", created)
+	}
+	status := jvsJSONData(t, analysisPath, "status")
+	if status["workspace"] != "analysis-run" || status["folder"] != analysisPath || status["started_from_save_point"] != base {
+		t.Fatalf("explicit sibling workspace should be usable from its folder: %#v", status)
+	}
+}
+
+func TestStoryJSON_WorkspaceNameCanDifferFromFolderBasename(t *testing.T) {
+	repoPath, cleanup := initTestRepo(t)
+	defer cleanup()
+
+	createFiles(t, repoPath, map[string]string{"review.md": "baseline\n"})
+	base := savePoint(t, repoPath, "review baseline")
+	reviewFolder := filepath.Join(filepath.Dir(repoPath), "scratch-space")
+
+	created := jvsJSONData(t, repoPath, "workspace", "new", "../scratch-space", "--from", base, "--name", "review-copy")
+	if created["workspace"] != "review-copy" || created["folder"] != reviewFolder || created["started_from_save_point"] != base {
+		t.Fatalf("--name should decouple registry name from folder basename: %#v", created)
+	}
+	path := jvsJSONData(t, repoPath, "workspace", "path", "review-copy")
+	if path["path"] != reviewFolder {
+		t.Fatalf("workspace path should use registry name and return explicit folder: %#v", path)
+	}
+	status := jvsJSONData(t, reviewFolder, "status")
+	if status["workspace"] != "review-copy" || status["folder"] != reviewFolder {
+		t.Fatalf("cd into renamed workspace folder should discover registry name: %#v", status)
+	}
+
+	stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "workspace", "path", "scratch-space")
+	if code == 0 {
+		t.Fatalf("folder basename should not become a second workspace name when --name is used: stdout=%s stderr=%s", stdout, stderr)
+	}
+	requirePureJSONEnvelope(t, stdout, stderr, false)
+}
+
 func TestStoryJSON_TargetingMainFromNonTargetCWD(t *testing.T) {
 	repoPath, cleanup := initTestRepo(t)
 	defer cleanup()

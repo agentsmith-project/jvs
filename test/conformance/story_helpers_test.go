@@ -3,6 +3,7 @@
 package conformance
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -24,6 +25,16 @@ func jvsJSON(t *testing.T, cwd string, args ...string) string {
 func jvsJSONData(t *testing.T, cwd string, args ...string) map[string]any {
 	t.Helper()
 	return decodeContractDataMap(t, jvsJSON(t, cwd, args...))
+}
+
+func jvsJSONValue(t *testing.T, cwd string, args ...string) any {
+	t.Helper()
+	env := decodeContractEnvelope(t, jvsJSON(t, cwd, args...))
+	var data any
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		t.Fatalf("JSON envelope data should decode: %v\n%s", err, string(env.Data))
+	}
+	return data
 }
 
 func jvsJSONFrom(t *testing.T, cwd string, args ...string) string {
@@ -206,6 +217,65 @@ func requireHistoryRecordMessage(t *testing.T, history map[string]any, savePoint
 		}
 	}
 	t.Fatalf("history missing save point %s in %#v", savePointID, raw)
+}
+
+func workspaceListRecord(t *testing.T, raw any, workspace string) map[string]any {
+	t.Helper()
+	records, ok := raw.([]any)
+	if !ok {
+		t.Fatalf("workspace list data should be an array: %#v", raw)
+	}
+	for _, item := range records {
+		record, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("workspace list record should be an object: %#v", item)
+		}
+		if record["workspace"] == workspace {
+			return record
+		}
+	}
+	t.Fatalf("workspace list missing %q in %#v", workspace, records)
+	return nil
+}
+
+func requireHistoryWorkspacePointer(t *testing.T, history map[string]any, workspace, savePointID string) {
+	t.Helper()
+	pointers, ok := history["workspace_pointers"].([]any)
+	if !ok {
+		t.Fatalf("history from should include workspace_pointers array: %#v", history["workspace_pointers"])
+	}
+	for _, item := range pointers {
+		pointer, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("workspace pointer should be an object: %#v", item)
+		}
+		if pointer["workspace"] != workspace {
+			continue
+		}
+		if pointer["save_point_id"] != savePointID {
+			t.Fatalf("workspace pointer %q = %#v, want save_point_id=%s", workspace, pointer, savePointID)
+		}
+		return
+	}
+	t.Fatalf("history missing workspace pointer %q in %#v", workspace, pointers)
+}
+
+func requireHistoryEdge(t *testing.T, history map[string]any, from, to, edgeType string) {
+	t.Helper()
+	edges, ok := history["edges"].([]any)
+	if !ok {
+		t.Fatalf("history from should include edges array: %#v", history["edges"])
+	}
+	for _, item := range edges {
+		edge, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("history edge should be an object: %#v", item)
+		}
+		if edge["from"] == from && edge["to"] == to && edge["type"] == edgeType {
+			return
+		}
+	}
+	t.Fatalf("history missing %s edge %s -> %s in %#v", edgeType, from, to, edges)
 }
 
 func requireJSONStringArrayContains(t *testing.T, raw any, want string) {

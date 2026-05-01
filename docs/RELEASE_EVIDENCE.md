@@ -28,6 +28,130 @@ Evidence classes:
 
 Raw logs and `coverage.out` are not stored here.
 
+## v0.4.5 - 2026-05-01
+
+### Release identity
+
+- Evidence class: GA candidate readiness
+- Candidate target tag: `v0.4.5`
+- Candidate state: not final, not tagged, and not published; this entry is
+  pending final tag creation and publication through the normal CI release
+  flow.
+- Changelog heading date: `2026-05-01`
+- Release identity: main-branch GA candidate readiness for the next published
+  save point public-contract release after `v0.4.4`.
+- Baseline: workspace user-story coverage for explicit workspace folders,
+  folder-local status, save, history, and restore, multi-workspace list/status
+  visibility, `jvs history from` default source behavior, workspace pointer
+  movement after saving, implicit workspace creation rejection, and `--name`
+  decoupling from folder basename.
+- Source archive boundary: no immutable `v0.4.5` tag snapshot exists yet. When
+  the pending final tag is created, the source archive will be the immutable tag
+  snapshot and will record readiness from tag time.
+- publication final evidence: pending. The future GitHub Release page and
+  post-release main ledger will record workflow run, release state, artifacts,
+  checksum validation, signing identity, smoke, and coverage facts after the
+  release exists.
+- Candidate release URL target:
+  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.5`
+- Scope: workspace user-story coverage/readiness for explicit sibling folder
+  creation from a save point, natural commands inside the workspace folder,
+  repo/workspace isolation, multi-workspace tracking, history direction and
+  default source behavior, current workspace pointer movement, rejection of
+  unsafe implicit folder creation, and workspace name/folder basename
+  decoupling.
+
+### Release gate summary
+
+Candidate release gate command:
+`env -u NO_COLOR CI=true GITHUB_ACTIONS=true TERM=xterm-256color make release-gate`
+
+The table records required checks for the pending final tag. This candidate
+entry records readiness expectations only; final results are intentionally left
+to CI and the post-release evidence ledger.
+
+| Check | Command or target | Candidate readiness evidence |
+| --- | --- | --- |
+| Release gate | `make release-gate` | Required before final publication; pending final run |
+| Docs contract | `make docs-contract` | Required by release-gate suite; pending final run |
+| CI contract | `make ci-contract` | Required by release-gate suite; pending final run |
+| Race tests | `make test-race` | Required by release-gate suite; pending final run |
+| Coverage | `make test-cover` | Required with threshold enforcement; pending final run |
+| Lint | `make lint` | Required by release-gate suite; pending final run |
+| Build | `make build` | Required by release-gate suite; pending final run |
+| Release cross-build | `make release-build` | Required before artifact publication; pending final run |
+| Conformance | `make conformance` | Required by release-gate suite; pending final run |
+| Library facade | `make library` | Required by release-gate suite; pending final run |
+| Regression | `make regression` | Required by release-gate suite; pending final run |
+| Fuzz ordinary tests | `make fuzz-tests` | Required by release-gate suite; pending final run |
+| Fuzz smoke | `make fuzz` | Required by release-gate suite; pending final run |
+
+### Coverage
+
+- Coverage total: pending final `make test-cover` evidence.
+- Coverage threshold: `60.0%`
+- Evidence command: `make test-cover`
+- Evidence source: pending final `make release-gate` output.
+
+### Representative repo evidence
+
+- Representative repo evidence source: pending final `make release-gate`,
+  including conformance and regression targets.
+- Representative repo readiness: release-gate coverage is expected to cover
+  save point history, explicit workspace folder creation, workspace state,
+  folder-local workspace commands, strict doctor, integrity checks, restore
+  preview/run/recovery behavior, and runtime repair path before publication.
+- Workspace story readiness: story e2e coverage is expected to exercise the
+  ordinary user path from a repo save point into a separate workspace folder,
+  then through workspace-local status, save, history, and restore.
+- Doctor command: `jvs doctor --strict`
+- Migration repair command for copied repos:
+  `jvs doctor --strict --repair-runtime`
+- Restore drill, recovery drill, and runtime repair evidence: pending final
+  release-gate conformance and regression coverage.
+
+### GA docs evidence
+
+- GA docs readiness scope: `docs/99_CHANGELOG.md`, this ledger, and
+  release-facing workspace command docs define the candidate readiness contract
+  for `v0.4.5`.
+- Changelog scope: workspace user-story coverage/readiness for explicit
+  workspace folder creation, folder-local status/save/history/restore,
+  multi-workspace list/status/path, `jvs history from` default source and
+  workspace pointer movement, rejection of implicit workspace creation, and
+  `--name`/folder basename decoupling.
+- Runtime-state migration boundary: non-portable JVS runtime state remains
+  destination-local and must be rebuilt at the destination with
+  `jvs doctor --strict --repair-runtime`.
+
+### Artifact and signing evidence
+
+- Artifact workflow: pending tag-gated `.github/workflows/ci.yml` release job.
+- Release gate includes `make release-build`, matching the release job's five
+  platform binaries: Linux x86_64, Linux ARM64, macOS x86_64, macOS ARM64, and
+  Windows x86_64.
+- Expected artifact set after final publication: five platform binaries, five
+  matching binary `.bundle` files, `SHA256SUMS`, and `SHA256SUMS.bundle`; this
+  candidate entry is not published and records no final asset result.
+- Signing workflow expectation: final artifacts are signed by the tag-gated
+  release workflow using Sigstore/cosign v3 bundle files.
+- Signing command family:
+  `cosign sign-blob --yes --bundle=<artifact>.bundle <artifact>`
+- Pre-upload verification expectation: the release job must run `test -s` for
+  every artifact, `sha256sum --check --strict SHA256SUMS`, and
+  `cosign verify-blob <artifact> --bundle <artifact>.bundle` with the release
+  workflow certificate identity and OIDC issuer.
+- Certificate identity rule:
+  `https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@<workflow-ref>`
+- OIDC issuer: `https://token.actions.githubusercontent.com`
+
+### Runbook references
+
+- Restore recovery, strict doctor, and cleanup semantics:
+  `docs/13_OPERATION_RUNBOOK.md`
+- Migration and backup: `docs/18_MIGRATION_AND_BACKUP.md`
+- Artifact signing and checksum validation: `docs/SIGNING.md`
+
 ## v0.4.4 - 2026-04-30
 
 ### Release identity
