@@ -28,21 +28,6 @@ type publicSavePointCreatedRecord struct {
 	UnsavedChanges       bool                       `json:"unsaved_changes"`
 }
 
-type publicSavePointHistoryRecord struct {
-	Workspace            string                  `json:"workspace"`
-	SavePoints           []publicSavePointRecord `json:"save_points"`
-	NewestSavePoint      string                  `json:"newest_save_point,omitempty"`
-	StartedFromSavePoint string                  `json:"started_from_save_point,omitempty"`
-}
-
-type publicWorkspaceRecord struct {
-	Workspace            string    `json:"workspace"`
-	ContentSource        string    `json:"content_source,omitempty"`
-	NewestSavePoint      string    `json:"newest_save_point,omitempty"`
-	StartedFromSavePoint string    `json:"started_from_save_point,omitempty"`
-	CreatedAt            time.Time `json:"created_at"`
-}
-
 type publicDoctorResult struct {
 	Healthy  bool                  `json:"healthy"`
 	Findings []publicDoctorFinding `json:"findings"`
@@ -135,33 +120,6 @@ func publicRestoredPathSources(sources []model.RestoredPathSource) []publicResto
 			SourcePath:      source.SourcePath,
 			Status:          source.Status,
 		})
-	}
-	return records
-}
-
-func publicSavePointHistory(workspace string, descs []*model.Descriptor, newest model.SnapshotID, startedFrom model.SnapshotID) publicSavePointHistoryRecord {
-	return publicSavePointHistoryRecord{
-		Workspace:            workspace,
-		SavePoints:           publicSavePoints(descs),
-		NewestSavePoint:      string(newest),
-		StartedFromSavePoint: string(startedFrom),
-	}
-}
-
-func publicWorkspace(cfg *model.WorktreeConfig) publicWorkspaceRecord {
-	return publicWorkspaceRecord{
-		Workspace:            cfg.Name,
-		ContentSource:        string(cfg.HeadSnapshotID),
-		NewestSavePoint:      string(cfg.LatestSnapshotID),
-		StartedFromSavePoint: string(cfg.StartedFromSnapshotID),
-		CreatedAt:            cfg.CreatedAt,
-	}
-}
-
-func publicWorkspaces(configs []*model.WorktreeConfig) []publicWorkspaceRecord {
-	records := make([]publicWorkspaceRecord, 0, len(configs))
-	for _, cfg := range configs {
-		records = append(records, publicWorkspace(cfg))
 	}
 	return records
 }

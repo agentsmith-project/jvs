@@ -310,7 +310,7 @@ func TestHistoryCommand_WithSavePoints(t *testing.T) {
 
 	stdout, err := executeCommand(createTestRootCmd(), "--json", "history")
 	require.NoError(t, err, stdout)
-	var history publicSavePointHistoryRecord
+	var history publicHistoryResult
 	decodeRootJSONData(t, stdout, &history)
 	require.Len(t, history.SavePoints, 2)
 	assert.Equal(t, secondID, history.SavePoints[0].SavePointID)
