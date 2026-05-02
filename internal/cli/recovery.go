@@ -12,6 +12,7 @@ import (
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/restore"
 	"github.com/agentsmith-project/jvs/internal/restoreplan"
+	"github.com/agentsmith-project/jvs/internal/transfer"
 	"github.com/agentsmith-project/jvs/pkg/color"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/agentsmith-project/jvs/pkg/uuidutil"
@@ -117,22 +118,23 @@ type publicRecoveryStatusList struct {
 }
 
 type publicRecoveryActionResult struct {
-	Mode                   string  `json:"mode"`
-	Status                 string  `json:"status"`
-	PlanID                 string  `json:"plan_id"`
-	Operation              string  `json:"operation"`
-	Folder                 string  `json:"folder"`
-	Workspace              string  `json:"workspace"`
-	SourceSavePoint        string  `json:"source_save_point"`
-	Path                   string  `json:"path,omitempty"`
-	RestoredSavePoint      string  `json:"restored_save_point,omitempty"`
-	RestoredPath           string  `json:"restored_path,omitempty"`
-	FromSavePoint          string  `json:"from_save_point,omitempty"`
-	HistoryChanged         bool    `json:"history_changed"`
-	BackupRemoved          bool    `json:"backup_removed"`
-	ProtectionReleased     bool    `json:"protection_released"`
-	NewestSavePoint        *string `json:"newest_save_point,omitempty"`
-	NoWorkspaceHistoryMove bool    `json:"no_workspace_history_move"`
+	Mode                   string            `json:"mode"`
+	Status                 string            `json:"status"`
+	PlanID                 string            `json:"plan_id"`
+	Operation              string            `json:"operation"`
+	Folder                 string            `json:"folder"`
+	Workspace              string            `json:"workspace"`
+	SourceSavePoint        string            `json:"source_save_point"`
+	Path                   string            `json:"path,omitempty"`
+	RestoredSavePoint      string            `json:"restored_save_point,omitempty"`
+	RestoredPath           string            `json:"restored_path,omitempty"`
+	FromSavePoint          string            `json:"from_save_point,omitempty"`
+	HistoryChanged         bool              `json:"history_changed"`
+	BackupRemoved          bool              `json:"backup_removed"`
+	ProtectionReleased     bool              `json:"protection_released"`
+	NewestSavePoint        *string           `json:"newest_save_point,omitempty"`
+	NoWorkspaceHistoryMove bool              `json:"no_workspace_history_move"`
+	Transfers              []transfer.Record `json:"transfers,omitempty"`
 }
 
 func recoveryStatusList(repoRoot string) (publicRecoveryStatusList, error) {
@@ -237,7 +239,7 @@ func runRecoveryRollback(repoRoot, planID string) (publicRecoveryActionResult, e
 			}
 			return nil
 		}
-		if err := mgr.RestoreBackup(plan); err != nil {
+		if err := mgr.RestoreBackupWithOptions(plan, recovery.RestoreBackupOptions{TransferOperation: "recovery_rollback"}); err != nil {
 			if errors.Is(err, recovery.ErrBackupMissing) {
 				if verifyErr := recovery.VerifyMissingBackupRecoveryPoint(repoRoot, plan); verifyErr != nil {
 					return fmt.Errorf("recovery rollback cannot be completed safely: %w", verifyErr)
@@ -264,6 +266,8 @@ func runRecoveryRollback(repoRoot, planID string) (publicRecoveryActionResult, e
 			}
 			return fmt.Errorf("recovery rollback cannot be completed safely: %w", err)
 		}
+		transfers := mgr.LastTransferRecords()
+		appendRecoveryCopyPointTransfers(plan, transfers)
 		if err := markRecoveryBackupRestored(repoRoot, plan); err != nil {
 			return err
 		}
@@ -284,6 +288,7 @@ func runRecoveryRollback(repoRoot, planID string) (publicRecoveryActionResult, e
 			BackupRemoved:          backupRemoved,
 			ProtectionReleased:     true,
 			NoWorkspaceHistoryMove: true,
+			Transfers:              transfers,
 		}
 		return nil
 	})
@@ -313,12 +318,13 @@ func runRecoveryResume(repoRoot, planID string) (publicRecoveryActionResult, err
 			return err
 		}
 		restoredBackupPath := ""
+		var backupRestoreTransfers []transfer.Record
 		if state.State == recovery.RecognizedPreMutation {
 			if recoveryBackupStatus(repoRoot, plan).Available {
 				restoredBackupPath = plan.Backup.Path
 			}
 		} else {
-			if err := mgr.RestoreBackup(plan); err != nil {
+			if err := mgr.RestoreBackupWithOptions(plan, recovery.RestoreBackupOptions{TransferOperation: "recovery_resume"}); err != nil {
 				if errors.Is(err, recovery.ErrBackupMissing) {
 					if verifyErr := recovery.VerifyMissingBackupRecoveryPoint(repoRoot, plan); verifyErr != nil {
 						return fmt.Errorf("recovery resume cannot return to the saved recovery point safely: %w", verifyErr)
@@ -328,6 +334,8 @@ func runRecoveryResume(repoRoot, planID string) (publicRecoveryActionResult, err
 				}
 			} else {
 				restoredBackupPath = plan.Backup.Path
+				backupRestoreTransfers = mgr.LastTransferRecords()
+				appendRecoveryCopyPointTransfers(plan, backupRestoreTransfers)
 			}
 		}
 		evidence, err := currentRecoveryEvidence(repoRoot, plan)
@@ -350,7 +358,7 @@ func runRecoveryResume(repoRoot, planID string) (publicRecoveryActionResult, err
 			}
 		}
 
-		restorer := restore.NewRestorer(repoRoot, detectEngine(repoRoot))
+		restorer := restore.NewRestorer(repoRoot, requestedTransferEngine(repoRoot))
 		switch plan.Operation {
 		case recovery.OperationRestore:
 			err = restorer.RestoreLockedWithOptions(plan.Workspace, plan.SourceSavePoint, restore.RunOptions{BackupPath: plan.Backup.Path})
@@ -365,6 +373,11 @@ func runRecoveryResume(repoRoot, planID string) (publicRecoveryActionResult, err
 			}
 			return keepRecoveryPlanActiveAfterNonIncompleteFailure(repoRoot, plan, err)
 		}
+		restoreTransfers := []transfer.Record{}
+		if record, ok := restorer.LastTransferRecord(); ok {
+			restoreTransfers = append(restoreTransfers, record)
+			appendRecoveryCopyPointTransfers(plan, restoreTransfers)
+		}
 		if err := markRecoveryRestoreApplied(repoRoot, plan); err != nil {
 			return err
 		}
@@ -372,7 +385,12 @@ func runRecoveryResume(repoRoot, planID string) (publicRecoveryActionResult, err
 			return err
 		}
 		result, err = publicRecoveryResultAfterResume(repoRoot, plan)
-		return err
+		if err != nil {
+			return err
+		}
+		result.Transfers = append([]transfer.Record(nil), backupRestoreTransfers...)
+		result.Transfers = append(result.Transfers, restoreTransfers...)
+		return nil
 	})
 	return result, err
 }
@@ -495,6 +513,18 @@ func keepRecoveryPlanActiveAfterNonIncompleteFailure(repoRoot string, plan *reco
 		return err
 	}
 	return restoreErr
+}
+
+func appendRecoveryCopyPointTransfers(plan *recovery.Plan, records []transfer.Record) {
+	if plan == nil || len(records) == 0 {
+		return
+	}
+	for _, record := range records {
+		if strings.TrimSpace(record.MaterializationDestination) == "" {
+			continue
+		}
+		plan.Transfers = append(plan.Transfers, record)
+	}
 }
 
 func markRecoveryRestoreApplied(repoRoot string, plan *recovery.Plan) error {
@@ -635,6 +665,9 @@ func printRecoveryRollbackResult(result publicRecoveryActionResult) {
 	if result.Path != "" {
 		fmt.Printf("Path: %s\n", result.Path)
 	}
+	if primary := recoveryRollbackPrimaryTransfer(result.Transfers); primary != nil {
+		printRecoveryTransferSummary(result.Transfers, primary)
+	}
 	fmt.Println("History was restored to the pre-restore state.")
 	if result.BackupRemoved {
 		fmt.Println("Recovery backup removed.")
@@ -654,8 +687,100 @@ func printRecoveryResumeResult(result publicRecoveryActionResult) {
 	} else {
 		fmt.Printf("Restored save point: %s\n", color.SnapshotID(result.RestoredSavePoint))
 	}
+	if primary := recoveryResumePrimaryTransfer(result.Transfers); primary != nil {
+		printRecoveryTransferSummary(result.Transfers, primary)
+	}
 	fmt.Println("History was not changed.")
 	fmt.Println("Recovery backup removed.")
+}
+
+func printRecoveryTransferSummary(transfers []transfer.Record, primary *transfer.Record) {
+	if primary == nil {
+		return
+	}
+	printPrimaryTransferSummary(primary)
+	if additional := recoveryAdditionalTransfersLabel(transfers, primary); additional != "" {
+		fmt.Printf("Additional transfers: %s; see JSON for details\n", additional)
+	}
+}
+
+func recoveryRollbackPrimaryTransfer(transfers []transfer.Record) *transfer.Record {
+	for i := range transfers {
+		if transfers[i].Primary && transfers[i].Operation == "recovery_rollback" && transfers[i].Phase == "backup_restore" {
+			return &transfers[i]
+		}
+	}
+	return firstPrimaryRecoveryTransfer(transfers)
+}
+
+func recoveryResumePrimaryTransfer(transfers []transfer.Record) *transfer.Record {
+	for i := range transfers {
+		if transfers[i].Primary && transfers[i].Operation == "restore" && transfers[i].Phase == "materialization" {
+			return &transfers[i]
+		}
+	}
+	for i := range transfers {
+		if transfers[i].Primary && transfers[i].Operation == "recovery_resume" && transfers[i].Phase == "backup_restore" {
+			return &transfers[i]
+		}
+	}
+	return firstPrimaryRecoveryTransfer(transfers)
+}
+
+func firstPrimaryRecoveryTransfer(transfers []transfer.Record) *transfer.Record {
+	for i := range transfers {
+		if transfers[i].Primary {
+			return &transfers[i]
+		}
+	}
+	if len(transfers) == 0 {
+		return nil
+	}
+	return &transfers[0]
+}
+
+func recoveryAdditionalTransfersLabel(transfers []transfer.Record, primary *transfer.Record) string {
+	counts := map[string]int{}
+	order := []string{}
+	total := 0
+	for i := range transfers {
+		if primary != nil && &transfers[i] == primary {
+			continue
+		}
+		total++
+		label := recoveryTransferLabel(transfers[i])
+		if counts[label] == 0 {
+			order = append(order, label)
+		}
+		counts[label]++
+	}
+	if total == 0 {
+		return ""
+	}
+	if len(order) != 1 {
+		return fmt.Sprintf("%d", total)
+	}
+	label := order[0]
+	count := counts[label]
+	return fmt.Sprintf("%d %s", count, pluralRecoveryTransferLabel(label, count))
+}
+
+func recoveryTransferLabel(record transfer.Record) string {
+	switch {
+	case record.Phase == "backup_restore":
+		return "backup restore"
+	case record.Operation == "restore" && record.Phase == "materialization":
+		return "restore materialization"
+	default:
+		return "transfer"
+	}
+}
+
+func pluralRecoveryTransferLabel(label string, count int) string {
+	if count == 1 {
+		return label
+	}
+	return label + "s"
 }
 
 func recoveryOperationLabel(operation string) string {

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentsmith-project/jvs/internal/engine"
 	"github.com/agentsmith-project/jvs/internal/integrity"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
@@ -51,6 +52,8 @@ func TestViewSavePointPathIsReadOnlyAndDoesNotChangeWorkspace(t *testing.T) {
 	assert.Contains(t, stdout, "Opened read-only view.")
 	assert.Contains(t, stdout, "Save point: "+firstID)
 	assert.Contains(t, stdout, "Path inside save point: src/app.txt")
+	assert.Contains(t, stdout, "Copy method: ")
+	assert.Contains(t, stdout, "Checked for this operation")
 	assert.Contains(t, stdout, "No workspace or history changed.")
 	assertViewOutputOmitsLegacyVocabulary(t, stdout)
 
@@ -101,11 +104,80 @@ func TestViewJSONUsesSavePointSchema(t *testing.T) {
 	require.FileExists(t, viewPath)
 	require.Equal(t, true, data["read_only"])
 	require.Equal(t, true, data["no_workspace_or_history_changed"])
+	transfers, ok := data["transfers"].([]any)
+	require.True(t, ok, "transfers should be an array: %#v", data["transfers"])
+	require.Len(t, transfers, 1)
+	primary, ok := transfers[0].(map[string]any)
+	require.True(t, ok, "primary transfer should be an object: %#v", transfers[0])
+	require.Equal(t, "view-primary", primary["transfer_id"])
+	require.Equal(t, "view", primary["operation"])
+	require.Equal(t, "view_materialization", primary["phase"])
+	require.Equal(t, true, primary["primary"])
+	require.Equal(t, "final", primary["result_kind"])
+	require.Equal(t, "execution", primary["permission_scope"])
+	require.Equal(t, "save_point_payload", primary["source_role"])
+	require.Equal(t, "view_directory", primary["destination_role"])
+	require.NotEmpty(t, primary["source_path"])
+	require.NotEmpty(t, primary["materialization_destination"])
+	require.NotEmpty(t, primary["capability_probe_path"])
+	require.Equal(t, filepath.Dir(primary["materialization_destination"].(string)), primary["capability_probe_path"])
+	require.Equal(t, viewPath, primary["published_destination"])
+	require.Equal(t, true, primary["checked_for_this_operation"])
+	require.Equal(t, "auto", primary["requested_engine"])
+	require.NotEmpty(t, primary["effective_engine"])
+	require.Contains(t, []any{"fast_copy", "normal_copy"}, primary["performance_class"])
 	assertViewJSONOmitsLegacyFields(t, data)
 
 	content, err := os.ReadFile(viewPath)
 	require.NoError(t, err)
 	assert.Equal(t, "v1", string(content))
+}
+
+func TestViewPlansTransferToPayloadMaterializationPath(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "file.txt"), []byte("v1"), 0644))
+	savePointID := savePointIDFromCLI(t, "source")
+	planner := &recordingViewTransferPlanner{
+		plan: &engine.TransferPlan{
+			RequestedEngine:   model.EngineReflinkCopy,
+			TransferEngine:    model.EngineCopy,
+			EffectiveEngine:   model.EngineCopy,
+			OptimizedTransfer: false,
+			DegradedReasons:   []string{"these two locations cannot use fast copy together"},
+		},
+	}
+	installViewTransferPlannerForTest(t, planner)
+
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "view", savePointID, "file.txt")
+	require.NoError(t, err)
+
+	env, data := decodeFacadeDataMap(t, stdout)
+	require.True(t, env.OK, stdout)
+	viewPath, ok := data["view_path"].(string)
+	require.True(t, ok, "view_path should be a string: %#v", data["view_path"])
+	restoreViewWriteBitsForCleanup(t, viewPath)
+	payloadRoot := viewPayloadRoot(t, viewPath, "file.txt")
+
+	req := planner.request
+	require.Equal(t, filepath.Join(repoRoot, ".jvs", "snapshots", savePointID), req.SourcePath)
+	require.Equal(t, payloadRoot, req.DestinationPath)
+	require.NotEqual(t, repoRoot, req.DestinationPath)
+	require.NotEqual(t, viewPath, req.DestinationPath)
+	require.Equal(t, filepath.Dir(payloadRoot), req.CapabilityPath)
+	require.DirExists(t, req.CapabilityPath)
+	require.Equal(t, model.EngineType("auto"), req.RequestedEngine)
+
+	transfers, ok := data["transfers"].([]any)
+	require.True(t, ok, "transfers should be an array: %#v", data["transfers"])
+	require.Len(t, transfers, 1)
+	primary, ok := transfers[0].(map[string]any)
+	require.True(t, ok, "primary transfer should be an object: %#v", transfers[0])
+	require.Equal(t, payloadRoot, primary["materialization_destination"])
+	require.Equal(t, filepath.Dir(payloadRoot), primary["capability_probe_path"])
+	require.Equal(t, viewPath, primary["published_destination"])
+	require.Equal(t, "normal_copy", primary["performance_class"])
+	require.Equal(t, false, primary["optimized_transfer"])
+	require.Equal(t, "copy", primary["effective_engine"])
 }
 
 func TestViewOpenCreatesPersistentPinAndCloseRemovesViewWithoutChangingWorkspace(t *testing.T) {
@@ -695,6 +767,27 @@ func documentedPinCount(t testing.TB, repoRoot string) int {
 		}
 	}
 	return count
+}
+
+func installViewTransferPlannerForTest(t *testing.T, planner *recordingViewTransferPlanner) {
+	t.Helper()
+	previous := viewTransferPlanner
+	viewTransferPlanner = planner
+	t.Cleanup(func() {
+		viewTransferPlanner = previous
+	})
+}
+
+type recordingViewTransferPlanner struct {
+	request engine.TransferPlanRequest
+	plan    *engine.TransferPlan
+}
+
+func (p *recordingViewTransferPlanner) PlanTransfer(req engine.TransferPlanRequest) (*engine.TransferPlan, error) {
+	p.request = req
+	plan := *p.plan
+	plan.RequestedEngine = req.RequestedEngine
+	return &plan, nil
 }
 
 func savePointCatalogCount(t *testing.T, repoRoot string) int {

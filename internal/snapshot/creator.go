@@ -17,6 +17,7 @@ import (
 	"github.com/agentsmith-project/jvs/internal/integrity"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshotpayload"
+	"github.com/agentsmith-project/jvs/internal/transfer"
 	"github.com/agentsmith-project/jvs/internal/workspacepath"
 	"github.com/agentsmith-project/jvs/internal/worktree"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
@@ -32,6 +33,9 @@ type Creator struct {
 	engine           engine.Engine
 	auditLogger      *audit.FileAppender
 	compression      *compression.Compressor
+	transferPlanner  transfer.EnginePlanner
+	cloneToNew       func(engine.Engine, string, string) (*engine.CloneResult, error)
+	lastTransfer     *transfer.Record
 	descriptorWriter func(string, *model.Descriptor) error
 	snapshotRenamer  func(string, string) error
 	latestUpdater    func(*worktree.Manager, string, model.SnapshotID) error
@@ -79,6 +83,8 @@ func NewCreatorWithCompression(repoRoot string, engineType model.EngineType, com
 		engine:           eng,
 		auditLogger:      audit.NewFileAppender(auditPath),
 		compression:      comp,
+		transferPlanner:  engine.TransferPlanner{},
+		cloneToNew:       engine.CloneToNew,
 		descriptorWriter: writeDescriptorFile,
 		snapshotRenamer:  fsutil.RenameNoReplaceAndSync,
 		latestUpdater: func(wtMgr *worktree.Manager, worktreeName string, snapshotID model.SnapshotID) error {
@@ -90,6 +96,15 @@ func NewCreatorWithCompression(repoRoot string, engineType model.EngineType, com
 // SetCompression sets the compression level for this creator.
 func (c *Creator) SetCompression(level compression.CompressionLevel) {
 	c.compression = compression.NewCompressor(level)
+}
+
+// LastTransferRecord returns the final primary transfer from the most recent
+// successful public save-point creation handled by this creator.
+func (c *Creator) LastTransferRecord() (transfer.Record, bool) {
+	if c == nil || c.lastTransfer == nil {
+		return transfer.Record{}, false
+	}
+	return *c.lastTransfer, true
 }
 
 // Create performs a full snapshot of the worktree using the 12-step protocol.
@@ -169,6 +184,8 @@ func (c *Creator) createPartialWithDescriptorParent(worktreeName, note string, t
 }
 
 func (c *Creator) createPartialWithDescriptorParentAndLineage(worktreeName, note string, tags []string, paths []string, parentOverride model.SnapshotID, overrideParent bool, validateSaveEvidence bool, lineageFn descriptorLineageFunc) (*model.Descriptor, error) {
+	c.lastTransfer = nil
+
 	// Step 1: Validate worktree exists
 	wtMgr := worktree.NewManager(c.repoRoot)
 	cfg, err := wtMgr.Get(worktreeName)
@@ -234,7 +251,13 @@ func (c *Creator) createPartialWithDescriptorParentAndLineage(worktreeName, note
 		lineage = &nextLineage
 	}
 
-	desc, err := c.stageSnapshot(&descriptorCfg, boundary, publishPaths, snapshotID, worktreeName, note, tags, partialPaths, lineage, saveEvidence)
+	var transferIntent *transfer.Intent
+	if validateSaveEvidence && len(partialPaths) == 0 {
+		intent := c.savePrimaryTransferIntent(boundary, publishPaths)
+		transferIntent = &intent
+	}
+
+	desc, stagedTransfer, err := c.stageSnapshot(&descriptorCfg, boundary, publishPaths, snapshotID, worktreeName, note, tags, partialPaths, lineage, saveEvidence, transferIntent)
 	if err != nil {
 		return nil, cleanupIntentAfterDefiniteFailure(intentPath, err)
 	}
@@ -260,11 +283,33 @@ func (c *Creator) createPartialWithDescriptorParentAndLineage(worktreeName, note
 	// Step 17: Write audit log. Once history has changed, a late audit write
 	// failure is reported as a warning so callers never see a failed save that
 	// already entered history.
-	if err := c.appendCreateAudit(worktreeName, snapshotID, note, desc.DescriptorChecksum, partialPaths); err != nil {
+	if err := c.appendCreateAudit(worktreeName, snapshotID, note, desc, stagedTransfer, partialPaths); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: saved save point %s but could not write audit log: %v\n", snapshotID, err)
 	}
 
+	if stagedTransfer != nil {
+		c.lastTransfer = stagedTransfer
+	}
+
 	return desc, nil
+}
+
+func (c *Creator) savePrimaryTransferIntent(boundary repo.WorktreePayloadBoundary, publishPaths snapshotPublishPaths) transfer.Intent {
+	return transfer.Intent{
+		TransferID:                 "save-primary",
+		Operation:                  "save",
+		Phase:                      "materialization",
+		Primary:                    true,
+		ResultKind:                 transfer.ResultKindFinal,
+		PermissionScope:            transfer.PermissionScopeExecution,
+		SourceRole:                 "workspace_content",
+		SourcePath:                 boundary.Root,
+		DestinationRole:            "save_point_staging",
+		MaterializationDestination: publishPaths.tmpDir,
+		CapabilityProbePath:        filepath.Dir(publishPaths.tmpDir),
+		PublishedDestination:       publishPaths.dir,
+		RequestedEngine:            c.engineType,
+	}
 }
 
 func savePointLineage(snapshotID model.SnapshotID, cfg *model.WorktreeConfig) model.WorkspaceSaveLineage {
@@ -354,20 +399,21 @@ func (c *Creator) stageSnapshot(
 	partialPaths []string,
 	lineage *model.WorkspaceSaveLineage,
 	saveEvidence model.HashValue,
-) (*model.Descriptor, error) {
+	transferIntent *transfer.Intent,
+) (*model.Descriptor, *transfer.Record, error) {
 	cleanupTmp := func() {
 		os.RemoveAll(publishPaths.tmpDir)
 	}
 
-	cloneResult, err := c.cloneSnapshotPayload(boundary, publishPaths.tmpDir, partialPaths)
+	cloneResult, transferRecord, err := c.cloneSnapshotPayload(boundary, publishPaths.tmpDir, partialPaths, transferIntent)
 	if err != nil {
 		cleanupTmp()
-		return nil, err
+		return nil, nil, err
 	}
 	if afterSnapshotPayloadStagedHook != nil {
 		if err := afterSnapshotPayloadStagedHook(snapshotID, publishPaths.tmpDir); err != nil {
 			cleanupTmp()
-			return nil, fmt.Errorf("after snapshot payload staged hook: %w", err)
+			return nil, nil, fmt.Errorf("after snapshot payload staged hook: %w", err)
 		}
 	}
 
@@ -375,15 +421,15 @@ func (c *Creator) stageSnapshot(
 	payloadHash, err := integrity.ComputePayloadRootHash(publishPaths.tmpDir)
 	if err != nil {
 		cleanupTmp()
-		return nil, fmt.Errorf("compute payload hash: %w", err)
+		return nil, nil, fmt.Errorf("compute payload hash: %w", err)
 	}
 	if saveEvidence != "" && payloadHash != saveEvidence {
 		cleanupTmp()
-		return nil, saveEvidenceChangedError()
+		return nil, nil, saveEvidenceChangedError()
 	}
 
 	// Step 7: Create descriptor
-	desc := c.newSnapshotDescriptor(cfg, snapshotID, worktreeName, note, tags, payloadHash, partialPaths, cloneResult)
+	desc := c.newSnapshotDescriptor(cfg, snapshotID, worktreeName, note, tags, payloadHash, partialPaths, cloneResult, transferRecord)
 	if lineage != nil {
 		lineage.ApplyToDescriptor(desc)
 	}
@@ -392,40 +438,40 @@ func (c *Creator) stageSnapshot(
 	checksum, err := integrity.ComputeDescriptorChecksum(desc)
 	if err != nil {
 		cleanupTmp()
-		return nil, fmt.Errorf("compute checksum: %w", err)
+		return nil, nil, fmt.Errorf("compute checksum: %w", err)
 	}
 	desc.DescriptorChecksum = checksum
 
 	// Step 9: Write .READY marker in tmp
-	if err := c.writeSnapshotReadyMarker(publishPaths.tmpDir, snapshotID, payloadHash, checksum); err != nil {
+	if err := c.writeSnapshotReadyMarker(publishPaths.tmpDir, snapshotID, payloadHash, checksum, desc.Engine); err != nil {
 		cleanupTmp()
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Step 10: Compress snapshot storage inside the unpublished tmp tree.
 	if err := c.compressSnapshotStorage(publishPaths.tmpDir); err != nil {
 		cleanupTmp()
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Step 11: Fsync the final staged tree for durability.
 	if err := fsutil.FsyncTree(publishPaths.tmpDir); err != nil {
 		cleanupTmp()
-		return nil, fmt.Errorf("fsync snapshot tree: %w", err)
+		return nil, nil, fmt.Errorf("fsync snapshot tree: %w", err)
 	}
 	if saveEvidence != "" {
 		currentEvidence, err := computeSaveWorkspaceEvidence(boundary)
 		if err != nil {
 			cleanupTmp()
-			return nil, saveEvidenceChangedError()
+			return nil, nil, saveEvidenceChangedError()
 		}
 		if currentEvidence != saveEvidence {
 			cleanupTmp()
-			return nil, saveEvidenceChangedError()
+			return nil, nil, saveEvidenceChangedError()
 		}
 	}
 
-	return desc, nil
+	return desc, transferRecord, nil
 }
 
 func computeSaveWorkspaceEvidence(boundary repo.WorktreePayloadBoundary) (model.HashValue, error) {
@@ -436,7 +482,30 @@ func saveEvidenceChangedError() error {
 	return errors.New("workspace files changed while saving. No save point was created. Run jvs save again.")
 }
 
-func (c *Creator) cloneSnapshotPayload(boundary repo.WorktreePayloadBoundary, snapshotTmpDir string, partialPaths []string) (*engine.CloneResult, error) {
+func (c *Creator) cloneSnapshotPayload(boundary repo.WorktreePayloadBoundary, snapshotTmpDir string, partialPaths []string, intent *transfer.Intent) (*engine.CloneResult, *transfer.Record, error) {
+	if intent == nil {
+		result, err := c.cloneSnapshotPayloadRuntime(boundary, snapshotTmpDir, partialPaths)
+		return result, nil, err
+	}
+
+	plan, err := transfer.PlanIntent(c.transferPlanner, *intent)
+	if err != nil {
+		return nil, nil, fmt.Errorf("plan transfer: %w", err)
+	}
+
+	originalEngine := c.engine
+	c.engine = engine.NewEngine(plan.TransferEngine)
+	result, err := c.cloneSnapshotPayloadRuntime(boundary, snapshotTmpDir, partialPaths)
+	c.engine = originalEngine
+	if err != nil {
+		return nil, nil, err
+	}
+
+	record := transfer.RecordFromPlanAndRuntime(*intent, plan, result)
+	return result, &record, nil
+}
+
+func (c *Creator) cloneSnapshotPayloadRuntime(boundary repo.WorktreePayloadBoundary, snapshotTmpDir string, partialPaths []string) (*engine.CloneResult, error) {
 	// For partial snapshots, only copy specified paths
 	if len(partialPaths) > 0 {
 		if err := os.MkdirAll(snapshotTmpDir, 0755); err != nil {
@@ -451,7 +520,7 @@ func (c *Creator) cloneSnapshotPayload(boundary repo.WorktreePayloadBoundary, sn
 	if len(boundary.ExcludedRootNames) > 0 {
 		return c.clonePayloadRootEntries(boundary, snapshotTmpDir)
 	}
-	result, err := engine.CloneToNew(c.engine, boundary.Root, snapshotTmpDir)
+	result, err := c.cloneToNew(c.engine, boundary.Root, snapshotTmpDir)
 	if err != nil {
 		return nil, fmt.Errorf("clone payload: %w", err)
 	}
@@ -471,13 +540,13 @@ func (c *Creator) clonePayloadRootEntries(boundary repo.WorktreePayloadBoundary,
 		return nil, fmt.Errorf("read payload root: %w", err)
 	}
 
-	combined := engine.NewCloneResult(c.engineType)
+	combined := engine.NewCloneResult(c.runtimeEngineType())
 	for _, entry := range entries {
 		name := entry.Name()
 		if boundary.ExcludesRelativePath(name) {
 			continue
 		}
-		result, err := engine.CloneToNew(c.engine, filepath.Join(boundary.Root, name), filepath.Join(snapshotTmpDir, name))
+		result, err := c.cloneToNew(c.engine, filepath.Join(boundary.Root, name), filepath.Join(snapshotTmpDir, name))
 		if err != nil {
 			return nil, fmt.Errorf("clone payload root entry %s: %w", name, err)
 		}
@@ -498,6 +567,7 @@ func (c *Creator) newSnapshotDescriptor(
 	payloadHash model.HashValue,
 	partialPaths []string,
 	cloneResult *engine.CloneResult,
+	transferRecord *transfer.Record,
 ) *model.Descriptor {
 	var parentID *model.SnapshotID
 	if cfg.HeadSnapshotID != "" {
@@ -505,6 +575,7 @@ func (c *Creator) newSnapshotDescriptor(
 		parentID = &pid
 	}
 
+	descriptorEngine := cloneDescriptorEngine(cloneResult, transferRecord, c.engineType)
 	desc := &model.Descriptor{
 		SnapshotID:           snapshotID,
 		ParentID:             parentID,
@@ -512,12 +583,12 @@ func (c *Creator) newSnapshotDescriptor(
 		CreatedAt:            time.Now().UTC(),
 		Note:                 note,
 		Tags:                 tags,
-		Engine:               c.engineType,
-		ActualEngine:         cloneActualEngine(cloneResult, c.engineType),
-		EffectiveEngine:      cloneEffectiveEngine(cloneResult, c.engineType),
-		DegradedReasons:      cloneDegradedReasons(cloneResult),
-		MetadataPreservation: cloneMetadataPreservation(cloneResult, c.engineType),
-		PerformanceClass:     clonePerformanceClass(cloneResult, c.engineType),
+		Engine:               descriptorEngine,
+		ActualEngine:         cloneActualEngine(cloneResult, descriptorEngine),
+		EffectiveEngine:      cloneEffectiveEngine(cloneResult, transferRecord, descriptorEngine),
+		DegradedReasons:      cloneDegradedReasons(cloneResult, transferRecord),
+		MetadataPreservation: cloneMetadataPreservation(cloneResult, transferRecord, descriptorEngine),
+		PerformanceClass:     clonePerformanceClass(cloneResult, transferRecord, descriptorEngine),
 		PayloadRootHash:      payloadHash,
 		IntegrityState:       model.IntegrityVerified,
 		PartialPaths:         partialPaths,
@@ -531,48 +602,128 @@ func (c *Creator) newSnapshotDescriptor(
 	return desc
 }
 
-func cloneActualEngine(result *engine.CloneResult, fallback model.EngineType) model.EngineType {
-	if result != nil && result.ActualEngine != "" {
-		return result.ActualEngine
+func cloneDescriptorEngine(result *engine.CloneResult, record *transfer.Record, fallback model.EngineType) model.EngineType {
+	if isConcreteSnapshotEngine(fallback) {
+		return fallback
 	}
-	return fallback
-}
-
-func cloneEffectiveEngine(result *engine.CloneResult, fallback model.EngineType) model.EngineType {
-	if result != nil && result.EffectiveEngine != "" {
+	if record != nil && isConcreteSnapshotEngine(record.EffectiveEngine) {
+		return record.EffectiveEngine
+	}
+	if result != nil && isConcreteSnapshotEngine(result.EffectiveEngine) {
 		return result.EffectiveEngine
 	}
-	return fallback
+	if result != nil && isConcreteSnapshotEngine(result.ActualEngine) {
+		return result.ActualEngine
+	}
+	return model.EngineCopy
 }
 
-func cloneDegradedReasons(result *engine.CloneResult) []string {
-	if result == nil || len(result.Degradations) == 0 {
+func cloneActualEngine(result *engine.CloneResult, fallback model.EngineType) model.EngineType {
+	if result != nil && isConcreteSnapshotEngine(result.ActualEngine) {
+		return result.ActualEngine
+	}
+	return concreteSnapshotEngineOrCopy(fallback)
+}
+
+func cloneEffectiveEngine(result *engine.CloneResult, record *transfer.Record, fallback model.EngineType) model.EngineType {
+	if record != nil && isConcreteSnapshotEngine(record.EffectiveEngine) {
+		return record.EffectiveEngine
+	}
+	if result != nil && isConcreteSnapshotEngine(result.EffectiveEngine) {
+		return result.EffectiveEngine
+	}
+	return concreteSnapshotEngineOrCopy(fallback)
+}
+
+func cloneDegradedReasons(result *engine.CloneResult, record *transfer.Record) []string {
+	var reasons []string
+	if record != nil {
+		reasons = appendUniqueSnapshotStrings(reasons, record.DegradedReasons...)
+	}
+	if result != nil {
+		reasons = appendUniqueSnapshotStrings(reasons, result.Degradations...)
+	}
+	if len(reasons) == 0 {
 		return nil
 	}
-	return append([]string{}, result.Degradations...)
+	return reasons
 }
 
-func cloneMetadataPreservation(result *engine.CloneResult, fallback model.EngineType) *model.MetadataPreservation {
-	metadata := engine.MetadataPreservationForEngine(fallback)
-	if result != nil && result.MetadataPreservation != (model.MetadataPreservation{}) {
-		metadata = result.MetadataPreservation
+func cloneMetadataPreservation(result *engine.CloneResult, record *transfer.Record, fallback model.EngineType) *model.MetadataPreservation {
+	if record != nil && isConcreteSnapshotEngine(record.EffectiveEngine) {
+		metadata := engine.MetadataPreservationForEngine(record.EffectiveEngine)
+		return &metadata
 	}
+	if result != nil && isConcreteSnapshotEngine(result.EffectiveEngine) && result.MetadataPreservation != (model.MetadataPreservation{}) {
+		metadata := result.MetadataPreservation
+		return &metadata
+	}
+	if result != nil && isConcreteSnapshotEngine(result.EffectiveEngine) {
+		metadata := engine.MetadataPreservationForEngine(result.EffectiveEngine)
+		return &metadata
+	}
+	metadata := engine.MetadataPreservationForEngine(concreteSnapshotEngineOrCopy(fallback))
 	return &metadata
 }
 
-func clonePerformanceClass(result *engine.CloneResult, fallback model.EngineType) string {
-	if result != nil && result.PerformanceClass != "" {
+func clonePerformanceClass(result *engine.CloneResult, record *transfer.Record, fallback model.EngineType) string {
+	if record != nil && isConcreteSnapshotEngine(record.EffectiveEngine) {
+		return engine.PerformanceClassForEngine(record.EffectiveEngine)
+	}
+	if result != nil && isConcreteSnapshotEngine(result.EffectiveEngine) && result.PerformanceClass != "" {
 		return result.PerformanceClass
 	}
-	return engine.PerformanceClassForEngine(fallback)
+	if result != nil && isConcreteSnapshotEngine(result.EffectiveEngine) {
+		return engine.PerformanceClassForEngine(result.EffectiveEngine)
+	}
+	return engine.PerformanceClassForEngine(concreteSnapshotEngineOrCopy(fallback))
 }
 
-func (c *Creator) writeSnapshotReadyMarker(snapshotTmpDir string, snapshotID model.SnapshotID, payloadHash, checksum model.HashValue) error {
+func (c *Creator) runtimeEngineType() model.EngineType {
+	if c != nil && c.engine != nil {
+		if name := c.engine.Name(); isConcreteSnapshotEngine(name) {
+			return name
+		}
+	}
+	if c != nil && isConcreteSnapshotEngine(c.engineType) {
+		return c.engineType
+	}
+	return model.EngineCopy
+}
+
+func isConcreteSnapshotEngine(engineType model.EngineType) bool {
+	return engineType != "" && engineType != engine.EngineAuto
+}
+
+func concreteSnapshotEngineOrCopy(engineType model.EngineType) model.EngineType {
+	if isConcreteSnapshotEngine(engineType) {
+		return engineType
+	}
+	return model.EngineCopy
+}
+
+func appendUniqueSnapshotStrings(base []string, values ...string) []string {
+	seen := make(map[string]struct{}, len(base)+len(values))
+	out := make([]string, 0, len(base)+len(values))
+	for _, value := range append(base, values...) {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func (c *Creator) writeSnapshotReadyMarker(snapshotTmpDir string, snapshotID model.SnapshotID, payloadHash, checksum model.HashValue, engineType model.EngineType) error {
 	readyMarker := &model.ReadyMarker{
 		SnapshotID:         snapshotID,
 		CompletedAt:        time.Now().UTC(),
 		PayloadHash:        payloadHash,
-		Engine:             c.engineType,
+		Engine:             concreteSnapshotEngineOrCopy(engineType),
 		DescriptorChecksum: checksum,
 	}
 	readyPath := filepath.Join(snapshotTmpDir, ".READY")
@@ -658,11 +809,20 @@ func cleanupIntentAfterDefiniteFailure(intentPath string, err error) error {
 	return err
 }
 
-func (c *Creator) appendCreateAudit(worktreeName string, snapshotID model.SnapshotID, note string, checksum model.HashValue, partialPaths []string) error {
+func (c *Creator) appendCreateAudit(worktreeName string, snapshotID model.SnapshotID, note string, desc *model.Descriptor, transferRecord *transfer.Record, partialPaths []string) error {
+	checksum := model.HashValue("")
+	engineType := model.EngineCopy
+	if desc != nil {
+		checksum = desc.DescriptorChecksum
+		engineType = concreteSnapshotEngineOrCopy(desc.Engine)
+	}
 	auditData := map[string]any{
-		"engine":   string(c.engineType),
+		"engine":   string(engineType),
 		"note":     note,
 		"checksum": string(checksum),
+	}
+	if transferRecord != nil {
+		auditData["transfers"] = []transfer.Record{*transferRecord}
 	}
 	if len(partialPaths) > 0 {
 		auditData["partial_paths"] = partialPaths
@@ -749,7 +909,7 @@ func partialPathCovers(ancestor, path string) bool {
 
 // clonePaths clones only the specified paths from source to destination.
 func (c *Creator) clonePaths(src, dst string, paths []string) (*engine.CloneResult, error) {
-	combined := engine.NewCloneResult(c.engineType)
+	combined := engine.NewCloneResult(c.runtimeEngineType())
 	for _, p := range paths {
 		srcPath := filepath.Join(src, p)
 		dstPath := filepath.Join(dst, p)
@@ -765,7 +925,7 @@ func (c *Creator) clonePaths(src, dst string, paths []string) (*engine.CloneResu
 				return nil, fmt.Errorf("create parent dir for %s: %w", p, err)
 			}
 			// Clone directory tree
-			result, err := engine.CloneToNew(c.engine, srcPath, dstPath)
+			result, err := c.cloneToNew(c.engine, srcPath, dstPath)
 			if err != nil {
 				return nil, fmt.Errorf("clone directory %s: %w", p, err)
 			}
@@ -775,7 +935,7 @@ func (c *Creator) clonePaths(src, dst string, paths []string) (*engine.CloneResu
 			if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
 				return nil, fmt.Errorf("create parent dir for %s: %w", p, err)
 			}
-			result, err := engine.CloneToNew(c.engine, srcPath, dstPath)
+			result, err := c.cloneToNew(c.engine, srcPath, dstPath)
 			if err != nil {
 				return nil, fmt.Errorf("clone file %s: %w", p, err)
 			}
@@ -790,7 +950,7 @@ func mergeCloneResult(combined, result *engine.CloneResult) {
 		return
 	}
 	if result.Degraded {
-		if result.ActualEngine != "" {
+		if isConcreteSnapshotEngine(result.ActualEngine) {
 			combined.ActualEngine = result.ActualEngine
 		}
 		if len(result.Degradations) == 0 {
@@ -805,10 +965,10 @@ func mergeCloneResult(combined, result *engine.CloneResult) {
 	if combined.Degraded {
 		return
 	}
-	if result.ActualEngine != "" {
+	if isConcreteSnapshotEngine(result.ActualEngine) {
 		combined.ActualEngine = result.ActualEngine
 	}
-	if result.EffectiveEngine != "" {
+	if isConcreteSnapshotEngine(result.EffectiveEngine) {
 		combined.EffectiveEngine = result.EffectiveEngine
 		combined.MetadataPreservation = result.MetadataPreservation
 		combined.PerformanceClass = result.PerformanceClass

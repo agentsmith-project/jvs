@@ -589,6 +589,53 @@ func TestRestoreWholeRunCapacityChecksRestorePayloadSiblingFilesystem(t *testing
 	before.assertUnchanged(t, repoRoot)
 }
 
+func TestRestoreWholeRunCapacityDoesNotBudgetRenameBackupAsCopy(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("source"), 0644))
+	firstID := savePointIDFromCLI(t, "source")
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "workspace-only.bin"), []byte(strings.Repeat("x", 64<<10)), 0644))
+	secondID := savePointIDFromCLI(t, "workspace")
+	previewOut, err := executeCommand(createTestRootCmd(), "restore", firstID)
+	require.NoError(t, err)
+	planID := restorePlanIDFromHumanOutput(t, previewOut)
+	sourcePeak := materializationPeakForSavePoint(t, repoRoot, model.SnapshotID(firstID))
+	boundary, err := repo.WorktreeManagedPayloadBoundary(repoRoot, "main")
+	require.NoError(t, err)
+	workspaceBytes, err := capacitygate.TreeSize(boundary.Root, boundary.ExcludesRelativePath)
+	require.NoError(t, err)
+	require.Greater(t, workspaceBytes, sourcePeak)
+
+	tempRoot := filepath.Join(t.TempDir(), "temp")
+	require.NoError(t, os.MkdirAll(tempRoot, 0755))
+	t.Setenv("TMPDIR", tempRoot)
+	meter := &cliPathCapacityMeter{
+		repoRoot:      repoRoot,
+		tempRoot:      tempRoot,
+		siblingPrefix: repoRoot + ".restore-",
+		siblingParent: filepath.Dir(repoRoot),
+		availableByDevice: map[string]int64{
+			"repo-fs":    100 << 20,
+			"temp-fs":    2 * sourcePeak,
+			"sibling-fs": sourcePeak,
+		},
+	}
+	restore := installCapacityGateHooks(capacitygate.Gate{Meter: meter, SafetyMarginBytes: 0})
+	t.Cleanup(restore)
+
+	stdout, err := executeCommand(createTestRootCmd(), "restore", "--run", planID)
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "Restored save point: "+firstID)
+	assert.Contains(t, slashPaths(meter.probes), filepath.ToSlash(filepath.Dir(repoRoot)))
+	assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "source")
+	require.NoFileExists(t, filepath.Join(repoRoot, "workspace-only.bin"))
+
+	cfg, err := repo.LoadWorktreeConfig(repoRoot, "main")
+	require.NoError(t, err)
+	require.Equal(t, model.SnapshotID(firstID), cfg.HeadSnapshotID)
+	require.Equal(t, model.SnapshotID(secondID), cfg.LatestSnapshotID)
+	require.Equal(t, 0, restoreBackupCount(t, repoRoot))
+}
+
 func TestRestorePathRunCapacityFailBeforeWorkspaceMutation(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))

@@ -53,6 +53,7 @@ maintaining a published version:
 | Release | [Release Index](release/README.md) | Release policy, evidence, changelog, and signing |
 | Design | [Design Index](design/README.md) | Non-release-facing design notes and active design references |
 | Future product research | [Product Gaps For Next Plan](PRODUCT_GAPS_FOR_NEXT_PLAN.md) | Non-committal product gaps to consider later |
+| Future milestone handoffs | [Smart Copy Boundaries](23_FILESYSTEM_AWARE_TRANSFER_PLANNING.md) | Filesystem-aware transfer planning handoff |
 
 ## Boundary Rules
 

@@ -104,20 +104,12 @@ func checkRestoreRunCapacity(repoRoot, workspaceName string, plan *restoreplan.P
 		return err
 	}
 
-	workspaceBytes, err := capacitygate.TreeSize(mgrBoundary.Root, mgrBoundary.ExcludesRelativePath)
-	if err != nil {
-		return err
-	}
-	targetBackupBytes := workspaceBytes
-	if plan.EffectiveScope() == restoreplan.ScopePath {
-		targetBackupBytes, err = capacitygate.TreeSizeWithin(mgrBoundary.Root, plan.Path, mgrBoundary.ExcludesRelativePath)
+	var saveFirstBytes int64
+	if plan.Options.SaveFirst {
+		workspaceBytes, err := capacitygate.TreeSize(mgrBoundary.Root, mgrBoundary.ExcludesRelativePath)
 		if err != nil {
 			return err
 		}
-	}
-
-	var saveFirstBytes int64
-	if plan.Options.SaveFirst {
 		saveFirstBytes = saturatingAdd(workspaceBytes, metadataFloor)
 	}
 
@@ -126,7 +118,6 @@ func checkRestoreRunCapacity(repoRoot, workspaceName string, plan *restoreplan.P
 		{Name: "restore hash", Path: filepath.Join(os.TempDir(), "jvs-payload-hash-restore-probe"), Bytes: sourceEstimate.PeakBytes},
 		{Name: "source validation", Path: filepath.Join(repoRoot, repo.JVSDirName, "restore-preview-probe", "source"), Bytes: sourceEstimate.PeakBytes},
 		{Name: "restore payload", Path: mgrBoundary.Root + ".restore-tmp-probe", Bytes: sourceEstimate.PeakBytes},
-		{Name: "workspace backup", Path: mgrBoundary.Root + ".restore-backup-probe", Bytes: targetBackupBytes},
 		{Name: "save-first safety save", Path: filepath.Join(repoRoot, repo.JVSDirName, "snapshots", "capacity-probe"), Bytes: saveFirstBytes},
 		{Name: "metadata", Path: filepath.Join(repoRoot, repo.JVSDirName), Bytes: metadataFloor},
 	}

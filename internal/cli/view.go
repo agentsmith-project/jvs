@@ -15,6 +15,7 @@ import (
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/internal/snapshotpayload"
 	"github.com/agentsmith-project/jvs/internal/sourcepin"
+	"github.com/agentsmith-project/jvs/internal/transfer"
 	"github.com/agentsmith-project/jvs/internal/worktree"
 	"github.com/agentsmith-project/jvs/pkg/color"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
@@ -23,6 +24,7 @@ import (
 )
 
 var viewCapacityGate = capacitygate.Default()
+var viewTransferPlanner transfer.EnginePlanner = engine.TransferPlanner{}
 
 var viewCmd = &cobra.Command{
 	Use:   "view <save-point> [path]",
@@ -95,6 +97,7 @@ var viewCloseCmd = &cobra.Command{
 }
 
 type publicViewResult struct {
+	transfer.Data
 	Folder                      string `json:"folder"`
 	Workspace                   string `json:"workspace"`
 	SavePoint                   string `json:"save_point"`
@@ -268,12 +271,26 @@ func openReadOnlySavePointView(repoRoot, workspaceName string, savePointID model
 	}()
 
 	opts := snapshotpayload.OptionsFromDescriptor(state.Descriptor)
+	viewPath := payloadRoot
+	if pathInside != "" {
+		viewPath = filepath.Join(payloadRoot, filepath.FromSlash(pathInside))
+	}
+	intent := viewPrimaryTransferIntent(repoRoot, savePointID, state.SnapshotDir, payloadRoot, viewPath)
+	plan, err := transfer.PlanIntent(viewTransferPlanner, intent)
+	if err != nil {
+		return publicViewResult{}, fmt.Errorf("plan view transfer: %w", err)
+	}
+	var runtimeResult *engine.CloneResult
 	if err := snapshotpayload.MaterializeToNew(state.SnapshotDir, payloadRoot, opts, func(src, dst string) error {
-		_, err := engine.CloneToNew(engine.NewCopyEngine(), src, dst)
+		result, err := engine.CloneToNew(engine.NewEngine(plan.TransferEngine), src, dst)
+		if result != nil {
+			runtimeResult = result
+		}
 		return err
 	}); err != nil {
 		return publicViewResult{}, err
 	}
+	transferRecord := transfer.RecordFromPlanAndRuntime(intent, plan, runtimeResult)
 
 	boundary, err := repo.WorktreeManagedPayloadBoundary(repoRoot, workspaceName)
 	if err != nil {
@@ -286,9 +303,7 @@ func openReadOnlySavePointView(repoRoot, workspaceName string, savePointID model
 		return publicViewResult{}, err
 	}
 
-	viewPath := payloadRoot
 	if pathInside != "" {
-		viewPath = filepath.Join(payloadRoot, filepath.FromSlash(pathInside))
 		if err := validateViewPath(payloadRoot, viewPath); err != nil {
 			return publicViewResult{}, err
 		}
@@ -300,6 +315,7 @@ func openReadOnlySavePointView(repoRoot, workspaceName string, savePointID model
 	releasePinOnError = false
 
 	return publicViewResult{
+		Data:                        transferDataFromRecord(&transferRecord),
 		Folder:                      folder,
 		Workspace:                   workspaceName,
 		SavePoint:                   string(savePointID),
@@ -309,6 +325,24 @@ func openReadOnlySavePointView(repoRoot, workspaceName string, savePointID model
 		ReadOnly:                    true,
 		NoWorkspaceOrHistoryChanged: true,
 	}, nil
+}
+
+func viewPrimaryTransferIntent(repoRoot string, savePointID model.SnapshotID, sourcePath, payloadRoot, viewPath string) transfer.Intent {
+	return transfer.Intent{
+		TransferID:                 "view-primary",
+		Operation:                  "view",
+		Phase:                      "view_materialization",
+		Primary:                    true,
+		ResultKind:                 transfer.ResultKindFinal,
+		PermissionScope:            transfer.PermissionScopeExecution,
+		SourceRole:                 "save_point_payload",
+		SourcePath:                 sourcePath,
+		DestinationRole:            "view_directory",
+		MaterializationDestination: payloadRoot,
+		CapabilityProbePath:        filepath.Dir(payloadRoot),
+		PublishedDestination:       viewPath,
+		RequestedEngine:            requestedTransferEngine(repoRoot),
+	}
 }
 
 func closeReadOnlySavePointView(repoRoot, rawViewID string) (publicViewCloseResult, error) {
@@ -584,6 +618,9 @@ func printViewResult(result publicViewResult) {
 	}
 	fmt.Printf("View: %s\n", result.ViewID)
 	fmt.Printf("View path: %s\n", result.ViewPath)
+	if len(result.Transfers) > 0 {
+		printPrimaryTransferSummary(&result.Transfers[0])
+	}
 	fmt.Println("No workspace or history changed.")
 }
 

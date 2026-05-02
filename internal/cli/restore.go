@@ -13,6 +13,7 @@ import (
 	"github.com/agentsmith-project/jvs/internal/restoreplan"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/internal/sourcepin"
+	"github.com/agentsmith-project/jvs/internal/transfer"
 	"github.com/agentsmith-project/jvs/pkg/color"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/agentsmith-project/jvs/pkg/model"
@@ -71,7 +72,7 @@ Examples:
 			if restoreDiscardDirty && restoreIncludeWorking {
 				return fmt.Errorf("--discard-unsaved and --save-first cannot be used together")
 			}
-			engineType := detectEngine(r.Root)
+			engineType := requestedTransferEngine(r.Root)
 			if !restoreDiscardDirty && !restoreIncludeWorking {
 				if err := checkRestorePreviewPreDirtyCapacity(r.Root, workspaceName, targetID, ""); err != nil {
 					return err
@@ -140,19 +141,20 @@ func validateRestoreArgs(cmd *cobra.Command, args []string) error {
 }
 
 type publicRestoreResult struct {
-	Mode              string  `json:"mode,omitempty"`
-	PlanID            string  `json:"plan_id,omitempty"`
-	Folder            string  `json:"folder"`
-	Workspace         string  `json:"workspace"`
-	RestoredSavePoint string  `json:"restored_save_point"`
-	SourceSavePoint   string  `json:"source_save_point,omitempty"`
-	NewestSavePoint   *string `json:"newest_save_point"`
-	HistoryHead       *string `json:"history_head"`
-	ContentSource     *string `json:"content_source"`
-	UnsavedChanges    bool    `json:"unsaved_changes"`
-	FilesState        string  `json:"files_state"`
-	HistoryChanged    bool    `json:"history_changed"`
-	FilesChanged      bool    `json:"files_changed"`
+	Mode              string            `json:"mode,omitempty"`
+	PlanID            string            `json:"plan_id,omitempty"`
+	Folder            string            `json:"folder"`
+	Workspace         string            `json:"workspace"`
+	RestoredSavePoint string            `json:"restored_save_point"`
+	SourceSavePoint   string            `json:"source_save_point,omitempty"`
+	NewestSavePoint   *string           `json:"newest_save_point"`
+	HistoryHead       *string           `json:"history_head"`
+	ContentSource     *string           `json:"content_source"`
+	UnsavedChanges    bool              `json:"unsaved_changes"`
+	FilesState        string            `json:"files_state"`
+	HistoryChanged    bool              `json:"history_changed"`
+	FilesChanged      bool              `json:"files_changed"`
+	Transfers         []transfer.Record `json:"transfers,omitempty"`
 }
 
 type publicRestorePreviewResult struct {
@@ -170,6 +172,7 @@ type publicRestorePreviewResult struct {
 	ExpectedFolderEvidence  string                         `json:"expected_folder_evidence,omitempty"`
 	ExpectedPathEvidence    string                         `json:"expected_path_evidence,omitempty"`
 	ManagedFiles            restoreplan.ManagedFilesImpact `json:"managed_files"`
+	Transfers               []transfer.Record              `json:"transfers,omitempty"`
 	Options                 restoreplan.Options            `json:"options,omitempty"`
 	HistoryChanged          bool                           `json:"history_changed"`
 	FilesChanged            bool                           `json:"files_changed"`
@@ -204,6 +207,7 @@ type publicRestorePathResult struct {
 	PathSources        []publicRestoredPathSource `json:"path_sources,omitempty"`
 	UnsavedChanges     bool                       `json:"unsaved_changes"`
 	FilesState         string                     `json:"files_state"`
+	Transfers          []transfer.Record          `json:"transfers,omitempty"`
 }
 
 func restorePathFlagChanged(cmd *cobra.Command) bool {
@@ -241,18 +245,20 @@ func changedRestoreRunBehaviorFlags(cmd *cobra.Command) []string {
 }
 
 type restoreRunResult struct {
-	Scope         string
-	ProtectedPath string
-	FilesChanged  bool
-	Whole         publicRestoreResult
-	Path          publicRestorePathResult
+	Scope          string
+	ProtectedPath  string
+	FilesChanged   bool
+	TransferRecord *transfer.Record
+	Transfers      []transfer.Record
+	Whole          publicRestoreResult
+	Path           publicRestorePathResult
 }
 
 type restoreRunScopeOps struct {
 	SaveFirstMessage string
 	ValidateTarget   func() error
-	ValidateSource   func(model.EngineType) error
-	ApplyRestore     func(*recovery.Plan, model.EngineType) error
+	ValidateSource   func(model.EngineType) (*transfer.Record, error)
+	ApplyRestore     func(*recovery.Plan, model.EngineType) (*transfer.Record, error)
 	RecordResult     func() error
 }
 
@@ -311,20 +317,33 @@ func runLoadedRestorePlan(repoRoot, workspaceName string, plan *restoreplan.Plan
 	if err := checkRestoreRunCapacity(repoRoot, workspaceName, plan, sourceState.SnapshotDir, sourceState.Descriptor); err != nil {
 		return err
 	}
-	engineType := detectEngine(repoRoot)
-	if err := ops.ValidateSource(engineType); err != nil {
+	engineType := requestedTransferEngine(repoRoot)
+	validationTransfer, err := ops.ValidateSource(engineType)
+	if err != nil {
 		return err
 	}
-	if err := createRestoreSafetySave(repoRoot, workspaceName, engineType, plan.Options.SaveFirst, ops.SaveFirstMessage); err != nil {
+	if validationTransfer != nil {
+		result.Transfers = append(result.Transfers, *validationTransfer)
+	}
+	safetyTransfer, err := createRestoreSafetySave(repoRoot, workspaceName, engineType, plan.Options.SaveFirst, ops.SaveFirstMessage)
+	if err != nil {
 		return err
+	}
+	if safetyTransfer != nil {
+		result.Transfers = append(result.Transfers, *safetyTransfer)
 	}
 	recoveryPlan, err := recovery.NewManager(repoRoot).CreateActiveForRestore(plan, restoreRecoveryBackupPath(plan.Folder))
 	if err != nil {
 		return err
 	}
-	if err := ops.ApplyRestore(recoveryPlan, engineType); err != nil {
+	transferRecord, err := ops.ApplyRestore(recoveryPlan, engineType)
+	if err != nil {
 		result.FilesChanged = restoreApplyErrorChangedFiles(err)
 		return handleRestoreApplyError(repoRoot, recoveryPlan, err)
+	}
+	result.TransferRecord = transferRecord
+	if transferRecord != nil {
+		result.Transfers = append(result.Transfers, *transferRecord)
 	}
 	result.FilesChanged = true
 	if err := resolveAppliedRestoreRecovery(repoRoot, recoveryPlan); err != nil {
@@ -341,11 +360,19 @@ func restoreRunOpsForScope(repoRoot, workspaceName string, plan *restoreplan.Pla
 			ValidateTarget: func() error {
 				return restoreplan.ValidateTarget(repoRoot, workspaceName, plan)
 			},
-			ValidateSource: func(engineType model.EngineType) error {
+			ValidateSource: func(engineType model.EngineType) (*transfer.Record, error) {
 				return restoreplan.ValidateSource(repoRoot, workspaceName, plan, engineType)
 			},
-			ApplyRestore: func(recoveryPlan *recovery.Plan, engineType model.EngineType) error {
-				return restore.NewRestorer(repoRoot, engineType).RestoreLockedWithOptions(workspaceName, plan.SourceSavePoint, restore.RunOptions{BackupPath: recoveryPlan.Backup.Path})
+			ApplyRestore: func(recoveryPlan *recovery.Plan, engineType model.EngineType) (*transfer.Record, error) {
+				restorer := restore.NewRestorer(repoRoot, engineType)
+				if err := restorer.RestoreLockedWithOptions(workspaceName, plan.SourceSavePoint, restore.RunOptions{BackupPath: recoveryPlan.Backup.Path}); err != nil {
+					return nil, err
+				}
+				record, ok := restorer.LastTransferRecord()
+				if !ok {
+					return nil, nil
+				}
+				return &record, nil
 			},
 			RecordResult: func() error {
 				status, err := publicRestoreStatus(repoRoot, workspaceName, plan.SourceSavePoint)
@@ -356,6 +383,7 @@ func restoreRunOpsForScope(repoRoot, workspaceName string, plan *restoreplan.Pla
 				status.PlanID = plan.PlanID
 				status.SourceSavePoint = string(plan.SourceSavePoint)
 				status.FilesChanged = true
+				status.Transfers = append([]transfer.Record(nil), result.Transfers...)
 				result.Whole = status
 				return nil
 			},
@@ -366,11 +394,19 @@ func restoreRunOpsForScope(repoRoot, workspaceName string, plan *restoreplan.Pla
 			ValidateTarget: func() error {
 				return restoreplan.ValidatePathTarget(repoRoot, workspaceName, plan)
 			},
-			ValidateSource: func(engineType model.EngineType) error {
+			ValidateSource: func(engineType model.EngineType) (*transfer.Record, error) {
 				return restoreplan.ValidateSourcePath(repoRoot, workspaceName, plan, engineType)
 			},
-			ApplyRestore: func(recoveryPlan *recovery.Plan, engineType model.EngineType) error {
-				return restore.NewRestorer(repoRoot, engineType).RestorePathLockedWithOptions(workspaceName, plan.SourceSavePoint, plan.Path, restore.RunOptions{BackupPath: recoveryPlan.Backup.Path})
+			ApplyRestore: func(recoveryPlan *recovery.Plan, engineType model.EngineType) (*transfer.Record, error) {
+				restorer := restore.NewRestorer(repoRoot, engineType)
+				if err := restorer.RestorePathLockedWithOptions(workspaceName, plan.SourceSavePoint, plan.Path, restore.RunOptions{BackupPath: recoveryPlan.Backup.Path}); err != nil {
+					return nil, err
+				}
+				record, ok := restorer.LastTransferRecord()
+				if !ok {
+					return nil, nil
+				}
+				return &record, nil
 			},
 			RecordResult: func() error {
 				status, err := publicRestorePathStatus(repoRoot, workspaceName, plan.Path, plan.SourceSavePoint)
@@ -379,6 +415,7 @@ func restoreRunOpsForScope(repoRoot, workspaceName string, plan *restoreplan.Pla
 				}
 				status.Mode = "run"
 				status.PlanID = plan.PlanID
+				status.Transfers = append([]transfer.Record(nil), result.Transfers...)
 				result.Path = status
 				return nil
 			},
@@ -388,12 +425,20 @@ func restoreRunOpsForScope(repoRoot, workspaceName string, plan *restoreplan.Pla
 	}
 }
 
-func createRestoreSafetySave(repoRoot, workspaceName string, engineType model.EngineType, saveFirst bool, message string) error {
+func createRestoreSafetySave(repoRoot, workspaceName string, engineType model.EngineType, saveFirst bool, message string) (*transfer.Record, error) {
 	if !saveFirst {
-		return nil
+		return nil, nil
 	}
-	_, err := snapshot.NewCreator(repoRoot, engineType).CreateSavePointLocked(workspaceName, message, nil)
-	return err
+	creator := snapshot.NewCreator(repoRoot, engineType)
+	_, err := creator.CreateSavePointLocked(workspaceName, message, nil)
+	if err != nil {
+		return nil, err
+	}
+	record, ok := creator.LastTransferRecord()
+	if !ok {
+		return nil, nil
+	}
+	return &record, nil
 }
 
 func handleRestoreApplyError(repoRoot string, recoveryPlan *recovery.Plan, restoreErr error) error {
@@ -488,7 +533,7 @@ func runRestorePath(cmd *cobra.Command, args []string, repoRoot, workspaceName s
 		if restoreDiscardDirty && restoreIncludeWorking {
 			return fmt.Errorf("--discard-unsaved and --save-first cannot be used together")
 		}
-		engineType := detectEngine(repoRoot)
+		engineType := requestedTransferEngine(repoRoot)
 		if !restoreIncludeWorking && !restoreDiscardDirty {
 			if err := checkRestorePreviewPreDirtyCapacity(repoRoot, workspaceName, targetID, path); err != nil {
 				return err
@@ -564,6 +609,7 @@ func publicRestorePreviewFromPlan(plan *restoreplan.Plan) publicRestorePreviewRe
 		ExpectedFolderEvidence:  plan.ExpectedFolderEvidence,
 		ExpectedPathEvidence:    plan.ExpectedPathEvidence,
 		ManagedFiles:            plan.ManagedFiles,
+		Transfers:               append([]transfer.Record(nil), plan.Transfers...),
 		Options:                 plan.Options,
 		HistoryChanged:          false,
 		FilesChanged:            false,
@@ -692,6 +738,7 @@ func printRestoreResult(result publicRestoreResult) {
 	}
 	fmt.Printf("Restored save point: %s\n", restored)
 	fmt.Printf("Managed files now match save point %s.\n", restored)
+	printRestoreRunTransferSummary(result.Transfers)
 	if result.NewestSavePoint != nil && *result.NewestSavePoint != result.RestoredSavePoint {
 		newest := color.SnapshotID(*result.NewestSavePoint)
 		fmt.Printf("Newest save point is still %s.\n", newest)
@@ -718,6 +765,9 @@ func printRestorePreviewResult(result publicRestorePreviewResult) {
 		fmt.Printf("Path: %s\n", result.Path)
 	}
 	fmt.Printf("Source save point: %s\n", color.SnapshotID(result.SourceSavePoint))
+	if len(result.Transfers) > 0 {
+		printPrimaryExpectedTransferSummary(&result.Transfers[0])
+	}
 	printRestorePreviewImpact("overwrite", result.ManagedFiles.Overwrite)
 	printRestorePreviewImpact("delete", result.ManagedFiles.Delete)
 	printRestorePreviewImpact("create", result.ManagedFiles.Create)
@@ -802,10 +852,80 @@ func printRestorePathResult(result publicRestorePathResult) {
 	}
 	fmt.Printf("Restored path: %s\n", result.RestoredPath)
 	fmt.Printf("From save point: %s\n", color.SnapshotID(result.FromSavePoint))
+	printRestoreRunTransferSummary(result.Transfers)
 	newest := formatStatusSavePoint(result.NewestSavePoint)
 	fmt.Printf("Newest save point is still %s.\n", newest)
 	fmt.Println("History was not changed.")
 	fmt.Printf("Next save creates a new save point after %s and records this restored path.\n", newest)
+}
+
+func printRestoreRunTransferSummary(transfers []transfer.Record) {
+	primaryIndex := restoreRunPrimaryTransferIndex(transfers)
+	if primaryIndex < 0 {
+		return
+	}
+	printPrimaryTransferSummary(&transfers[primaryIndex])
+	printRestoreAdditionalTransferSummary(transfers, primaryIndex)
+}
+
+func restoreRunPrimaryTransfer(transfers []transfer.Record) *transfer.Record {
+	primaryIndex := restoreRunPrimaryTransferIndex(transfers)
+	if primaryIndex < 0 {
+		return nil
+	}
+	return &transfers[primaryIndex]
+}
+
+func restoreRunPrimaryTransferIndex(transfers []transfer.Record) int {
+	for i := range transfers {
+		if transfers[i].Primary && transfers[i].Operation == "restore" && transfers[i].Phase == "materialization" {
+			return i
+		}
+	}
+	if len(transfers) == 0 {
+		return -1
+	}
+	return 0
+}
+
+func printRestoreAdditionalTransferSummary(transfers []transfer.Record, primaryIndex int) {
+	sourceValidationCount := 0
+	safetySaveCount := 0
+	otherCount := 0
+	for i, record := range transfers {
+		if i == primaryIndex {
+			continue
+		}
+		switch {
+		case record.Operation == "restore" && record.Phase == "source_validation":
+			sourceValidationCount++
+		case record.Operation == "save":
+			safetySaveCount++
+		default:
+			otherCount++
+		}
+	}
+	parts := []string{}
+	if sourceValidationCount > 0 {
+		parts = append(parts, restoreAdditionalTransferCount(sourceValidationCount, "source validation", "source validations"))
+	}
+	if safetySaveCount > 0 {
+		parts = append(parts, restoreAdditionalTransferCount(safetySaveCount, "safety save", "safety saves"))
+	}
+	if otherCount > 0 {
+		parts = append(parts, restoreAdditionalTransferCount(otherCount, "other transfer", "other transfers"))
+	}
+	if len(parts) == 0 {
+		return
+	}
+	fmt.Printf("Additional transfers: %s; see JSON for details\n", strings.Join(parts, ", "))
+}
+
+func restoreAdditionalTransferCount(count int, singular, plural string) string {
+	if count == 1 {
+		return fmt.Sprintf("1 %s", singular)
+	}
+	return fmt.Sprintf("%d %s", count, plural)
 }
 
 func withActiveOperationSourcePin(repoRoot string, sourceID model.SnapshotID, reason string, fn func() error) error {

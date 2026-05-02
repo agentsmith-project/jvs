@@ -14,6 +14,7 @@ import (
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/internal/snapshotpayload"
+	"github.com/agentsmith-project/jvs/internal/transfer"
 	"github.com/agentsmith-project/jvs/internal/verify"
 	"github.com/agentsmith-project/jvs/internal/worktree"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
@@ -25,11 +26,14 @@ import (
 
 // Restorer handles snapshot restore operations.
 type Restorer struct {
-	repoRoot    string
-	engineType  model.EngineType
-	engine      engine.Engine
-	auditLogger *audit.FileAppender
-	updateHead  func(*worktree.Manager, string, model.SnapshotID) error
+	repoRoot        string
+	engineType      model.EngineType
+	engine          engine.Engine
+	transferPlanner transfer.EnginePlanner
+	cloneToNew      func(engine.Engine, string, string) (*engine.CloneResult, error)
+	lastTransfer    *transfer.Record
+	auditLogger     *audit.FileAppender
+	updateHead      func(*worktree.Manager, string, model.SnapshotID) error
 }
 
 type RunOptions struct {
@@ -73,10 +77,12 @@ func NewRestorer(repoRoot string, engineType model.EngineType) *Restorer {
 
 	auditPath := filepath.Join(repoRoot, ".jvs", "audit", "audit.jsonl")
 	return &Restorer{
-		repoRoot:    repoRoot,
-		engineType:  engineType,
-		engine:      eng,
-		auditLogger: audit.NewFileAppender(auditPath),
+		repoRoot:        repoRoot,
+		engineType:      engineType,
+		engine:          eng,
+		transferPlanner: engine.TransferPlanner{},
+		cloneToNew:      engine.CloneToNew,
+		auditLogger:     audit.NewFileAppender(auditPath),
 		updateHead: func(wtMgr *worktree.Manager, worktreeName string, snapshotID model.SnapshotID) error {
 			if restoreUpdateHead != nil {
 				return restoreUpdateHead(wtMgr, worktreeName, snapshotID)
@@ -84,6 +90,15 @@ func NewRestorer(repoRoot string, engineType model.EngineType) *Restorer {
 			return wtMgr.UpdateHead(worktreeName, snapshotID)
 		},
 	}
+}
+
+// LastTransferRecord returns the final primary restore materialization transfer
+// from the most recent successful restore handled by this Restorer.
+func (r *Restorer) LastTransferRecord() (transfer.Record, bool) {
+	if r == nil || r.lastTransfer == nil {
+		return transfer.Record{}, false
+	}
+	return *r.lastTransfer, true
 }
 
 // Restore replaces the content of a worktree with a snapshot.
@@ -129,6 +144,7 @@ func (r *Restorer) restore(worktreeName string, snapshotID model.SnapshotID) err
 }
 
 func (r *Restorer) restoreWithOptions(worktreeName string, snapshotID model.SnapshotID, options RunOptions) error {
+	r.lastTransfer = nil
 	if worktreeName == "" {
 		return fmt.Errorf("worktree name is required")
 	}
@@ -186,10 +202,7 @@ func (r *Restorer) restoreWithOptions(worktreeName string, snapshotID model.Snap
 	tempPath := boundary.Root + ".restore-tmp-" + uuidutil.NewV4()[:8]
 
 	// Step 1: Materialize logical snapshot payload to temp location
-	if err := snapshotpayload.MaterializeToNew(snapshotDir, tempPath, snapshotpayload.OptionsFromDescriptor(desc), func(src, dst string) error {
-		_, err := engine.CloneToNew(r.engine, src, dst)
-		return err
-	}); err != nil {
+	if err := r.materializeRestoreSource(snapshotDir, tempPath, desc, r.restoreRunTransferIntent(snapshotDir, tempPath, boundary.Root)); err != nil {
 		os.RemoveAll(tempPath)
 		return fmt.Errorf("materialize snapshot: %w", err)
 	}
@@ -250,6 +263,7 @@ func (r *Restorer) restorePath(worktreeName string, snapshotID model.SnapshotID,
 }
 
 func (r *Restorer) restorePathWithOptions(worktreeName string, snapshotID model.SnapshotID, rawPath string, options RunOptions) error {
+	r.lastTransfer = nil
 	if worktreeName == "" {
 		return fmt.Errorf("worktree name is required")
 	}
@@ -304,10 +318,8 @@ func (r *Restorer) restorePathWithOptions(worktreeName string, snapshotID model.
 		return fmt.Errorf("snapshot path: %w", err)
 	}
 	tempPath := boundary.Root + ".restore-path-tmp-" + uuidutil.NewV4()[:8]
-	if err := snapshotpayload.MaterializeToNew(snapshotDir, tempPath, snapshotpayload.OptionsFromDescriptor(desc), func(src, dst string) error {
-		_, err := engine.CloneToNew(r.engine, src, dst)
-		return err
-	}); err != nil {
+	publishedPath := filepath.Join(boundary.Root, filepath.FromSlash(relPath))
+	if err := r.materializeRestoreSource(snapshotDir, tempPath, desc, r.restorePathRunTransferIntent(snapshotDir, tempPath, publishedPath)); err != nil {
 		os.RemoveAll(tempPath)
 		return fmt.Errorf("materialize snapshot: %w", err)
 	}
@@ -353,6 +365,62 @@ func (r *Restorer) restorePathWithOptions(worktreeName string, snapshotID model.
 
 func newRestoreBackupPath(payloadRoot string) string {
 	return payloadRoot + ".restore-backup-" + uuidutil.NewV4()[:8]
+}
+
+func (r *Restorer) materializeRestoreSource(snapshotDir, tempPath string, desc *model.Descriptor, intent transfer.Intent) error {
+	plan, err := transfer.PlanIntent(r.transferPlanner, intent)
+	if err != nil {
+		return fmt.Errorf("plan transfer: %w", err)
+	}
+	eng := r.engineForTransfer(plan.TransferEngine)
+	cloneToNew := r.cloneToNew
+	if cloneToNew == nil {
+		cloneToNew = engine.CloneToNew
+	}
+
+	var runtimeResult *engine.CloneResult
+	if err := snapshotpayload.MaterializeToNew(snapshotDir, tempPath, snapshotpayload.OptionsFromDescriptor(desc), func(src, dst string) error {
+		var cloneErr error
+		runtimeResult, cloneErr = cloneToNew(eng, src, dst)
+		return cloneErr
+	}); err != nil {
+		return err
+	}
+
+	record := transfer.RecordFromPlanAndRuntime(intent, plan, runtimeResult)
+	r.lastTransfer = &record
+	return nil
+}
+
+func (r *Restorer) engineForTransfer(transferEngine model.EngineType) engine.Engine {
+	if r != nil && r.engine != nil && transferEngine == r.engineType {
+		return r.engine
+	}
+	return engine.NewEngine(transferEngine)
+}
+
+func (r *Restorer) restoreRunTransferIntent(snapshotDir, tempPath, publishedDestination string) transfer.Intent {
+	return transfer.Intent{
+		TransferID:                 "restore-run-primary",
+		Operation:                  "restore",
+		Phase:                      "materialization",
+		Primary:                    true,
+		ResultKind:                 transfer.ResultKindFinal,
+		PermissionScope:            transfer.PermissionScopeExecution,
+		SourceRole:                 "save_point_payload",
+		SourcePath:                 snapshotDir,
+		DestinationRole:            "restore_staging",
+		MaterializationDestination: tempPath,
+		CapabilityProbePath:        filepath.Dir(tempPath),
+		PublishedDestination:       publishedDestination,
+		RequestedEngine:            r.engineType,
+	}
+}
+
+func (r *Restorer) restorePathRunTransferIntent(snapshotDir, tempPath, publishedDestination string) transfer.Intent {
+	intent := r.restoreRunTransferIntent(snapshotDir, tempPath, publishedDestination)
+	intent.TransferID = "restore-path-run-primary"
+	return intent
 }
 
 func verifySnapshotResultError(result *verify.Result, fallback string) error {

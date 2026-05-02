@@ -6,9 +6,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agentsmith-project/jvs/internal/engine"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/restoreplan"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
+	"github.com/agentsmith-project/jvs/internal/transfer"
 	"github.com/agentsmith-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -73,6 +75,7 @@ func TestRestoreWholePreviewJSONUsesCleanSchema(t *testing.T) {
 	require.Equal(t, false, data["history_changed"])
 	require.Equal(t, false, data["files_changed"])
 	require.Equal(t, "jvs restore --run "+data["plan_id"].(string), data["run_command"])
+	assertRestoreExpectedPreviewTransfer(t, data, repoRoot, firstID)
 	assertRestorePreviewImpact(t, data, "overwrite", 1, "app.txt")
 	assertRestorePreviewImpact(t, data, "delete", 1, "workspace-only.txt")
 	assertRestorePreviewImpact(t, data, "create", 1, "only-source.txt")
@@ -139,8 +142,99 @@ func TestRestoreWholeRunJSONUsesCleanSchema(t *testing.T) {
 	require.Equal(t, true, data["files_changed"])
 	require.Equal(t, false, data["unsaved_changes"])
 	require.Equal(t, "matches_save_point", data["files_state"])
+	assertRestoreFinalRunTransfer(t, data, repoRoot, firstID)
 	assertRestoreJSONOmitsLegacyFields(t, data)
 	assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "v1")
+}
+
+func TestRestoreWholeRunReplansInsteadOfUsingPreviewTransfer(t *testing.T) {
+	repoRoot, firstID, _ := setupWholeRestoreImpactRepo(t)
+	previewOut, err := executeCommand(createTestRootCmd(), "--json", "restore", firstID)
+	require.NoError(t, err)
+	_, previewData := decodeFacadeDataMap(t, previewOut)
+	planID := previewData["plan_id"].(string)
+
+	plan, err := restoreplan.Load(repoRoot, planID)
+	require.NoError(t, err)
+	plan.Transfers = []transfer.Record{{
+		TransferID:                 "restore-preview-validation-primary",
+		Operation:                  "restore",
+		Phase:                      "preview_validation",
+		Primary:                    true,
+		ResultKind:                 transfer.ResultKindExpected,
+		PermissionScope:            transfer.PermissionScopePreviewOnly,
+		SourceRole:                 "save_point_payload",
+		SourcePath:                 filepath.Join(repoRoot, ".jvs", "snapshots", firstID),
+		DestinationRole:            "restore_preview_validation",
+		MaterializationDestination: "/preview-only-materialization",
+		CapabilityProbePath:        "/preview-only-probe",
+		PublishedDestination:       repoRoot,
+		CheckedForThisOperation:    true,
+		RequestedEngine:            engine.EngineAuto,
+		EffectiveEngine:            model.EngineReflinkCopy,
+		OptimizedTransfer:          true,
+		PerformanceClass:           transfer.PerformanceClassFastCopy,
+		DegradedReasons:            []string{},
+		Warnings:                   []string{},
+	}}
+	require.NoError(t, restoreplan.Write(repoRoot, plan))
+
+	t.Setenv("JVS_SNAPSHOT_ENGINE", "copy")
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "restore", "--run", planID)
+	require.NoError(t, err)
+
+	_, data := decodeFacadeDataMap(t, stdout)
+	_, primary := assertRestoreRunTransfersDestination(t, data, repoRoot, firstID, repoRoot, "restore-run-primary", ".restore-tmp-")
+	require.Equal(t, "copy", primary["requested_engine"])
+	require.Equal(t, "copy", primary["effective_engine"])
+	require.Equal(t, "normal_copy", primary["performance_class"])
+	require.NotEqual(t, "/preview-only-materialization", primary["materialization_destination"])
+	require.NotEqual(t, "/preview-only-probe", primary["capability_probe_path"])
+}
+
+func TestRestoreWholePreviewAndRunHumanOutputShowTransferMethod(t *testing.T) {
+	repoRoot, firstID, _ := setupWholeRestoreImpactRepo(t)
+
+	previewOut, err := executeCommand(createTestRootCmd(), "restore", firstID)
+	require.NoError(t, err)
+	assert.Contains(t, previewOut, "Expected copy method: ")
+	assert.Contains(t, previewOut, "Checked for this preview")
+	planID := restorePlanIDFromHumanOutput(t, previewOut)
+
+	runOut, err := executeCommand(createTestRootCmd(), "restore", "--run", planID)
+	require.NoError(t, err)
+	copyMethodIndex := strings.Index(runOut, "Copy method: ")
+	additionalIndex := strings.Index(runOut, "Additional transfers: 1 source validation; see JSON for details")
+	require.NotEqual(t, -1, copyMethodIndex, runOut)
+	require.NotEqual(t, -1, additionalIndex, runOut)
+	require.Less(t, copyMethodIndex, additionalIndex, runOut)
+	assert.Contains(t, runOut, "Checked for this operation")
+	assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "v1")
+}
+
+func TestRestoreRunPrimaryTransferPrefersRestoreMaterialization(t *testing.T) {
+	transfers := []transfer.Record{
+		{
+			TransferID:       "save-primary",
+			Operation:        "save",
+			Phase:            "materialization",
+			Primary:          true,
+			PerformanceClass: transfer.PerformanceClassFastCopy,
+		},
+		{
+			TransferID:       "restore-run-primary",
+			Operation:        "restore",
+			Phase:            "materialization",
+			Primary:          true,
+			PerformanceClass: transfer.PerformanceClassNormalCopy,
+		},
+	}
+
+	primary := restoreRunPrimaryTransfer(transfers)
+
+	require.NotNil(t, primary)
+	require.Equal(t, "restore-run-primary", primary.TransferID)
+	require.Equal(t, transfer.PerformanceClassNormalCopy, primary.PerformanceClass)
 }
 
 func TestRestoreWholeRunRejectsChangedNewestWithoutMutation(t *testing.T) {
@@ -347,6 +441,7 @@ func TestRestoreWholeSaveFirstPreviewThenRunCreatesSafetySaveThenRestores(t *tes
 	require.Equal(t, firstID, runData["content_source"])
 	require.Equal(t, false, runData["history_changed"])
 	require.Equal(t, false, runData["unsaved_changes"])
+	assertSaveFirstRestoreRunTransfers(t, runData, repoRoot, firstID, repoRoot, "restore-run-primary", ".restore-tmp-")
 	assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "v1")
 
 	historyOut, err := executeCommand(createTestRootCmd(), "history", "to", newest)
@@ -557,6 +652,136 @@ func assertRestorePreviewImpact(t *testing.T, data map[string]any, kind string, 
 	samples, ok := rawImpact["samples"].([]any)
 	require.True(t, ok, "%s samples should be an array: %#v", kind, rawImpact["samples"])
 	assert.Contains(t, samples, sample)
+}
+
+func assertRestoreExpectedPreviewTransfer(t *testing.T, data map[string]any, repoRoot, sourceID string) {
+	t.Helper()
+	assertRestoreExpectedPreviewTransferDestination(t, data, repoRoot, sourceID, repoRoot)
+}
+
+func assertRestoreExpectedPreviewTransferDestination(t *testing.T, data map[string]any, repoRoot, sourceID, publishedDestination string) {
+	t.Helper()
+	primary := assertSingleRestoreTransfer(t, data)
+	require.Equal(t, "restore-preview-validation-primary", primary["transfer_id"])
+	require.Equal(t, "restore", primary["operation"])
+	require.Equal(t, "preview_validation", primary["phase"])
+	require.Equal(t, true, primary["primary"])
+	require.Equal(t, "expected", primary["result_kind"])
+	require.Equal(t, "preview_only", primary["permission_scope"])
+	require.Equal(t, "save_point_payload", primary["source_role"])
+	require.Equal(t, filepath.Join(repoRoot, ".jvs", "snapshots", sourceID), primary["source_path"])
+	require.Equal(t, "restore_preview_validation", primary["destination_role"])
+	require.Contains(t, primary["materialization_destination"], filepath.Join(repoRoot, ".jvs", "restore-preview-"))
+	require.NotEqual(t, repoRoot, primary["materialization_destination"])
+	require.NotEmpty(t, primary["capability_probe_path"])
+	require.Equal(t, publishedDestination, primary["published_destination"])
+	require.Equal(t, true, primary["checked_for_this_operation"])
+	require.Contains(t, []any{"auto", "copy"}, primary["requested_engine"])
+	require.Contains(t, []any{"fast_copy", "normal_copy"}, primary["performance_class"])
+	require.IsType(t, []any{}, primary["degraded_reasons"])
+	require.IsType(t, []any{}, primary["warnings"])
+}
+
+func assertRestoreFinalRunTransfer(t *testing.T, data map[string]any, repoRoot, sourceID string) {
+	t.Helper()
+	assertRestoreRunTransfersDestination(t, data, repoRoot, sourceID, repoRoot, "restore-run-primary", ".restore-tmp-")
+}
+
+func assertRestorePathFinalRunTransfer(t *testing.T, data map[string]any, repoRoot, sourceID, path string) {
+	t.Helper()
+	assertRestoreRunTransfersDestination(t, data, repoRoot, sourceID, filepath.Join(repoRoot, filepath.FromSlash(path)), "restore-path-run-primary", ".restore-path-tmp-")
+}
+
+func assertRestoreRunTransfersDestination(t *testing.T, data map[string]any, repoRoot, sourceID, publishedDestination, transferID, tempMarker string) (map[string]any, map[string]any) {
+	t.Helper()
+	transfers := assertRestoreTransfers(t, data, 2)
+	validation, ok := transfers[0].(map[string]any)
+	require.True(t, ok, "source validation transfer should be an object: %#v", transfers[0])
+	assertRestoreRunSourceValidationTransfer(t, validation, repoRoot, sourceID, publishedDestination)
+	primary, ok := transfers[1].(map[string]any)
+	require.True(t, ok, "restore transfer should be an object: %#v", transfers[1])
+	assertRestoreFinalRunTransferRecord(t, primary, repoRoot, sourceID, publishedDestination, transferID, tempMarker)
+	return validation, primary
+}
+
+func assertRestoreRunSourceValidationTransfer(t *testing.T, record map[string]any, repoRoot, sourceID, publishedDestination string) {
+	t.Helper()
+	require.Equal(t, "restore-run-source-validation", record["transfer_id"])
+	require.Equal(t, "restore", record["operation"])
+	require.Equal(t, "source_validation", record["phase"])
+	require.Equal(t, false, record["primary"])
+	require.Equal(t, "final", record["result_kind"])
+	require.Equal(t, "execution", record["permission_scope"])
+	require.Equal(t, "save_point_payload", record["source_role"])
+	require.Equal(t, filepath.Join(repoRoot, ".jvs", "snapshots", sourceID), record["source_path"])
+	require.Equal(t, "restore_source_validation", record["destination_role"])
+	require.Contains(t, record["materialization_destination"], filepath.Join(repoRoot, ".jvs", "restore-run-validation-"))
+	require.NotEqual(t, repoRoot, record["materialization_destination"])
+	require.NotEmpty(t, record["capability_probe_path"])
+	require.Equal(t, publishedDestination, record["published_destination"])
+	require.Equal(t, true, record["checked_for_this_operation"])
+	require.Contains(t, []any{"auto", "copy"}, record["requested_engine"])
+	require.Contains(t, []any{"fast_copy", "normal_copy"}, record["performance_class"])
+	require.IsType(t, []any{}, record["degraded_reasons"])
+	require.IsType(t, []any{}, record["warnings"])
+}
+
+func assertRestoreFinalRunTransferRecord(t *testing.T, primary map[string]any, repoRoot, sourceID, publishedDestination, transferID, tempMarker string) {
+	t.Helper()
+	require.Equal(t, transferID, primary["transfer_id"])
+	require.Equal(t, "restore", primary["operation"])
+	require.Equal(t, "materialization", primary["phase"])
+	require.Equal(t, true, primary["primary"])
+	require.Equal(t, "final", primary["result_kind"])
+	require.Equal(t, "execution", primary["permission_scope"])
+	require.Equal(t, "save_point_payload", primary["source_role"])
+	require.Equal(t, filepath.Join(repoRoot, ".jvs", "snapshots", sourceID), primary["source_path"])
+	require.Equal(t, "restore_staging", primary["destination_role"])
+	require.Contains(t, primary["materialization_destination"], tempMarker)
+	require.NotEqual(t, repoRoot, primary["materialization_destination"])
+	require.Equal(t, filepath.Dir(repoRoot), primary["capability_probe_path"])
+	require.Equal(t, publishedDestination, primary["published_destination"])
+	require.Equal(t, true, primary["checked_for_this_operation"])
+	require.Contains(t, []any{"auto", "copy"}, primary["requested_engine"])
+	require.Contains(t, []any{"fast_copy", "normal_copy"}, primary["performance_class"])
+	require.IsType(t, []any{}, primary["degraded_reasons"])
+	require.IsType(t, []any{}, primary["warnings"])
+}
+
+func assertSaveFirstRestoreRunTransfers(t *testing.T, data map[string]any, repoRoot, sourceID, publishedDestination, restoreTransferID, tempMarker string) {
+	t.Helper()
+	transfers := assertRestoreTransfers(t, data, 3)
+	validation, ok := transfers[0].(map[string]any)
+	require.True(t, ok, "source validation transfer should be an object: %#v", transfers[0])
+	assertRestoreRunSourceValidationTransfer(t, validation, repoRoot, sourceID, publishedDestination)
+
+	safetySave, ok := transfers[1].(map[string]any)
+	require.True(t, ok, "safety save transfer should be an object: %#v", transfers[1])
+	require.Equal(t, "save-primary", safetySave["transfer_id"])
+	require.Equal(t, "save", safetySave["operation"])
+	require.Equal(t, true, safetySave["primary"])
+	require.Equal(t, "final", safetySave["result_kind"])
+	require.Equal(t, "execution", safetySave["permission_scope"])
+
+	restoreTransfer, ok := transfers[2].(map[string]any)
+	require.True(t, ok, "restore transfer should be an object: %#v", transfers[2])
+	assertRestoreFinalRunTransferRecord(t, restoreTransfer, repoRoot, sourceID, publishedDestination, restoreTransferID, tempMarker)
+}
+
+func assertSingleRestoreTransfer(t *testing.T, data map[string]any) map[string]any {
+	t.Helper()
+	transfers := assertRestoreTransfers(t, data, 1)
+	primary, ok := transfers[0].(map[string]any)
+	require.True(t, ok, "primary transfer should be an object: %#v", transfers[0])
+	return primary
+}
+
+func assertRestoreTransfers(t *testing.T, data map[string]any, expected int) []any {
+	t.Helper()
+	transfers, ok := data["transfers"].([]any)
+	require.True(t, ok, "transfers should be an array: %#v", data["transfers"])
+	require.Len(t, transfers, expected)
+	return transfers
 }
 
 func assertRestorePlanFileExists(t *testing.T, repoRoot, planID string) {

@@ -144,18 +144,73 @@ func TestTransferPlanner_DegradesReflinkPairOnce(t *testing.T) {
 	require.Equal(t, 1, selector.calls)
 }
 
+func TestTransferPlannerUsesCapabilityProbePathForMissingMaterializationDestinationPairProbe(t *testing.T) {
+	capabilityPath := t.TempDir()
+	sourcePath := filepath.Join(t.TempDir(), "workspace")
+	materializationDestination := filepath.Join(capabilityPath, ".save.staging-1234")
+	prober := &fakeCapabilityProber{
+		report: &engine.CapabilityReport{
+			ProbePath: capabilityPath,
+			Write: engine.Capability{
+				Available:  true,
+				Supported:  true,
+				Confidence: engine.CapabilityConfirmed,
+			},
+			Copy: engine.Capability{
+				Available:  true,
+				Supported:  true,
+				Confidence: engine.CapabilityConfirmed,
+			},
+			Reflink: engine.Capability{
+				Available:  true,
+				Supported:  true,
+				Confidence: engine.CapabilityConfirmed,
+			},
+			RecommendedEngine: model.EngineReflinkCopy,
+		},
+		pair: &engine.TransferPairReport{
+			Reflink: engine.Capability{
+				Available:  true,
+				Supported:  true,
+				Confidence: engine.CapabilityConfirmed,
+			},
+		},
+	}
+
+	plan, err := engine.TransferPlanner{Prober: prober}.PlanTransfer(engine.TransferPlanRequest{
+		SourcePath:      sourcePath,
+		DestinationPath: materializationDestination,
+		CapabilityPath:  capabilityPath,
+		RequestedEngine: model.EngineReflinkCopy,
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, model.EngineReflinkCopy, plan.TransferEngine)
+	require.True(t, plan.OptimizedTransfer)
+	require.Equal(t, 1, prober.pairCalls)
+	require.Equal(t, sourcePath, prober.pairSourcePath)
+	require.Equal(t, capabilityPath, prober.pairDestinationPath)
+	require.Empty(t, plan.DegradedReasons)
+}
+
 type fakeCapabilityProber struct {
-	report    *engine.CapabilityReport
-	pair      *engine.TransferPairReport
-	pairCalls int
+	report              *engine.CapabilityReport
+	pair                *engine.TransferPairReport
+	capabilityPath      string
+	pairSourcePath      string
+	pairDestinationPath string
+	pairCalls           int
 }
 
 func (p *fakeCapabilityProber) ProbeCapabilities(path string, writeProbe bool) (*engine.CapabilityReport, error) {
+	p.capabilityPath = path
 	return p.report, nil
 }
 
 func (p *fakeCapabilityProber) ProbeTransferPair(sourcePath, destinationPath string) (*engine.TransferPairReport, error) {
 	p.pairCalls++
+	p.pairSourcePath = sourcePath
+	p.pairDestinationPath = destinationPath
 	return p.pair, nil
 }
 

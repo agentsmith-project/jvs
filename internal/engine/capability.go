@@ -312,7 +312,8 @@ func (p TransferPlanner) PlanTransfer(req TransferPlanRequest) (*TransferPlan, e
 	}
 
 	if plan.TransferEngine == model.EngineReflinkCopy {
-		pair, err := prober.ProbeTransferPair(req.SourcePath, req.DestinationPath)
+		pairDestinationPath := transferPairProbeDestination(req, report)
+		pair, err := prober.ProbeTransferPair(req.SourcePath, pairDestinationPath)
 		if err != nil {
 			plan.degradeToCopy(fmt.Sprintf("reflink-copy source/destination probe failed: %v", err))
 		} else {
@@ -334,6 +335,37 @@ func (p TransferPlanner) PlanTransfer(req TransferPlanRequest) (*TransferPlan, e
 	plan.DegradedReasons = uniqueStrings(plan.DegradedReasons)
 	plan.Warnings = uniqueStrings(plan.Warnings)
 	return plan, nil
+}
+
+func transferPairProbeDestination(req TransferPlanRequest, report *CapabilityReport) string {
+	destination := req.DestinationPath
+	if destination == "" {
+		return firstNonEmpty(reportProbePath(report), req.CapabilityPath)
+	}
+	info, err := os.Stat(destination)
+	if err == nil && info.IsDir() {
+		return destination
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return destination
+	}
+	return firstNonEmpty(reportProbePath(report), req.CapabilityPath, destination)
+}
+
+func reportProbePath(report *CapabilityReport) string {
+	if report == nil {
+		return ""
+	}
+	return report.ProbePath
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (p *TransferPlan) degradeToCopy(reason string) {

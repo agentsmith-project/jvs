@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"github.com/agentsmith-project/jvs/internal/audit"
+	"github.com/agentsmith-project/jvs/internal/engine"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshot/publishstate"
 	"github.com/agentsmith-project/jvs/internal/snapshotpayload"
+	"github.com/agentsmith-project/jvs/internal/transfer"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/agentsmith-project/jvs/pkg/fsutil"
 	"github.com/agentsmith-project/jvs/pkg/model"
@@ -22,15 +24,20 @@ import (
 
 // Manager handles worktree CRUD operations.
 type Manager struct {
-	repoRoot string
+	repoRoot        string
+	transferPlanner transfer.EnginePlanner
+	cloneToNew      func(engine.Engine, string, string) (*engine.CloneResult, error)
+	lastTransfer    *transfer.Record
 }
 
 // StartedFromSnapshotRequest describes a new workspace folder whose initial
 // files come from a save point.
 type StartedFromSnapshotRequest struct {
-	Name       string
-	Folder     string
-	SnapshotID model.SnapshotID
+	Name            string
+	Folder          string
+	SnapshotID      model.SnapshotID
+	RequestedEngine model.EngineType
+	TransferPlanner transfer.EnginePlanner
 }
 
 var (
@@ -40,7 +47,20 @@ var (
 
 // NewManager creates a new worktree manager.
 func NewManager(repoRoot string) *Manager {
-	return &Manager{repoRoot: repoRoot}
+	return &Manager{
+		repoRoot:        repoRoot,
+		transferPlanner: engine.TransferPlanner{},
+		cloneToNew:      engine.CloneToNew,
+	}
+}
+
+// LastTransferRecord returns the final primary transfer from the most recent
+// successful filesystem-aware workspace materialization handled by this manager.
+func (m *Manager) LastTransferRecord() (transfer.Record, bool) {
+	if m == nil || m.lastTransfer == nil {
+		return transfer.Record{}, false
+	}
+	return *m.lastTransfer, true
 }
 
 // Create creates a new worktree with the given name.
@@ -242,6 +262,8 @@ func (m *Manager) createMaterializedSnapshotWorktreeLocked(name string, snapshot
 }
 
 func (m *Manager) createStartedFromSnapshotLocked(req StartedFromSnapshotRequest, cloneFunc func(src, dst string) error) (*model.WorktreeConfig, error) {
+	m.lastTransfer = nil
+
 	name, folder, err := normalizeStartedFromRequest(req)
 	if err != nil {
 		return nil, err
@@ -273,8 +295,41 @@ func (m *Manager) createStartedFromSnapshotLocked(req StartedFromSnapshotRequest
 		}
 	}()
 
-	if err := snapshotpayload.MaterializeToNew(snapshotDir, stagingPath, opts, cloneFunc); err != nil {
+	materializeCloneFunc := cloneFunc
+	var transferRecord *transfer.Record
+	var transferIntent *transfer.Intent
+	var transferPlan *engine.TransferPlan
+	var runtimeResult *engine.CloneResult
+	if req.RequestedEngine != "" || req.TransferPlanner != nil || materializeCloneFunc == nil {
+		intent := m.workspaceNewPrimaryTransferIntent(req, snapshotDir, stagingPath, payloadPath)
+		planner := req.TransferPlanner
+		if planner == nil {
+			planner = m.transferPlanner
+		}
+		plan, err := transfer.PlanIntent(planner, intent)
+		if err != nil {
+			return nil, fmt.Errorf("plan workspace transfer: %w", err)
+		}
+		transferIntent = &intent
+		transferPlan = plan
+		cloneToNew := m.cloneToNew
+		if cloneToNew == nil {
+			cloneToNew = engine.CloneToNew
+		}
+		eng := engine.NewEngine(plan.TransferEngine)
+		materializeCloneFunc = func(src, dst string) error {
+			var err error
+			runtimeResult, err = cloneToNew(eng, src, dst)
+			return err
+		}
+	}
+
+	if err := snapshotpayload.MaterializeToNew(snapshotDir, stagingPath, opts, materializeCloneFunc); err != nil {
 		return nil, fmt.Errorf("copy save point contents: %w", err)
+	}
+	if transferIntent != nil {
+		record := transfer.RecordFromPlanAndRuntime(*transferIntent, transferPlan, runtimeResult)
+		transferRecord = &record
 	}
 	if err := validateStartedFromMaterializedPayload(stagingPath); err != nil {
 		return nil, fmt.Errorf("validate save point contents: %w", err)
@@ -336,7 +391,29 @@ func (m *Manager) createStartedFromSnapshotLocked(req StartedFromSnapshotRequest
 		return nil, fmt.Errorf("write config: %w", err)
 	}
 
+	if transferRecord != nil {
+		m.lastTransfer = transferRecord
+	}
+
 	return cfg, nil
+}
+
+func (m *Manager) workspaceNewPrimaryTransferIntent(req StartedFromSnapshotRequest, snapshotDir, stagingPath, payloadPath string) transfer.Intent {
+	return transfer.Intent{
+		TransferID:                 "workspace-new-primary",
+		Operation:                  "workspace_new",
+		Phase:                      "materialization",
+		Primary:                    true,
+		ResultKind:                 transfer.ResultKindFinal,
+		PermissionScope:            transfer.PermissionScopeExecution,
+		SourceRole:                 "save_point_payload",
+		SourcePath:                 snapshotDir,
+		DestinationRole:            "workspace_folder",
+		MaterializationDestination: stagingPath,
+		CapabilityProbePath:        filepath.Dir(payloadPath),
+		PublishedDestination:       payloadPath,
+		RequestedEngine:            req.RequestedEngine,
+	}
 }
 
 func (m *Manager) loadPublishedSnapshotForMaterialization(snapshotID model.SnapshotID) (*model.Descriptor, string, error) {

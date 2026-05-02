@@ -6,6 +6,7 @@ import (
 	"time"
 
 	clidoctor "github.com/agentsmith-project/jvs/internal/doctor"
+	"github.com/agentsmith-project/jvs/internal/transfer"
 	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
@@ -17,6 +18,7 @@ type publicSavePointRecord struct {
 }
 
 type publicSavePointCreatedRecord struct {
+	transfer.Data
 	SavePointID          string                     `json:"save_point_id"`
 	Workspace            string                     `json:"workspace"`
 	Message              string                     `json:"message"`
@@ -89,8 +91,9 @@ func publicSavePoints(descs []*model.Descriptor) []publicSavePointRecord {
 	return records
 }
 
-func publicSavePointCreated(desc *model.Descriptor, unsavedChanges bool) publicSavePointCreatedRecord {
+func publicSavePointCreated(desc *model.Descriptor, unsavedChanges bool, transferData transfer.Data) publicSavePointCreatedRecord {
 	record := publicSavePointCreatedRecord{
+		Data:            transferData,
 		SavePointID:     string(desc.SnapshotID),
 		Workspace:       desc.WorktreeName,
 		Message:         desc.Note,

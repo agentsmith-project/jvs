@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/agentsmith-project/jvs/internal/restore"
 	"github.com/agentsmith-project/jvs/internal/restoreplan"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
+	"github.com/agentsmith-project/jvs/internal/transfer"
 	"github.com/agentsmith-project/jvs/internal/worktree"
 	"github.com/agentsmith-project/jvs/pkg/fsutil"
 	"github.com/agentsmith-project/jvs/pkg/model"
@@ -373,6 +375,69 @@ func TestWholeRecoveryRollbackRestoresFilesMetadataAndResolvesPlan(t *testing.T)
 	assertCleanupFieldContains(t, cleanupAfterRollback, "reclaimable_save_points", sourceID)
 }
 
+func TestRecoveryRollbackBackupRestoreSurfacesTransferInHumanAndJSON(t *testing.T) {
+	t.Run("human", func(t *testing.T) {
+		_, sourceID, _ := setupWholeRecoveryRepo(t)
+		recoveryPlanID := createWholeRecoveryFailure(t, sourceID)
+
+		rollbackOut, err := executeCommand(createTestRootCmd(), "recovery", "rollback", recoveryPlanID)
+		require.NoError(t, err)
+		assert.Contains(t, rollbackOut, "Recovery rollback completed.")
+		assert.Contains(t, rollbackOut, "Copy method:")
+		assert.Contains(t, rollbackOut, "Checked for this operation")
+		assertRecoveryOutputOmitsInternalVocabulary(t, rollbackOut)
+	})
+
+	t.Run("json", func(t *testing.T) {
+		repoRoot, sourceID, _ := setupWholeRecoveryRepo(t)
+		recoveryPlanID := createWholeRecoveryFailure(t, sourceID)
+
+		jsonOut, err := executeCommand(createTestRootCmd(), "--json", "recovery", "rollback", recoveryPlanID)
+		require.NoError(t, err)
+		env, data := decodeFacadeDataMap(t, jsonOut)
+		require.True(t, env.OK, jsonOut)
+		assert.Equal(t, "recovery rollback", env.Command)
+		transfers, ok := data["transfers"].([]any)
+		require.True(t, ok, "transfers should be an array: %#v", data["transfers"])
+		require.Len(t, transfers, 1)
+		primary, ok := transfers[0].(map[string]any)
+		require.True(t, ok, "primary transfer should be an object: %#v", transfers[0])
+		assert.Equal(t, "recovery_rollback", primary["operation"])
+		assert.Equal(t, "backup_restore", primary["phase"])
+		assert.Equal(t, true, primary["primary"])
+		assert.Equal(t, "final", primary["result_kind"])
+		assert.Equal(t, "execution", primary["permission_scope"])
+		assert.Equal(t, "recovery_backup_payload", primary["source_role"])
+		assert.Contains(t, primary["source_path"], ".restore-backup-")
+		assert.Equal(t, "recovery_restore_staging", primary["destination_role"])
+		assert.Contains(t, primary["materialization_destination"], ".recovery-restore-tmp-")
+		assert.Equal(t, filepath.Join(repoRoot, "main"), primary["published_destination"])
+		assert.Equal(t, true, primary["checked_for_this_operation"])
+		assert.Contains(t, []any{"fast_copy", "normal_copy"}, primary["performance_class"])
+	})
+}
+
+func TestRecoveryRollbackBackupRestorePersistsTransferInRecoveryPlan(t *testing.T) {
+	repoRoot, sourceID, _ := setupWholeRecoveryRepo(t)
+	recoveryPlanID := createWholeRecoveryFailure(t, sourceID)
+
+	rollbackOut, err := executeCommand(createTestRootCmd(), "recovery", "rollback", recoveryPlanID)
+	require.NoError(t, err, rollbackOut)
+
+	plan, err := recovery.NewManager(repoRoot).Load(recoveryPlanID)
+	require.NoError(t, err)
+	require.Len(t, plan.Transfers, 1)
+	assert.Equal(t, "recovery-backup-restore-primary", plan.Transfers[0].TransferID)
+	assert.Equal(t, "recovery_rollback", plan.Transfers[0].Operation)
+	assert.Equal(t, "backup_restore", plan.Transfers[0].Phase)
+	assert.NotEmpty(t, plan.Transfers[0].MaterializationDestination)
+
+	rawPlan := readRecoveryPlanFileMap(t, repoRoot, recoveryPlanID)
+	rawTransfers, ok := rawPlan["transfers"].([]any)
+	require.True(t, ok, "recovery plan file should persist transfers: %#v", rawPlan)
+	require.Len(t, rawTransfers, 1)
+}
+
 func TestRecoveryRollbackResolvesAfterBackupRestoreAppliedButPlanWriteFailed(t *testing.T) {
 	repoRoot, sourceID, originalID := setupWholeRecoveryRepo(t)
 	previewOut, err := executeCommand(createTestRootCmd(), "restore", sourceID)
@@ -621,6 +686,7 @@ func TestRecoveryRollbackWithEvidenceAndMissingBackupResolvesWithoutMutation(t *
 	assert.Contains(t, rollbackOut, "Recovery rollback completed.")
 	assert.Contains(t, rollbackOut, "No recovery backup was present.")
 	assert.NotContains(t, rollbackOut, "Recovery backup removed.")
+	assert.NotContains(t, rollbackOut, "Copy method:")
 	assertRecoveryOutputOmitsInternalVocabulary(t, rollbackOut)
 
 	mainPath := filepath.Join(repoRoot, "main")
@@ -635,6 +701,151 @@ func TestRecoveryRollbackWithEvidenceAndMissingBackupResolvesWithoutMutation(t *
 	plan, err := recovery.NewManager(repoRoot).Load(planID)
 	require.NoError(t, err)
 	assert.Equal(t, recovery.StatusResolved, plan.Status)
+}
+
+func TestRecoveryRollbackNoCopyJSONOmitsTransfers(t *testing.T) {
+	repoRoot, sourceID, _ := setupWholeRecoveryRepo(t)
+	planID := createCrashRecoveryPlanWithMissingBackup(t, repoRoot, sourceID)
+
+	jsonOut, err := executeCommand(createTestRootCmd(), "--json", "recovery", "rollback", planID)
+	require.NoError(t, err)
+	env, data := decodeFacadeDataMap(t, jsonOut)
+	require.True(t, env.OK, jsonOut)
+	assert.Equal(t, "recovery rollback", env.Command)
+	assert.NotContains(t, data, "transfers")
+
+	plan, err := recovery.NewManager(repoRoot).Load(planID)
+	require.NoError(t, err)
+	assert.Empty(t, plan.Transfers)
+	assert.NotContains(t, readRecoveryPlanFileMap(t, repoRoot, planID), "transfers")
+}
+
+func TestRecoveryRollbackPreMutationWithBackupJSONAndPlanOmitTransfers(t *testing.T) {
+	repoRoot, sourceID, _ := setupWholeRecoveryRepo(t)
+	planID := createCrashRecoveryPlanWithMissingBackup(t, repoRoot, sourceID)
+	plan, err := recovery.NewManager(repoRoot).Load(planID)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(plan.Backup.Path, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(plan.Backup.Path, "original.txt"), []byte("original"), 0644))
+
+	jsonOut, err := executeCommand(createTestRootCmd(), "--json", "recovery", "rollback", planID)
+	require.NoError(t, err)
+	env, data := decodeFacadeDataMap(t, jsonOut)
+	require.True(t, env.OK, jsonOut)
+	assert.Equal(t, "recovery rollback", env.Command)
+	assert.Equal(t, true, data["backup_removed"])
+	assert.NotContains(t, data, "transfers")
+	assert.NoDirExists(t, plan.Backup.Path)
+
+	plan, err = recovery.NewManager(repoRoot).Load(planID)
+	require.NoError(t, err)
+	assert.Empty(t, plan.Transfers)
+	assert.NotContains(t, readRecoveryPlanFileMap(t, repoRoot, planID), "transfers")
+}
+
+func TestRecoveryResumeNoBackupCopySurfacesRestoreTransfer(t *testing.T) {
+	t.Run("human", func(t *testing.T) {
+		repoRoot, sourceID, _ := setupWholeRecoveryRepo(t)
+		planID := createCrashRecoveryPlanWithMissingBackup(t, repoRoot, sourceID)
+
+		resumeOut, err := executeCommand(createTestRootCmd(), "recovery", "resume", planID)
+		require.NoError(t, err)
+		assert.Contains(t, resumeOut, "Recovery resume completed.")
+		assert.Contains(t, resumeOut, "Copy method:")
+		assert.Contains(t, resumeOut, "Checked for this operation")
+		assertRecoveryOutputOmitsInternalVocabulary(t, resumeOut)
+	})
+
+	t.Run("json", func(t *testing.T) {
+		t.Setenv("JVS_SNAPSHOT_ENGINE", "")
+		t.Setenv("JVS_ENGINE", "")
+		repoRoot, sourceID, _ := setupWholeRecoveryRepo(t)
+		planID := createCrashRecoveryPlanWithMissingBackup(t, repoRoot, sourceID)
+
+		jsonOut, err := executeCommand(createTestRootCmd(), "--json", "recovery", "resume", planID)
+		require.NoError(t, err)
+		env, data := decodeFacadeDataMap(t, jsonOut)
+		require.True(t, env.OK, jsonOut)
+		assert.Equal(t, "recovery resume", env.Command)
+		transfers := requireRecoveryTransfers(t, data, 1)
+		restoreTransfer := requireTransferMap(t, transfers[0])
+		assertRecoveryResumeRestoreTransfer(t, restoreTransfer, repoRoot, sourceID)
+	})
+}
+
+func TestRecoveryResumeWithBackupRestoreSurfacesBothTransfersInJSON(t *testing.T) {
+	t.Setenv("JVS_SNAPSHOT_ENGINE", "")
+	t.Setenv("JVS_ENGINE", "")
+	repoRoot, sourceID, _ := setupWholeRecoveryRepo(t)
+	planID := createWholeResumePlanRequiringBackupRestore(t, repoRoot, sourceID)
+
+	jsonOut, err := executeCommand(createTestRootCmd(), "--json", "recovery", "resume", planID)
+	require.NoError(t, err)
+	env, data := decodeFacadeDataMap(t, jsonOut)
+	require.True(t, env.OK, jsonOut)
+	assert.Equal(t, "recovery resume", env.Command)
+	transfers := requireRecoveryTransfers(t, data, 2)
+	backupTransfer := requireTransferMap(t, transfers[0])
+	assert.Equal(t, "recovery-backup-restore-primary", backupTransfer["transfer_id"])
+	assert.Equal(t, "recovery_resume", backupTransfer["operation"])
+	assert.Equal(t, "backup_restore", backupTransfer["phase"])
+	assert.Equal(t, true, backupTransfer["primary"])
+	assert.Equal(t, "final", backupTransfer["result_kind"])
+	assert.Equal(t, "execution", backupTransfer["permission_scope"])
+	assert.Equal(t, "recovery_backup_payload", backupTransfer["source_role"])
+	assert.Contains(t, backupTransfer["source_path"], ".restore-backup-")
+	assert.Equal(t, "recovery_restore_staging", backupTransfer["destination_role"])
+	assert.Contains(t, backupTransfer["materialization_destination"], ".recovery-restore-tmp-")
+	assert.Equal(t, filepath.Join(repoRoot, "main"), backupTransfer["published_destination"])
+	assert.Equal(t, true, backupTransfer["checked_for_this_operation"])
+	assert.Equal(t, "auto", backupTransfer["requested_engine"])
+	assert.Contains(t, []any{"fast_copy", "normal_copy"}, backupTransfer["performance_class"])
+
+	restoreTransfer := requireTransferMap(t, transfers[1])
+	assertRecoveryResumeRestoreTransfer(t, restoreTransfer, repoRoot, sourceID)
+
+	plan, err := recovery.NewManager(repoRoot).Load(planID)
+	require.NoError(t, err)
+	require.Len(t, plan.Transfers, 2)
+	assert.Equal(t, "recovery-backup-restore-primary", plan.Transfers[0].TransferID)
+	assert.Equal(t, "restore-run-primary", plan.Transfers[1].TransferID)
+	rawTransfers, ok := readRecoveryPlanFileMap(t, repoRoot, planID)["transfers"].([]any)
+	require.True(t, ok, "recovery plan file should persist transfers")
+	require.Len(t, rawTransfers, 2)
+}
+
+func TestRecoveryResumeWithBackupRestoreHumanShowsPrimaryAndAdditionalTransfers(t *testing.T) {
+	repoRoot, sourceID, _ := setupWholeRecoveryRepo(t)
+	planID := createWholeResumePlanRequiringBackupRestore(t, repoRoot, sourceID)
+
+	resumeOut, err := executeCommand(createTestRootCmd(), "recovery", "resume", planID)
+	require.NoError(t, err, resumeOut)
+	assert.Contains(t, resumeOut, "Recovery resume completed.")
+	assert.Contains(t, resumeOut, "Copy method:")
+	assert.Equal(t, 1, strings.Count(resumeOut, "Copy method:"), resumeOut)
+	assert.Contains(t, resumeOut, "Additional transfers: 1 backup restore; see JSON for details")
+	assertRecoveryOutputOmitsInternalVocabulary(t, resumeOut)
+}
+
+func TestRecoveryResumePrimaryTransferPrefersRestoreMaterialization(t *testing.T) {
+	transfers := []transfer.Record{
+		{
+			TransferID: "recovery-backup-restore-primary",
+			Operation:  "recovery_resume",
+			Phase:      "backup_restore",
+			Primary:    true,
+		},
+		{
+			TransferID: "restore-run-primary",
+			Operation:  "restore",
+			Phase:      "materialization",
+			Primary:    true,
+		},
+	}
+
+	primary := recoveryResumePrimaryTransfer(transfers)
+	require.NotNil(t, primary)
+	assert.Equal(t, "restore-run-primary", primary.TransferID)
 }
 
 func TestRecoveryResumeWithEvidenceAndMissingBackupRetriesRestore(t *testing.T) {
@@ -957,6 +1168,118 @@ func createPathRecoveryFailure(t *testing.T, sourceID string) string {
 	assert.Contains(t, err.Error(), "Recovery plan:")
 	assertRecoveryOutputOmitsInternalVocabulary(t, err.Error())
 	return recoveryPlanIDFromText(t, err.Error())
+}
+
+func createWholeRecoveryFailure(t *testing.T, sourceID string) string {
+	t.Helper()
+	previewOut, err := executeCommand(createTestRootCmd(), "restore", sourceID)
+	require.NoError(t, err)
+	restorePlanID := restorePlanIDFromHumanOutput(t, previewOut)
+	restoreHooks := restore.SetHooksForTest(restore.Hooks{
+		UpdateHead: func(wtMgr *worktree.Manager, worktreeName string, snapshotID model.SnapshotID) error {
+			if err := wtMgr.UpdateHead(worktreeName, snapshotID); err != nil {
+				return err
+			}
+			return errors.New("injected update metadata failure")
+		},
+	})
+	_, err = executeCommand(createTestRootCmd(), "restore", "--run", restorePlanID)
+	restoreHooks()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Recovery plan:")
+	assertRecoveryOutputOmitsInternalVocabulary(t, err.Error())
+	return recoveryPlanIDFromText(t, err.Error())
+}
+
+func createWholeResumePlanRequiringBackupRestore(t *testing.T, repoRoot, sourceID string) string {
+	t.Helper()
+	r, err := repo.Discover(repoRoot)
+	require.NoError(t, err)
+	cfg, err := worktree.NewManager(repoRoot).Get("main")
+	require.NoError(t, err)
+	mainPath := filepath.Join(repoRoot, "main")
+	preEvidence, err := restoreplan.WorkspaceEvidence(repoRoot, "main")
+	require.NoError(t, err)
+	backupPath := mainPath + ".restore-backup-transfer"
+	require.NoError(t, os.MkdirAll(backupPath, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(backupPath, "original.txt"), []byte("original"), 0644))
+	require.NoError(t, os.Remove(filepath.Join(mainPath, "original.txt")))
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "interrupted.txt"), []byte("interrupted"), 0644))
+	recoveryEvidence, err := restoreplan.WorkspaceEvidence(repoRoot, "main")
+	require.NoError(t, err)
+
+	planID := "RP-" + string(model.NewSnapshotID())
+	now := time.Now().UTC()
+	plan := recovery.Plan{
+		SchemaVersion:          recovery.SchemaVersion,
+		RepoID:                 r.RepoID,
+		PlanID:                 planID,
+		Status:                 recovery.StatusActive,
+		Operation:              recovery.OperationRestore,
+		RestorePlanID:          "restore-preview",
+		Workspace:              "main",
+		Folder:                 mainPath,
+		SourceSavePoint:        model.SnapshotID(sourceID),
+		CreatedAt:              now,
+		UpdatedAt:              now,
+		PreWorktreeState:       recovery.WorktreeState{Name: cfg.Name, RealPath: cfg.RealPath, BaseSnapshotID: cfg.BaseSnapshotID, HeadSnapshotID: cfg.HeadSnapshotID, LatestSnapshotID: cfg.LatestSnapshotID, PathSources: cfg.PathSources.Clone(), CreatedAt: cfg.CreatedAt},
+		Backup:                 recovery.Backup{Path: backupPath, Scope: recovery.BackupScopeWhole, State: recovery.BackupStateRequired},
+		Phase:                  recovery.PhaseBackupRequired,
+		PreRecoveryEvidence:    preEvidence,
+		RecoveryEvidence:       recoveryEvidence,
+		RecommendedNextCommand: "jvs recovery resume " + planID,
+	}
+	require.NoError(t, recovery.NewManager(repoRoot).Write(&plan))
+	return planID
+}
+
+func requireRecoveryTransfers(t *testing.T, data map[string]any, expected int) []any {
+	t.Helper()
+	transfers, ok := data["transfers"].([]any)
+	require.True(t, ok, "transfers should be an array: %#v", data["transfers"])
+	require.Len(t, transfers, expected)
+	return transfers
+}
+
+func requireTransferMap(t *testing.T, transfer any) map[string]any {
+	t.Helper()
+	record, ok := transfer.(map[string]any)
+	require.True(t, ok, "transfer should be an object: %#v", transfer)
+	return record
+}
+
+func assertRecoveryResumeRestoreTransfer(t *testing.T, record map[string]any, repoRoot, sourceID string) {
+	t.Helper()
+	mainPath := filepath.Join(repoRoot, "main")
+	assert.Equal(t, "restore-run-primary", record["transfer_id"])
+	assert.Equal(t, "restore", record["operation"])
+	assert.Equal(t, "materialization", record["phase"])
+	assert.Equal(t, true, record["primary"])
+	assert.Equal(t, "final", record["result_kind"])
+	assert.Equal(t, "execution", record["permission_scope"])
+	assert.Equal(t, "save_point_payload", record["source_role"])
+	assert.Equal(t, filepath.Join(repoRoot, ".jvs", "snapshots", sourceID), record["source_path"])
+	assert.Equal(t, "restore_staging", record["destination_role"])
+	assert.Contains(t, record["materialization_destination"], ".restore-tmp-")
+	assert.NotEqual(t, mainPath, record["materialization_destination"])
+	assert.Equal(t, repoRoot, record["capability_probe_path"])
+	assert.Equal(t, mainPath, record["published_destination"])
+	assert.Equal(t, true, record["checked_for_this_operation"])
+	assert.Equal(t, "auto", record["requested_engine"])
+	assert.Contains(t, []any{"fast_copy", "normal_copy"}, record["performance_class"])
+	assert.IsType(t, []any{}, record["degraded_reasons"])
+	assert.IsType(t, []any{}, record["warnings"])
+}
+
+func readRecoveryPlanFileMap(t *testing.T, repoRoot, planID string) map[string]any {
+	t.Helper()
+	path, err := repo.RecoveryPlanPath(repoRoot, planID)
+	require.NoError(t, err)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	return raw
 }
 
 func recoveryPlanIDFromText(t *testing.T, value string) string {

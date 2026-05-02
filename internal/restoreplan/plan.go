@@ -20,6 +20,7 @@ import (
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/internal/snapshotpayload"
+	"github.com/agentsmith-project/jvs/internal/transfer"
 	"github.com/agentsmith-project/jvs/internal/worktree"
 	"github.com/agentsmith-project/jvs/pkg/fsutil"
 	"github.com/agentsmith-project/jvs/pkg/model"
@@ -37,6 +38,7 @@ const (
 )
 
 var planCapacityGate = capacitygate.Default()
+var planTransferPlanner transfer.EnginePlanner = engine.TransferPlanner{}
 
 type Options struct {
 	DiscardUnsaved bool `json:"discard_unsaved,omitempty"`
@@ -71,6 +73,7 @@ type Plan struct {
 	ExpectedPathEvidence    string             `json:"expected_path_evidence,omitempty"`
 	Options                 Options            `json:"options,omitempty"`
 	ManagedFiles            ManagedFilesImpact `json:"managed_files"`
+	Transfers               []transfer.Record  `json:"transfers,omitempty"`
 	RunCommand              string             `json:"run_command"`
 	DecisionOnly            bool               `json:"decision_only,omitempty"`
 }
@@ -91,6 +94,14 @@ func SetCapacityGateForTest(gate capacitygate.Gate) func() {
 	planCapacityGate = gate
 	return func() {
 		planCapacityGate = previous
+	}
+}
+
+func SetTransferPlannerForTest(planner transfer.EnginePlanner) func() {
+	previous := planTransferPlanner
+	planTransferPlanner = planner
+	return func() {
+		planTransferPlanner = previous
 	}
 }
 
@@ -150,10 +161,12 @@ func buildWholePreviewPlan(repoRoot, workspaceName string, sourceID model.Snapsh
 	if _, err := checkPreviewCapacity(repoRoot, folder, workspaceName, sourceID, "", sourceState.SnapshotDir, sourceState.Descriptor); err != nil {
 		return nil, err
 	}
-	if err := ValidateSource(repoRoot, workspaceName, &Plan{SourceSavePoint: sourceID}, engineType); err != nil {
+	sourceRoot, cleanup, transferRecord, err := validateSourcePayloadWithTransfer(repoRoot, workspaceName, sourceID, engineType, restorePreviewValidationTransferOptions(folder))
+	if err != nil {
 		return nil, err
 	}
-	impact, err := ComputeManagedImpact(repoRoot, workspaceName, sourceID, engineType)
+	defer cleanup()
+	impact, err := computeManagedImpactFromSourceRoot(repoRoot, workspaceName, sourceRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -173,6 +186,7 @@ func buildWholePreviewPlan(repoRoot, workspaceName string, sourceID model.Snapsh
 		ExpectedFolderEvidence:  evidence,
 		Options:                 options,
 		ManagedFiles:            impact,
+		Transfers:               transferRecordsFrom(transferRecord),
 	}
 	return plan, nil
 }
@@ -237,10 +251,16 @@ func buildPathPreviewPlan(repoRoot, workspaceName string, sourceID model.Snapsho
 	if _, err := checkPreviewCapacity(repoRoot, folder, workspaceName, sourceID, path, sourceState.SnapshotDir, sourceState.Descriptor); err != nil {
 		return nil, err
 	}
-	if err := ValidateSourcePath(repoRoot, workspaceName, &Plan{SourceSavePoint: sourceID, Path: path}, engineType); err != nil {
+	publishedDestination := filepath.Join(folder, filepath.FromSlash(path))
+	sourceRoot, cleanup, transferRecord, err := validateSourcePayloadWithTransfer(repoRoot, workspaceName, sourceID, engineType, restorePreviewValidationTransferOptions(publishedDestination))
+	if err != nil {
 		return nil, err
 	}
-	impact, err := ComputeManagedPathImpact(repoRoot, workspaceName, sourceID, path, engineType)
+	defer cleanup()
+	if err := validateSourcePathExists(sourceRoot, path); err != nil {
+		return nil, sourceNotRestorableError(err)
+	}
+	impact, err := computeManagedPathImpactFromSourceRoot(repoRoot, workspaceName, sourceRoot, path)
 	if err != nil {
 		return nil, err
 	}
@@ -261,6 +281,7 @@ func buildPathPreviewPlan(repoRoot, workspaceName string, sourceID model.Snapsho
 		ExpectedPathEvidence:    pathEvidence,
 		Options:                 options,
 		ManagedFiles:            impact,
+		Transfers:               transferRecordsFrom(transferRecord),
 	}
 	return plan, nil
 }
@@ -399,40 +420,113 @@ func ValidatePathTarget(repoRoot, workspaceName string, plan *Plan) error {
 	return nil
 }
 
-func ValidateSource(repoRoot, workspaceName string, plan *Plan, engineType model.EngineType) error {
+func ValidateSource(repoRoot, workspaceName string, plan *Plan, engineType model.EngineType) (*transfer.Record, error) {
 	if plan == nil {
-		return fmt.Errorf("restore plan is required")
+		return nil, fmt.Errorf("restore plan is required")
 	}
 	if plan.SourceSavePoint == "" {
-		return sourceNotRestorableError(fmt.Errorf("source save point is required"))
+		return nil, sourceNotRestorableError(fmt.Errorf("source save point is required"))
 	}
-	_, cleanup, err := validateSourcePayload(repoRoot, workspaceName, plan.SourceSavePoint, engineType)
+	publishedDestination, err := restoreValidationPublishedDestination(repoRoot, workspaceName, plan)
 	if err != nil {
-		return sourceNotRestorableError(err)
+		return nil, err
+	}
+	_, cleanup, transferRecord, err := validateSourcePayloadWithTransfer(repoRoot, workspaceName, plan.SourceSavePoint, engineType, restoreRunValidationTransferOptions(publishedDestination))
+	if err != nil {
+		return nil, sourceNotRestorableError(err)
 	}
 	defer cleanup()
-	return nil
+	return transferRecord, nil
 }
 
-func ValidateSourcePath(repoRoot, workspaceName string, plan *Plan, engineType model.EngineType) error {
+func ValidateSourcePath(repoRoot, workspaceName string, plan *Plan, engineType model.EngineType) (*transfer.Record, error) {
 	if plan == nil {
-		return fmt.Errorf("restore plan is required")
+		return nil, fmt.Errorf("restore plan is required")
 	}
 	if plan.SourceSavePoint == "" {
-		return sourceNotRestorableError(fmt.Errorf("source save point is required"))
+		return nil, sourceNotRestorableError(fmt.Errorf("source save point is required"))
 	}
 	if strings.TrimSpace(plan.Path) == "" {
-		return sourceNotRestorableError(fmt.Errorf("path is required"))
+		return nil, sourceNotRestorableError(fmt.Errorf("path is required"))
 	}
-	sourceRoot, cleanup, err := validateSourcePayload(repoRoot, workspaceName, plan.SourceSavePoint, engineType)
+	publishedDestination, err := restoreValidationPublishedDestination(repoRoot, workspaceName, plan)
 	if err != nil {
-		return sourceNotRestorableError(err)
+		return nil, err
+	}
+	sourceRoot, cleanup, transferRecord, err := validateSourcePayloadWithTransfer(repoRoot, workspaceName, plan.SourceSavePoint, engineType, restoreRunValidationTransferOptions(publishedDestination))
+	if err != nil {
+		return nil, sourceNotRestorableError(err)
 	}
 	defer cleanup()
 	if err := validateSourcePathExists(sourceRoot, plan.Path); err != nil {
-		return sourceNotRestorableError(err)
+		return nil, sourceNotRestorableError(err)
 	}
-	return nil
+	return transferRecord, nil
+}
+
+type sourceTransferOptions struct {
+	RecordTransfer       bool
+	TransferID           string
+	Operation            string
+	Phase                string
+	Primary              bool
+	ResultKind           transfer.ResultKind
+	PermissionScope      transfer.PermissionScope
+	SourceRole           string
+	DestinationRole      string
+	PublishedDestination string
+	TempParentPattern    string
+}
+
+func restorePreviewValidationTransferOptions(publishedDestination string) sourceTransferOptions {
+	return sourceTransferOptions{
+		RecordTransfer:       true,
+		TransferID:           "restore-preview-validation-primary",
+		Operation:            "restore",
+		Phase:                "preview_validation",
+		Primary:              true,
+		ResultKind:           transfer.ResultKindExpected,
+		PermissionScope:      transfer.PermissionScopePreviewOnly,
+		SourceRole:           "save_point_payload",
+		DestinationRole:      "restore_preview_validation",
+		PublishedDestination: publishedDestination,
+		TempParentPattern:    "restore-preview-*",
+	}
+}
+
+func restoreRunValidationTransferOptions(publishedDestination string) sourceTransferOptions {
+	return sourceTransferOptions{
+		RecordTransfer:       true,
+		TransferID:           "restore-run-source-validation",
+		Operation:            "restore",
+		Phase:                "source_validation",
+		Primary:              false,
+		ResultKind:           transfer.ResultKindFinal,
+		PermissionScope:      transfer.PermissionScopeExecution,
+		SourceRole:           "save_point_payload",
+		DestinationRole:      "restore_source_validation",
+		PublishedDestination: publishedDestination,
+		TempParentPattern:    "restore-run-validation-*",
+	}
+}
+
+func restoreValidationPublishedDestination(repoRoot, workspaceName string, plan *Plan) (string, error) {
+	folder := strings.TrimSpace(plan.Folder)
+	if folder == "" {
+		var err error
+		folder, err = worktree.NewManager(repoRoot).Path(workspaceName)
+		if err != nil {
+			return "", fmt.Errorf("workspace folder: %w", err)
+		}
+	}
+	if plan.EffectiveScope() == ScopePath {
+		cleanPath, err := validatePlanRelativePath(plan.Path)
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(folder, filepath.FromSlash(cleanPath)), nil
+	}
+	return folder, nil
 }
 
 func InspectSourceReadOnly(repoRoot string, sourceID model.SnapshotID) (*snapshot.PublishState, error) {
@@ -470,33 +564,38 @@ func checkPreviewCapacity(repoRoot, folder, workspaceName string, sourceID model
 }
 
 func validateSourcePayload(repoRoot, workspaceName string, sourceID model.SnapshotID, engineType model.EngineType) (string, func(), error) {
+	sourceRoot, cleanup, _, err := validateSourcePayloadWithTransfer(repoRoot, workspaceName, sourceID, engineType, sourceTransferOptions{})
+	return sourceRoot, cleanup, err
+}
+
+func validateSourcePayloadWithTransfer(repoRoot, workspaceName string, sourceID model.SnapshotID, engineType model.EngineType, transferOptions sourceTransferOptions) (string, func(), *transfer.Record, error) {
 	if err := snapshot.VerifySnapshot(repoRoot, sourceID, true); err != nil {
-		return "", func() {}, err
+		return "", func() {}, nil, err
 	}
 	desc, err := snapshot.LoadDescriptor(repoRoot, sourceID)
 	if err != nil {
-		return "", func() {}, err
+		return "", func() {}, nil, err
 	}
 	if desc.SnapshotID != sourceID {
-		return "", func() {}, fmt.Errorf("descriptor save point ID %s does not match requested %s", desc.SnapshotID, sourceID)
+		return "", func() {}, nil, fmt.Errorf("descriptor save point ID %s does not match requested %s", desc.SnapshotID, sourceID)
 	}
 	boundary, err := repo.WorktreeManagedPayloadBoundary(repoRoot, workspaceName)
 	if err != nil {
-		return "", func() {}, err
+		return "", func() {}, nil, err
 	}
-	sourceRoot, cleanup, err := materializeSource(repoRoot, sourceID, desc, engineType)
+	sourceRoot, cleanup, transferRecord, err := materializeSourceWithTransfer(repoRoot, sourceID, desc, engineType, transferOptions)
 	if err != nil {
-		return "", cleanup, err
+		return "", cleanup, nil, err
 	}
 	if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(sourceRoot); err != nil {
 		cleanup()
-		return "", func() {}, err
+		return "", func() {}, nil, err
 	}
 	if err := repo.ValidateManagedPayloadOnly(boundary, sourceRoot); err != nil {
 		cleanup()
-		return "", func() {}, err
+		return "", func() {}, nil, err
 	}
-	return sourceRoot, cleanup, nil
+	return sourceRoot, cleanup, transferRecord, nil
 }
 
 func WorkspaceEvidence(repoRoot, workspaceName string) (string, error) {
@@ -624,6 +723,17 @@ func ComputeManagedImpact(repoRoot, workspaceName string, sourceID model.Snapsho
 		return ManagedFilesImpact{}, err
 	}
 	defer cleanup()
+	return computeManagedImpactFromSourceRoot(repoRoot, workspaceName, sourceRoot)
+}
+
+func computeManagedImpactFromSourceRoot(repoRoot, workspaceName, sourceRoot string) (ManagedFilesImpact, error) {
+	boundary, err := repo.WorktreeManagedPayloadBoundary(repoRoot, workspaceName)
+	if err != nil {
+		return ManagedFilesImpact{}, fmt.Errorf("workspace path: %w", err)
+	}
+	if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(boundary.Root); err != nil {
+		return ManagedFilesImpact{}, err
+	}
 	if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(sourceRoot); err != nil {
 		return ManagedFilesImpact{}, fmt.Errorf("source save point payload: %w", err)
 	}
@@ -670,6 +780,25 @@ func ComputeManagedPathImpact(repoRoot, workspaceName string, sourceID model.Sna
 		return ManagedFilesImpact{}, err
 	}
 	defer cleanup()
+	return computeManagedPathImpactFromSourceRoot(repoRoot, workspaceName, sourceRoot, path)
+}
+
+func computeManagedPathImpactFromSourceRoot(repoRoot, workspaceName, sourceRoot, path string) (ManagedFilesImpact, error) {
+	cleanPath, err := validatePlanRelativePath(path)
+	if err != nil {
+		return ManagedFilesImpact{}, err
+	}
+	path = cleanPath
+	boundary, err := repo.WorktreeManagedPayloadBoundary(repoRoot, workspaceName)
+	if err != nil {
+		return ManagedFilesImpact{}, fmt.Errorf("workspace path: %w", err)
+	}
+	if boundary.ExcludesRelativePath(path) {
+		return ManagedFilesImpact{}, fmt.Errorf("path must be a workspace-relative path; JVS control data is not managed")
+	}
+	if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(boundary.Root); err != nil {
+		return ManagedFilesImpact{}, err
+	}
 	if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(sourceRoot); err != nil {
 		return ManagedFilesImpact{}, fmt.Errorf("source save point payload: %w", err)
 	}
@@ -692,26 +821,72 @@ func ComputeManagedPathImpact(repoRoot, workspaceName string, sourceID model.Sna
 }
 
 func materializeSource(repoRoot string, sourceID model.SnapshotID, desc *model.Descriptor, engineType model.EngineType) (string, func(), error) {
-	tmpParent, err := os.MkdirTemp(filepath.Join(repoRoot, repo.JVSDirName), "restore-preview-*")
+	sourceRoot, cleanup, _, err := materializeSourceWithTransfer(repoRoot, sourceID, desc, engineType, sourceTransferOptions{})
+	return sourceRoot, cleanup, err
+}
+
+func materializeSourceWithTransfer(repoRoot string, sourceID model.SnapshotID, desc *model.Descriptor, engineType model.EngineType, transferOptions sourceTransferOptions) (string, func(), *transfer.Record, error) {
+	tempParentPattern := strings.TrimSpace(transferOptions.TempParentPattern)
+	if tempParentPattern == "" {
+		tempParentPattern = "restore-preview-*"
+	}
+	tmpParent, err := os.MkdirTemp(filepath.Join(repoRoot, repo.JVSDirName), tempParentPattern)
 	if err != nil {
-		return "", func() {}, fmt.Errorf("create restore preview staging: %w", err)
+		return "", func() {}, nil, fmt.Errorf("create restore preview staging: %w", err)
 	}
 	cleanup := func() { _ = os.RemoveAll(tmpParent) }
 	sourceRoot := filepath.Join(tmpParent, "source")
 	snapshotDir, err := repo.SnapshotPathForRead(repoRoot, sourceID)
 	if err != nil {
 		cleanup()
-		return "", func() {}, fmt.Errorf("source save point path: %w", err)
+		return "", func() {}, nil, fmt.Errorf("source save point path: %w", err)
 	}
-	eng := engine.NewEngine(engineType)
+
+	intent := transfer.Intent{
+		TransferID:                 transferOptions.TransferID,
+		Operation:                  transferOptions.Operation,
+		Phase:                      transferOptions.Phase,
+		Primary:                    transferOptions.Primary,
+		ResultKind:                 transferOptions.ResultKind,
+		PermissionScope:            transferOptions.PermissionScope,
+		SourceRole:                 transferOptions.SourceRole,
+		SourcePath:                 snapshotDir,
+		DestinationRole:            transferOptions.DestinationRole,
+		MaterializationDestination: sourceRoot,
+		CapabilityProbePath:        tmpParent,
+		PublishedDestination:       transferOptions.PublishedDestination,
+		RequestedEngine:            engineType,
+	}
+	plan, err := transfer.PlanIntent(planTransferPlanner, intent)
+	if err != nil {
+		cleanup()
+		return "", func() {}, nil, fmt.Errorf("plan transfer: %w", err)
+	}
+
+	eng := engine.NewEngine(plan.TransferEngine)
+	var runtimeResult *engine.CloneResult
 	if err := snapshotpayload.MaterializeToNew(snapshotDir, sourceRoot, snapshotpayload.OptionsFromDescriptor(desc), func(src, dst string) error {
-		_, err := engine.CloneToNew(eng, src, dst)
-		return err
+		var cloneErr error
+		runtimeResult, cloneErr = engine.CloneToNew(eng, src, dst)
+		return cloneErr
 	}); err != nil {
 		cleanup()
-		return "", func() {}, fmt.Errorf("materialize source save point: %w", err)
+		return "", func() {}, nil, fmt.Errorf("materialize source save point: %w", err)
 	}
-	return sourceRoot, cleanup, nil
+
+	var transferRecord *transfer.Record
+	if transferOptions.RecordTransfer {
+		record := transfer.RecordFromPlanAndRuntime(intent, plan, runtimeResult)
+		transferRecord = &record
+	}
+	return sourceRoot, cleanup, transferRecord, nil
+}
+
+func transferRecordsFrom(record *transfer.Record) []transfer.Record {
+	if record == nil {
+		return nil
+	}
+	return []transfer.Record{*record}
 }
 
 type fileSignature struct {

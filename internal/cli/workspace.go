@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/agentsmith-project/jvs/internal/engine"
+	"github.com/agentsmith-project/jvs/internal/transfer"
 	"github.com/agentsmith-project/jvs/internal/worktree"
 	"github.com/agentsmith-project/jvs/pkg/color"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
@@ -75,22 +75,19 @@ var workspaceNewCmd = &cobra.Command{
 		}
 
 		mgr := worktree.NewManager(r.Root)
-		eng := newCloneEngine(r.Root)
 		var cfg *model.WorktreeConfig
 		req := worktree.StartedFromSnapshotRequest{
-			Name:       name,
-			Folder:     folder,
-			SnapshotID: sourceID,
+			Name:            name,
+			Folder:          folder,
+			SnapshotID:      sourceID,
+			RequestedEngine: requestedTransferEngine(r.Root),
 		}
 		err = withActiveOperationSourcePin(r.Root, sourceID, "workspace new", func() error {
 			if err := checkWorkspaceNewCapacity(r.Root, req); err != nil {
 				return err
 			}
 			var err error
-			cfg, err = mgr.CreateStartedFromSnapshotAt(req, func(src, dst string) error {
-				_, err := engine.CloneToNew(eng, src, dst)
-				return err
-			})
+			cfg, err = mgr.CreateStartedFromSnapshotAt(req, nil)
 			return err
 		})
 		if err != nil {
@@ -102,7 +99,12 @@ var workspaceNewCmd = &cobra.Command{
 			return workspaceNewError(err)
 		}
 		recordResolvedTarget(r.Root, cfg.Name)
+		var transferRecord *transfer.Record
+		if record, ok := mgr.LastTransferRecord(); ok {
+			transferRecord = &record
+		}
 		result := publicWorkspaceNewResult{
+			Data:                 transferDataFromRecord(transferRecord),
 			Mode:                 "new",
 			Status:               "created",
 			Workspace:            cfg.Name,
@@ -121,6 +123,7 @@ var workspaceNewCmd = &cobra.Command{
 }
 
 type publicWorkspaceNewResult struct {
+	transfer.Data
 	Mode                 string  `json:"mode"`
 	Status               string  `json:"status"`
 	Workspace            string  `json:"workspace"`
@@ -137,6 +140,9 @@ func printWorkspaceNewResult(result publicWorkspaceNewResult) {
 	fmt.Printf("Folder: %s\n", result.Folder)
 	fmt.Printf("Workspace: %s\n", result.Workspace)
 	fmt.Printf("Started from save point: %s\n", color.SnapshotID(result.StartedFromSavePoint))
+	if len(result.Transfers) > 0 {
+		printPrimaryTransferSummary(&result.Transfers[0])
+	}
 	fmt.Println("Newest save point: none")
 	if result.OriginalUnchanged {
 		fmt.Println("Original workspace unchanged.")

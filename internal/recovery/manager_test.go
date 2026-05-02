@@ -5,13 +5,17 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/agentsmith-project/jvs/internal/capacitygate"
+	"github.com/agentsmith-project/jvs/internal/engine"
 	"github.com/agentsmith-project/jvs/internal/recovery"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/restoreplan"
 	"github.com/agentsmith-project/jvs/internal/sourcepin"
+	"github.com/agentsmith-project/jvs/internal/transfer"
 	"github.com/agentsmith-project/jvs/pkg/fsutil"
 	"github.com/agentsmith-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
@@ -578,6 +582,109 @@ func TestRestoreWholeBackupCopyFailureKeepsBackupReusable(t *testing.T) {
 	assert.FileExists(t, filepath.Join(backupPath, "original.txt"))
 }
 
+func TestRestoreWholeBackupCapacityFailurePreventsCopyAndPreservesPayloads(t *testing.T) {
+	repoRoot, repoID := setupRecoveryManagerRepo(t)
+	mainPath := filepath.Join(repoRoot, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "current.txt"), []byte("current"), 0644))
+	backupPath := filepath.Join(repoRoot, "main.restore-backup-test")
+	require.NoError(t, os.MkdirAll(filepath.Join(backupPath, ".jvs"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(backupPath, "original.txt"), []byte("12345"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(backupPath, ".jvs", "control"), []byte("0123456789"), 0644))
+	plan := recovery.Plan{
+		SchemaVersion:    recovery.SchemaVersion,
+		RepoID:           repoID,
+		PlanID:           "RP-whole-capacity",
+		Status:           recovery.StatusActive,
+		Operation:        recovery.OperationRestore,
+		RestorePlanID:    "restore-preview",
+		Workspace:        "main",
+		Folder:           mainPath,
+		SourceSavePoint:  model.NewSnapshotID(),
+		CreatedAt:        time.Now().UTC(),
+		UpdatedAt:        time.Now().UTC(),
+		PreWorktreeState: recovery.WorktreeState{Name: "main"},
+		Backup:           recovery.Backup{Path: backupPath, Scope: recovery.BackupScopeWhole, State: recovery.BackupStateRequired},
+	}
+	restoreCapacity := recovery.SetRestoreBackupCapacityGateForTest(capacitygate.Gate{Meter: &recoveryStaticMeter{available: 5}, SafetyMarginBytes: 0})
+	defer restoreCapacity()
+	cloneCalled := false
+	restoreClone := recovery.SetRestoreBackupCloneHookForTest(func(src, dst string) error {
+		cloneCalled = true
+		return errors.New("clone should not run")
+	})
+	defer restoreClone()
+
+	mgr := recovery.NewManager(repoRoot)
+	err := mgr.RestoreBackup(&plan)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Not enough free space")
+	assert.Contains(t, err.Error(), "Required bytes: 15")
+	assert.False(t, cloneCalled)
+	assert.Empty(t, mgr.LastTransferRecords())
+	content, readErr := os.ReadFile(filepath.Join(mainPath, "current.txt"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "current", string(content))
+	backupContent, readErr := os.ReadFile(filepath.Join(backupPath, "original.txt"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "12345", string(backupContent))
+}
+
+func TestRestoreWholeBackupRecordsFinalTransferForRecoveryCopyPoint(t *testing.T) {
+	repoRoot, repoID := setupRecoveryManagerRepo(t)
+	mainPath := filepath.Join(repoRoot, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "current.txt"), []byte("current"), 0644))
+	backupPath := filepath.Join(repoRoot, "main.restore-backup-test")
+	require.NoError(t, os.MkdirAll(backupPath, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(backupPath, "original.txt"), []byte("original backup"), 0644))
+	plan := recovery.Plan{
+		SchemaVersion:    recovery.SchemaVersion,
+		RepoID:           repoID,
+		PlanID:           "RP-whole-transfer",
+		Status:           recovery.StatusActive,
+		Operation:        recovery.OperationRestore,
+		RestorePlanID:    "restore-preview",
+		Workspace:        "main",
+		Folder:           mainPath,
+		SourceSavePoint:  model.NewSnapshotID(),
+		CreatedAt:        time.Now().UTC(),
+		UpdatedAt:        time.Now().UTC(),
+		PreWorktreeState: recovery.WorktreeState{Name: "main"},
+		Backup:           recovery.Backup{Path: backupPath, Scope: recovery.BackupScopeWhole, State: recovery.BackupStateRequired},
+	}
+	planner := &recoveryRecordingPlanner{}
+	restorePlanner := recovery.SetRestoreBackupTransferPlannerForTest(planner)
+	defer restorePlanner()
+
+	mgr := recovery.NewManager(repoRoot)
+	require.NoError(t, mgr.RestoreBackup(&plan))
+
+	records := mgr.LastTransferRecords()
+	require.Len(t, records, 1)
+	record := records[0]
+	assert.Equal(t, "recovery-backup-restore-primary", record.TransferID)
+	assert.Equal(t, "recovery_backup_restore", record.Operation)
+	assert.Equal(t, "backup_restore", record.Phase)
+	assert.True(t, record.Primary)
+	assert.Equal(t, transfer.ResultKindFinal, record.ResultKind)
+	assert.Equal(t, transfer.PermissionScopeExecution, record.PermissionScope)
+	assert.Equal(t, "recovery_backup_payload", record.SourceRole)
+	assert.Equal(t, backupPath, record.SourcePath)
+	assert.Equal(t, "recovery_restore_staging", record.DestinationRole)
+	assert.True(t, strings.HasPrefix(record.MaterializationDestination, mainPath+".recovery-restore-tmp-"), record.MaterializationDestination)
+	assert.Equal(t, filepath.Dir(record.MaterializationDestination), record.CapabilityProbePath)
+	assert.Equal(t, mainPath, record.PublishedDestination)
+	assert.True(t, record.CheckedForThisOperation)
+	assert.Equal(t, model.EngineCopy, record.EffectiveEngine)
+	assert.False(t, record.OptimizedTransfer)
+	assert.Equal(t, transfer.PerformanceClassNormalCopy, record.PerformanceClass)
+	require.Len(t, planner.requests, 1)
+	assert.Equal(t, backupPath, planner.requests[0].SourcePath)
+	assert.Equal(t, record.MaterializationDestination, planner.requests[0].DestinationPath)
+	assert.Equal(t, record.CapabilityProbePath, planner.requests[0].CapabilityPath)
+	assert.Equal(t, engine.EngineAuto, planner.requests[0].RequestedEngine)
+}
+
 func TestRestorePathBackupAbsentOriginalRemovesRestoredPath(t *testing.T) {
 	repoRoot, repoID := setupRecoveryManagerRepo(t)
 	mainPath := filepath.Join(repoRoot, "main")
@@ -611,12 +718,141 @@ func TestRestorePathBackupAbsentOriginalRemovesRestoredPath(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(mainPath, "created.txt"))
 }
 
+func TestRestorePathBackupAbsentOriginalDoesNotGateCopyOrRecordTransfer(t *testing.T) {
+	repoRoot, repoID := setupRecoveryManagerRepo(t)
+	mainPath := filepath.Join(repoRoot, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "created.txt"), []byte("restored current"), 0644))
+	backupPath := filepath.Join(repoRoot, "main.restore-backup-test")
+	require.NoError(t, os.MkdirAll(backupPath, 0755))
+	plan := recovery.Plan{
+		SchemaVersion:    recovery.SchemaVersion,
+		RepoID:           repoID,
+		PlanID:           "RP-path-no-copy-transfer",
+		Status:           recovery.StatusActive,
+		Operation:        recovery.OperationRestorePath,
+		RestorePlanID:    "restore-preview",
+		Workspace:        "main",
+		Folder:           mainPath,
+		SourceSavePoint:  model.NewSnapshotID(),
+		Path:             "created.txt",
+		CreatedAt:        time.Now().UTC(),
+		UpdatedAt:        time.Now().UTC(),
+		PreWorktreeState: recovery.WorktreeState{Name: "main"},
+		Backup: recovery.Backup{
+			Path:         backupPath,
+			Scope:        recovery.BackupScopePath,
+			State:        recovery.BackupStateRequired,
+			TouchedPaths: []string{"created.txt"},
+			Entries:      []recovery.BackupEntry{{Path: "created.txt", HadOriginal: false}},
+		},
+	}
+	restoreCapacity := recovery.SetRestoreBackupCapacityGateForTest(capacitygate.Gate{Meter: &recoveryStaticMeter{available: 0}, SafetyMarginBytes: 0})
+	defer restoreCapacity()
+	cloneCalled := false
+	restoreClone := recovery.SetRestoreBackupCloneHookForTest(func(src, dst string) error {
+		cloneCalled = true
+		return errors.New("clone should not run")
+	})
+	defer restoreClone()
+
+	mgr := recovery.NewManager(repoRoot)
+	require.NoError(t, mgr.RestoreBackup(&plan))
+
+	assert.False(t, cloneCalled)
+	assert.Empty(t, mgr.LastTransferRecords())
+	assert.NoFileExists(t, filepath.Join(mainPath, "created.txt"))
+}
+
+func TestRestorePathBackupOriginalRecordsTransferOnlyForCopiedEntry(t *testing.T) {
+	repoRoot, repoID := setupRecoveryManagerRepo(t)
+	mainPath := filepath.Join(repoRoot, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "app.txt"), []byte("restored current"), 0644))
+	backupPath := filepath.Join(repoRoot, "main.restore-backup-test")
+	require.NoError(t, os.MkdirAll(backupPath, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(backupPath, "app.txt"), []byte("original backup"), 0644))
+	plan := recovery.Plan{
+		SchemaVersion:    recovery.SchemaVersion,
+		RepoID:           repoID,
+		PlanID:           "RP-path-transfer",
+		Status:           recovery.StatusActive,
+		Operation:        recovery.OperationRestorePath,
+		RestorePlanID:    "restore-preview",
+		Workspace:        "main",
+		Folder:           mainPath,
+		SourceSavePoint:  model.NewSnapshotID(),
+		Path:             "app.txt",
+		CreatedAt:        time.Now().UTC(),
+		UpdatedAt:        time.Now().UTC(),
+		PreWorktreeState: recovery.WorktreeState{Name: "main"},
+		Backup: recovery.Backup{
+			Path:         backupPath,
+			Scope:        recovery.BackupScopePath,
+			State:        recovery.BackupStateRequired,
+			TouchedPaths: []string{"app.txt"},
+			Entries:      []recovery.BackupEntry{{Path: "app.txt", HadOriginal: true}},
+		},
+	}
+	planner := &recoveryRecordingPlanner{}
+	restorePlanner := recovery.SetRestoreBackupTransferPlannerForTest(planner)
+	defer restorePlanner()
+
+	mgr := recovery.NewManager(repoRoot)
+	require.NoError(t, mgr.RestoreBackup(&plan))
+
+	records := mgr.LastTransferRecords()
+	require.Len(t, records, 1)
+	record := records[0]
+	assert.Equal(t, "recovery-path-backup-restore-primary", record.TransferID)
+	assert.Equal(t, filepath.Join(backupPath, "app.txt"), record.SourcePath)
+	assert.True(t, strings.HasPrefix(record.MaterializationDestination, mainPath+".recovery-path-tmp-"), record.MaterializationDestination)
+	assert.True(t, strings.HasSuffix(record.MaterializationDestination, filepath.Join("", "app.txt")), record.MaterializationDestination)
+	assert.Equal(t, filepath.Dir(filepath.Dir(record.MaterializationDestination)), record.CapabilityProbePath)
+	assert.Equal(t, filepath.Join(mainPath, "app.txt"), record.PublishedDestination)
+	assert.Equal(t, "original backup", string(requireReadFile(t, filepath.Join(mainPath, "app.txt"))))
+	require.Len(t, planner.requests, 1)
+	assert.Equal(t, filepath.Join(backupPath, "app.txt"), planner.requests[0].SourcePath)
+	assert.Equal(t, record.MaterializationDestination, planner.requests[0].DestinationPath)
+}
+
 func setupRecoveryManagerRepo(t *testing.T) (repoRoot string, repoID string) {
 	t.Helper()
 	repoRoot = t.TempDir()
 	r, err := repo.Init(repoRoot, "test")
 	require.NoError(t, err)
 	return repoRoot, r.RepoID
+}
+
+type recoveryStaticMeter struct {
+	available int64
+}
+
+func (m *recoveryStaticMeter) AvailableBytes(string) (int64, error) {
+	return m.available, nil
+}
+
+type recoveryRecordingPlanner struct {
+	requests []engine.TransferPlanRequest
+}
+
+func (p *recoveryRecordingPlanner) PlanTransfer(req engine.TransferPlanRequest) (*engine.TransferPlan, error) {
+	p.requests = append(p.requests, req)
+	requested := req.RequestedEngine
+	if requested == "" {
+		requested = engine.EngineAuto
+	}
+	return &engine.TransferPlan{
+		RequestedEngine:   requested,
+		TransferEngine:    model.EngineCopy,
+		EffectiveEngine:   model.EngineCopy,
+		OptimizedTransfer: false,
+	}, nil
+}
+
+func requireReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return data
 }
 
 func writeRawRecoveryPlan(t *testing.T, repoRoot, planID string, value map[string]any) error {

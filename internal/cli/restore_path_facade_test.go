@@ -191,6 +191,39 @@ func TestRestorePathJSONRestoresFileRecordsPathSourceAndStatus(t *testing.T) {
 	require.Equal(t, model.SnapshotID(firstID), latestDesc.RestoredPaths[0].SourceSnapshotID)
 }
 
+func TestRestorePathPreviewJSONIncludesPathTransferDestination(t *testing.T) {
+	repoRoot, firstID := setupRestorePathTransferFacadeRepo(t)
+
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "restore", firstID, "--path", "src/app.txt")
+	require.NoError(t, err)
+
+	env, data := decodeFacadeDataMap(t, stdout)
+	require.True(t, env.OK, stdout)
+	require.Equal(t, "preview", data["mode"])
+	require.Equal(t, "path", data["scope"])
+	require.Equal(t, "src/app.txt", data["path"])
+	assertRestoreExpectedPreviewTransferDestination(t, data, repoRoot, firstID, filepath.Join(repoRoot, "src", "app.txt"))
+}
+
+func TestRestorePathRunJSONIncludesPathTransferDestination(t *testing.T) {
+	repoRoot, firstID := setupRestorePathTransferFacadeRepo(t)
+	previewOut, err := executeCommand(createTestRootCmd(), "--json", "restore", firstID, "--path", "src/app.txt")
+	require.NoError(t, err)
+	_, previewData := decodeFacadeDataMap(t, previewOut)
+	planID := previewData["plan_id"].(string)
+
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "restore", "--run", planID)
+	require.NoError(t, err)
+
+	env, data := decodeFacadeDataMap(t, stdout)
+	require.True(t, env.OK, stdout)
+	require.Equal(t, "run", data["mode"])
+	require.Equal(t, planID, data["plan_id"])
+	require.Equal(t, "src/app.txt", data["restored_path"])
+	assertRestorePathFinalRunTransfer(t, data, repoRoot, firstID, "src/app.txt")
+	assertFileContent(t, filepath.Join(repoRoot, "src", "app.txt"), "v1")
+}
+
 func TestRestorePathDirectoryRestoresScopeOnly(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(repoRoot, "src"), 0755))
@@ -367,6 +400,7 @@ func TestRestorePathSaveFirstAndLaterSaveRecordsRestoredPaths(t *testing.T) {
 	require.Equal(t, saveFirstID, restoreData["history_head"])
 	require.Equal(t, saveFirstID, restoreData["content_source"])
 	require.Equal(t, firstID, restoreData["from_save_point"])
+	assertSaveFirstRestoreRunTransfers(t, restoreData, repoRoot, firstID, filepath.Join(repoRoot, "app.txt"), "restore-path-run-primary", ".restore-path-tmp-")
 	assertPublicPathSources(t, restoreData["path_sources"], "app.txt", firstID)
 
 	saveFirstDesc, err := snapshot.LoadDescriptor(repoRoot, model.SnapshotID(saveFirstID))
@@ -746,6 +780,17 @@ func TestRestorePathRejectsUnsafePathsAndOldRefsWithoutMutation(t *testing.T) {
 			before.assertUnchanged(t, repoRoot)
 		})
 	}
+}
+
+func setupRestorePathTransferFacadeRepo(t *testing.T) (repoRoot, firstID string) {
+	t.Helper()
+	repoRoot = setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(repoRoot, "src"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "src", "app.txt"), []byte("v1"), 0644))
+	firstID = savePointIDFromCLI(t, "first")
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "src", "app.txt"), []byte("v2"), 0644))
+	_ = savePointIDFromCLI(t, "second")
+	return repoRoot, firstID
 }
 
 func assertPublicPathSources(t *testing.T, raw any, targetPath, sourceSavePoint string) {

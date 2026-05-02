@@ -40,6 +40,8 @@ func TestSaveCommandHumanOutputUsesSavePointVocabulary(t *testing.T) {
 
 	assert.Contains(t, stdout, "Saved save point")
 	assert.Contains(t, stdout, "Workspace: main")
+	assert.Contains(t, stdout, "Copy method: ")
+	assert.Contains(t, stdout, "Checked for this operation")
 	assert.Contains(t, stdout, "Newest save point:")
 	assert.Contains(t, stdout, "Unsaved changes: no")
 	assertNoOldSavePointVocabulary(t, stdout)
@@ -61,9 +63,31 @@ func TestSaveCommandJSONUsesSavePointSchema(t *testing.T) {
 	require.Equal(t, data["save_point_id"], data["newest_save_point"])
 	require.Equal(t, false, data["unsaved_changes"])
 	require.NotEmpty(t, data["created_at"])
+	transfers, ok := data["transfers"].([]any)
+	require.True(t, ok, "transfers should be an array: %#v", data["transfers"])
+	require.Len(t, transfers, 1)
+	primary, ok := transfers[0].(map[string]any)
+	require.True(t, ok, "primary transfer should be an object: %#v", transfers[0])
+	require.Equal(t, "save-primary", primary["transfer_id"])
+	require.Equal(t, "save", primary["operation"])
+	require.Equal(t, "materialization", primary["phase"])
+	require.Equal(t, true, primary["primary"])
+	require.Equal(t, "final", primary["result_kind"])
+	require.Equal(t, "execution", primary["permission_scope"])
+	require.Equal(t, "workspace_content", primary["source_role"])
+	require.Equal(t, "save_point_staging", primary["destination_role"])
+	require.NotEmpty(t, primary["source_path"])
+	require.NotEmpty(t, primary["materialization_destination"])
+	require.NotEmpty(t, primary["capability_probe_path"])
+	require.NotEmpty(t, primary["published_destination"])
+	require.NotEqual(t, primary["materialization_destination"], primary["published_destination"])
+	require.Equal(t, true, primary["checked_for_this_operation"])
+	require.Equal(t, "auto", primary["requested_engine"])
+	require.NotEmpty(t, primary["effective_engine"])
+	require.Contains(t, []any{"fast_copy", "normal_copy"}, primary["performance_class"])
 	assert.NotContains(t, data, "restored_from")
 	assertNoLegacyJSONFields(t, data)
-	assertNoOldSavePointVocabulary(t, string(env.Data))
+	assertNoOldSavePointVocabulary(t, publicDataWithoutTransfers(t, data))
 }
 
 func TestHistoryCommandHumanOutputUsesSavePointVocabulary(t *testing.T) {
@@ -171,7 +195,7 @@ func TestSaveCommandAfterRestoreCreatesNewSavePointFromNewestParent(t *testing.T
 	require.NoError(t, err)
 	env, data := decodeFacadeDataMap(t, stdout)
 	require.True(t, env.OK, stdout)
-	assertNoOldSavePointVocabulary(t, string(env.Data))
+	assertNoOldSavePointVocabulary(t, publicDataWithoutTransfers(t, data))
 
 	thirdID := model.SnapshotID(data["save_point_id"].(string))
 	thirdDesc, err := snapshot.LoadDescriptor(repoRoot, thirdID)
@@ -265,6 +289,20 @@ func decodeFacadeDataMap(t *testing.T, stdout string) (contractEnvelope, map[str
 	var data map[string]any
 	require.NoError(t, json.Unmarshal(env.Data, &data), stdout)
 	return env, data
+}
+
+func publicDataWithoutTransfers(t *testing.T, data map[string]any) string {
+	t.Helper()
+	clone := make(map[string]any, len(data))
+	for key, value := range data {
+		if key == "transfers" {
+			continue
+		}
+		clone[key] = value
+	}
+	payload, err := json.Marshal(clone)
+	require.NoError(t, err)
+	return string(payload)
 }
 
 func assertNoLegacyJSONFields(t *testing.T, data map[string]any) {

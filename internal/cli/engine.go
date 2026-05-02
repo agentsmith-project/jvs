@@ -18,6 +18,28 @@ func newCloneEngine(repoRoot string) engine.Engine {
 	return engine.NewEngine(detectEngine(repoRoot))
 }
 
+func requestedTransferEngine(repoRoot string) model.EngineType {
+	if selected, ok := snapshotEngineFromEnv(); ok {
+		return normalizeRequestedTransferEngine(selected)
+	}
+	if selected, ok := legacyEngineFromEnv(); ok {
+		return normalizeRequestedTransferEngine(selected)
+	}
+	if cfg, err := config.Load(repoRoot); err == nil && cfg.DefaultEngine != "" {
+		return normalizeRequestedTransferEngine(cfg.DefaultEngine)
+	}
+	return engine.EngineAuto
+}
+
+func normalizeRequestedTransferEngine(selected model.EngineType) model.EngineType {
+	switch selected {
+	case model.EngineJuiceFSClone, model.EngineReflinkCopy, model.EngineCopy, engine.EngineAuto:
+		return selected
+	default:
+		return engine.EngineAuto
+	}
+}
+
 func resolveEffectiveEngine(repoRoot string) model.EngineType {
 	return resolveEffectiveEngineWithProbe(repoRoot, true)
 }

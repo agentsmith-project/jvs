@@ -5,9 +5,11 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/agentsmith-project/jvs/internal/engine"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/restoreplan"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
+	"github.com/agentsmith-project/jvs/internal/transfer"
 	"github.com/agentsmith-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -61,6 +63,111 @@ func TestCreatePathPlanAndValidatePathTarget(t *testing.T) {
 	assert.Contains(t, err.Error(), "folder changed since preview")
 }
 
+func TestCreateWholePlanIncludesExpectedPreviewTransfer(t *testing.T) {
+	repoRoot := setupRestorePlanRepo(t)
+	mainPath := filepath.Join(repoRoot, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "app.txt"), []byte("v1"), 0644))
+	first, err := snapshot.NewCreator(repoRoot, model.EngineCopy).CreateSavePoint("main", "first", nil)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "app.txt"), []byte("v2"), 0644))
+	_, err = snapshot.NewCreator(repoRoot, model.EngineCopy).CreateSavePoint("main", "second", nil)
+	require.NoError(t, err)
+
+	plan, err := restoreplan.Create(repoRoot, "main", first.SnapshotID, engine.EngineAuto, restoreplan.Options{})
+	require.NoError(t, err)
+
+	require.Len(t, plan.Transfers, 1)
+	record := plan.Transfers[0]
+	require.Equal(t, "restore-preview-validation-primary", record.TransferID)
+	require.Equal(t, "restore", record.Operation)
+	require.Equal(t, "preview_validation", record.Phase)
+	require.True(t, record.Primary)
+	require.Equal(t, transfer.ResultKindExpected, record.ResultKind)
+	require.Equal(t, transfer.PermissionScopePreviewOnly, record.PermissionScope)
+	require.Equal(t, "save_point_payload", record.SourceRole)
+	require.Equal(t, filepath.Join(repoRoot, ".jvs", "snapshots", string(first.SnapshotID)), record.SourcePath)
+	require.Equal(t, "restore_preview_validation", record.DestinationRole)
+	require.Contains(t, record.MaterializationDestination, filepath.Join(repoRoot, ".jvs", "restore-preview-"))
+	require.Equal(t, mainPath, record.PublishedDestination)
+	require.True(t, record.CheckedForThisOperation)
+	require.Equal(t, engine.EngineAuto, record.RequestedEngine)
+	require.Contains(t, []transfer.PerformanceClass{transfer.PerformanceClassFastCopy, transfer.PerformanceClassNormalCopy}, record.PerformanceClass)
+	assert.Equal(t, "v2", readRestorePlanTestFile(t, filepath.Join(mainPath, "app.txt")))
+}
+
+func TestCreatePathPlanIncludesExpectedPreviewTransfer(t *testing.T) {
+	repoRoot := setupRestorePlanRepo(t)
+	mainPath := filepath.Join(repoRoot, "main")
+	require.NoError(t, os.MkdirAll(filepath.Join(mainPath, "src"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "src", "app.txt"), []byte("v1"), 0644))
+	first, err := snapshot.NewCreator(repoRoot, model.EngineCopy).CreateSavePoint("main", "first", nil)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "src", "app.txt"), []byte("v2"), 0644))
+	_, err = snapshot.NewCreator(repoRoot, model.EngineCopy).CreateSavePoint("main", "second", nil)
+	require.NoError(t, err)
+
+	plan, err := restoreplan.CreatePath(repoRoot, "main", first.SnapshotID, "src/app.txt", engine.EngineAuto, restoreplan.Options{})
+	require.NoError(t, err)
+
+	require.Len(t, plan.Transfers, 1)
+	record := plan.Transfers[0]
+	require.Equal(t, "restore-preview-validation-primary", record.TransferID)
+	require.Equal(t, "restore", record.Operation)
+	require.Equal(t, "preview_validation", record.Phase)
+	require.True(t, record.Primary)
+	require.Equal(t, transfer.ResultKindExpected, record.ResultKind)
+	require.Equal(t, transfer.PermissionScopePreviewOnly, record.PermissionScope)
+	require.Equal(t, "save_point_payload", record.SourceRole)
+	require.Equal(t, filepath.Join(repoRoot, ".jvs", "snapshots", string(first.SnapshotID)), record.SourcePath)
+	require.Equal(t, "restore_preview_validation", record.DestinationRole)
+	require.Contains(t, record.MaterializationDestination, filepath.Join(repoRoot, ".jvs", "restore-preview-"))
+	require.Equal(t, filepath.Join(mainPath, "src", "app.txt"), record.PublishedDestination)
+	require.True(t, record.CheckedForThisOperation)
+	require.Equal(t, engine.EngineAuto, record.RequestedEngine)
+	require.Contains(t, []transfer.PerformanceClass{transfer.PerformanceClassFastCopy, transfer.PerformanceClassNormalCopy}, record.PerformanceClass)
+	assert.Equal(t, "v2", readRestorePlanTestFile(t, filepath.Join(mainPath, "src", "app.txt")))
+}
+
+func TestValidateSourceReturnsRunValidationTransfer(t *testing.T) {
+	repoRoot := setupRestorePlanRepo(t)
+	mainPath := filepath.Join(repoRoot, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "app.txt"), []byte("v1"), 0644))
+	first, err := snapshot.NewCreator(repoRoot, model.EngineCopy).CreateSavePoint("main", "first", nil)
+	require.NoError(t, err)
+
+	plan := &restoreplan.Plan{
+		Scope:           restoreplan.ScopeWhole,
+		Workspace:       "main",
+		Folder:          mainPath,
+		SourceSavePoint: first.SnapshotID,
+	}
+	record, err := restoreplan.ValidateSource(repoRoot, "main", plan, model.EngineCopy)
+	require.NoError(t, err)
+
+	assertRunValidationTransferRecord(t, record, repoRoot, string(first.SnapshotID), mainPath)
+}
+
+func TestValidateSourcePathReturnsRunValidationTransfer(t *testing.T) {
+	repoRoot := setupRestorePlanRepo(t)
+	mainPath := filepath.Join(repoRoot, "main")
+	require.NoError(t, os.MkdirAll(filepath.Join(mainPath, "src"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "src", "app.txt"), []byte("v1"), 0644))
+	first, err := snapshot.NewCreator(repoRoot, model.EngineCopy).CreateSavePoint("main", "first", nil)
+	require.NoError(t, err)
+
+	plan := &restoreplan.Plan{
+		Scope:           restoreplan.ScopePath,
+		Workspace:       "main",
+		Folder:          mainPath,
+		SourceSavePoint: first.SnapshotID,
+		Path:            "src/app.txt",
+	}
+	record, err := restoreplan.ValidateSourcePath(repoRoot, "main", plan, model.EngineCopy)
+	require.NoError(t, err)
+
+	assertRunValidationTransferRecord(t, record, repoRoot, string(first.SnapshotID), filepath.Join(mainPath, "src", "app.txt"))
+}
+
 func TestCreatePlansReleaseOperationPins(t *testing.T) {
 	repoRoot := setupRestorePlanRepo(t)
 	mainPath := filepath.Join(repoRoot, "main")
@@ -94,10 +201,30 @@ func TestValidateSourcePathRejectsMissingSourcePath(t *testing.T) {
 		SourceSavePoint: first.SnapshotID,
 		Path:            "missing.txt",
 	}
-	err = restoreplan.ValidateSourcePath(repoRoot, "main", plan, model.EngineCopy)
+	_, err = restoreplan.ValidateSourcePath(repoRoot, "main", plan, model.EngineCopy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "source save point is not restorable")
 	assert.Contains(t, err.Error(), "path does not exist in save point: missing.txt")
+}
+
+func assertRunValidationTransferRecord(t *testing.T, record *transfer.Record, repoRoot, sourceID, publishedDestination string) {
+	t.Helper()
+	require.NotNil(t, record)
+	require.Equal(t, "restore-run-source-validation", record.TransferID)
+	require.Equal(t, "restore", record.Operation)
+	require.Equal(t, "source_validation", record.Phase)
+	require.False(t, record.Primary)
+	require.Equal(t, transfer.ResultKindFinal, record.ResultKind)
+	require.Equal(t, transfer.PermissionScopeExecution, record.PermissionScope)
+	require.Equal(t, "save_point_payload", record.SourceRole)
+	require.Equal(t, filepath.Join(repoRoot, ".jvs", "snapshots", sourceID), record.SourcePath)
+	require.Equal(t, "restore_source_validation", record.DestinationRole)
+	require.Contains(t, record.MaterializationDestination, filepath.Join(repoRoot, ".jvs", "restore-run-validation-"))
+	require.Equal(t, publishedDestination, record.PublishedDestination)
+	require.True(t, record.CheckedForThisOperation)
+	require.Equal(t, model.EngineCopy, record.RequestedEngine)
+	require.Equal(t, model.EngineCopy, record.EffectiveEngine)
+	require.Equal(t, transfer.PerformanceClassNormalCopy, record.PerformanceClass)
 }
 
 func setupRestorePlanRepo(t *testing.T) string {
@@ -122,4 +249,11 @@ func restorePlanDocumentedPinCount(t *testing.T, repoRoot string) int {
 		}
 	}
 	return count
+}
+
+func readRestorePlanTestFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return string(data)
 }

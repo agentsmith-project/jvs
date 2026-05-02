@@ -12,12 +12,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentsmith-project/jvs/internal/capacitygate"
 	"github.com/agentsmith-project/jvs/internal/engine"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/restoreplan"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/internal/snapshotpayload"
 	"github.com/agentsmith-project/jvs/internal/sourcepin"
+	"github.com/agentsmith-project/jvs/internal/transfer"
 	"github.com/agentsmith-project/jvs/pkg/fsutil"
 	"github.com/agentsmith-project/jvs/pkg/model"
 	"github.com/agentsmith-project/jvs/pkg/pathutil"
@@ -27,10 +29,12 @@ import (
 const SchemaVersion = 1
 
 var (
-	ErrBackupMissing   = errors.New("recovery backup is missing")
-	writePlanFile      = fsutil.AtomicWrite
-	restoreBackupClone = cloneRecoveryBackupToNew
-	writeWorktreeCfg   = repo.WriteWorktreeConfig
+	ErrBackupMissing                                    = errors.New("recovery backup is missing")
+	writePlanFile                                       = fsutil.AtomicWrite
+	restoreBackupClone                                  = cloneRecoveryBackupToNew
+	restoreBackupCapacityGate                           = capacitygate.Default()
+	restoreBackupTransferPlanner transfer.EnginePlanner = engine.TransferPlanner{}
+	writeWorktreeCfg                                    = repo.WriteWorktreeConfig
 )
 
 func SetWriteHookForTest(hook func(string, []byte, os.FileMode) error) func() {
@@ -43,9 +47,27 @@ func SetWriteHookForTest(hook func(string, []byte, os.FileMode) error) func() {
 
 func SetRestoreBackupCloneHookForTest(hook func(src, dst string) error) func() {
 	previous := restoreBackupClone
-	restoreBackupClone = hook
+	restoreBackupClone = func(_ engine.Engine, src, dst string) (*engine.CloneResult, error) {
+		return nil, hook(src, dst)
+	}
 	return func() {
 		restoreBackupClone = previous
+	}
+}
+
+func SetRestoreBackupCapacityGateForTest(gate capacitygate.Gate) func() {
+	previous := restoreBackupCapacityGate
+	restoreBackupCapacityGate = gate
+	return func() {
+		restoreBackupCapacityGate = previous
+	}
+}
+
+func SetRestoreBackupTransferPlannerForTest(planner transfer.EnginePlanner) func() {
+	previous := restoreBackupTransferPlanner
+	restoreBackupTransferPlanner = planner
+	return func() {
+		restoreBackupTransferPlanner = previous
 	}
 }
 
@@ -121,6 +143,7 @@ type Plan struct {
 	CleanupProtectionPinIDs []string            `json:"cleanup_protection_pin_ids,omitempty"`
 	CleanupProtectionPins   []model.Pin         `json:"cleanup_protection_pins,omitempty"`
 	RestoreOptions          restoreplan.Options `json:"restore_options,omitempty"`
+	Transfers               []transfer.Record   `json:"transfers,omitempty"`
 }
 
 type WorktreeState struct {
@@ -166,6 +189,10 @@ type CurrentState struct {
 	Evidence string
 }
 
+type RestoreBackupOptions struct {
+	TransferOperation string
+}
+
 func (e *VisiblePlanWriteUncertainError) Error() string {
 	if e == nil {
 		return "<nil>"
@@ -181,11 +208,19 @@ func (e *VisiblePlanWriteUncertainError) Unwrap() error {
 }
 
 type Manager struct {
-	repoRoot string
+	repoRoot      string
+	lastTransfers []transfer.Record
 }
 
 func NewManager(repoRoot string) *Manager {
 	return &Manager{repoRoot: repoRoot}
+}
+
+func (m *Manager) LastTransferRecords() []transfer.Record {
+	if m == nil || len(m.lastTransfers) == 0 {
+		return nil
+	}
+	return append([]transfer.Record(nil), m.lastTransfers...)
 }
 
 func NewPlanID() string {
@@ -419,18 +454,26 @@ func (m *Manager) releaseCleanupProtections(plan *Plan) error {
 }
 
 func (m *Manager) RestoreBackup(plan *Plan) error {
+	return m.RestoreBackupWithOptions(plan, RestoreBackupOptions{})
+}
+
+func (m *Manager) RestoreBackupWithOptions(plan *Plan, options RestoreBackupOptions) error {
+	if m != nil {
+		m.lastTransfers = nil
+	}
 	boundary, err := m.validateLiveBackup(plan)
 	if err != nil {
 		return err
 	}
+	transferOperation := recoveryBackupTransferOperation(options.TransferOperation)
 	if backupPayloadRestoreRequired(plan.Backup) {
 		switch plan.Backup.Scope {
 		case BackupScopeWhole:
-			if err := restoreWholeBackup(boundary, plan.Backup.Path); err != nil {
+			if err := m.restoreWholeBackup(plan, boundary, plan.Backup.Path, transferOperation); err != nil {
 				return err
 			}
 		case BackupScopePath:
-			if err := restorePathBackup(boundary.Root, plan.Backup.Path, pathBackupEntries(plan.Backup)); err != nil {
+			if err := m.restorePathBackup(plan, boundary.Root, plan.Backup.Path, pathBackupEntries(plan.Backup), transferOperation); err != nil {
 				return err
 			}
 		default:
@@ -599,10 +642,30 @@ func validateBackupPath(boundaryRoot, planFolder, backupPath string) error {
 	return nil
 }
 
-func restoreWholeBackup(boundary repo.WorktreePayloadBoundary, backupPath string) error {
+func (m *Manager) restoreWholeBackup(plan *Plan, boundary repo.WorktreePayloadBoundary, backupPath, transferOperation string) error {
 	tempPath := boundary.Root + ".recovery-restore-tmp-" + uuidutil.NewV4()[:8]
 	defer os.RemoveAll(tempPath)
-	if err := restoreBackupClone(backupPath, tempPath); err != nil {
+	bytes, err := capacitygate.TreeSize(backupPath, nil)
+	if err != nil {
+		return fmt.Errorf("measure recovery backup: %w", err)
+	}
+	if err := checkRecoveryBackupRestoreCapacity(plan, []capacitygate.Component{{
+		Name:  "recovery backup restore staging",
+		Path:  tempPath,
+		Bytes: bytes,
+	}}); err != nil {
+		return err
+	}
+	intent := recoveryBackupRestoreIntent(recoveryBackupRestoreIntentRequest{
+		TransferID:                 "recovery-backup-restore-primary",
+		Operation:                  transferOperation,
+		SourcePath:                 backupPath,
+		MaterializationDestination: tempPath,
+		CapabilityProbePath:        filepath.Dir(tempPath),
+		PublishedDestination:       boundary.Root,
+		Primary:                    true,
+	})
+	if err := m.materializeRecoveryBackupCopy(intent); err != nil {
 		return fmt.Errorf("copy recovery backup: %w", err)
 	}
 	if err := clearManagedDirectory(boundary); err != nil {
@@ -611,17 +674,51 @@ func restoreWholeBackup(boundary repo.WorktreePayloadBoundary, backupPath string
 	return moveManagedContents(tempPath, boundary.Root, boundary.ExcludesRelativePath)
 }
 
-func restorePathBackup(payloadRoot, backupPath string, entries []BackupEntry) error {
+func (m *Manager) restorePathBackup(plan *Plan, payloadRoot, backupPath string, entries []BackupEntry, transferOperation string) error {
 	entries, err := validatePathBackupRequiredEntries(payloadRoot, backupPath, entries)
 	if err != nil {
 		return err
 	}
 	tempPath := payloadRoot + ".recovery-path-tmp-" + uuidutil.NewV4()[:8]
 	defer os.RemoveAll(tempPath)
+	copyEntries := pathBackupCopyEntries(entries)
+	components := make([]capacitygate.Component, 0, len(copyEntries))
+	for _, entry := range copyEntries {
+		source := filepath.Join(backupPath, entry.Path)
+		bytes, err := capacitygate.TreeSize(source, nil)
+		if err != nil {
+			return fmt.Errorf("measure recovery backup path %s: %w", entry.Path, err)
+		}
+		components = append(components, capacitygate.Component{
+			Name:  "recovery backup path restore staging",
+			Path:  filepath.Join(tempPath, entry.Path),
+			Bytes: bytes,
+		})
+	}
+	if err := checkRecoveryBackupRestoreCapacity(plan, components); err != nil {
+		return err
+	}
+	copyIndex := 0
 	for _, entry := range entries {
 		clean := entry.Path
 		if entry.HadOriginal {
-			if err := restoreBackupClone(filepath.Join(backupPath, clean), filepath.Join(tempPath, clean)); err != nil {
+			copyIndex++
+			transferID := "recovery-path-backup-restore-primary"
+			primary := true
+			if copyIndex > 1 {
+				transferID = fmt.Sprintf("recovery-path-backup-restore-%d", copyIndex)
+				primary = false
+			}
+			intent := recoveryBackupRestoreIntent(recoveryBackupRestoreIntentRequest{
+				TransferID:                 transferID,
+				Operation:                  transferOperation,
+				SourcePath:                 filepath.Join(backupPath, clean),
+				MaterializationDestination: filepath.Join(tempPath, clean),
+				CapabilityProbePath:        filepath.Dir(tempPath),
+				PublishedDestination:       filepath.Join(payloadRoot, clean),
+				Primary:                    primary,
+			})
+			if err := m.materializeRecoveryBackupCopy(intent); err != nil {
 				return fmt.Errorf("copy recovery backup path %s: %w", clean, err)
 			}
 		}
@@ -643,6 +740,93 @@ func restorePathBackup(payloadRoot, backupPath string, entries []BackupEntry) er
 		}
 	}
 	return nil
+}
+
+func (m *Manager) materializeRecoveryBackupCopy(intent transfer.Intent) error {
+	plan, err := transfer.PlanIntent(restoreBackupTransferPlanner, intent)
+	if err != nil {
+		return fmt.Errorf("plan transfer: %w", err)
+	}
+	transferEngine := model.EngineCopy
+	if plan != nil && plan.TransferEngine != "" {
+		transferEngine = plan.TransferEngine
+	}
+	runtime, err := restoreBackupClone(engine.NewEngine(transferEngine), intent.SourcePath, intent.MaterializationDestination)
+	if err != nil {
+		return err
+	}
+	record := transfer.RecordFromPlanAndRuntime(intent, plan, runtime)
+	m.lastTransfers = append(m.lastTransfers, record)
+	return nil
+}
+
+func checkRecoveryBackupRestoreCapacity(plan *Plan, components []capacitygate.Component) error {
+	if len(components) == 0 {
+		return nil
+	}
+	folder := ""
+	workspace := ""
+	path := ""
+	if plan != nil {
+		folder = plan.Folder
+		workspace = plan.Workspace
+		path = plan.Path
+	}
+	_, err := restoreBackupCapacityGate.Check(capacitygate.Request{
+		Operation:       "recovery backup restore",
+		Folder:          folder,
+		Workspace:       workspace,
+		Path:            path,
+		Components:      components,
+		FailureMessages: []string{"No files were changed.", "Recovery backup was not changed."},
+	})
+	return err
+}
+
+type recoveryBackupRestoreIntentRequest struct {
+	TransferID                 string
+	Operation                  string
+	SourcePath                 string
+	MaterializationDestination string
+	CapabilityProbePath        string
+	PublishedDestination       string
+	Primary                    bool
+}
+
+func recoveryBackupRestoreIntent(req recoveryBackupRestoreIntentRequest) transfer.Intent {
+	return transfer.Intent{
+		TransferID:                 req.TransferID,
+		Operation:                  recoveryBackupTransferOperation(req.Operation),
+		Phase:                      "backup_restore",
+		Primary:                    req.Primary,
+		ResultKind:                 transfer.ResultKindFinal,
+		PermissionScope:            transfer.PermissionScopeExecution,
+		SourceRole:                 "recovery_backup_payload",
+		SourcePath:                 req.SourcePath,
+		DestinationRole:            "recovery_restore_staging",
+		MaterializationDestination: req.MaterializationDestination,
+		CapabilityProbePath:        req.CapabilityProbePath,
+		PublishedDestination:       req.PublishedDestination,
+		RequestedEngine:            engine.EngineAuto,
+	}
+}
+
+func recoveryBackupTransferOperation(operation string) string {
+	operation = strings.TrimSpace(operation)
+	if operation == "" {
+		return "recovery_backup_restore"
+	}
+	return operation
+}
+
+func pathBackupCopyEntries(entries []BackupEntry) []BackupEntry {
+	out := make([]BackupEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.HadOriginal {
+			out = append(out, entry)
+		}
+	}
+	return out
 }
 
 func validatePathBackupRequiredEntries(payloadRoot, backupPath string, entries []BackupEntry) ([]BackupEntry, error) {
@@ -716,9 +900,11 @@ func moveManagedContents(srcRoot, dstRoot string, excluded func(rel string) bool
 	return nil
 }
 
-func cloneRecoveryBackupToNew(src, dst string) error {
-	_, err := engine.CloneToNew(engine.NewCopyEngine(), src, dst)
-	return err
+func cloneRecoveryBackupToNew(eng engine.Engine, src, dst string) (*engine.CloneResult, error) {
+	if eng == nil {
+		eng = engine.NewCopyEngine()
+	}
+	return engine.CloneToNew(eng, src, dst)
 }
 
 func (s WorktreeState) WorktreeConfig() *model.WorktreeConfig {

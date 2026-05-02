@@ -33,6 +33,8 @@ func TestWorkspaceNewCreatesRelativeExplicitFolderFromSavePoint(t *testing.T) {
 		"Newest save point: none",
 		"Original workspace unchanged.",
 	})
+	assert.Contains(t, stdout, "Copy method: ")
+	assert.Contains(t, stdout, "Checked for this operation")
 
 	assertFileContent(t, filepath.Join(targetFolder, "app.txt"), "v1")
 	cfg, err := worktree.NewManager(repoRoot).Get("exp")
@@ -43,6 +45,46 @@ func TestWorkspaceNewCreatesRelativeExplicitFolderFromSavePoint(t *testing.T) {
 	path, err := worktree.NewManager(repoRoot).Path("exp")
 	require.NoError(t, err)
 	assert.Equal(t, targetFolder, path)
+}
+
+func TestWorkspaceNewJSONIncludesPrimaryTransferForExplicitFolder(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
+	sourceID := savePointIDFromCLI(t, "source")
+	targetFolder := filepath.Join(t.TempDir(), "client-review-files")
+
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "workspace", "new", targetFolder, "--from", sourceID, "--name", "review")
+	require.NoError(t, err)
+
+	env, data := decodeFacadeDataMap(t, stdout)
+	require.True(t, env.OK, stdout)
+	require.Equal(t, "workspace new", env.Command)
+	require.Equal(t, "review", data["workspace"])
+	require.Equal(t, targetFolder, data["folder"])
+	transfers, ok := data["transfers"].([]any)
+	require.True(t, ok, "transfers should be an array: %#v", data["transfers"])
+	require.Len(t, transfers, 1)
+	primary, ok := transfers[0].(map[string]any)
+	require.True(t, ok, "primary transfer should be an object: %#v", transfers[0])
+	require.Equal(t, "workspace-new-primary", primary["transfer_id"])
+	require.Equal(t, "workspace_new", primary["operation"])
+	require.Equal(t, "materialization", primary["phase"])
+	require.Equal(t, true, primary["primary"])
+	require.Equal(t, "final", primary["result_kind"])
+	require.Equal(t, "execution", primary["permission_scope"])
+	require.Equal(t, "save_point_payload", primary["source_role"])
+	require.Equal(t, "workspace_folder", primary["destination_role"])
+	require.NotEmpty(t, primary["source_path"])
+	require.NotEmpty(t, primary["materialization_destination"])
+	require.NotEmpty(t, primary["capability_probe_path"])
+	require.Equal(t, targetFolder, primary["published_destination"])
+	require.NotEqual(t, targetFolder, primary["materialization_destination"])
+	require.Equal(t, filepath.Dir(targetFolder), primary["capability_probe_path"])
+	require.Equal(t, true, primary["checked_for_this_operation"])
+	require.Equal(t, "auto", primary["requested_engine"])
+	require.NotEmpty(t, primary["effective_engine"])
+	require.Contains(t, []any{"fast_copy", "normal_copy"}, primary["performance_class"])
+	assertFileContent(t, filepath.Join(targetFolder, "app.txt"), "v1")
 }
 
 func TestWorkspaceNewCreatesAbsoluteExplicitFolderWithName(t *testing.T) {
