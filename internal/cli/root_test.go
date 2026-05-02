@@ -116,7 +116,7 @@ func TestRootCommand_Help(t *testing.T) {
 	} {
 		assert.Contains(t, stdout, line)
 	}
-	for _, command := range []string{"init", "save", "status", "history", "view", "restore", "workspace", "recovery", "doctor", "cleanup", "completion", "help"} {
+	for _, command := range []string{"init", "save", "status", "history", "view", "restore", "repo", "workspace", "recovery", "doctor", "cleanup", "completion", "help"} {
 		assertRootHelpListsCommand(t, stdout, command)
 	}
 	for _, word := range []string{
@@ -615,6 +615,8 @@ func createTestRootCmd() *cobra.Command {
 	workspaceNewFromRef = ""
 	workspaceNewName = ""
 	workspaceListStatus = false
+	repoCloneSavePoints = "all"
+	repoCloneDryRun = false
 	historyLimit = defaultHistoryLimit
 	historyNoteFilter = ""
 	historyPath = ""
@@ -649,6 +651,7 @@ func createTestRootCmd() *cobra.Command {
 	cmd.AddCommand(saveCmd)
 	cmd.AddCommand(statusCmd)
 	cmd.AddCommand(viewCmd)
+	cmd.AddCommand(repoCmd)
 	cmd.AddCommand(workspaceCmd)
 	cmd.AddCommand(historyCmd)
 	cmd.AddCommand(restoreCmd)

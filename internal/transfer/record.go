@@ -114,6 +114,7 @@ func (i Intent) PlanRequest() engine.TransferPlanRequest {
 		DestinationPath: i.MaterializationDestination,
 		CapabilityPath:  i.CapabilityProbePath,
 		RequestedEngine: requestedEngine(i.RequestedEngine),
+		PreviewOnly:     i.PermissionScope == PermissionScopePreviewOnly,
 	}
 }
 

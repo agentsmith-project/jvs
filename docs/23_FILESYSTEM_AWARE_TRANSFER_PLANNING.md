@@ -2,7 +2,7 @@
 
 **Subtitle:** filesystem-aware transfer planning handoff.
 
-**Status:** clean future milestone handoff，非当前 GA blocker。
+**Status:** active clean redesign, non-release-facing, not part of the v0 public contract. Clean future milestone handoff，非当前 GA blocker。
 
 **中文名:** 智能复制边界。
 

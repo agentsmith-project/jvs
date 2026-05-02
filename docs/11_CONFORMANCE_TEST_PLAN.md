@@ -106,7 +106,7 @@ UX.
 
 - Public docs describe cleanup preview/run semantics.
 - Cleanup must protect workspace history, open views, active recovery plans,
-  and active operations.
+  active operations, and durable imported clone history.
 - Cleanup preview JSON exposes `plan_id`, `created_at`,
   `protected_save_points`, `protection_groups`, `protected_by_history`,
   `candidate_count`, `reclaimable_save_points`, and
@@ -151,7 +151,7 @@ UX.
 - View tests cover read-only behavior for files and directories, including
   large managed paths.
 - Cleanup tests cover protection groups for history, open views, active
-  recovery, and active operations.
+  recovery, active operations, and imported clone history.
 - Migration tests cover offline whole-folder copy to a fresh destination,
   destination `jvs doctor --strict --repair-runtime`, a fresh cleanup preview,
   and the restore drill.

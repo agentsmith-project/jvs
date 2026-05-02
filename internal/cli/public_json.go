@@ -198,7 +198,8 @@ func publicCleanupProtectionReason(reason string) (string, error) {
 	case model.GCProtectionReasonHistory,
 		model.GCProtectionReasonOpenView,
 		model.GCProtectionReasonActiveRecovery,
-		model.GCProtectionReasonActiveOperation:
+		model.GCProtectionReasonActiveOperation,
+		model.GCProtectionReasonImportedCloneHistory:
 		return reason, nil
 	default:
 		return "", fmt.Errorf("cleanup plan contains unsupported cleanup protection reason")

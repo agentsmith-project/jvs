@@ -110,10 +110,11 @@ type CleanupProtectionGroup struct {
 type CleanupProtectionReason = string
 
 const (
-    CleanupProtectionReasonHistory         CleanupProtectionReason = "history"
-    CleanupProtectionReasonOpenView        CleanupProtectionReason = "open_view"
-    CleanupProtectionReasonActiveRecovery  CleanupProtectionReason = "active_recovery"
-    CleanupProtectionReasonActiveOperation CleanupProtectionReason = "active_operation"
+    CleanupProtectionReasonHistory              CleanupProtectionReason = "history"
+    CleanupProtectionReasonOpenView             CleanupProtectionReason = "open_view"
+    CleanupProtectionReasonActiveRecovery       CleanupProtectionReason = "active_recovery"
+    CleanupProtectionReasonActiveOperation      CleanupProtectionReason = "active_operation"
+    CleanupProtectionReasonImportedCloneHistory CleanupProtectionReason = "imported_clone_history"
 )
 ```
 
@@ -129,6 +130,8 @@ Cleanup protection reason meanings:
 - `active_recovery`: the save point is referenced by an active recovery plan.
 - `active_operation`: the save point is referenced by an active JVS operation
   that has not finished.
+- `imported_clone_history`: the save point was imported by `jvs repo clone`
+  and is protected by durable clone history metadata.
 
 ### EngineType
 

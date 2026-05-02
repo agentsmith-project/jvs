@@ -257,8 +257,8 @@ Required product layering:
 - Public docs say cleanup preview/run.
 - Cleanup preview must not delete.
 - Cleanup run must bind to a reviewed plan and revalidate before deletion.
-- Cleanup protects workspace history, open views, active recovery plans, and
-  active operations.
+- Cleanup protects workspace history, open views, active recovery plans, active operations,
+  and imported clone history.
 - Deleted save points require tombstone/audit information for later errors.
 
 ## Audit Boundary

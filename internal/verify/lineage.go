@@ -11,17 +11,21 @@ import (
 )
 
 const (
-	ErrorCodeLineageParentMissing = "E_LINEAGE_PARENT_MISSING"
-	ErrorCodeLineageParentInvalid = "E_LINEAGE_PARENT_INVALID"
-	ErrorCodeLineageCycle         = "E_LINEAGE_CYCLE"
+	ErrorCodeLineageParentMissing    = "E_LINEAGE_PARENT_MISSING"
+	ErrorCodeLineageParentInvalid    = "E_LINEAGE_PARENT_INVALID"
+	ErrorCodeLineageCycle            = "E_LINEAGE_CYCLE"
+	ErrorCodeLineageReferenceMissing = "E_LINEAGE_REFERENCE_MISSING"
+	ErrorCodeLineageReferenceInvalid = "E_LINEAGE_REFERENCE_INVALID"
 )
 
 // LineageIssue describes a machine-readable lineage problem.
 type LineageIssue struct {
-	Code       string
-	SnapshotID model.SnapshotID
-	ParentID   model.SnapshotID
-	Message    string
+	Code           string
+	SnapshotID     model.SnapshotID
+	ParentID       model.SnapshotID
+	ReferenceID    model.SnapshotID
+	ReferenceField string
+	Message        string
 }
 
 func (i *LineageIssue) Error() string {
@@ -54,7 +58,13 @@ func CheckLineage(repoRoot string, snapshotID model.SnapshotID) *LineageIssue {
 			}
 		}
 		if desc.ParentID == nil {
+			if issue := checkDescriptorProvenanceReferences(repoRoot, current, desc); issue != nil {
+				return issue
+			}
 			return nil
+		}
+		if issue := checkDescriptorProvenanceReferences(repoRoot, current, desc); issue != nil {
+			return issue
 		}
 
 		parentID := *desc.ParentID
@@ -81,6 +91,59 @@ func CheckLineage(repoRoot string, snapshotID model.SnapshotID) *LineageIssue {
 		current = parentID
 	}
 	return nil
+}
+
+type descriptorReference struct {
+	field string
+	id    model.SnapshotID
+}
+
+func checkDescriptorProvenanceReferences(repoRoot string, snapshotID model.SnapshotID, desc *model.Descriptor) *LineageIssue {
+	for _, ref := range descriptorProvenanceReferences(desc) {
+		if err := ref.id.Validate(); err != nil {
+			return &LineageIssue{
+				Code:           ErrorCodeLineageReferenceInvalid,
+				SnapshotID:     snapshotID,
+				ReferenceID:    ref.id,
+				ReferenceField: ref.field,
+				Message:        fmt.Sprintf("snapshot %s has invalid %s %s: %v", snapshotID, ref.field, ref.id, err),
+			}
+		}
+		if _, err := repo.SnapshotDescriptorPathForRead(repoRoot, ref.id); err != nil {
+			code := ErrorCodeLineageReferenceInvalid
+			if errors.Is(err, os.ErrNotExist) {
+				code = ErrorCodeLineageReferenceMissing
+			}
+			return &LineageIssue{
+				Code:           code,
+				SnapshotID:     snapshotID,
+				ReferenceID:    ref.id,
+				ReferenceField: ref.field,
+				Message:        fmt.Sprintf("snapshot %s %s %s is missing or unreadable: %v", snapshotID, ref.field, ref.id, err),
+			}
+		}
+	}
+	return nil
+}
+
+func descriptorProvenanceReferences(desc *model.Descriptor) []descriptorReference {
+	if desc == nil {
+		return nil
+	}
+	var refs []descriptorReference
+	if desc.StartedFrom != nil {
+		refs = append(refs, descriptorReference{field: "started_from", id: *desc.StartedFrom})
+	}
+	if desc.RestoredFrom != nil {
+		refs = append(refs, descriptorReference{field: "restored_from", id: *desc.RestoredFrom})
+	}
+	for i, restored := range desc.RestoredPaths {
+		refs = append(refs, descriptorReference{
+			field: fmt.Sprintf("restored_paths[%d].source_snapshot_id", i),
+			id:    restored.SourceSnapshotID,
+		})
+	}
+	return refs
 }
 
 // IsAncestor reports whether ancestorID is reachable from descendantID by

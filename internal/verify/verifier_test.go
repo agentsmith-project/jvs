@@ -100,6 +100,29 @@ func writeLineageDescriptor(t *testing.T, repoPath string, snapshotID model.Snap
 	require.NoError(t, os.WriteFile(descriptorPath, data, 0644))
 }
 
+func writeProvenanceDescriptor(t *testing.T, repoPath string, snapshotID model.SnapshotID, restoredFrom *model.SnapshotID, restoredPaths []model.RestoredPathSource) {
+	t.Helper()
+
+	desc := &model.Descriptor{
+		SnapshotID:      snapshotID,
+		RestoredFrom:    restoredFrom,
+		RestoredPaths:   restoredPaths,
+		WorktreeName:    "main",
+		CreatedAt:       time.Now().UTC(),
+		Engine:          model.EngineCopy,
+		PayloadRootHash: "hash",
+		IntegrityState:  model.IntegrityVerified,
+	}
+	checksum, err := integrity.ComputeDescriptorChecksum(desc)
+	require.NoError(t, err)
+	desc.DescriptorChecksum = checksum
+
+	data, err := json.MarshalIndent(desc, "", "  ")
+	require.NoError(t, err)
+	descriptorPath := filepath.Join(repoPath, ".jvs", "descriptors", string(snapshotID)+".json")
+	require.NoError(t, os.WriteFile(descriptorPath, data, 0644))
+}
+
 func TestVerifier_VerifySnapshot(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	snapshotID := createTestSnapshot(t, repoPath)
@@ -140,6 +163,28 @@ func TestVerifierVerifySnapshotReportsParentCycle(t *testing.T) {
 	assert.True(t, result.TamperDetected)
 	assert.Equal(t, "E_LINEAGE_CYCLE", result.ErrorCode)
 	assert.Contains(t, result.Error, "cycle")
+}
+
+func TestVerifierVerifySnapshotReportsMissingProvenanceReference(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	snapshotID := model.SnapshotID("1708300800000-deadbeef")
+	restoredFrom := model.SnapshotID("1708300700000-feedface")
+	restoredPathSource := model.SnapshotID("1708300600000-cafebabe")
+	writeProvenanceDescriptor(t, repoPath, snapshotID, &restoredFrom, []model.RestoredPathSource{
+		{
+			TargetPath:       "restored/path.txt",
+			SourceSnapshotID: restoredPathSource,
+			SourcePath:       "source/path.txt",
+			Status:           model.PathSourceExact,
+		},
+	})
+
+	result, err := verify.NewVerifier(repoPath).VerifySnapshot(snapshotID, false)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.True(t, result.TamperDetected)
+	assert.Equal(t, "E_LINEAGE_REFERENCE_MISSING", result.ErrorCode)
+	assert.Contains(t, result.Error, "restored_from")
 }
 
 func TestVerifier_VerifySnapshotRejectsPathLikeAndNonCanonicalIDs(t *testing.T) {
@@ -469,6 +514,23 @@ func TestVerifyAllReportsWorkspaceCurrentLatestRefs(t *testing.T) {
 	}
 	assert.Equal(t, "E_DESCRIPTOR_MISSING", got[currentID])
 	assert.Equal(t, "E_DESCRIPTOR_MISSING", got[latestID])
+}
+
+func TestVerifyAllReportsWorkspacePathSourceRefs(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	pathSourceID := model.SnapshotID("1708300800000-deadbeef")
+	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	cfg.PathSources = model.NewPathSources()
+	require.NoError(t, cfg.PathSources.Restore("restored/path.txt", pathSourceID))
+	require.NoError(t, repo.WriteWorktreeConfig(repoPath, "main", cfg))
+
+	results, err := verify.NewVerifier(repoPath).VerifyAll(false)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, pathSourceID, results[0].SnapshotID)
+	assert.True(t, results[0].TamperDetected)
+	assert.Equal(t, "E_DESCRIPTOR_MISSING", results[0].ErrorCode)
 }
 
 func TestVerifier_VerifyAllSkipsTmpAndInvalidSnapshotDirNames(t *testing.T) {

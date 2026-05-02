@@ -36,13 +36,14 @@ func TestPreviewCleanupExposesProtectionGroups(t *testing.T) {
 
 func TestCleanupProtectionReasonConstantsExposeStableTokens(t *testing.T) {
 	reasons := map[CleanupProtectionReason]string{
-		CleanupProtectionReasonHistory:         "history",
-		CleanupProtectionReasonOpenView:        "open_view",
-		CleanupProtectionReasonActiveRecovery:  "active_recovery",
-		CleanupProtectionReasonActiveOperation: "active_operation",
+		CleanupProtectionReasonHistory:              "history",
+		CleanupProtectionReasonOpenView:             "open_view",
+		CleanupProtectionReasonActiveRecovery:       "active_recovery",
+		CleanupProtectionReasonActiveOperation:      "active_operation",
+		CleanupProtectionReasonImportedCloneHistory: "imported_clone_history",
 	}
 
-	require.Len(t, reasons, 4)
+	require.Len(t, reasons, 5)
 	for reason, token := range reasons {
 		assert.Equal(t, token, string(reason))
 	}
@@ -67,16 +68,18 @@ func TestPublicCleanupPlanMapsProtectionReasonsToFacadeConstants(t *testing.T) {
 			{Reason: model.GCProtectionReasonOpenView, Count: 1},
 			{Reason: model.GCProtectionReasonActiveRecovery, Count: 1},
 			{Reason: model.GCProtectionReasonActiveOperation, Count: 1},
+			{Reason: model.GCProtectionReasonImportedCloneHistory, Count: 1},
 		},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, plan)
-	require.Len(t, plan.ProtectionGroups, 4)
+	require.Len(t, plan.ProtectionGroups, 5)
 
 	assert.Equal(t, CleanupProtectionReasonHistory, plan.ProtectionGroups[0].Reason)
 	assert.Equal(t, CleanupProtectionReasonOpenView, plan.ProtectionGroups[1].Reason)
 	assert.Equal(t, CleanupProtectionReasonActiveRecovery, plan.ProtectionGroups[2].Reason)
 	assert.Equal(t, CleanupProtectionReasonActiveOperation, plan.ProtectionGroups[3].Reason)
+	assert.Equal(t, CleanupProtectionReasonImportedCloneHistory, plan.ProtectionGroups[4].Reason)
 	assert.Equal(t, 2, plan.ProtectedByHistory)
 }
 

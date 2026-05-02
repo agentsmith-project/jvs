@@ -8,10 +8,11 @@ import (
 const GCPlanSchemaVersion = 1
 
 const (
-	GCProtectionReasonHistory         = "history"
-	GCProtectionReasonOpenView        = "open_view"
-	GCProtectionReasonActiveRecovery  = "active_recovery"
-	GCProtectionReasonActiveOperation = "active_operation"
+	GCProtectionReasonHistory              = "history"
+	GCProtectionReasonOpenView             = "open_view"
+	GCProtectionReasonActiveRecovery       = "active_recovery"
+	GCProtectionReasonActiveOperation      = "active_operation"
+	GCProtectionReasonImportedCloneHistory = "imported_clone_history"
 )
 
 // Pin protects a snapshot from garbage collection.

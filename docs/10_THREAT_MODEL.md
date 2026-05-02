@@ -33,8 +33,8 @@
 - Runtime repair limited to safe runtime cleanup actions.
 - Migration guidance treats non-portable JVS runtime state as
   destination-local and rebuilds it with `jvs doctor --strict --repair-runtime`.
-- Cleanup protects workspace history, open views, active recovery plans, and
-  active operations.
+- Cleanup protects workspace history, open views, active recovery plans, active operations,
+  and imported clone history.
 
 ## Residual Risks
 

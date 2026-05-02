@@ -54,6 +54,7 @@ var publicRootCommandNames = map[string]bool{
 	"help":       true,
 	"history":    true,
 	"init":       true,
+	"repo":       true,
 	"recovery":   true,
 	"restore":    true,
 	"save":       true,

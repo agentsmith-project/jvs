@@ -260,8 +260,13 @@ func (v *Verifier) collectWorkspaceRefIDs(seen map[model.SnapshotID]bool) error 
 		if err != nil {
 			return fmt.Errorf("load worktree metadata %s: %w", entry.Name(), err)
 		}
+		addInventoryRef(seen, cfg.BaseSnapshotID)
 		addInventoryRef(seen, cfg.HeadSnapshotID)
 		addInventoryRef(seen, cfg.LatestSnapshotID)
+		addInventoryRef(seen, cfg.StartedFromSnapshotID)
+		for _, source := range cfg.PathSources {
+			addInventoryRef(seen, source.SourceSnapshotID)
+		}
 	}
 	return nil
 }

@@ -132,6 +132,8 @@ func cleanupProtectionReasonLabel(reason string) string {
 		return "active recovery plans"
 	case model.GCProtectionReasonActiveOperation:
 		return "active operations"
+	case model.GCProtectionReasonImportedCloneHistory:
+		return "imported clone history"
 	default:
 		return reason
 	}

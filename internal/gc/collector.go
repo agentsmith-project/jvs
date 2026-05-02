@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/agentsmith-project/jvs/internal/audit"
+	"github.com/agentsmith-project/jvs/internal/clonehistory"
 	"github.com/agentsmith-project/jvs/internal/recovery"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
@@ -36,8 +37,9 @@ const (
 	cleanupPreviewOperation = "cleanup preview"
 	cleanupRunOperation     = "cleanup run"
 
-	cleanupActiveOperationsUnavailableMessage = "cleanup cannot determine active operations safely; run jvs doctor --strict before cleanup"
-	cleanupSavePointStorageUnavailableMessage = "cleanup cannot verify save point storage safely; run jvs doctor --strict before cleanup"
+	cleanupActiveOperationsUnavailableMessage     = "cleanup cannot determine active operations safely; run jvs doctor --strict before cleanup"
+	cleanupSavePointStorageUnavailableMessage     = "cleanup cannot verify save point storage safely; run jvs doctor --strict before cleanup"
+	cleanupImportedCloneHistoryUnavailableMessage = "cleanup cannot verify imported clone history safely; run jvs doctor --strict before cleanup"
 )
 
 type planInputs struct {
@@ -130,6 +132,7 @@ func (b *protectionBuilder) protectionGroups() []model.GCProtectionGroup {
 		model.GCProtectionReasonOpenView,
 		model.GCProtectionReasonActiveRecovery,
 		model.GCProtectionReasonActiveOperation,
+		model.GCProtectionReasonImportedCloneHistory,
 	}
 	seen := make(map[string]bool, len(known))
 	for _, reason := range known {
@@ -664,22 +667,19 @@ func (c *Collector) computeProtectedSet() ([]model.SnapshotID, []model.GCProtect
 		return nil, nil, 0, err
 	}
 	roots := make(map[model.SnapshotID]bool)
-	directProtected := make(map[model.SnapshotID]bool)
 	addRoot := func(id model.SnapshotID) {
 		if id != "" {
 			roots[id] = true
-		}
-	}
-	addDirectProtected := func(id model.SnapshotID) {
-		if id != "" {
-			directProtected[id] = true
 		}
 	}
 	for _, cfg := range wtList {
 		addRoot(cfg.HeadSnapshotID)
 		addRoot(cfg.LatestSnapshotID)
 		addRoot(cfg.BaseSnapshotID)
-		addDirectProtected(cfg.StartedFromSnapshotID)
+		addRoot(cfg.StartedFromSnapshotID)
+		for _, source := range cfg.PathSources {
+			addRoot(source.SourceSnapshotID)
+		}
 	}
 
 	rootIDs := make([]model.SnapshotID, 0, len(roots))
@@ -689,12 +689,6 @@ func (c *Collector) computeProtectedSet() ([]model.SnapshotID, []model.GCProtect
 		}
 		protection.add(model.GCProtectionReasonHistory, id)
 		rootIDs = append(rootIDs, id)
-	}
-	for id := range directProtected {
-		if err := id.Validate(); err != nil {
-			continue
-		}
-		protection.add(model.GCProtectionReasonHistory, id)
 	}
 	sortSnapshotIDs(rootIDs)
 
@@ -731,6 +725,18 @@ func (c *Collector) computeProtectedSet() ([]model.SnapshotID, []model.GCProtect
 			continue
 		}
 		protection.add(model.GCProtectionReasonActiveRecovery, plan.SourceSavePoint)
+	}
+
+	// 6. All-clone imported history is durable protection metadata. Any
+	// unreadable, malformed, repo-mismatched, or dangling manifest fails closed.
+	manifest, ok, err := clonehistory.LoadValidatedManifest(c.repoRoot)
+	if err != nil {
+		return nil, nil, 0, newCleanupPublicError(cleanupImportedCloneHistoryUnavailableMessage, err)
+	}
+	if ok {
+		for _, id := range manifest.ImportedSavePoints {
+			protection.add(model.GCProtectionReasonImportedCloneHistory, id)
+		}
 	}
 
 	return protection.protectedSet(), protection.protectionGroups(), lineageCount, nil
@@ -827,17 +833,42 @@ func (c *Collector) walkLineageSeen(snapshotID model.SnapshotID, protection *pro
 		return count
 	}
 	if desc.ParentID != nil {
-		if protection.add(model.GCProtectionReasonHistory, *desc.ParentID) {
+		if addValidHistoryReference(protection, *desc.ParentID) {
 			count++
 		}
 		count += c.walkLineageSeen(*desc.ParentID, protection, seen)
 	}
-	if desc.StartedFrom != nil {
-		if protection.add(model.GCProtectionReasonHistory, *desc.StartedFrom) {
+	for _, ref := range descriptorProvenanceReferences(desc) {
+		if addValidHistoryReference(protection, ref) {
 			count++
 		}
+		count += c.walkLineageSeen(ref, protection, seen)
 	}
 	return count
+}
+
+func addValidHistoryReference(protection *protectionBuilder, id model.SnapshotID) bool {
+	if err := id.Validate(); err != nil {
+		return false
+	}
+	return protection.add(model.GCProtectionReasonHistory, id)
+}
+
+func descriptorProvenanceReferences(desc *model.Descriptor) []model.SnapshotID {
+	if desc == nil {
+		return nil
+	}
+	var refs []model.SnapshotID
+	if desc.StartedFrom != nil {
+		refs = append(refs, *desc.StartedFrom)
+	}
+	if desc.RestoredFrom != nil {
+		refs = append(refs, *desc.RestoredFrom)
+	}
+	for _, restored := range desc.RestoredPaths {
+		refs = append(refs, restored.SourceSnapshotID)
+	}
+	return refs
 }
 
 func (c *Collector) listAllSnapshots(allowReadyMissingDescriptor map[model.SnapshotID]bool) ([]model.SnapshotID, error) {

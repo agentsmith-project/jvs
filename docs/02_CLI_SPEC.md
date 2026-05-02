@@ -45,6 +45,7 @@ doctor
 history
 init
 recovery
+repo clone
 restore
 save
 status
@@ -124,6 +125,55 @@ Required JSON `data` fields include:
 - `newest_save_point`
 - `unsaved_changes`
 - setup engine probe fields such as `effective_engine` and `warnings`
+
+## Repo Clone
+
+### `jvs repo clone <target-folder> [--save-points all|main] [--dry-run] [--json]`
+
+Clone a local or mounted JVS project into a new folder. The source is the
+current discovered project, or the project named by global `--repo <path>`.
+`repo clone` is not Git clone and must reject URL, ssh, and scp-like remote
+inputs.
+
+Rules:
+
+- `<target-folder>` must not already exist.
+- `<target-folder>` must be outside every source workspace.
+- The target gets a new repository identity.
+- The target creates only workspace `main`.
+- Source workspaces other than `main`, source workspace locators, runtime
+  state, and cleanup plans are not copied.
+- `--save-points all` copies all ready save points and writes durable imported
+  clone history metadata for cleanup protection.
+- `--save-points main` copies the source `main` history/provenance closure.
+- `--dry-run` plans only; it must not create the target or write probe files.
+
+Human output must show:
+
+- `Source`
+- `Target`
+- save points copied
+- `Workspaces created: main only`
+- source workspaces not created
+- copy method for save point storage and main workspace
+- strict doctor result for a completed clone
+
+Required JSON `data` fields include:
+
+- `operation`
+- `source_repo_root`
+- `target_repo_root`
+- `source_repo_id`
+- `target_repo_id`
+- `save_points_mode`
+- `save_points_copied_count`
+- `save_points_copied`
+- `workspaces_created`
+- `source_workspaces_not_created`
+- `runtime_state_copied`
+- `transfers`
+- `clone_manifest` when `--save-points all` completes
+- `dry_run` for dry runs
 
 ## Status
 
@@ -458,12 +508,12 @@ audit history as an automatic repair.
 `cleanup` is the public product term. Cleanup must remain two-stage: preview
 first, then run a reviewed plan. A cleanup run must revalidate its plan before
 deleting anything and must protect the stable reasons: workspace history, open
-views, active recovery plans, and active operations.
+views, active recovery plans, active operations, and imported clone history.
 Cleanup only deletes unprotected save point storage. It must not delete
 workspace folders, user cache directories, JVS control data, or runtime state;
 it must not prune workspace history or apply a retention policy.
 Stable cleanup reasons: workspace history; open views; active recovery plans;
-active operations.
+active operations; imported clone history.
 
 Cleanup preview must explain protected save points by stable generic reasons:
 
@@ -471,15 +521,18 @@ Cleanup preview must explain protected save points by stable generic reasons:
 - `open_view`
 - `active_recovery`
 - `active_operation`
+- `imported_clone_history`
 
 JSON uses those stable reason tokens. Human output must render them as natural
 labels: workspace history, open views, active recovery plans, and active
-operations.
+operations, and imported clone history.
 
 ### `jvs cleanup preview [--json]`
 
 Create a cleanup plan for save point storage that is no longer needed by
 workspace history, open views, active recovery plans, or active operations.
+Imported clone history is also protected when durable repo clone metadata is
+present.
 Preview does not delete anything.
 
 Human output must show:

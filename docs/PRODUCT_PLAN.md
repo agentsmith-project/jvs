@@ -233,8 +233,8 @@ Required semantics:
 
 - Preview does not delete.
 - Run binds to a reviewed plan and revalidates before deletion.
-- Cleanup protects workspace history, open views, active recovery plans, and
-  active operations.
+- Cleanup protects workspace history, open views, active recovery plans, active operations,
+  and imported clone history.
 - Cleanup does not delete workspace folders, user cache directories, JVS
   control data, or runtime state; it does not prune history or apply a
   retention policy.

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentsmith-project/jvs/internal/clonehistory"
 	"github.com/agentsmith-project/jvs/internal/doctor"
 	"github.com/agentsmith-project/jvs/internal/engine"
 	"github.com/agentsmith-project/jvs/internal/gc"
@@ -297,6 +298,42 @@ func TestDoctor_Check_Strict(t *testing.T) {
 	result, err := doc.Check(true)
 	require.NoError(t, err)
 	assert.True(t, result.Healthy)
+}
+
+func TestDoctorStrictValidatesImportedCloneHistoryManifest(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	importedID := createRemovedWorktreeSnapshot(t, repoPath)
+	writeImportedCloneHistoryManifestForDoctorTest(t, repoPath, []model.SnapshotID{importedID})
+
+	result, err := doctor.NewDoctor(repoPath).Check(true)
+	require.NoError(t, err)
+	assert.True(t, result.Healthy, "findings: %#v", result.Findings)
+
+	writeImportedCloneHistoryManifestRawForDoctorTest(t, repoPath, []model.SnapshotID{"1708300800000-deadbeef"})
+	result, err = doctor.NewDoctor(repoPath).Check(true)
+	require.NoError(t, err)
+	assert.False(t, result.Healthy)
+	assertFindingCode(t, result, "clone_history", doctor.ErrorCodeCloneHistoryInvalid)
+
+	require.NoError(t, os.WriteFile(clonehistory.ManifestPath(repoPath), []byte("{not json"), 0644))
+	result, err = doctor.NewDoctor(repoPath).Check(true)
+	require.NoError(t, err)
+	assert.False(t, result.Healthy)
+	assertFindingCode(t, result, "clone_history", doctor.ErrorCodeCloneHistoryInvalid)
+}
+
+func TestDoctorStrictReportsWorkspacePathSourceMissing(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	cfg.PathSources = model.NewPathSources()
+	require.NoError(t, cfg.PathSources.Restore("restored/path.txt", "1708300800000-deadbeef"))
+	require.NoError(t, repo.WriteWorktreeConfig(repoPath, "main", cfg))
+
+	result, err := doctor.NewDoctor(repoPath).Check(true)
+	require.NoError(t, err)
+	assert.False(t, result.Healthy)
+	assertFindingCode(t, result, "integrity", "E_DESCRIPTOR_MISSING")
 }
 
 func TestDoctor_Check_OrphanIntent(t *testing.T) {
@@ -1920,6 +1957,42 @@ func assertFindingCode(t *testing.T, result *doctor.Result, category, code strin
 		}
 	}
 	t.Fatalf("expected finding %s/%s in %#v", category, code, result.Findings)
+}
+
+func writeImportedCloneHistoryManifestForDoctorTest(t *testing.T, repoPath string, ids []model.SnapshotID) {
+	t.Helper()
+
+	manifest := importedCloneHistoryManifestForDoctorTest(t, repoPath, ids)
+	require.NoError(t, clonehistory.WriteManifest(repoPath, manifest))
+}
+
+func writeImportedCloneHistoryManifestRawForDoctorTest(t *testing.T, repoPath string, ids []model.SnapshotID) {
+	t.Helper()
+
+	manifest := importedCloneHistoryManifestForDoctorTest(t, repoPath, ids)
+	manifest.ImportedSavePointsCount, manifest.ImportedSavePointsChecksum = clonehistory.ComputeImportedSavePointsEvidence(ids)
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	require.NoError(t, err)
+	path := clonehistory.ManifestPath(repoPath)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0755))
+	require.NoError(t, os.WriteFile(path, data, 0644))
+}
+
+func importedCloneHistoryManifestForDoctorTest(t *testing.T, repoPath string, ids []model.SnapshotID) clonehistory.Manifest {
+	t.Helper()
+
+	r, err := repo.Discover(repoPath)
+	require.NoError(t, err)
+	return clonehistory.Manifest{
+		SchemaVersion:      clonehistory.ManifestSchemaVersion,
+		Operation:          clonehistory.OperationRepoClone,
+		SourceRepoID:       "source-repo-id",
+		TargetRepoID:       r.RepoID,
+		SavePointsMode:     clonehistory.SavePointsModeAll,
+		RuntimeStateCopied: false,
+		ProtectionReason:   model.GCProtectionReasonImportedCloneHistory,
+		ImportedSavePoints: ids,
+	}
 }
 
 func assertNoFindingCode(t *testing.T, result *doctor.Result, code string) {

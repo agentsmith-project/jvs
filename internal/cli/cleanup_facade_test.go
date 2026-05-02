@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agentsmith-project/jvs/internal/clonehistory"
+	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/sourcepin"
 	"github.com/agentsmith-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
@@ -53,6 +55,29 @@ func TestCleanupPreviewJSONIncludesProtectionGroups(t *testing.T) {
 	require.NotNil(t, history)
 	assert.Equal(t, float64(1), history["count"])
 	assert.Equal(t, []any{savePointID}, history["save_points"])
+}
+
+func TestCleanupPreviewExplainsImportedCloneHistoryReason(t *testing.T) {
+	isolateContractCLIState(t)
+	repoRoot := setupCurrentContractRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("baseline"), 0644))
+	savePointID := savePointForContract(t, "baseline")
+	writeImportedCloneHistoryManifestForCLITest(t, repoRoot, []model.SnapshotID{model.SnapshotID(savePointID)})
+
+	stdout, err := executeCommand(createTestRootCmd(), "cleanup", "preview")
+	require.NoError(t, err, stdout)
+
+	assert.Contains(t, stdout, "imported clone history:")
+	assert.NotContains(t, stdout, "imported_clone_history:")
+
+	jsonOut, err := executeCommand(createTestRootCmd(), "--json", "cleanup", "preview")
+	require.NoError(t, err, jsonOut)
+	data := decodeContractDataMap(t, jsonOut)
+	groups, ok := data["protection_groups"].([]any)
+	require.True(t, ok, "protection_groups should be a stable JSON array: %#v", data)
+	imported := cleanupProtectionGroupByReason(t, groups, "imported_clone_history")
+	require.NotNil(t, imported)
+	assert.Equal(t, []any{savePointID}, imported["save_points"])
 }
 
 func TestDoctorRepairRuntimeInvalidatesCopiedCleanupPlanPublicly(t *testing.T) {
@@ -198,6 +223,23 @@ func corruptCLIReadyMarker(t *testing.T, repoRoot, savePointID string) {
 
 	readyPath := filepath.Join(repoRoot, ".jvs", "snapshots", savePointID, ".READY")
 	require.NoError(t, os.WriteFile(readyPath, []byte("{not json"), 0644))
+}
+
+func writeImportedCloneHistoryManifestForCLITest(t *testing.T, repoRoot string, ids []model.SnapshotID) {
+	t.Helper()
+
+	r, err := repo.Discover(repoRoot)
+	require.NoError(t, err)
+	require.NoError(t, clonehistory.WriteManifest(repoRoot, clonehistory.Manifest{
+		SchemaVersion:      clonehistory.ManifestSchemaVersion,
+		Operation:          clonehistory.OperationRepoClone,
+		SourceRepoID:       "source-repo-id",
+		TargetRepoID:       r.RepoID,
+		SavePointsMode:     clonehistory.SavePointsModeAll,
+		RuntimeStateCopied: false,
+		ProtectionReason:   model.GCProtectionReasonImportedCloneHistory,
+		ImportedSavePoints: ids,
+	}))
 }
 
 func assertPublicCleanupErrorOmitsInternalActiveOperationVocabulary(t *testing.T, value string) {

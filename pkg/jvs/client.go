@@ -79,10 +79,11 @@ type CleanupOptions struct{}
 type CleanupProtectionReason = string
 
 const (
-	CleanupProtectionReasonHistory         CleanupProtectionReason = "history"
-	CleanupProtectionReasonOpenView        CleanupProtectionReason = "open_view"
-	CleanupProtectionReasonActiveRecovery  CleanupProtectionReason = "active_recovery"
-	CleanupProtectionReasonActiveOperation CleanupProtectionReason = "active_operation"
+	CleanupProtectionReasonHistory              CleanupProtectionReason = "history"
+	CleanupProtectionReasonOpenView             CleanupProtectionReason = "open_view"
+	CleanupProtectionReasonActiveRecovery       CleanupProtectionReason = "active_recovery"
+	CleanupProtectionReasonActiveOperation      CleanupProtectionReason = "active_operation"
+	CleanupProtectionReasonImportedCloneHistory CleanupProtectionReason = "imported_clone_history"
 )
 
 // CleanupPlan is the public library view of a cleanup plan.
@@ -548,6 +549,8 @@ func publicCleanupProtectionReason(reason string) (CleanupProtectionReason, erro
 		return CleanupProtectionReasonActiveRecovery, nil
 	case model.GCProtectionReasonActiveOperation:
 		return CleanupProtectionReasonActiveOperation, nil
+	case model.GCProtectionReasonImportedCloneHistory:
+		return CleanupProtectionReasonImportedCloneHistory, nil
 	default:
 		return "", fmt.Errorf("cleanup plan contains unsupported cleanup protection reason")
 	}

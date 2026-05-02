@@ -54,6 +54,7 @@ maintaining a published version:
 | Design | [Design Index](design/README.md) | Non-release-facing design notes and active design references |
 | Future product research | [Product Gaps For Next Plan](PRODUCT_GAPS_FOR_NEXT_PLAN.md) | Non-committal product gaps to consider later |
 | Future milestone handoffs | [Smart Copy Boundaries](23_FILESYSTEM_AWARE_TRANSFER_PLANNING.md) | Filesystem-aware transfer planning handoff |
+| Future milestone handoffs | [Repo Clone Product Plan](24_REPO_CLONE_PRODUCT_PLAN.md) | Local JVS project clone handoff |
 
 ## Boundary Rules
 

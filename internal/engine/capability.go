@@ -62,6 +62,7 @@ type TransferPlanRequest struct {
 	DestinationPath string
 	CapabilityPath  string
 	RequestedEngine model.EngineType
+	PreviewOnly     bool
 }
 
 // TransferSelectionRequest is passed to a selector after destination
@@ -262,14 +263,16 @@ func (DefaultTransferSelector) SelectTransfer(req TransferSelectionRequest) Tran
 	}
 }
 
-// PlanTransfer uses destination write-probed capabilities plus pair probes to
-// select an engine for source+destination transfer operations.
+// PlanTransfer uses destination capabilities plus pair probes to select an
+// engine for source+destination transfer operations. Preview-only requests are
+// read-only and therefore do not perform write probes.
 func PlanTransfer(req TransferPlanRequest) (*TransferPlan, error) {
 	return TransferPlanner{}.PlanTransfer(req)
 }
 
-// PlanTransfer uses destination write-probed capabilities plus pair probes to
-// select an engine for source+destination transfer operations.
+// PlanTransfer uses destination capabilities plus pair probes to select an
+// engine for source+destination transfer operations. Preview-only requests are
+// read-only and therefore do not perform write probes.
 func (p TransferPlanner) PlanTransfer(req TransferPlanRequest) (*TransferPlan, error) {
 	prober := p.Prober
 	if prober == nil {
@@ -284,7 +287,8 @@ func (p TransferPlanner) PlanTransfer(req TransferPlanRequest) (*TransferPlan, e
 	if capabilityPath == "" {
 		capabilityPath = req.DestinationPath
 	}
-	report, err := prober.ProbeCapabilities(capabilityPath, true)
+	writeProbe := !req.PreviewOnly
+	report, err := prober.ProbeCapabilities(capabilityPath, writeProbe)
 	if err != nil {
 		return nil, err
 	}
@@ -311,7 +315,7 @@ func (p TransferPlanner) PlanTransfer(req TransferPlanRequest) (*TransferPlan, e
 		Warnings:          uniqueStrings(append(append([]string{}, report.Warnings...), selection.Warnings...)),
 	}
 
-	if plan.TransferEngine == model.EngineReflinkCopy {
+	if !req.PreviewOnly && plan.TransferEngine == model.EngineReflinkCopy {
 		pairDestinationPath := transferPairProbeDestination(req, report)
 		pair, err := prober.ProbeTransferPair(req.SourcePath, pairDestinationPath)
 		if err != nil {

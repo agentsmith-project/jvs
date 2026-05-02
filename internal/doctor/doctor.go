@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/agentsmith-project/jvs/internal/audit"
+	"github.com/agentsmith-project/jvs/internal/clonehistory"
 	"github.com/agentsmith-project/jvs/internal/gc"
 	"github.com/agentsmith-project/jvs/internal/integrity"
 	"github.com/agentsmith-project/jvs/internal/repo"
@@ -120,6 +121,7 @@ const (
 	ErrorCodeTmpControlInvalid           = "E_TMP_CONTROL_INVALID"
 	ErrorCodeTmpOrphan                   = "E_TMP_ORPHAN"
 	ErrorCodeAuditScanFailed             = "E_AUDIT_SCAN_FAILED"
+	ErrorCodeCloneHistoryInvalid         = "E_CLONE_HISTORY_INVALID"
 )
 
 var repairRegistry = []repairActionDef{
@@ -1019,6 +1021,7 @@ func (d *Doctor) Check(strict bool) (*Result, error) {
 
 	// 7. Check snapshot integrity (if strict)
 	if strict {
+		d.checkImportedCloneHistory(result)
 		d.checkSnapshotIntegrity(result)
 		// 8. Check audit chain (if strict)
 		d.checkAuditChain(result)
@@ -1583,6 +1586,17 @@ func (d *Doctor) checkReadyMarkers(result *Result, strict bool) {
 			Severity:    "error",
 			ErrorCode:   issue.Code,
 			Path:        issue.Path,
+		})
+	}
+}
+
+func (d *Doctor) checkImportedCloneHistory(result *Result) {
+	if _, _, err := clonehistory.LoadValidatedManifest(d.repoRoot); err != nil {
+		result.Findings = append(result.Findings, Finding{
+			Category:    "clone_history",
+			Description: fmt.Sprintf("imported clone history manifest invalid: %v", err),
+			Severity:    "error",
+			ErrorCode:   ErrorCodeCloneHistoryInvalid,
 		})
 	}
 }

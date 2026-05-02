@@ -205,6 +205,35 @@ only when those local changes are intentionally disposable:
 jvs workspace remove experiment --force
 ```
 
+## `jvs repo clone <target-folder> [--save-points all|main] [--dry-run]`
+
+Copy the current local JVS project into a new folder. The source is the project
+you are in, or the project named by global `--repo <path>`.
+
+```bash
+jvs repo clone ../project-copy
+jvs repo clone ../project-copy-preview --save-points main --dry-run
+```
+
+Use the first form when you want a full local copy with saved history. Use the
+second form to preview a smaller copy before JVS creates any files.
+
+Behavior:
+
+- `<target-folder>` must be a new folder path that does not already exist.
+- `<target-folder>` must be outside every source workspace. Do not choose a
+  folder inside any workspace of the project you are copying.
+- By default, JVS copies all save points, the same as `--save-points all`.
+- Even in the default mode, the target creates only one workspace, named
+  `main`, at `<target-folder>`.
+- Other workspaces from the source project are not created in the target.
+- `--save-points main` copies only the saved history needed by source `main`,
+  including earlier save points that history depends on.
+- `--dry-run` checks what would happen and prints the plan, but does not create
+  the target folder or any files.
+
+The source project is unchanged.
+
 ## `jvs recovery`
 
 Recover an interrupted restore.

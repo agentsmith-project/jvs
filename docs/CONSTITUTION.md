@@ -17,7 +17,7 @@ workspace state without a server or Git-style mental model.
 5. Restore copies content into a workspace; it does not rewrite history.
 6. Destructive restore is preview-first and recovery-backed.
 7. Cleanup is review-first and must protect workspace history, open views,
-   active recovery plans, and active operations.
+   active recovery plans, active operations, and imported clone history.
 8. Labels/messages/tags are discovery metadata, not restore targets or cleanup
    protection.
 9. Implementation names must not become user mental models.
@@ -111,8 +111,8 @@ Cleanup must be two-stage:
 cleanup preview -> cleanup run
 ```
 
-Cleanup protects workspace history, open views, active recovery plans, and
-active operations.
+Cleanup protects workspace history, open views, active recovery plans, active operations,
+and imported clone history.
 
 ## Implementation Boundary
 

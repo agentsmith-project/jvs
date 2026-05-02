@@ -27,8 +27,8 @@ Rules:
   protection rules before deleting.
 - Run fails and requires a fresh cleanup preview when either the protected save
   point set or reclaimable candidate set differs from the reviewed plan.
-- Cleanup protects workspace history, open views, active recovery plans, and
-  active operations.
+- Cleanup protects workspace history, open views, active recovery plans,
+  active operations, and imported clone history.
 - Labels do not protect save points.
 - Kept save points and direct explanatory sources are protected when the public
   keep contract is promoted.
@@ -43,6 +43,7 @@ At minimum cleanup protects save points needed by:
 - open views
 - active recovery plans
 - active operations
+- imported clone history
 
 Protection explanations are grouped by stable generic reason:
 
@@ -50,13 +51,16 @@ Protection explanations are grouped by stable generic reason:
 - `open_view`
 - `active_recovery`
 - `active_operation`
+- `imported_clone_history`
 
 Each group reports its `reason`, `count`, and protected `save_points`. Reasons
 come from cleanup's public protection boundary: workspace history/provenance,
-open read-only views, active recovery plans, and active operations.
+open read-only views, active recovery plans, active operations, and imported
+clone history recorded by durable repo clone metadata.
 
 JSON keeps the stable reason tokens. Human cleanup output renders them as
-workspace history, open views, active recovery plans, and active operations.
+workspace history, open views, active recovery plans, active operations, and
+imported clone history.
 
 ## Plan Evidence
 

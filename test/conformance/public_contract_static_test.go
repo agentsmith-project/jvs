@@ -2065,6 +2065,7 @@ func TestDocs_StablePublicCommandPathMatchesCurrentHelpSurface(t *testing.T) {
 		{"recovery", "status"},
 		{"recovery", "resume"},
 		{"recovery", "rollback"},
+		{"repo", "clone"},
 		{"workspace", "new"},
 		{"workspace", "list"},
 		{"workspace", "path"},
@@ -2099,14 +2100,23 @@ func TestDocs_StablePublicCommandPathMatchesCurrentHelpSurface(t *testing.T) {
 	}
 }
 
-func TestDocs_CLISpecVisiblePublicCommandsIncludeCleanupSurface(t *testing.T) {
+func TestDocs_CLISpecVisiblePublicCommandsIncludeCleanupAndRepoCloneSurface(t *testing.T) {
 	doc := "docs/02_CLI_SPEC.md"
 	body := readRepoFile(t, doc)
 	section := markdownSectionByHeading(t, doc, body, "## Root Help Surface")
-	for _, required := range []string{"cleanup preview", "cleanup run"} {
+	for _, required := range []string{"cleanup preview", "cleanup run", "repo clone"} {
 		if !strings.Contains(section, required) {
 			t.Fatalf("%s visible public commands must include %q", doc, required)
 		}
+	}
+}
+
+func TestDocs_GCSpecDocumentsImportedCloneHistoryProtectionReason(t *testing.T) {
+	doc := "docs/08_GC_SPEC.md"
+	body := readRepoFile(t, doc)
+	section := markdownSectionByHeading(t, doc, body, "## Protected Save Points")
+	for _, required := range []string{"imported clone history", "imported_clone_history"} {
+		requireReleaseReadinessText(t, "GC imported clone history protection "+required, section, required)
 	}
 }
 
@@ -2135,6 +2145,7 @@ func TestDocs_CurrentPublicHelpSurfaceUsesSavePointCommands(t *testing.T) {
 		"restore",
 		"cleanup",
 		"recovery",
+		"repo",
 		"workspace",
 		"status",
 		"doctor",
@@ -3619,6 +3630,7 @@ func stableCleanupProtectionReasonTokens() []string {
 		"open_view",
 		"active_recovery",
 		"active_operation",
+		"imported_clone_history",
 	}
 }
 
@@ -3781,6 +3793,7 @@ func stableCleanupProtectionNaturalTerms() []string {
 		"open views",
 		"active recovery plans",
 		"active operations",
+		"imported clone history",
 	}
 }
 
@@ -3851,6 +3864,8 @@ func activeNonReleaseFacingDesignDocs() []string {
 	return []string{
 		"docs/21_SAVE_POINT_WORKSPACE_SEMANTICS.md",
 		"docs/22_WORKSPACE_EXPLICIT_PATH_BEHAVIOR.md",
+		"docs/23_FILESYSTEM_AWARE_TRANSFER_PLANNING.md",
+		"docs/24_REPO_CLONE_PRODUCT_PLAN.md",
 	}
 }
 
@@ -4321,7 +4336,7 @@ func stablePublicCommandPath(commandPath []string, publicRootCommands map[string
 		return true
 	}
 	switch commandPath[0] {
-	case "workspace", "view", "recovery", "cleanup":
+	case "workspace", "view", "recovery", "cleanup", "repo":
 	default:
 		return true
 	}
@@ -4336,6 +4351,7 @@ func stablePublicCommandPath(commandPath []string, publicRootCommands map[string
 		"workspace remove",
 		"cleanup preview",
 		"cleanup run",
+		"repo clone",
 		"view close",
 		"recovery status",
 		"recovery resume",

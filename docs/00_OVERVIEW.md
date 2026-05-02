@@ -24,7 +24,7 @@ Core guarantees:
 4. Restore is preview-first and does not rewrite save point history.
 5. Interrupted restore is closed by recovery status/resume/rollback.
 6. Cleanup is review-first and must protect workspace history, open views,
-   active recovery plans, and active operations.
+   active recovery plans, active operations, and imported clone history.
 7. Internal storage names do not define product vocabulary, commands,
    selectors, examples, or user mental models.
 
