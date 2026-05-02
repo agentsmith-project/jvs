@@ -98,18 +98,19 @@ var recoveryRollbackCmd = &cobra.Command{
 }
 
 type publicRecoveryPlan struct {
-	PlanID                 string  `json:"plan_id"`
-	Status                 string  `json:"status"`
-	Operation              string  `json:"operation"`
-	RestorePlanID          string  `json:"restore_plan_id"`
-	Folder                 string  `json:"folder"`
-	Workspace              string  `json:"workspace"`
-	SourceSavePoint        string  `json:"source_save_point"`
-	Path                   string  `json:"path,omitempty"`
-	RecommendedNextCommand string  `json:"recommended_next_command,omitempty"`
-	LastError              string  `json:"last_error,omitempty"`
-	BackupAvailable        bool    `json:"backup_available"`
-	ResolvedAt             *string `json:"resolved_at,omitempty"`
+	PlanID                 string            `json:"plan_id"`
+	Status                 string            `json:"status"`
+	Operation              string            `json:"operation"`
+	RestorePlanID          string            `json:"restore_plan_id"`
+	Folder                 string            `json:"folder"`
+	Workspace              string            `json:"workspace"`
+	SourceSavePoint        string            `json:"source_save_point"`
+	Path                   string            `json:"path,omitempty"`
+	RecommendedNextCommand string            `json:"recommended_next_command,omitempty"`
+	LastError              string            `json:"last_error,omitempty"`
+	BackupAvailable        bool              `json:"backup_available"`
+	ResolvedAt             *string           `json:"resolved_at,omitempty"`
+	Transfers              []transfer.Record `json:"transfers,omitempty"`
 }
 
 type publicRecoveryStatusList struct {
@@ -180,6 +181,7 @@ func publicRecoveryPlanFromPlan(repoRoot string, plan *recovery.Plan) publicReco
 		LastError:              recoveryVocabulary(plan.LastError),
 		BackupAvailable:        backupStatus.Available,
 		ResolvedAt:             resolvedAt,
+		Transfers:              append([]transfer.Record(nil), plan.Transfers...),
 	}
 }
 
@@ -324,18 +326,22 @@ func runRecoveryResume(repoRoot, planID string) (publicRecoveryActionResult, err
 				restoredBackupPath = plan.Backup.Path
 			}
 		} else {
-			if err := mgr.RestoreBackupWithOptions(plan, recovery.RestoreBackupOptions{TransferOperation: "recovery_resume"}); err != nil {
-				if errors.Is(err, recovery.ErrBackupMissing) {
+			restoreBackupErr := mgr.RestoreBackupWithOptions(plan, recovery.RestoreBackupOptions{TransferOperation: "recovery_resume"})
+			backupRestoreTransfers = mgr.LastTransferRecords()
+			appendRecoveryCopyPointTransfers(plan, backupRestoreTransfers)
+			if restoreBackupErr != nil {
+				if errors.Is(restoreBackupErr, recovery.ErrBackupMissing) {
 					if verifyErr := recovery.VerifyMissingBackupRecoveryPoint(repoRoot, plan); verifyErr != nil {
 						return fmt.Errorf("recovery resume cannot return to the saved recovery point safely: %w", verifyErr)
 					}
 				} else {
-					return fmt.Errorf("recovery resume cannot return to the saved recovery point safely: %w", err)
+					if len(backupRestoreTransfers) > 0 {
+						restoreBackupErr = keepRecoveryPlanActiveAfterBackupRestoreFailure(repoRoot, plan, restoreBackupErr)
+					}
+					return fmt.Errorf("recovery resume cannot return to the saved recovery point safely: %w", restoreBackupErr)
 				}
 			} else {
 				restoredBackupPath = plan.Backup.Path
-				backupRestoreTransfers = mgr.LastTransferRecords()
-				appendRecoveryCopyPointTransfers(plan, backupRestoreTransfers)
 			}
 		}
 		evidence, err := currentRecoveryEvidence(repoRoot, plan)
@@ -367,16 +373,13 @@ func runRecoveryResume(repoRoot, planID string) (publicRecoveryActionResult, err
 		default:
 			return fmt.Errorf("recovery operation is not supported")
 		}
+		restoreTransfers := restoreTransferRecords(restorer)
+		appendRecoveryCopyPointTransfers(plan, restoreTransfers)
 		if err != nil {
 			if _, ok := restore.AsIncompleteError(err); ok {
 				return keepRecoveryPlanActiveAfterRestoreFailure(repoRoot, plan, err)
 			}
 			return keepRecoveryPlanActiveAfterNonIncompleteFailure(repoRoot, plan, err)
-		}
-		restoreTransfers := []transfer.Record{}
-		if record, ok := restorer.LastTransferRecord(); ok {
-			restoreTransfers = append(restoreTransfers, record)
-			appendRecoveryCopyPointTransfers(plan, restoreTransfers)
 		}
 		if err := markRecoveryRestoreApplied(repoRoot, plan); err != nil {
 			return err
@@ -515,16 +518,47 @@ func keepRecoveryPlanActiveAfterNonIncompleteFailure(repoRoot string, plan *reco
 	return restoreErr
 }
 
+func keepRecoveryPlanActiveAfterBackupRestoreFailure(repoRoot string, plan *recovery.Plan, restoreErr error) error {
+	if evidence, err := currentRecoveryEvidence(repoRoot, plan); err == nil {
+		plan.RecoveryEvidence = evidence
+	}
+	plan.LastError = restoreErr.Error()
+	plan.PendingSteps = []string{"resume restore or rollback"}
+	plan.RecommendedNextCommand = "jvs recovery resume " + plan.PlanID
+	plan.UpdatedAt = time.Now().UTC()
+	if err := recovery.NewManager(repoRoot).Write(plan); err != nil {
+		return fmt.Errorf("%w (persist active recovery plan: %v)", restoreErr, err)
+	}
+	return restoreErr
+}
+
+func restoreTransferRecords(restorer *restore.Restorer) []transfer.Record {
+	if restorer == nil {
+		return nil
+	}
+	record, ok := restorer.LastTransferRecord()
+	if !ok {
+		return nil
+	}
+	return []transfer.Record{record}
+}
+
 func appendRecoveryCopyPointTransfers(plan *recovery.Plan, records []transfer.Record) {
 	if plan == nil || len(records) == 0 {
 		return
 	}
 	for _, record := range records {
-		if strings.TrimSpace(record.MaterializationDestination) == "" {
+		if !isRecoveryPlanTransfer(record) {
 			continue
 		}
 		plan.Transfers = append(plan.Transfers, record)
 	}
+}
+
+func isRecoveryPlanTransfer(record transfer.Record) bool {
+	return record.ResultKind == transfer.ResultKindFinal &&
+		record.PermissionScope == transfer.PermissionScopeExecution &&
+		strings.TrimSpace(record.MaterializationDestination) != ""
 }
 
 func markRecoveryRestoreApplied(repoRoot string, plan *recovery.Plan) error {

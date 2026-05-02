@@ -258,8 +258,13 @@ type restoreRunScopeOps struct {
 	SaveFirstMessage string
 	ValidateTarget   func() error
 	ValidateSource   func(model.EngineType) (*transfer.Record, error)
-	ApplyRestore     func(*recovery.Plan, model.EngineType) (*transfer.Record, error)
+	ApplyRestore     func(*recovery.Plan, model.EngineType) (restoreApplyOutcome, error)
 	RecordResult     func() error
+}
+
+type restoreApplyOutcome struct {
+	Transfer    transfer.Record
+	HasTransfer bool
 }
 
 func runRestorePlan(repoRoot, workspaceName, planID string) error {
@@ -336,14 +341,17 @@ func runLoadedRestorePlan(repoRoot, workspaceName string, plan *restoreplan.Plan
 	if err != nil {
 		return err
 	}
-	transferRecord, err := ops.ApplyRestore(recoveryPlan, engineType)
+	appendRecoveryCopyPointTransfers(recoveryPlan, result.Transfers)
+	applyOutcome, err := ops.ApplyRestore(recoveryPlan, engineType)
+	if applyOutcome.HasTransfer {
+		record := applyOutcome.Transfer
+		result.TransferRecord = &record
+		result.Transfers = append(result.Transfers, record)
+		appendRecoveryCopyPointTransfers(recoveryPlan, []transfer.Record{record})
+	}
 	if err != nil {
 		result.FilesChanged = restoreApplyErrorChangedFiles(err)
 		return handleRestoreApplyError(repoRoot, recoveryPlan, err)
-	}
-	result.TransferRecord = transferRecord
-	if transferRecord != nil {
-		result.Transfers = append(result.Transfers, *transferRecord)
 	}
 	result.FilesChanged = true
 	if err := resolveAppliedRestoreRecovery(repoRoot, recoveryPlan); err != nil {
@@ -363,16 +371,10 @@ func restoreRunOpsForScope(repoRoot, workspaceName string, plan *restoreplan.Pla
 			ValidateSource: func(engineType model.EngineType) (*transfer.Record, error) {
 				return restoreplan.ValidateSource(repoRoot, workspaceName, plan, engineType)
 			},
-			ApplyRestore: func(recoveryPlan *recovery.Plan, engineType model.EngineType) (*transfer.Record, error) {
+			ApplyRestore: func(recoveryPlan *recovery.Plan, engineType model.EngineType) (restoreApplyOutcome, error) {
 				restorer := restore.NewRestorer(repoRoot, engineType)
-				if err := restorer.RestoreLockedWithOptions(workspaceName, plan.SourceSavePoint, restore.RunOptions{BackupPath: recoveryPlan.Backup.Path}); err != nil {
-					return nil, err
-				}
-				record, ok := restorer.LastTransferRecord()
-				if !ok {
-					return nil, nil
-				}
-				return &record, nil
+				err := restorer.RestoreLockedWithOptions(workspaceName, plan.SourceSavePoint, restore.RunOptions{BackupPath: recoveryPlan.Backup.Path})
+				return restoreApplyOutcomeFromRestorer(restorer), err
 			},
 			RecordResult: func() error {
 				status, err := publicRestoreStatus(repoRoot, workspaceName, plan.SourceSavePoint)
@@ -397,16 +399,10 @@ func restoreRunOpsForScope(repoRoot, workspaceName string, plan *restoreplan.Pla
 			ValidateSource: func(engineType model.EngineType) (*transfer.Record, error) {
 				return restoreplan.ValidateSourcePath(repoRoot, workspaceName, plan, engineType)
 			},
-			ApplyRestore: func(recoveryPlan *recovery.Plan, engineType model.EngineType) (*transfer.Record, error) {
+			ApplyRestore: func(recoveryPlan *recovery.Plan, engineType model.EngineType) (restoreApplyOutcome, error) {
 				restorer := restore.NewRestorer(repoRoot, engineType)
-				if err := restorer.RestorePathLockedWithOptions(workspaceName, plan.SourceSavePoint, plan.Path, restore.RunOptions{BackupPath: recoveryPlan.Backup.Path}); err != nil {
-					return nil, err
-				}
-				record, ok := restorer.LastTransferRecord()
-				if !ok {
-					return nil, nil
-				}
-				return &record, nil
+				err := restorer.RestorePathLockedWithOptions(workspaceName, plan.SourceSavePoint, plan.Path, restore.RunOptions{BackupPath: recoveryPlan.Backup.Path})
+				return restoreApplyOutcomeFromRestorer(restorer), err
 			},
 			RecordResult: func() error {
 				status, err := publicRestorePathStatus(repoRoot, workspaceName, plan.Path, plan.SourceSavePoint)
@@ -439,6 +435,17 @@ func createRestoreSafetySave(repoRoot, workspaceName string, engineType model.En
 		return nil, nil
 	}
 	return &record, nil
+}
+
+func restoreApplyOutcomeFromRestorer(restorer *restore.Restorer) restoreApplyOutcome {
+	if restorer == nil {
+		return restoreApplyOutcome{}
+	}
+	record, ok := restorer.LastTransferRecord()
+	if !ok {
+		return restoreApplyOutcome{}
+	}
+	return restoreApplyOutcome{Transfer: record, HasTransfer: true}
 }
 
 func handleRestoreApplyError(repoRoot string, recoveryPlan *recovery.Plan, restoreErr error) error {

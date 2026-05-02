@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentsmith-project/jvs/internal/engine"
 	"github.com/agentsmith-project/jvs/internal/gc"
 	"github.com/agentsmith-project/jvs/internal/recovery"
 	"github.com/agentsmith-project/jvs/internal/repo"
@@ -64,7 +65,15 @@ func TestWholeRestoreFailureCreatesRecoveryPlanStatusAndProtectsSource(t *testin
 	assert.Equal(t, "restore", data["operation"])
 	assert.Equal(t, sourceID, data["source_save_point"])
 	assert.Contains(t, data["recommended_next_command"], "jvs recovery")
+	assertRecoveryStatusPlanTransfers(t, data, []string{"restore-run-source-validation", "restore-run-primary"})
 	assertRecoveryOutputOmitsInternalVocabulary(t, jsonOut)
+
+	plan, err := recovery.NewManager(repoRoot).Load(recoveryPlanID)
+	require.NoError(t, err)
+	assertRecoveryPlanTransfers(t, plan.Transfers, []string{"restore-run-source-validation", "restore-run-primary"})
+	rawTransfers, ok := readRecoveryPlanFileMap(t, repoRoot, recoveryPlanID)["transfers"].([]any)
+	require.True(t, ok, "recovery plan file should persist restore run transfers")
+	assertRecoveryTransferIDs(t, rawTransfers, []string{"restore-run-source-validation", "restore-run-primary"})
 
 	gcPlan, err := gc.NewCollector(repoRoot).PlanWithPolicy(model.RetentionPolicy{})
 	require.NoError(t, err)
@@ -79,6 +88,38 @@ func TestWholeRestoreFailureCreatesRecoveryPlanStatusAndProtectsSource(t *testin
 	assert.Contains(t, err.Error(), "active recovery plan")
 	assert.Contains(t, err.Error(), "jvs recovery status")
 	assertRecoveryOutputOmitsInternalVocabulary(t, err.Error())
+}
+
+func TestRestoreFailurePersistsExecutedValidationSafetyAndPrimaryTransfers(t *testing.T) {
+	repoRoot, sourceID, _ := setupWholeRestoreImpactRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("local edit"), 0644))
+	previewOut, err := executeCommand(createTestRootCmd(), "restore", sourceID, "--save-first")
+	require.NoError(t, err)
+	restorePlanID := restorePlanIDFromHumanOutput(t, previewOut)
+
+	restoreHooks := restore.SetHooksForTest(restore.Hooks{
+		UpdateHead: func(*worktree.Manager, string, model.SnapshotID) error {
+			return errors.New("injected update metadata failure")
+		},
+	})
+	t.Cleanup(restoreHooks)
+
+	stdout, err := executeCommand(createTestRootCmd(), "restore", "--run", restorePlanID)
+	require.Error(t, err)
+	require.Empty(t, stdout)
+	recoveryPlanID := recoveryPlanIDFromText(t, err.Error())
+	expectedTransfers := []string{"restore-run-source-validation", "save-primary", "restore-run-primary"}
+
+	plan, err := recovery.NewManager(repoRoot).Load(recoveryPlanID)
+	require.NoError(t, err)
+	assertRecoveryPlanTransfers(t, plan.Transfers, expectedTransfers)
+
+	jsonOut, err := executeCommand(createTestRootCmd(), "--json", "recovery", "status", recoveryPlanID)
+	require.NoError(t, err)
+	env, data := decodeFacadeDataMap(t, jsonOut)
+	require.True(t, env.OK, jsonOut)
+	assert.Equal(t, "recovery status", env.Command)
+	assertRecoveryStatusPlanTransfers(t, data, expectedTransfers)
 }
 
 func TestRecoveryStatusShowsActivePlanSafetySummary(t *testing.T) {
@@ -128,6 +169,56 @@ func TestRecoveryStatusShowsActivePlanSafetySummary(t *testing.T) {
 	require.True(t, env.OK, detailJSON)
 	assert.Equal(t, "recovery status", env.Command)
 	assertRecoveryJSONPlanSummary(t, detailData, recoveryPlanID, repoRoot, sourceID, "app.txt")
+}
+
+func TestRecoveryStatusJSONSurfacesPersistedPlanTransfers(t *testing.T) {
+	repoRoot, sourceID, _ := setupWholeRecoveryRepo(t)
+	recoveryPlanID := createCrashRecoveryPlanWithMissingBackup(t, repoRoot, sourceID)
+	plan, err := recovery.NewManager(repoRoot).Load(recoveryPlanID)
+	require.NoError(t, err)
+	plan.Transfers = []transfer.Record{testRecoveryStatusTransfer(repoRoot, sourceID)}
+	require.NoError(t, recovery.NewManager(repoRoot).Write(plan))
+
+	listJSON, err := executeCommand(createTestRootCmd(), "--json", "recovery", "status")
+	require.NoError(t, err)
+	env, listData := decodeFacadeDataMap(t, listJSON)
+	require.True(t, env.OK, listJSON)
+	assert.Equal(t, "recovery status", env.Command)
+	plans, ok := listData["plans"].([]any)
+	require.True(t, ok, "recovery status plans should be a list: %#v", listData)
+	require.Len(t, plans, 1)
+	listPlan, ok := plans[0].(map[string]any)
+	require.True(t, ok, "recovery plan should be an object: %#v", plans[0])
+	assertRecoveryStatusPlanTransfers(t, listPlan, []string{"persisted-restore-transfer"})
+
+	detailJSON, err := executeCommand(createTestRootCmd(), "--json", "recovery", "status", recoveryPlanID)
+	require.NoError(t, err)
+	env, detailData := decodeFacadeDataMap(t, detailJSON)
+	require.True(t, env.OK, detailJSON)
+	assert.Equal(t, "recovery status", env.Command)
+	assertRecoveryStatusPlanTransfers(t, detailData, []string{"persisted-restore-transfer"})
+}
+
+func TestRecoveryPlanTransfersFilterActualExecutionMaterializationsWithoutDedupe(t *testing.T) {
+	actual := testRecoveryStatusTransfer("/repo", "source")
+	expectedPreview := actual
+	expectedPreview.TransferID = "restore-preview-validation-primary"
+	expectedPreview.ResultKind = transfer.ResultKindExpected
+	expectedPreview.PermissionScope = transfer.PermissionScopePreviewOnly
+	previewOnly := actual
+	previewOnly.TransferID = "preview-only-transfer"
+	previewOnly.PermissionScope = transfer.PermissionScopePreviewOnly
+	emptyDestination := actual
+	emptyDestination.TransferID = "empty-destination-transfer"
+	emptyDestination.MaterializationDestination = ""
+
+	plan := &recovery.Plan{}
+	appendRecoveryCopyPointTransfers(plan, []transfer.Record{actual, expectedPreview, previewOnly, emptyDestination})
+	appendRecoveryCopyPointTransfers(plan, []transfer.Record{actual})
+
+	require.Len(t, plan.Transfers, 2)
+	assert.Equal(t, "persisted-restore-transfer", plan.Transfers[0].TransferID)
+	assert.Equal(t, "persisted-restore-transfer", plan.Transfers[1].TransferID)
 }
 
 func TestRecoveryStatusReportsUnavailableBackup(t *testing.T) {
@@ -426,16 +517,18 @@ func TestRecoveryRollbackBackupRestorePersistsTransferInRecoveryPlan(t *testing.
 
 	plan, err := recovery.NewManager(repoRoot).Load(recoveryPlanID)
 	require.NoError(t, err)
-	require.Len(t, plan.Transfers, 1)
-	assert.Equal(t, "recovery-backup-restore-primary", plan.Transfers[0].TransferID)
-	assert.Equal(t, "recovery_rollback", plan.Transfers[0].Operation)
-	assert.Equal(t, "backup_restore", plan.Transfers[0].Phase)
-	assert.NotEmpty(t, plan.Transfers[0].MaterializationDestination)
+	require.Len(t, plan.Transfers, 3)
+	assert.Equal(t, "restore-run-source-validation", plan.Transfers[0].TransferID)
+	assert.Equal(t, "restore-run-primary", plan.Transfers[1].TransferID)
+	assert.Equal(t, "recovery-backup-restore-primary", plan.Transfers[2].TransferID)
+	assert.Equal(t, "recovery_rollback", plan.Transfers[2].Operation)
+	assert.Equal(t, "backup_restore", plan.Transfers[2].Phase)
+	assert.NotEmpty(t, plan.Transfers[2].MaterializationDestination)
 
 	rawPlan := readRecoveryPlanFileMap(t, repoRoot, recoveryPlanID)
 	rawTransfers, ok := rawPlan["transfers"].([]any)
 	require.True(t, ok, "recovery plan file should persist transfers: %#v", rawPlan)
-	require.Len(t, rawTransfers, 1)
+	require.Len(t, rawTransfers, 3)
 }
 
 func TestRecoveryRollbackResolvesAfterBackupRestoreAppliedButPlanWriteFailed(t *testing.T) {
@@ -812,6 +905,80 @@ func TestRecoveryResumeWithBackupRestoreSurfacesBothTransfersInJSON(t *testing.T
 	rawTransfers, ok := readRecoveryPlanFileMap(t, repoRoot, planID)["transfers"].([]any)
 	require.True(t, ok, "recovery plan file should persist transfers")
 	require.Len(t, rawTransfers, 2)
+}
+
+func TestRecoveryResumePersistsBackupRestoreTransferWhenBackupRestoreFailsAfterCopy(t *testing.T) {
+	t.Setenv("JVS_SNAPSHOT_ENGINE", "")
+	t.Setenv("JVS_ENGINE", "")
+	repoRoot, sourceID, _ := setupWholeRecoveryRepo(t)
+	planID := createWholeResumePlanRequiringBackupRestore(t, repoRoot, sourceID)
+
+	restoreMetadata := recovery.SetWriteWorktreeConfigHookForTest(func(repoRoot, name string, cfg *model.WorktreeConfig) error {
+		return errors.New("injected recovery metadata write failure")
+	})
+	stdout, err := executeCommand(createTestRootCmd(), "recovery", "resume", planID)
+	restoreMetadata()
+	require.Error(t, err)
+	require.Empty(t, stdout)
+	assert.Contains(t, err.Error(), "injected recovery metadata write failure")
+
+	expectedTransfers := []string{"recovery-backup-restore-primary"}
+	plan, loadErr := recovery.NewManager(repoRoot).Load(planID)
+	require.NoError(t, loadErr)
+	assert.Equal(t, recovery.StatusActive, plan.Status)
+	assertRecoveryPlanTransfers(t, plan.Transfers, expectedTransfers)
+
+	rawTransfers, ok := readRecoveryPlanFileMap(t, repoRoot, planID)["transfers"].([]any)
+	require.True(t, ok, "recovery plan file should persist backup restore transfer")
+	assertRecoveryTransferIDs(t, rawTransfers, expectedTransfers)
+
+	jsonOut, statusErr := executeCommand(createTestRootCmd(), "--json", "recovery", "status", planID)
+	require.NoError(t, statusErr)
+	env, data := decodeFacadeDataMap(t, jsonOut)
+	require.True(t, env.OK, jsonOut)
+	assert.Equal(t, "recovery status", env.Command)
+	assert.Equal(t, "active", data["status"])
+	assertRecoveryStatusPlanTransfers(t, data, expectedTransfers)
+}
+
+func TestRecoveryResumePersistsPrimaryTransferWhenRestoreFailsAfterMaterialization(t *testing.T) {
+	t.Setenv("JVS_SNAPSHOT_ENGINE", "")
+	t.Setenv("JVS_ENGINE", "")
+	repoRoot, sourceID, _ := setupWholeRecoveryRepo(t)
+	planID := createCrashRecoveryPlanWithMissingBackup(t, repoRoot, sourceID)
+	updateHeadCalled := false
+	restoreHooks := restore.SetHooksForTest(restore.Hooks{
+		UpdateHead: func(*worktree.Manager, string, model.SnapshotID) error {
+			updateHeadCalled = true
+			return errors.New("injected update metadata failure after materialization")
+		},
+	})
+	t.Cleanup(restoreHooks)
+
+	stdout, err := executeCommand(createTestRootCmd(), "recovery", "resume", planID)
+	require.Error(t, err)
+	require.Empty(t, stdout)
+	require.True(t, updateHeadCalled, "restore should reach metadata update after materialization")
+
+	expectedTransfers := []string{"restore-run-primary"}
+	plan, loadErr := recovery.NewManager(repoRoot).Load(planID)
+	require.NoError(t, loadErr)
+	assert.Equal(t, recovery.StatusActive, plan.Status)
+	assertRecoveryPlanTransfers(t, plan.Transfers, expectedTransfers)
+
+	rawTransfers, ok := readRecoveryPlanFileMap(t, repoRoot, planID)["transfers"].([]any)
+	require.True(t, ok, "recovery plan file should persist restore materialization transfer")
+	assertRecoveryTransferIDs(t, rawTransfers, expectedTransfers)
+
+	jsonOut, statusErr := executeCommand(createTestRootCmd(), "--json", "recovery", "status", planID)
+	require.NoError(t, statusErr)
+	require.NotContains(t, jsonOut, "restore-preview-validation-primary")
+	require.NotContains(t, jsonOut, `"result_kind":"expected"`)
+	env, data := decodeFacadeDataMap(t, jsonOut)
+	require.True(t, env.OK, jsonOut)
+	assert.Equal(t, "recovery status", env.Command)
+	assert.Equal(t, "active", data["status"])
+	assertRecoveryStatusPlanTransfers(t, data, expectedTransfers)
 }
 
 func TestRecoveryResumeWithBackupRestoreHumanShowsPrimaryAndAdditionalTransfers(t *testing.T) {
@@ -1269,6 +1436,62 @@ func assertRecoveryResumeRestoreTransfer(t *testing.T, record map[string]any, re
 	assert.Contains(t, []any{"fast_copy", "normal_copy"}, record["performance_class"])
 	assert.IsType(t, []any{}, record["degraded_reasons"])
 	assert.IsType(t, []any{}, record["warnings"])
+}
+
+func testRecoveryStatusTransfer(repoRoot, sourceID string) transfer.Record {
+	mainPath := filepath.Join(repoRoot, "main")
+	return transfer.Record{
+		TransferID:                 "persisted-restore-transfer",
+		Operation:                  "restore",
+		Phase:                      "materialization",
+		Primary:                    true,
+		ResultKind:                 transfer.ResultKindFinal,
+		PermissionScope:            transfer.PermissionScopeExecution,
+		SourceRole:                 "save_point_payload",
+		SourcePath:                 filepath.Join(repoRoot, ".jvs", "snapshots", sourceID),
+		DestinationRole:            "restore_staging",
+		MaterializationDestination: mainPath + ".restore-tmp-status",
+		CapabilityProbePath:        repoRoot,
+		PublishedDestination:       mainPath,
+		CheckedForThisOperation:    true,
+		RequestedEngine:            engine.EngineAuto,
+		EffectiveEngine:            model.EngineCopy,
+		PerformanceClass:           transfer.PerformanceClassNormalCopy,
+		DegradedReasons:            []string{},
+		Warnings:                   []string{},
+	}
+}
+
+func assertRecoveryStatusPlanTransfers(t *testing.T, data map[string]any, expectedIDs []string) {
+	t.Helper()
+	transfers, ok := data["transfers"].([]any)
+	require.True(t, ok, "recovery status plan should include transfers: %#v", data)
+	assertRecoveryTransferIDs(t, transfers, expectedIDs)
+}
+
+func assertRecoveryPlanTransfers(t *testing.T, transfers []transfer.Record, expectedIDs []string) {
+	t.Helper()
+	require.Len(t, transfers, len(expectedIDs))
+	for i, expectedID := range expectedIDs {
+		assert.Equal(t, expectedID, transfers[i].TransferID)
+		assert.Equal(t, transfer.ResultKindFinal, transfers[i].ResultKind)
+		assert.Equal(t, transfer.PermissionScopeExecution, transfers[i].PermissionScope)
+		assert.NotEqual(t, "restore-preview-validation-primary", transfers[i].TransferID)
+		assert.NotEmpty(t, transfers[i].MaterializationDestination)
+	}
+}
+
+func assertRecoveryTransferIDs(t *testing.T, transfers []any, expectedIDs []string) {
+	t.Helper()
+	require.Len(t, transfers, len(expectedIDs))
+	for i, expectedID := range expectedIDs {
+		record := requireTransferMap(t, transfers[i])
+		assert.Equal(t, expectedID, record["transfer_id"])
+		assert.Equal(t, "final", record["result_kind"])
+		assert.Equal(t, "execution", record["permission_scope"])
+		assert.NotEqual(t, "restore-preview-validation-primary", record["transfer_id"])
+		assert.NotEmpty(t, record["materialization_destination"])
+	}
 }
 
 func readRecoveryPlanFileMap(t *testing.T, repoRoot, planID string) map[string]any {
