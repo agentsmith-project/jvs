@@ -210,6 +210,10 @@ jvs workspace remove experiment --force
 Copy the current local JVS project into a new folder. The source is the project
 you are in, or the project named by global `--repo <path>`.
 
+These examples assume you are running the command from the project folder. If
+you are inside a `main` subfolder, choose a target outside the project folder,
+such as `../../project-copy`.
+
 ```bash
 jvs repo clone ../project-copy
 jvs repo clone ../project-copy-preview --save-points main --dry-run
@@ -221,8 +225,8 @@ second form to preview a smaller copy before JVS creates any files.
 Behavior:
 
 - `<target-folder>` must be a new folder path that does not already exist.
-- `<target-folder>` must be outside every source workspace. Do not choose a
-  folder inside any workspace of the project you are copying.
+- `<target-folder>` must be outside the source project and every source
+  workspace. Do not choose a folder inside the project you are copying.
 - By default, JVS copies all save points, the same as `--save-points all`.
 - Even in the default mode, the target creates only one workspace, named
   `main`, at `<target-folder>`.

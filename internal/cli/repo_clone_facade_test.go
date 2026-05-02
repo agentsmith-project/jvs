@@ -179,6 +179,33 @@ func TestRepoCloneCommandRejectsTargetInsideCurrentWorkspaceWithClearError(t *te
 	assertNoRepoCloneStaging(t, repoRoot)
 }
 
+func TestRepoCloneRepoFlagRejectsTargetInsideSourceProjectWithClearError(t *testing.T) {
+	repoRoot := filepath.Join(t.TempDir(), "source")
+	_, err := repo.Init(repoRoot, "source")
+	require.NoError(t, err)
+	mainWorkspace := filepath.Join(repoRoot, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(mainWorkspace, "app.txt"), []byte("v1"), 0644))
+	_, err = snapshot.NewCreator(repoRoot, model.EngineCopy).CreateSavePoint("main", "source", nil)
+	require.NoError(t, err)
+
+	originalWD, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(t.TempDir()))
+	t.Cleanup(func() { require.NoError(t, os.Chdir(originalWD)) })
+
+	target := filepath.Join(repoRoot, "clone-target")
+	stdout, stderr, err := executeCommandWithErrorReport(createTestRootCmd(), "--repo", repoRoot, "repo", "clone", target)
+	require.Error(t, err)
+
+	assert.Empty(t, stdout)
+	assert.Contains(t, stderr, "target cannot be inside the source project")
+	assert.Contains(t, stderr, "Choose a folder outside the source project/workspaces")
+	assert.NotContains(t, stderr, "nested")
+	assert.NotContains(t, stderr, "staging")
+	assert.NoDirExists(t, target)
+	assertNoRepoCloneStaging(t, repoRoot)
+}
+
 func TestRepoCloneRepoFlagSelectsSource(t *testing.T) {
 	source := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(source, "app.txt"), []byte("from source"), 0644))

@@ -142,6 +142,9 @@ func prepare(options Options) (*preparedClone, error) {
 	if err := rejectTargetInsideSourceWorkspaces(source.Root, target, workspaces); err != nil {
 		return nil, err
 	}
+	if err := rejectTargetInsideSourceProject(source.Root, target); err != nil {
+		return nil, err
+	}
 	if err := validateTargetMissing(target); err != nil {
 		return nil, err
 	}
@@ -242,9 +245,30 @@ func rejectTargetInsideSourceWorkspaces(repoRoot, target string, workspaces []*m
 	return nil
 }
 
+func rejectTargetInsideSourceProject(repoRoot, target string) error {
+	rootLexical, rootPhysical, err := clonePathForms(repoRoot)
+	if err != nil {
+		return fmt.Errorf("cannot clone: source project path cannot be inspected: %w", err)
+	}
+	targetLexical, targetPhysical, err := clonePathForms(target)
+	if err != nil {
+		return fmt.Errorf("resolve target folder: %w", err)
+	}
+	if pathInsideAnyRoot([]string{rootLexical, rootPhysical}, []string{targetLexical, targetPhysical}) {
+		return targetInsideSourceProjectError()
+	}
+	return nil
+}
+
 func targetInsideSourceWorkspaceError() error {
 	return errclass.ErrUsage.
 		WithMessage("Cannot clone: target cannot be inside a source workspace.").
+		WithHint("Choose a folder outside the source project/workspaces to keep the source unchanged.")
+}
+
+func targetInsideSourceProjectError() error {
+	return errclass.ErrUsage.
+		WithMessage("Cannot clone: target cannot be inside the source project/repository.").
 		WithHint("Choose a folder outside the source project/workspaces to keep the source unchanged.")
 }
 

@@ -214,6 +214,24 @@ func TestCloneRejectsTargetInsideSourceMainWorkspaceBeforeStaging(t *testing.T) 
 	})
 }
 
+func TestCloneRejectsTargetInsideSourceProjectRootBeforeStaging(t *testing.T) {
+	repoRoot, mainWorkspace := setupSplitCloneSourceRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(mainWorkspace, "app.txt"), []byte("main v1"), 0644))
+	_ = createCloneSavePoint(t, repoRoot, "main", "main baseline")
+	target := filepath.Join(repoRoot, "clone-target")
+
+	_, err := repoclone.Clone(repoclone.Options{
+		SourceRepoRoot:  repoRoot,
+		TargetPath:      target,
+		SavePointsMode:  repoclone.SavePointsModeAll,
+		RequestedEngine: model.EngineCopy,
+	})
+
+	assertTargetInsideSourceProjectError(t, err)
+	assert.NoDirExists(t, target)
+	assertNoCloneStaging(t, repoRoot)
+}
+
 func TestCloneAcceptsSiblingTargetOutsideSourceWorkspace(t *testing.T) {
 	base := t.TempDir()
 	source := filepath.Join(base, "source")
@@ -489,6 +507,15 @@ func setupCloneSourceRepo(t *testing.T) string {
 	return source
 }
 
+func setupSplitCloneSourceRepo(t *testing.T) (string, string) {
+	t.Helper()
+
+	repoRoot := filepath.Join(t.TempDir(), "source")
+	_, err := repo.Init(repoRoot, "source")
+	require.NoError(t, err)
+	return repoRoot, filepath.Join(repoRoot, "main")
+}
+
 func withWorkingDir(t *testing.T, dir string) {
 	t.Helper()
 
@@ -506,6 +533,19 @@ func assertTargetInsideSourceWorkspaceError(t *testing.T, err error) {
 	require.True(t, errors.As(err, &jvsErr), "expected public usage error, got %T: %v", err, err)
 	assert.Equal(t, errclass.ErrUsage.Code, jvsErr.Code)
 	assert.Contains(t, jvsErr.Message, "target cannot be inside a source workspace")
+	assert.Contains(t, jvsErr.Hint, "Choose a folder outside the source project/workspaces")
+	assert.NotContains(t, err.Error(), "nested")
+	assert.NotContains(t, err.Error(), "staging")
+}
+
+func assertTargetInsideSourceProjectError(t *testing.T, err error) {
+	t.Helper()
+
+	require.Error(t, err)
+	var jvsErr *errclass.JVSError
+	require.True(t, errors.As(err, &jvsErr), "expected public usage error, got %T: %v", err, err)
+	assert.Equal(t, errclass.ErrUsage.Code, jvsErr.Code)
+	assert.Contains(t, jvsErr.Message, "target cannot be inside the source project")
 	assert.Contains(t, jvsErr.Hint, "Choose a folder outside the source project/workspaces")
 	assert.NotContains(t, err.Error(), "nested")
 	assert.NotContains(t, err.Error(), "staging")
