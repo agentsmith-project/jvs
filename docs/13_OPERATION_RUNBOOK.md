@@ -2,12 +2,57 @@
 
 **Status:** active save point operations runbook
 
+## Separated-Control Operator Entry
+
+Use this section when an operator or platform integration gives you a trusted
+control root `C` and a workspace payload root `P`. Phase 1 separated-control
+operations are explicit-target operations:
+
+```bash
+jvs init --control-root C --payload-root P --workspace main --json
+jvs --control-root C --workspace main status --json
+jvs --control-root C --workspace main save -m "baseline" --json
+jvs --control-root C --workspace main doctor --strict --json
+```
+
+Every separated-control command must include `--control-root C --workspace
+main`. Do not rely on CWD, `--repo`, or payload-root discovery for this mode.
+Do not run `jvs init` from the payload root. A naked payload-root command is
+not a separated-control operator entry, and it must not lead an operator to
+create a separate embedded repo inside the payload root.
+
+The separated-control doctor entry is `doctor --strict --json` only.
+`--repair-runtime`, `--repair-list`, and other repair variants fail closed for
+separated-control repos. Use strict JSON diagnostics to decide whether to
+resume recovery, roll back recovery, restore missing roots, or escalate.
+
+Pending restore/recovery state blocks mutation. Resolve it before starting
+save, restore run, cleanup run, clone publish, or lifecycle commands:
+
+```bash
+jvs --control-root C --workspace main recovery status
+jvs --control-root C --workspace main recovery resume <recovery-plan>
+jvs --control-root C --workspace main recovery rollback <recovery-plan>
+```
+
+An external payload locator is for human discovery only. It can help a person
+find the intended control root and workspace name, but it is not runtime
+authority. Runtime authority comes from the explicit control root and the
+control registry. If the payload root contains a root-level `.jvs` path, the
+strict separated profile fails closed instead of reading it as authority.
+
 ## Daily Checks
 
-1. Run `jvs doctor --strict`.
+1. For embedded/current repos, run `jvs doctor --strict`. For
+   separated-control repos, run
+   `jvs --control-root C --workspace main doctor --strict --json`.
 2. Review active recovery plans:
    ```bash
    jvs recovery status
+   ```
+   For separated-control repos, add the explicit selector:
+   ```bash
+   jvs --control-root C --workspace main recovery status
    ```
 
 ## Incident: Doctor Failure
@@ -22,8 +67,9 @@
 
 ## Incident: Runtime Artifacts
 
-Use this only for runtime state. It does not rewrite durable save point
-history.
+Use this only for embedded/current runtime state. It does not rewrite durable
+save point history. This is not a separated-control repair path; separated
+control uses `doctor --strict --json`, and repair variants fail closed.
 
 1. Run `jvs doctor --strict --json`.
 2. Run `jvs doctor --repair-list` and confirm only public runtime repairs are
@@ -58,8 +104,9 @@ history.
 7. Record the plan ID, final command, and outcome in the operations log.
 
 Do not start another restore in that workspace while an active recovery plan
-exists. Active recovery plans protect referenced source save points from
-cleanup until resolved.
+exists. Do not start any other mutation in that workspace while pending
+restore/recovery state exists. Active recovery plans protect referenced source
+save points from cleanup until resolved.
 
 ## Restore Drill
 
@@ -91,7 +138,8 @@ Run this drill for release qualification and after backup/migration changes.
 ## Migration Runbook
 
 Use the offline whole-folder copy procedure in
-`docs/18_MIGRATION_AND_BACKUP.md`.
+`docs/18_MIGRATION_AND_BACKUP.md`. That procedure is the embedded/current
+whole-folder path; do not use it as an embedded-to-separated split.
 
 1. Stop all JVS writers and stop agent jobs.
 2. Confirm the source folder status is readable:

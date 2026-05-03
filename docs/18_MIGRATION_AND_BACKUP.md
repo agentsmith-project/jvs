@@ -4,6 +4,49 @@ JVS does not provide remote replication or hot migration. Use an offline
 whole-folder copy of the managed folder/repository, then let the destination
 rebuild runtime state before any writes resume.
 
+## Support Boundary
+
+Embedded-to-separated migration is not delivered. This document does not define
+an in-place split of an embedded-control folder into a separated control root
+and payload root.
+
+Available now:
+
+- Embedded/current repo backup and migration use the offline whole-folder copy
+  below. The restore to the same repo mode keeps the managed folder/repository
+  whole, then rebuilds destination runtime state before writers resume.
+- Separated-control repo creation uses explicit roots:
+  ```bash
+  jvs init --control-root C --payload-root P --workspace main --json
+  ```
+- Separated-control split-target clone uses explicit source and target roots:
+  ```bash
+  jvs --control-root C --workspace main repo clone --target-control-root TC --target-payload-root TP --save-points main --json
+  ```
+  The target control root and target payload root must be missing or empty.
+  The split target is main-only.
+
+Unavailable:
+
+- No embedded-to-separated migration command.
+- No hand-built split copy of embedded control data and user files into
+  separated roots.
+- No hot migration, overlay, merge, overwrite, or adoption of non-empty target
+  roots.
+- No separated-control `doctor --repair-runtime` migration step; separated
+  doctor repair variants fail closed.
+- `--save-points all` fails closed for separated split-target clone until
+  imported-history protection is available for that mode.
+
+Backup boundary:
+
+- An embedded/current backup copies the managed folder/repository as a whole.
+- A separated-control backup must preserve control root and payload root as one
+  matched set while writers are stopped. A backup that captures only one side is
+  not a portable JVS backup.
+- Backup restore is not a mode conversion. Restore to the same repo mode, then
+  run that mode's validation commands before writers resume.
+
 ## Recommended Method
 
 Use a cold maintenance window. Stop all JVS writers, stop agent jobs, verify
@@ -47,7 +90,8 @@ only: the destination must rebuild runtime state before use.
 
 ## Runtime-State Policy
 
-Runtime state is non-portable and must not be migrated as authoritative state:
+For embedded/current whole-folder copy, runtime state is non-portable and must
+not be migrated as authoritative state:
 
 - in-flight write coordination
 - abandoned operation bookkeeping
@@ -72,6 +116,13 @@ does not match the recorded content source, `doctor --strict --repair-runtime`
 remains unhealthy and reports the workspace path binding until the destination
 sibling is present with matching content.
 
+For separated-control repos, do not use runtime repair as a migration bridge.
+Use the explicit separated-control doctor entry instead:
+
+```bash
+jvs --control-root C --workspace main doctor --strict --json
+```
+
 ## Migration Flow
 
 1. Keep the source in the maintenance window: stop all JVS writers, keep agent
@@ -89,7 +140,8 @@ sibling is present with matching content.
    The copy is an offline whole-folder copy. Do not hand-select JVS control
    paths, do not overlay a non-empty destination, and do not treat copied
    non-portable JVS runtime state as authoritative.
-3. Validate destination and rebuild runtime state before any destination write:
+3. For an embedded/current whole-folder destination, validate destination and
+   rebuild runtime state before any destination write:
    ```bash
    cd /mnt/dst/myrepo
    jvs doctor --strict --repair-runtime
@@ -128,6 +180,8 @@ authoritative product state. Rebuild it on the destination with
 
 ## Backup Restore Drill
 
+For embedded/current backups:
+
 1. Restore backup to a fresh volume.
 2. Run `jvs doctor --strict --repair-runtime`.
 3. Run `jvs doctor --strict`.
@@ -146,6 +200,15 @@ authoritative product state. Rebuild it on the destination with
 7. Preview and run a path restore in the drill workspace.
 8. Record the source save point, new workspace name, restore plan ID, and final
    status in the operations log.
+
+For separated-control backups, restore the matched control root and payload
+root set to the intended locations, then validate with:
+
+```bash
+jvs --control-root C --workspace main doctor --strict --json
+```
+
+Do not use a separated backup restore as an embedded-to-separated migration.
 
 ## Historical/Internal Terminology
 

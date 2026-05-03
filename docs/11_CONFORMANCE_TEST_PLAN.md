@@ -102,6 +102,32 @@ UX.
   while source paths are both offline and still mounted, including external
   workspace siblings that are safely rebound, missing, or content-mismatched.
 
+### Separated-Control Phase 1
+
+- Explicit selector coverage uses `--control-root C --workspace main` from a
+  clean CWD and from another repo CWD. Ambient discovery, `--repo`, and
+  payload-root CWD must not change the target.
+- Payload root fail-closed coverage creates a root-level `.jvs` file,
+  directory, and symlink under the payload root. Each case returns
+  `E_PAYLOAD_LOCATOR_PRESENT`; an external payload locator is human discovery
+  only, not runtime authority.
+- Doctor strict-json only coverage uses `doctor --strict --json` for separated
+  control. `--repair-runtime`, `--repair-list`, and other repair variants fail
+  closed for this mode.
+- Restore/recovery blocker coverage leaves pending restore/recovery state in
+  the selected workspace, then proves new mutation fails with
+  `E_RECOVERY_BLOCKING` until recovery status, resume, or rollback resolves it.
+- Clone main-only coverage uses
+  `jvs --control-root C --workspace main repo clone --target-control-root TC --target-payload-root TP --save-points main --json`.
+  The target control root and target payload root must be missing or empty, the
+  target repo gets a new identity, and only the `main` workspace is created.
+- `--save-points all` fail closed coverage returns
+  `E_IMPORTED_HISTORY_PROTECTION_MISSING` until durable imported-history
+  protection is available for separated split-target clone.
+- Lifecycle unsupported external contract coverage runs repo/workspace
+  lifecycle commands against a separated-control repo and requires
+  `E_SEPARATED_LIFECYCLE_UNSUPPORTED` with no file changes.
+
 ### Cleanup Layering
 
 - Public docs describe cleanup preview/run semantics.
@@ -155,6 +181,10 @@ UX.
 - Migration tests cover offline whole-folder copy to a fresh destination,
   destination `jvs doctor --strict --repair-runtime`, a fresh cleanup preview,
   and the restore drill.
+- Separated-control tests cover explicit selector behavior, payload root
+  fail-closed behavior, doctor strict-json only behavior, restore/recovery
+  blockers, clone main-only split targets, `--save-points all` fail-closed
+  behavior, and lifecycle unsupported behavior.
 - Performance and benchmark docs scope engine claims and label internal
   package names as implementation facts only.
 - User story tests must match the current coverage stated in

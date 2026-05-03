@@ -5,6 +5,7 @@ package conformance
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -98,6 +99,134 @@ func TestStorySeparatedOpsPayloadBoundaryAndAuthoritativeJSON(t *testing.T) {
 	requireSeparatedStoryControlFiles(t, controlRoot)
 }
 
+func TestStorySeparatedOpsLifecycleCommandsFailClosedWithoutMutatingRoots(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		args         func(base, controlRoot, payloadRoot, savePointID string) []string
+		missingPaths func(base, controlRoot, payloadRoot string) []string
+	}{
+		{
+			name: "repo move preview",
+			args: func(base, controlRoot, payloadRoot, savePointID string) []string {
+				return separatedLifecycleStoryArgs(controlRoot, "repo", "move", filepath.Join(base, "control-moved"))
+			},
+			missingPaths: func(base, controlRoot, payloadRoot string) []string {
+				return []string{filepath.Join(base, "control-moved")}
+			},
+		},
+		{
+			name: "repo move run",
+			args: func(base, controlRoot, payloadRoot, savePointID string) []string {
+				return separatedLifecycleStoryArgs(controlRoot, "repo", "move", "--run", "missing-separated-plan")
+			},
+		},
+		{
+			name: "repo rename preview",
+			args: func(base, controlRoot, payloadRoot, savePointID string) []string {
+				return separatedLifecycleStoryArgs(controlRoot, "repo", "rename", "control-renamed")
+			},
+			missingPaths: func(base, controlRoot, payloadRoot string) []string {
+				return []string{filepath.Join(base, "control-renamed")}
+			},
+		},
+		{
+			name: "repo rename run",
+			args: func(base, controlRoot, payloadRoot, savePointID string) []string {
+				return separatedLifecycleStoryArgs(controlRoot, "repo", "rename", "--run", "missing-separated-plan")
+			},
+		},
+		{
+			name: "repo detach preview",
+			args: func(base, controlRoot, payloadRoot, savePointID string) []string {
+				return separatedLifecycleStoryArgs(controlRoot, "repo", "detach")
+			},
+		},
+		{
+			name: "repo detach run",
+			args: func(base, controlRoot, payloadRoot, savePointID string) []string {
+				return separatedLifecycleStoryArgs(controlRoot, "repo", "detach", "--run", "missing-separated-plan")
+			},
+		},
+		{
+			name: "workspace new",
+			args: func(base, controlRoot, payloadRoot, savePointID string) []string {
+				return separatedLifecycleStoryArgs(controlRoot, "workspace", "new", filepath.Join(base, "feature-payload"), "--from", savePointID, "--name", "feature")
+			},
+			missingPaths: func(base, controlRoot, payloadRoot string) []string {
+				return []string{filepath.Join(base, "feature-payload")}
+			},
+		},
+		{
+			name: "workspace move preview",
+			args: func(base, controlRoot, payloadRoot, savePointID string) []string {
+				return separatedLifecycleStoryArgs(controlRoot, "workspace", "move", "main", filepath.Join(base, "payload-moved"))
+			},
+			missingPaths: func(base, controlRoot, payloadRoot string) []string {
+				return []string{filepath.Join(base, "payload-moved")}
+			},
+		},
+		{
+			name: "workspace move run",
+			args: func(base, controlRoot, payloadRoot, savePointID string) []string {
+				return separatedLifecycleStoryArgs(controlRoot, "workspace", "move", "--run", "missing-separated-plan")
+			},
+		},
+		{
+			name: "workspace rename",
+			args: func(base, controlRoot, payloadRoot, savePointID string) []string {
+				return separatedLifecycleStoryArgs(controlRoot, "workspace", "rename", "main", "main-renamed")
+			},
+		},
+		{
+			name: "workspace rename dry run",
+			args: func(base, controlRoot, payloadRoot, savePointID string) []string {
+				return separatedLifecycleStoryArgs(controlRoot, "workspace", "rename", "--dry-run", "main", "main-renamed")
+			},
+		},
+		{
+			name: "workspace delete preview",
+			args: func(base, controlRoot, payloadRoot, savePointID string) []string {
+				return separatedLifecycleStoryArgs(controlRoot, "workspace", "delete", "main")
+			},
+		},
+		{
+			name: "workspace delete run",
+			args: func(base, controlRoot, payloadRoot, savePointID string) []string {
+				return separatedLifecycleStoryArgs(controlRoot, "workspace", "delete", "--run", "missing-separated-plan")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base, controlRoot, payloadRoot, savePointID := setupSeparatedLifecycleStoryRepo(t)
+			before := captureSeparatedLifecycleStoryRoots(t, controlRoot, payloadRoot)
+
+			stdout, stderr, code := runJVS(t, base, tc.args(base, controlRoot, payloadRoot, savePointID)...)
+
+			env := requireSeparatedControlJSONError(t, stdout, stderr, code, "E_SEPARATED_LIFECYCLE_UNSUPPORTED")
+			if env.RepoRoot == nil || *env.RepoRoot != controlRoot {
+				t.Fatalf("unsupported lifecycle repo_root = %#v, want %q\n%s", env.RepoRoot, controlRoot, stdout)
+			}
+			if env.Workspace == nil || *env.Workspace != "main" {
+				t.Fatalf("unsupported lifecycle workspace = %#v, want main\n%s", env.Workspace, stdout)
+			}
+			if !strings.Contains(env.Error.Message, "No files changed") {
+				t.Fatalf("unsupported lifecycle message should promise no mutation: %#v", env.Error)
+			}
+
+			requireSeparatedLifecycleStoryRootsUnchanged(t, before, controlRoot, payloadRoot)
+			requireSeparatedStoryControlFiles(t, controlRoot)
+			if got := readAbsoluteFile(t, filepath.Join(payloadRoot, "app.txt")); got != "lifecycle sentinel\n" {
+				t.Fatalf("payload sentinel mutated: %q", got)
+			}
+			if tc.missingPaths != nil {
+				for _, path := range tc.missingPaths(base, controlRoot, payloadRoot) {
+					requireAbsolutePathAbsent(t, path)
+				}
+			}
+		})
+	}
+}
+
 func TestStorySeparatedOpsSymlinkEscapeFailsClosed(t *testing.T) {
 	base := t.TempDir()
 	controlRoot := filepath.Join(base, "control")
@@ -171,6 +300,91 @@ func separatedJSON(t *testing.T, cwd, controlRoot, workspace string, args ...str
 		t.Fatalf("jvs %v failed\nstdout=%s\nstderr=%s", fullArgs, stdout, stderr)
 	}
 	return requireSeparatedControlAuthoritativeJSON(t, stdout, stderr, controlRoot, separatedPayloadRootFromControlOutput(t, stdout), workspace)
+}
+
+func setupSeparatedLifecycleStoryRepo(t *testing.T) (base, controlRoot, payloadRoot, savePointID string) {
+	t.Helper()
+	base = t.TempDir()
+	controlRoot = filepath.Join(base, "control")
+	payloadRoot = filepath.Join(base, "payload")
+	initSeparatedControlRepo(t, base, controlRoot, payloadRoot, "main")
+	seedSeparatedStoryControlFiles(t, controlRoot)
+	createFiles(t, payloadRoot, map[string]string{"app.txt": "lifecycle sentinel\n"})
+	saveOut := separatedJSON(t, base, controlRoot, "main", "save", "-m", "lifecycle unsupported source")
+	savePointID, _ = saveOut["save_point_id"].(string)
+	if savePointID == "" {
+		t.Fatalf("separated lifecycle setup missing save point ID: %#v", saveOut)
+	}
+	requireSeparatedStoryControlFiles(t, controlRoot)
+	return base, controlRoot, payloadRoot, savePointID
+}
+
+func separatedLifecycleStoryArgs(controlRoot string, args ...string) []string {
+	fullArgs := []string{"--json", "--control-root", controlRoot, "--workspace", "main"}
+	return append(fullArgs, args...)
+}
+
+type separatedLifecycleStoryRootSnapshot map[string]separatedLifecycleStoryNode
+
+type separatedLifecycleStoryNode struct {
+	Mode       os.FileMode
+	Content    string
+	LinkTarget string
+}
+
+func captureSeparatedLifecycleStoryRoots(t *testing.T, controlRoot, payloadRoot string) map[string]separatedLifecycleStoryRootSnapshot {
+	t.Helper()
+	return map[string]separatedLifecycleStoryRootSnapshot{
+		"control": captureSeparatedLifecycleStoryRoot(t, controlRoot),
+		"payload": captureSeparatedLifecycleStoryRoot(t, payloadRoot),
+	}
+}
+
+func captureSeparatedLifecycleStoryRoot(t *testing.T, root string) separatedLifecycleStoryRootSnapshot {
+	t.Helper()
+	snapshot := separatedLifecycleStoryRootSnapshot{}
+	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		node := separatedLifecycleStoryNode{Mode: info.Mode()}
+		switch {
+		case info.Mode().IsRegular():
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			node.Content = string(content)
+		case info.Mode()&os.ModeSymlink != 0:
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			node.LinkTarget = target
+		}
+		snapshot[rel] = node
+		return nil
+	}); err != nil {
+		t.Fatalf("capture separated lifecycle root %s: %v", root, err)
+	}
+	return snapshot
+}
+
+func requireSeparatedLifecycleStoryRootsUnchanged(t *testing.T, before map[string]separatedLifecycleStoryRootSnapshot, controlRoot, payloadRoot string) {
+	t.Helper()
+	after := captureSeparatedLifecycleStoryRoots(t, controlRoot, payloadRoot)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("separated lifecycle command mutated control/payload roots\nbefore=%#v\nafter=%#v", before, after)
+	}
 }
 
 func separatedPayloadRootFromControlOutput(t *testing.T, stdout string) string {

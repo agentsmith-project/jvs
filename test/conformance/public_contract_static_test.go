@@ -333,6 +333,74 @@ func TestDocs_UserCommandsDocumentsSeparatedControlPhase1(t *testing.T) {
 	}
 }
 
+func TestDocs_OperatorDocsDocumentSeparatedControlPhase1(t *testing.T) {
+	runbookDoc := "docs/13_OPERATION_RUNBOOK.md"
+	runbook := readRepoFile(t, runbookDoc)
+	runbookSection := markdownSectionByHeading(t, runbookDoc, runbook, "## Separated-Control Operator Entry")
+	normalizedRunbook := strings.Join(strings.Fields(runbookSection), " ")
+	for _, required := range []string{
+		"jvs init --control-root C --payload-root P --workspace main --json",
+		"jvs --control-root C --workspace main status --json",
+		"jvs --control-root C --workspace main doctor --strict --json",
+		"must include `--control-root C --workspace main`",
+		"Do not run `jvs init` from the payload root",
+		"naked payload-root command",
+		"doctor --strict --json",
+		"`--repair-runtime`",
+		"fail closed",
+		"Pending restore/recovery state blocks mutation",
+		"external payload locator",
+		"human discovery",
+		"not runtime authority",
+	} {
+		requireReleaseReadinessText(t, "separated-control operator runbook", normalizedRunbook, required)
+	}
+
+	migrationDoc := "docs/18_MIGRATION_AND_BACKUP.md"
+	migration := readRepoFile(t, migrationDoc)
+	migrationSection := markdownSectionByHeading(t, migrationDoc, migration, "## Support Boundary")
+	normalizedMigration := strings.Join(strings.Fields(migrationSection), " ")
+	for _, required := range []string{
+		"Embedded-to-separated migration is not delivered",
+		"Available now",
+		"Unavailable",
+		"offline whole-folder copy",
+		"jvs init --control-root C --payload-root P --workspace main --json",
+		"jvs --control-root C --workspace main repo clone --target-control-root TC --target-payload-root TP --save-points main --json",
+		"target control root and target payload root must be missing or empty",
+		"main-only",
+		"`--save-points all` fails closed",
+		"backup must preserve control root and payload root as one matched set",
+		"restore to the same repo mode",
+	} {
+		requireReleaseReadinessText(t, "separated-control migration boundary", normalizedMigration, required)
+	}
+}
+
+func TestDocs_ConformancePlanDocumentsSeparatedControlCoverage(t *testing.T) {
+	doc := "docs/11_CONFORMANCE_TEST_PLAN.md"
+	body := readRepoFile(t, doc)
+	section := markdownSectionByHeading(t, doc, body, "### Separated-Control Phase 1")
+	normalizedSection := strings.Join(strings.Fields(section), " ")
+	for _, required := range []string{
+		"explicit selector",
+		"`--control-root C --workspace main`",
+		"payload root fail-closed",
+		"E_PAYLOAD_LOCATOR_PRESENT",
+		"doctor strict-json only",
+		"doctor --strict --json",
+		"restore/recovery blocker",
+		"E_RECOVERY_BLOCKING",
+		"clone main-only",
+		"`--save-points all` fail closed",
+		"E_IMPORTED_HISTORY_PROTECTION_MISSING",
+		"lifecycle unsupported external contract",
+		"E_SEPARATED_LIFECYCLE_UNSUPPORTED",
+	} {
+		requireReleaseReadinessText(t, "separated-control conformance plan", normalizedSection, required)
+	}
+}
+
 func TestDocs_PublicDocsUseExplicitWorkspaceNewFolderSyntax(t *testing.T) {
 	for _, doc := range activePublicContractDocs() {
 		if doc == "CONTRIBUTING.md" {
