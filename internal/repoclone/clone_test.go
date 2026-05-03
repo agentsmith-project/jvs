@@ -45,17 +45,10 @@ func TestSeparatedCloneMainCreatesSplitTargetWithNewRepoIDAndPayloadOnly(t *test
 
 	assert.Equal(t, "repo_clone", result.Operation)
 	assert.Equal(t, sourceControl, result.SourceRepoRoot)
-	assert.Equal(t, targetControl, result.TargetRepoRoot)
+	assert.Empty(t, result.TargetRepoRoot)
+	assert.Equal(t, targetPayload, result.TargetFolder)
 	assert.Equal(t, targetControl, result.TargetControlRoot)
 	assert.Equal(t, targetPayload, result.TargetPayloadRoot)
-	assert.Equal(t, "separated_control", result.RepoMode)
-	assert.Equal(t, "main", result.WorkspaceName)
-	require.NotNil(t, result.SeparatedControl)
-	assert.True(t, *result.SeparatedControl)
-	require.NotNil(t, result.BoundaryValidated)
-	assert.True(t, *result.BoundaryValidated)
-	require.NotNil(t, result.LocatorAuthoritative)
-	assert.False(t, *result.LocatorAuthoritative)
 	assert.Equal(t, "passed", result.DoctorStrict)
 	assert.Equal(t, repoclone.SavePointsModeMain, result.SavePointsMode)
 	assert.Equal(t, []model.SnapshotID{mainID}, result.SavePointsCopied)
@@ -110,6 +103,33 @@ func TestSeparatedCloneMainCreatesSplitTargetWithNewRepoIDAndPayloadOnly(t *test
 	assert.Equal(t, "passed", strict.DoctorStrict)
 }
 
+func TestSeparatedCloneAcceptsTargetPathWithTargetControlRoot(t *testing.T) {
+	sourceControl, sourcePayload := setupSeparatedCloneSourceRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("main v1"), 0644))
+	mainID := createCloneSavePoint(t, sourceControl, "main", "main baseline")
+
+	targetBase := t.TempDir()
+	targetControl := filepath.Join(targetBase, "target-control")
+	targetFolder := filepath.Join(targetBase, "target-folder")
+	result, err := repoclone.Clone(repoclone.Options{
+		SourceRepoRoot:    sourceControl,
+		TargetPath:        targetFolder,
+		TargetControlRoot: targetControl,
+		SavePointsMode:    repoclone.SavePointsModeMain,
+		RequestedEngine:   model.EngineCopy,
+	})
+	require.NoError(t, err)
+
+	assert.Empty(t, result.TargetRepoRoot)
+	assert.Equal(t, targetFolder, result.TargetFolder)
+	assert.Equal(t, targetControl, result.TargetControlRoot)
+	assert.Equal(t, targetFolder, result.TargetPayloadRoot)
+	assert.Equal(t, []model.SnapshotID{mainID}, result.SavePointsCopied)
+	assertFileContent(t, filepath.Join(targetFolder, "app.txt"), "main v1")
+	assert.NoDirExists(t, filepath.Join(targetFolder, ".jvs"))
+	assert.FileExists(t, filepath.Join(targetControl, ".jvs", "repo_id"))
+}
+
 func TestSeparatedCloneAcceptsEmptyTargetRoots(t *testing.T) {
 	sourceControl, sourcePayload := setupSeparatedCloneSourceRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("main v1"), 0644))
@@ -130,7 +150,9 @@ func TestSeparatedCloneAcceptsEmptyTargetRoots(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	assert.Equal(t, targetControl, result.TargetRepoRoot)
+	assert.Empty(t, result.TargetRepoRoot)
+	assert.Equal(t, targetPayload, result.TargetFolder)
+	assert.Equal(t, targetControl, result.TargetControlRoot)
 	assert.FileExists(t, filepath.Join(targetControl, ".jvs", "repo_id"))
 	assert.NoDirExists(t, filepath.Join(targetPayload, ".jvs"))
 	assertFileContent(t, filepath.Join(targetPayload, "app.txt"), "main v1")
@@ -164,10 +186,11 @@ func TestSeparatedCloneRejectsTargetOverlapOccupiedAndAllProtection(t *testing.T
 	_ = createCloneSavePoint(t, sourceControl, "main", "main baseline")
 
 	for _, tc := range []struct {
-		name  string
-		setup func(base string) (controlRoot, payloadRoot string)
-		mode  repoclone.SavePointsMode
-		code  string
+		name        string
+		setup       func(base string) (controlRoot, payloadRoot string)
+		mode        repoclone.SavePointsMode
+		code        string
+		wantMessage string
 	}{
 		{
 			name: "target control occupied",
@@ -190,8 +213,9 @@ func TestSeparatedCloneRejectsTargetOverlapOccupiedAndAllProtection(t *testing.T
 				require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "occupied.txt"), []byte("keep"), 0644))
 				return controlRoot, payloadRoot
 			},
-			mode: repoclone.SavePointsModeMain,
-			code: errclass.ErrTargetRootOccupied.Code,
+			mode:        repoclone.SavePointsModeMain,
+			code:        errclass.ErrTargetRootOccupied.Code,
+			wantMessage: "target folder",
 		},
 		{
 			name: "same target root",
@@ -199,8 +223,9 @@ func TestSeparatedCloneRejectsTargetOverlapOccupiedAndAllProtection(t *testing.T
 				root := filepath.Join(base, "target")
 				return root, root
 			},
-			mode: repoclone.SavePointsModeMain,
-			code: errclass.ErrControlPayloadOverlap.Code,
+			mode:        repoclone.SavePointsModeMain,
+			code:        errclass.ErrControlPayloadOverlap.Code,
+			wantMessage: "workspace folder",
 		},
 		{
 			name: "payload inside control",
@@ -208,8 +233,9 @@ func TestSeparatedCloneRejectsTargetOverlapOccupiedAndAllProtection(t *testing.T
 				controlRoot := filepath.Join(base, "target-control")
 				return controlRoot, filepath.Join(controlRoot, "payload")
 			},
-			mode: repoclone.SavePointsModeMain,
-			code: errclass.ErrPayloadInsideControl.Code,
+			mode:        repoclone.SavePointsModeMain,
+			code:        errclass.ErrPayloadInsideControl.Code,
+			wantMessage: "target folder",
 		},
 		{
 			name: "control inside payload",
@@ -217,8 +243,9 @@ func TestSeparatedCloneRejectsTargetOverlapOccupiedAndAllProtection(t *testing.T
 				payloadRoot := filepath.Join(base, "target-payload")
 				return filepath.Join(payloadRoot, "control"), payloadRoot
 			},
-			mode: repoclone.SavePointsModeMain,
-			code: errclass.ErrControlInsidePayload.Code,
+			mode:        repoclone.SavePointsModeMain,
+			code:        errclass.ErrControlInsidePayload.Code,
+			wantMessage: "target folder",
 		},
 		{
 			name: "all protection missing",
@@ -241,6 +268,10 @@ func TestSeparatedCloneRejectsTargetOverlapOccupiedAndAllProtection(t *testing.T
 			})
 
 			assertJVSErrorCode(t, err, tc.code)
+			if tc.wantMessage != "" {
+				assert.NotContains(t, err.Error(), "payload root")
+				assert.Contains(t, err.Error(), tc.wantMessage)
+			}
 			assert.NoDirExists(t, filepath.Join(controlRoot, ".jvs"))
 			assert.NoDirExists(t, filepath.Join(payloadRoot, ".jvs"))
 		})

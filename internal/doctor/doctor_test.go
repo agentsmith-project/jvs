@@ -43,6 +43,33 @@ func setupSeparatedDoctorTestRepo(t *testing.T) (base, controlRoot, payloadRoot 
 	return base, controlRoot, payloadRoot
 }
 
+func TestSeparatedStrictDoctorJSONUsesFolderAndControlRootVocabulary(t *testing.T) {
+	_, controlRoot, payloadRoot := setupSeparatedDoctorTestRepo(t)
+
+	result, err := doctor.CheckSeparatedStrict(repo.SeparatedContextRequest{ControlRoot: controlRoot, Workspace: "main"})
+	require.NoError(t, err)
+
+	data, err := json.Marshal(result)
+	require.NoError(t, err)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(data, &payload), string(data))
+	assert.Equal(t, controlRoot, payload["control_root"])
+	assert.Equal(t, payloadRoot, payload["folder"])
+	assert.Equal(t, "main", payload["workspace"])
+	for _, key := range []string{
+		"repo_mode",
+		"separated_control",
+		"payload_root",
+		"workspace_name",
+		"locator_authoritative",
+		"doctor_strict",
+		"boundary_validated",
+	} {
+		assert.NotContains(t, payload, key)
+	}
+	assert.Contains(t, payload, "checks")
+}
+
 func createTestSnapshot(t *testing.T, repoPath string) model.SnapshotID {
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	desc, err := creator.Create("main", "test", nil)
@@ -210,7 +237,7 @@ func assertWorktreeInvalidSnapshotIDFinding(t *testing.T, result *doctor.Result,
 	t.Fatalf("expected invalid %s worktree finding in %#v", field, result.Findings)
 }
 
-func assertSeparatedStrictCheckFailed(t *testing.T, result *doctor.SeparatedStrictResult, name, code string) {
+func assertSeparatedStrictCheckFailed(t *testing.T, result *doctor.SeparatedStrictResult, name, code string) doctor.StrictCheck {
 	t.Helper()
 
 	for _, check := range result.Checks {
@@ -220,9 +247,10 @@ func assertSeparatedStrictCheckFailed(t *testing.T, result *doctor.SeparatedStri
 		require.Equal(t, "failed", check.Status, "check %q should fail in %#v", name, result.Checks)
 		require.NotNil(t, check.ErrorCode, "check %q should include an error code", name)
 		assert.Equal(t, code, *check.ErrorCode)
-		return
+		return check
 	}
 	t.Fatalf("missing separated strict check %q in %#v", name, result.Checks)
+	return doctor.StrictCheck{}
 }
 
 func assertSeparatedStrictCheckGolden(t *testing.T, result *doctor.SeparatedStrictResult, name, code, message string) {
@@ -270,12 +298,12 @@ func TestSeparatedStrictDoctorFailureCheckGoldens(t *testing.T) {
 				return inside
 			},
 			wantMessage: func(controlRoot, payloadRoot, seeded string) string {
-				return "Payload root must not be inside control root."
+				return "Workspace folder must not be inside control root."
 			},
 		},
 		{
-			name:  "payload locator",
-			check: "payload_locator",
+			name:  "workspace control marker",
+			check: "workspace_control_marker",
 			code:  errclass.ErrPayloadLocatorPresent.Code,
 			seed: func(t *testing.T, base, controlRoot, payloadRoot string) string {
 				t.Helper()
@@ -284,7 +312,7 @@ func TestSeparatedStrictDoctorFailureCheckGoldens(t *testing.T) {
 				return locator
 			},
 			wantMessage: func(controlRoot, payloadRoot, seeded string) string {
-				return fmt.Sprintf("Payload root contains root-level %s path: %s", repo.JVSDirName, seeded)
+				return fmt.Sprintf("Workspace folder contains root-level %s control data marker: %s", repo.JVSDirName, seeded)
 			},
 		},
 		{
@@ -303,7 +331,7 @@ func TestSeparatedStrictDoctorFailureCheckGoldens(t *testing.T) {
 				return payloadRoot
 			},
 			wantMessage: func(controlRoot, payloadRoot, seeded string) string {
-				return "Cannot verify payload root permissions at " + payloadRoot + ": synthetic permission denial"
+				return "Cannot verify workspace folder permissions at " + payloadRoot + ": synthetic permission denial"
 			},
 		},
 		{
@@ -347,7 +375,7 @@ func TestSeparatedStrictDoctorFailureCheckGoldens(t *testing.T) {
 				return payloadRoot
 			},
 			wantMessage: func(controlRoot, payloadRoot, seeded string) string {
-				return "Payload root must not be a symlink: " + payloadRoot
+				return "Workspace folder must not be a symlink: " + payloadRoot
 			},
 		},
 	} {
@@ -374,7 +402,12 @@ func TestSeparatedStrictDoctorPathBoundaryFailsOnPayloadSymlinkEscape(t *testing
 	require.NoError(t, err)
 	assert.False(t, result.Healthy)
 	assert.Equal(t, "failed", result.DoctorStrict)
-	assertSeparatedStrictCheckFailed(t, result, "path_boundary", errclass.ErrPathBoundaryEscape.Code)
+	check := assertSeparatedStrictCheckFailed(t, result, "path_boundary", errclass.ErrPathBoundaryEscape.Code)
+	message := strings.ToLower(check.Message)
+	assert.NotContains(t, message, "payload")
+	if !strings.Contains(message, "workspace folder") && !strings.Contains(message, "control data") {
+		t.Fatalf("path_boundary public diagnostic must use workspace/control-data wording, got %q", check.Message)
+	}
 }
 
 func TestSeparatedStrictDoctorActiveOperationFixturesFail(t *testing.T) {

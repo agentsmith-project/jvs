@@ -28,22 +28,19 @@ func TestStorySeparatedCloneMainOnlySplitTarget(t *testing.T) {
 		"--control-root", sourceControl,
 		"--workspace", "main",
 		"repo", "clone",
+		targetPayload,
 		"--target-control-root", targetControl,
-		"--target-payload-root", targetPayload,
 		"--save-points", "main",
 	)
 	if code != 0 {
 		t.Fatalf("separated clone failed: stdout=%s stderr=%s", stdout, stderr)
 	}
-	clone := requireSeparatedControlAuthoritativeJSON(t, stdout, stderr, targetControl, targetPayload, "main")
+	clone := requireSeparatedCloneExternalControlRootJSON(t, stdout, stderr, targetControl, targetPayload)
 	if clone["source_repo_id"] == clone["target_repo_id"] {
 		t.Fatalf("clone reused source repo_id: %#v", clone)
 	}
 	if clone["newest_save_point"] != baseline {
 		t.Fatalf("clone newest save point = %#v, want %s in %#v", clone["newest_save_point"], baseline, clone)
-	}
-	if clone["doctor_strict"] != "passed" {
-		t.Fatalf("clone doctor_strict = %#v, want passed in %#v", clone["doctor_strict"], clone)
 	}
 	requireSeparatedCloneTransfers(t, clone, sourceControl, sourcePayload, targetControl, targetPayload)
 
@@ -62,8 +59,7 @@ func TestStorySeparatedCloneMainOnlySplitTarget(t *testing.T) {
 		requireAbsolutePathAbsent(t, path)
 	}
 
-	doctor := separatedJSON(t, base, targetControl, "main", "doctor", "--strict")
-	requireSeparatedControlAuthoritativeData(t, doctor, targetControl, targetPayload, "main")
+	doctor := separatedDoctorJSON(t, base, targetControl, targetPayload, "main", "--strict")
 	if doctor["healthy"] != true {
 		t.Fatalf("target doctor should be healthy: %#v", doctor)
 	}
@@ -123,8 +119,8 @@ func TestStorySeparatedCloneRejectsPositionalTarget(t *testing.T) {
 		"--save-points", "main",
 	)
 	env := requireSeparatedControlJSONError(t, stdout, stderr, code, "E_EXPLICIT_TARGET_REQUIRED")
-	if !strings.Contains(env.Error.Message, "--target-control-root") || !strings.Contains(env.Error.Message, "--target-payload-root") {
-		t.Fatalf("positional target error should require split target roots: %#v", env.Error)
+	if !strings.Contains(env.Error.Message, "--target-control-root") {
+		t.Fatalf("positional target error should require a target control root: %#v", env.Error)
 	}
 	requireAbsolutePathAbsent(t, target)
 }
@@ -219,8 +215,8 @@ func TestStorySeparatedCloneTargetErrorsFailClosed(t *testing.T) {
 				"--control-root", sourceControl,
 				"--workspace", "main",
 				"repo", "clone",
+				payloadRoot,
 				"--target-control-root", controlRoot,
-				"--target-payload-root", payloadRoot,
 				"--save-points", tc.mode,
 			)
 			env := requireSeparatedControlJSONError(t, stdout, stderr, code, tc.code)
@@ -231,6 +227,32 @@ func TestStorySeparatedCloneTargetErrorsFailClosed(t *testing.T) {
 			requireAbsolutePathAbsent(t, filepath.Join(payloadRoot, ".jvs"))
 		})
 	}
+}
+
+func requireSeparatedCloneExternalControlRootJSON(t *testing.T, stdout, stderr, targetControlRoot, targetFolder string) map[string]any {
+	t.Helper()
+	env := requirePureJSONEnvelope(t, stdout, stderr, true)
+	if env.RepoRoot == nil || *env.RepoRoot != targetControlRoot {
+		t.Fatalf("clone JSON repo_root = %#v, want target control root %q\n%s", env.RepoRoot, targetControlRoot, stdout)
+	}
+
+	data := decodeContractDataMap(t, stdout)
+	if data["target_control_root"] != targetControlRoot {
+		t.Fatalf("clone target_control_root = %#v, want %q in %#v", data["target_control_root"], targetControlRoot, data)
+	}
+	if data["target_folder"] != targetFolder {
+		t.Fatalf("clone target_folder = %#v, want %q in %#v", data["target_folder"], targetFolder, data)
+	}
+	if got := jsonStringArray(t, data["workspaces_created"]); !sameStringSlice(got, []string{"main"}) {
+		t.Fatalf("clone workspaces_created = %v, want [main] in %#v", got, data)
+	}
+	requireSeparatedControlPublicModelFieldsAbsent(t, data)
+	for _, field := range []string{"target_payload_root", "source_payload_root"} {
+		if _, ok := data[field]; ok {
+			t.Fatalf("external clone public JSON exposes old field data.%s in %#v", field, data)
+		}
+	}
+	return data
 }
 
 func seedSeparatedCloneSourceControlFiles(t *testing.T, controlRoot string) {

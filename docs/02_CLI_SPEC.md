@@ -77,25 +77,31 @@ They must not appear in public help, examples, or release-facing workflows.
 - Commands that overwrite managed files must refuse unsaved changes by default
   unless the user chooses an explicit safety option.
 
-## Separated-Control Phase 1
+## External Control Root
 
-Separated-control repositories keep control metadata and workspace files in
-different roots. This Phase 1 surface is explicit-selector only and main-only.
+Most users use `jvs init [folder]`, and JVS stores control data in that
+workspace folder's `.jvs/`. Advanced operators and platform integrations can
+place the same workspace's control data in an explicit external control root.
+This is a control data location choice, not a second product model.
 
-- Create one with
-  `jvs init --control-root C --payload-root P --workspace main`.
+- Create an external-control-root workspace with
+  `jvs init [folder] --control-root C --workspace main`.
 - After init, target it with
   `jvs --control-root C --workspace main <command>`.
-- `--repo` is not a separated-control selector; it remains an advanced target
-  assertion for ordinary project paths.
-- Separated-control doctor supports `doctor --strict --json` only, for example
-  `jvs --json --control-root C --workspace main doctor --strict`.
-- Separated-control repo clone uses a main-only split target:
-  `jvs --control-root C --workspace main repo clone --target-control-root TC --target-payload-root TP --save-points main`.
-  `--save-points all` fails closed in this mode.
-- Repo and workspace lifecycle commands are unsupported in Phase 1: repo move,
-  repo rename, repo detach, workspace move, workspace rename, workspace delete,
-  and workspace new.
+- The folder argument is the workspace folder; legacy split-root flags are not
+  the primary entry for this workflow.
+- `--repo` is not an external control root selector; it remains an advanced
+  target assertion for ordinary project paths.
+- External control root doctor supports `doctor --strict --json` only, for
+  example `jvs --json --control-root C --workspace main doctor --strict`.
+- External control root repo clone uses a main-only target folder plus target
+  control root:
+  `jvs --control-root C --workspace main repo clone <target-folder> --target-control-root TC --save-points main`.
+  `--save-points all` fails closed until imported-history protection is
+  available for this control data location.
+- Repo and workspace lifecycle commands are currently unsupported for external
+  control roots: repo move, repo rename, repo detach, workspace move, workspace
+  rename, workspace delete, and workspace new fail closed with no file changes.
 
 ## JSON Envelope
 

@@ -299,7 +299,24 @@ func separatedJSON(t *testing.T, cwd, controlRoot, workspace string, args ...str
 	if code != 0 {
 		t.Fatalf("jvs %v failed\nstdout=%s\nstderr=%s", fullArgs, stdout, stderr)
 	}
-	return requireSeparatedControlAuthoritativeJSON(t, stdout, stderr, controlRoot, separatedPayloadRootFromControlOutput(t, stdout), workspace)
+	return requireSeparatedControlAuthoritativeJSON(t, stdout, stderr, controlRoot, separatedWorkspaceFolderFromControlOutput(t, stdout), workspace)
+}
+
+func separatedDoctorJSON(t *testing.T, cwd, controlRoot, workspaceFolder, workspace string, args ...string) map[string]any {
+	t.Helper()
+	fullArgs := []string{"--json", "--control-root", controlRoot, "--workspace", workspace, "doctor"}
+	fullArgs = append(fullArgs, args...)
+	stdout, stderr, code := runJVS(t, cwd, fullArgs...)
+	if code != 0 {
+		t.Fatalf("jvs %v failed\nstdout=%s\nstderr=%s", fullArgs, stdout, stderr)
+	}
+	env := requirePureJSONEnvelope(t, stdout, stderr, true)
+	if env.RepoRoot == nil || *env.RepoRoot != controlRoot {
+		t.Fatalf("separated doctor JSON repo_root = %#v, want %q\n%s", env.RepoRoot, controlRoot, stdout)
+	}
+	data := decodeContractDataMap(t, stdout)
+	requireSeparatedControlDoctorData(t, data, controlRoot, workspaceFolder, workspace)
+	return data
 }
 
 func setupSeparatedLifecycleStoryRepo(t *testing.T) (base, controlRoot, payloadRoot, savePointID string) {
@@ -387,14 +404,14 @@ func requireSeparatedLifecycleStoryRootsUnchanged(t *testing.T, before map[strin
 	}
 }
 
-func separatedPayloadRootFromControlOutput(t *testing.T, stdout string) string {
+func separatedWorkspaceFolderFromControlOutput(t *testing.T, stdout string) string {
 	t.Helper()
 	data := decodeContractDataMap(t, stdout)
-	payloadRoot, _ := data["payload_root"].(string)
-	if payloadRoot == "" {
-		t.Fatalf("separated JSON missing payload_root: %#v", data)
+	folder, _ := data["folder"].(string)
+	if folder == "" {
+		t.Fatalf("external control root JSON missing folder: %#v", data)
 	}
-	return payloadRoot
+	return folder
 }
 
 func seedSeparatedStoryControlFiles(t *testing.T, controlRoot string) {

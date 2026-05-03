@@ -16,15 +16,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSeparatedControlInitJSONReportsAuthoritativeFields(t *testing.T) {
+func TestSeparatedControlInitJSONReportsFolderAndControlData(t *testing.T) {
 	base := setupSeparatedControlCLICWD(t)
 	controlRoot := filepath.Join(base, "control")
 	payloadRoot := filepath.Join(base, "payload")
 
 	stdout, err := executeCommand(createTestRootCmd(),
 		"init",
+		payloadRoot,
 		"--control-root", controlRoot,
-		"--payload-root", payloadRoot,
 		"--workspace", "main",
 		"--json",
 	)
@@ -35,9 +35,47 @@ func TestSeparatedControlInitJSONReportsAuthoritativeFields(t *testing.T) {
 	assert.Equal(t, controlRoot, *env.RepoRoot)
 	require.NotNil(t, env.Workspace)
 	assert.Equal(t, "main", *env.Workspace)
-	assertSeparatedControlAuthoritativeData(t, data, controlRoot, payloadRoot, "main")
-	assert.Equal(t, "passed", data["doctor_strict"])
+	assertExternalControlDataShape(t, data, controlRoot, payloadRoot, "main")
 	assert.NoFileExists(t, filepath.Join(payloadRoot, jvsrepo.JVSDirName))
+}
+
+func TestSeparatedControlInitHumanUsesFolderAndControlDataLanguage(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+
+	stdout, err := executeCommand(createTestRootCmd(),
+		"init",
+		payloadRoot,
+		"--control-root", controlRoot,
+		"--workspace", "main",
+	)
+	require.NoError(t, err, stdout)
+
+	assert.Contains(t, stdout, "JVS is ready for this folder.")
+	assert.Contains(t, stdout, "Folder: "+payloadRoot)
+	assert.Contains(t, stdout, "Control data: "+controlRoot)
+	assert.Contains(t, stdout, "Workspace: main")
+	assert.NotContains(t, stdout, "separated control")
+	assert.NotContains(t, stdout, "Payload root")
+	assert.NotContains(t, stdout, "Control root")
+}
+
+func TestSeparatedControlInitWithoutFolderUsesCurrentDirectory(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(t.TempDir(), "control")
+
+	stdout, err := executeCommand(createTestRootCmd(),
+		"init",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"--json",
+	)
+	require.NoError(t, err, stdout)
+
+	_, data := decodeSeparatedControlDataMap(t, stdout)
+	assertExternalControlDataShape(t, data, controlRoot, base, "main")
+	assert.NoFileExists(t, filepath.Join(base, jvsrepo.JVSDirName))
 }
 
 func TestSeparatedControlStatusJSONUsesControlRootFromCleanAndOtherRepoCWD(t *testing.T) {
@@ -66,8 +104,7 @@ func TestSeparatedControlStatusJSONUsesControlRootFromCleanAndOtherRepoCWD(t *te
 			assert.Equal(t, controlRoot, *env.RepoRoot)
 			require.NotNil(t, env.Workspace)
 			assert.Equal(t, "main", *env.Workspace)
-			assertSeparatedControlAuthoritativeData(t, data, controlRoot, payloadRoot, "main")
-			assert.Equal(t, "not_run", data["doctor_strict"])
+			assertExternalControlDataShape(t, data, controlRoot, payloadRoot, "main")
 			assert.Equal(t, controlRoot, data["repo"])
 			assert.Equal(t, payloadRoot, data["folder"])
 			assert.Equal(t, "main", data["workspace"])
@@ -116,6 +153,8 @@ func TestSeparatedControlRepoFlagRequiresControlRootWorkspaceSelector(t *testing
 		t.Run(tc.name, func(t *testing.T) {
 			stdout, stderr, exitCode := runContractSubprocess(t, base, tc.args...)
 			env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrExplicitTargetRequired.Code)
+			assert.Contains(t, env.Error.Message, "control data is outside the folder")
+			assert.NotContains(t, env.Error.Message, "separated-control")
 			assertSeparatedSelectorHint(t, env, controlRoot, tc.commandHint)
 		})
 	}
@@ -133,6 +172,8 @@ func TestSeparatedControlAmbientControlRootRequiresExplicitSelector(t *testing.T
 	stdout, stderr, exitCode := runContractSubprocess(t, nestedCWD, "--json", "status")
 
 	env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrExplicitTargetRequired.Code)
+	assert.Contains(t, env.Error.Message, "control data is outside the folder")
+	assert.NotContains(t, env.Error.Message, "separated-control")
 	assertSeparatedSelectorHint(t, env, controlRoot, "status")
 }
 
@@ -317,23 +358,21 @@ func TestSeparatedControlRecoveryStatusRejectsPlanPayloadBindingDrift(t *testing
 			stdout, stderr, exitCode := runContractSubprocess(t, base, args...)
 
 			env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrPathBoundaryEscape.Code)
-			assert.Contains(t, env.Error.Message, "payload root")
+			assert.NotContains(t, env.Error.Message, "payload root")
+			assert.Contains(t, env.Error.Message, "workspace folder")
+			assert.Contains(t, env.Error.Message, "control data")
 		})
 	}
 }
 
-func TestSeparatedControlInitJSONRejectsMixedAndUnpairedRoots(t *testing.T) {
+func TestSeparatedControlInitJSONRejectsHiddenPayloadAliasMisuse(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		args []string
 	}{
 		{
-			name: "positional folder with separated roots",
+			name: "positional folder with hidden payload-root alias",
 			args: []string{"init", "folder", "--control-root", "control", "--payload-root", "payload", "--workspace", "main", "--json"},
-		},
-		{
-			name: "control root without payload root",
-			args: []string{"init", "--control-root", "control", "--workspace", "main", "--json"},
 		},
 		{
 			name: "payload root without control root",
@@ -363,8 +402,8 @@ func TestSeparatedControlInitRejectsNonMainWorkspaceWithoutMutation(t *testing.T
 	stdout, stderr, exitCode := runContractSubprocess(t, base,
 		"--json",
 		"init",
+		payloadRoot,
 		"--control-root", controlRoot,
-		"--payload-root", payloadRoot,
 		"--workspace", "feature",
 	)
 
@@ -390,8 +429,7 @@ func TestSeparatedControlDoctorStrictJSONIncludesChecks(t *testing.T) {
 	require.NoError(t, err, stdout)
 
 	_, data := decodeSeparatedControlDataMap(t, stdout)
-	assertSeparatedControlAuthoritativeData(t, data, controlRoot, payloadRoot, "main")
-	assert.Equal(t, "passed", data["doctor_strict"])
+	assertExternalControlDataShape(t, data, controlRoot, payloadRoot, "main")
 	assert.Equal(t, true, data["healthy"])
 	assertSeparatedDoctorChecks(t, data, map[string]string{})
 }
@@ -422,6 +460,8 @@ func TestSeparatedControlDoctorUnsupportedVariantsFailClosed(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			stdout, stderr, exitCode := runContractSubprocess(t, base, tc.args...)
 			env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrExplicitTargetRequired.Code)
+			assert.Contains(t, env.Error.Message, "external control root")
+			assert.NotContains(t, env.Error.Message, "separated-control")
 			assertSeparatedSelectorHint(t, env, controlRoot, "doctor --strict --json")
 		})
 	}
@@ -439,7 +479,7 @@ func TestSeparatedControlDoctorUnsupportedVariantsFailClosed(t *testing.T) {
 	assert.Contains(t, stderr, "--workspace main")
 }
 
-func TestSeparatedControlDoctorStrictJSONPayloadLocatorReportsDiagnosticChecks(t *testing.T) {
+func TestSeparatedControlDoctorStrictJSONWorkspaceControlMarkerReportsDiagnosticChecks(t *testing.T) {
 	base := setupSeparatedControlCLICWD(t)
 	controlRoot := filepath.Join(base, "control")
 	payloadRoot := filepath.Join(base, "payload")
@@ -460,11 +500,10 @@ func TestSeparatedControlDoctorStrictJSONPayloadLocatorReportsDiagnosticChecks(t
 	assert.True(t, env.OK, stdout)
 	var data map[string]any
 	require.NoError(t, json.Unmarshal(env.Data, &data), stdout)
-	assertSeparatedControlAuthoritativeData(t, data, controlRoot, payloadRoot, "main")
-	assert.Equal(t, "failed", data["doctor_strict"])
+	assertExternalControlDataShape(t, data, controlRoot, payloadRoot, "main")
 	assert.Equal(t, false, data["healthy"])
 	assertSeparatedDoctorChecks(t, data, map[string]string{
-		"payload_locator": "E_PAYLOAD_LOCATOR_PRESENT",
+		"workspace_control_marker": "E_PAYLOAD_LOCATOR_PRESENT",
 	})
 }
 
@@ -522,8 +561,7 @@ func TestSeparatedControlDoctorStrictJSONActiveOperationFixturesFail(t *testing.
 			assert.True(t, env.OK, stdout)
 			var data map[string]any
 			require.NoError(t, json.Unmarshal(env.Data, &data), stdout)
-			assertSeparatedControlAuthoritativeData(t, data, controlRoot, payloadRoot, "main")
-			assert.Equal(t, "failed", data["doctor_strict"])
+			assertExternalControlDataShape(t, data, controlRoot, payloadRoot, "main")
 			assert.Equal(t, false, data["healthy"])
 			assertSeparatedDoctorChecks(t, data, map[string]string{
 				"active_operation": "E_ACTIVE_OPERATION_BLOCKING",
@@ -589,8 +627,7 @@ func TestSeparatedControlDoctorStrictJSONRecoveryStateFixturesFail(t *testing.T)
 			assert.True(t, env.OK, stdout)
 			var data map[string]any
 			require.NoError(t, json.Unmarshal(env.Data, &data), stdout)
-			assertSeparatedControlAuthoritativeData(t, data, controlRoot, payloadRoot, "main")
-			assert.Equal(t, "failed", data["doctor_strict"])
+			assertExternalControlDataShape(t, data, controlRoot, payloadRoot, "main")
 			assert.Equal(t, false, data["healthy"])
 			assertSeparatedDoctorChecks(t, data, map[string]string{
 				"recovery_state": "E_RECOVERY_BLOCKING",
@@ -617,8 +654,8 @@ func initSeparatedControlForCLITest(t *testing.T, controlRoot, payloadRoot, work
 
 	stdout, err := executeCommand(createTestRootCmd(),
 		"init",
+		payloadRoot,
 		"--control-root", controlRoot,
-		"--payload-root", payloadRoot,
 		"--workspace", workspace,
 		"--json",
 	)
@@ -635,16 +672,29 @@ func decodeSeparatedControlDataMap(t *testing.T, stdout string) (contractEnvelop
 	return env, data
 }
 
-func assertSeparatedControlAuthoritativeData(t *testing.T, data map[string]any, controlRoot, payloadRoot, workspace string) {
+func assertExternalControlDataShape(t *testing.T, data map[string]any, controlRoot, folder, workspace string) {
 	t.Helper()
 
 	assert.Equal(t, controlRoot, data["control_root"])
-	assert.Equal(t, payloadRoot, data["payload_root"])
-	assert.Equal(t, "separated_control", data["repo_mode"])
-	assert.Equal(t, workspace, data["workspace_name"])
-	assert.Equal(t, true, data["separated_control"])
-	assert.Equal(t, true, data["boundary_validated"])
-	assert.Equal(t, false, data["locator_authoritative"])
+	assert.Equal(t, folder, data["folder"])
+	assert.Equal(t, workspace, data["workspace"])
+	assertNoExternalControlImplementationFields(t, data)
+}
+
+func assertNoExternalControlImplementationFields(t *testing.T, data map[string]any) {
+	t.Helper()
+
+	for _, key := range []string{
+		"repo_mode",
+		"separated_control",
+		"payload_root",
+		"workspace_name",
+		"locator_authoritative",
+		"doctor_strict",
+		"boundary_validated",
+	} {
+		assert.NotContains(t, data, key)
+	}
 }
 
 func seedSeparatedControlIntentFixture(t *testing.T, controlRoot string) {
@@ -703,7 +753,7 @@ func assertSeparatedDoctorChecks(t *testing.T, data map[string]any, failed map[s
 
 	for _, name := range []string{
 		"root_overlap",
-		"payload_locator",
+		"workspace_control_marker",
 		"repo_identity",
 		"workspace_binding",
 		"path_boundary",

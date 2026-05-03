@@ -17,8 +17,8 @@ func TestStorySeparatedControlInitCreatesMissingRootsAndReportsAuthoritativeJSON
 	payloadRoot := filepath.Join(base, "payload")
 
 	stdout, stderr, code := runJVS(t, base, "init",
+		payloadRoot,
 		"--control-root", controlRoot,
-		"--payload-root", payloadRoot,
 		"--workspace", "main",
 		"--json",
 	)
@@ -53,10 +53,7 @@ func TestStorySeparatedControlExplicitStatusIgnoresCleanCWD(t *testing.T) {
 		t.Fatalf("separated status from clean cwd failed: stdout=%s stderr=%s", stdout, stderr)
 	}
 
-	data := requireSeparatedControlAuthoritativeJSON(t, stdout, stderr, controlRoot, payloadRoot, "main")
-	if data["doctor_strict"] != "not_run" {
-		t.Fatalf("status doctor_strict = %#v, want not_run in %#v", data["doctor_strict"], data)
-	}
+	requireSeparatedControlAuthoritativeJSON(t, stdout, stderr, controlRoot, payloadRoot, "main")
 }
 
 func TestStorySeparatedControlRejectsRepoFlagAndAmbientSelectors(t *testing.T) {
@@ -107,7 +104,7 @@ func TestStorySeparatedControlRejectsRepoFlagAndAmbientSelectors(t *testing.T) {
 	requireSeparatedSelectorHint(t, env, controlRoot, "status")
 }
 
-func TestStorySeparatedControlPayloadRootNakedStatusHintDoesNotSuggestInit(t *testing.T) {
+func TestStorySeparatedControlWorkspaceFolderNakedStatusHintDoesNotSuggestInit(t *testing.T) {
 	base := t.TempDir()
 	controlRoot := filepath.Join(base, "control")
 	payloadRoot := filepath.Join(base, "payload")
@@ -117,7 +114,7 @@ func TestStorySeparatedControlPayloadRootNakedStatusHintDoesNotSuggestInit(t *te
 
 	env := requireSeparatedControlJSONError(t, stdout, stderr, code, "E_NOT_REPO")
 	if strings.Contains(env.Error.Hint, "jvs init") || strings.Contains(env.Error.Message, "jvs init") {
-		t.Fatalf("payload-root naked status must not suggest init: %#v", env.Error)
+		t.Fatalf("workspace-folder naked status must not suggest init: %#v", env.Error)
 	}
 }
 
@@ -143,8 +140,8 @@ func TestStorySeparatedControlInitRejectsNonMainWorkspaceWithoutMutation(t *test
 	payloadRoot := filepath.Join(base, "payload")
 
 	stdout, stderr, code := runJVS(t, base, "init",
+		payloadRoot,
 		"--control-root", controlRoot,
-		"--payload-root", payloadRoot,
 		"--workspace", "feature",
 		"--json",
 	)
@@ -200,8 +197,8 @@ func TestStorySeparatedControlPayloadLocatorPresentFailsClosed(t *testing.T) {
 			tc.marker(t, payloadRoot)
 
 			stdout, stderr, code := runJVS(t, base, "init",
+				payloadRoot,
 				"--control-root", controlRoot,
-				"--payload-root", payloadRoot,
 				"--workspace", "main",
 				"--json",
 			)
@@ -254,8 +251,8 @@ func TestStorySeparatedControlBoundaryRootCasesFailWithoutMutation(t *testing.T)
 			payloadRoot := tc.payloadRoot(base)
 
 			stdout, stderr, code := runJVS(t, base, "init",
+				payloadRoot,
 				"--control-root", controlRoot,
-				"--payload-root", payloadRoot,
 				"--workspace", "main",
 				"--json",
 			)
@@ -295,8 +292,8 @@ func TestStorySeparatedControlTargetOccupancyFailsWithoutMutation(t *testing.T) 
 			}
 
 			stdout, stderr, code := runJVS(t, base, "init",
+				payloadRoot,
 				"--control-root", controlRoot,
-				"--payload-root", payloadRoot,
 				"--workspace", "main",
 				"--json",
 			)
@@ -333,8 +330,8 @@ func TestStorySeparatedControlStatusMissingControlFailsClosed(t *testing.T) {
 func initSeparatedControlRepo(t *testing.T, cwd, controlRoot, payloadRoot, workspace string) {
 	t.Helper()
 	stdout, stderr, code := runJVS(t, cwd, "init",
+		payloadRoot,
 		"--control-root", controlRoot,
-		"--payload-root", payloadRoot,
 		"--workspace", workspace,
 		"--json",
 	)
@@ -344,7 +341,7 @@ func initSeparatedControlRepo(t *testing.T, cwd, controlRoot, payloadRoot, works
 	requireSeparatedControlAuthoritativeJSON(t, stdout, stderr, controlRoot, payloadRoot, workspace)
 }
 
-func requireSeparatedControlAuthoritativeJSON(t *testing.T, stdout, stderr, controlRoot, payloadRoot, workspace string) map[string]any {
+func requireSeparatedControlAuthoritativeJSON(t *testing.T, stdout, stderr, controlRoot, workspaceFolder, workspace string) map[string]any {
 	t.Helper()
 	env := requirePureJSONEnvelope(t, stdout, stderr, true)
 	if env.RepoRoot == nil || *env.RepoRoot != controlRoot {
@@ -355,32 +352,50 @@ func requireSeparatedControlAuthoritativeJSON(t *testing.T, stdout, stderr, cont
 	if err := json.Unmarshal(env.Data, &data); err != nil {
 		t.Fatalf("decode separated JSON data object: %v\n%s", err, stdout)
 	}
-	requireSeparatedControlAuthoritativeData(t, data, controlRoot, payloadRoot, workspace)
+	requireSeparatedControlAuthoritativeData(t, data, controlRoot, workspaceFolder, workspace)
 	return data
 }
 
-func requireSeparatedControlAuthoritativeData(t *testing.T, data map[string]any, controlRoot, payloadRoot, workspace string) {
+func requireSeparatedControlAuthoritativeData(t *testing.T, data map[string]any, controlRoot, workspaceFolder, workspace string) {
+	t.Helper()
+	requireSeparatedControlTargetData(t, data, controlRoot, workspaceFolder, workspace)
+	requireSeparatedControlPublicModelFieldsAbsent(t, data)
+}
+
+func requireSeparatedControlDoctorData(t *testing.T, data map[string]any, controlRoot, workspaceFolder, workspace string) {
+	t.Helper()
+	requireSeparatedControlTargetData(t, data, controlRoot, workspaceFolder, workspace)
+}
+
+func requireSeparatedControlTargetData(t *testing.T, data map[string]any, controlRoot, workspaceFolder, workspace string) {
 	t.Helper()
 	if data["control_root"] != controlRoot {
 		t.Fatalf("data.control_root = %#v, want %q in %#v", data["control_root"], controlRoot, data)
 	}
-	if data["payload_root"] != payloadRoot {
-		t.Fatalf("data.payload_root = %#v, want %q in %#v", data["payload_root"], payloadRoot, data)
+	if data["folder"] != workspaceFolder {
+		t.Fatalf("data.folder = %#v, want %q in %#v", data["folder"], workspaceFolder, data)
 	}
-	if data["repo_mode"] != "separated_control" {
-		t.Fatalf("data.repo_mode = %#v, want separated_control in %#v", data["repo_mode"], data)
+	if data["workspace"] != workspace {
+		t.Fatalf("data.workspace = %#v, want %q in %#v", data["workspace"], workspace, data)
 	}
-	if data["workspace_name"] != workspace {
-		t.Fatalf("data.workspace_name = %#v, want %q in %#v", data["workspace_name"], workspace, data)
+	if workspace != "main" {
+		t.Fatalf("external control root conformance helper only supports workspace main, got %q", workspace)
 	}
-	if data["separated_control"] != true {
-		t.Fatalf("data.separated_control = %#v, want true in %#v", data["separated_control"], data)
-	}
-	if data["boundary_validated"] != true {
-		t.Fatalf("data.boundary_validated = %#v, want true in %#v", data["boundary_validated"], data)
-	}
-	if data["locator_authoritative"] != false {
-		t.Fatalf("data.locator_authoritative = %#v, want false in %#v", data["locator_authoritative"], data)
+}
+
+func requireSeparatedControlPublicModelFieldsAbsent(t *testing.T, data map[string]any) {
+	t.Helper()
+	for _, field := range []string{
+		"payload_root",
+		"repo_mode",
+		"separated_control",
+		"workspace_name",
+		"locator_authoritative",
+		"doctor_strict",
+	} {
+		if _, ok := data[field]; ok {
+			t.Fatalf("external control root public JSON exposes old field data.%s in %#v", field, data)
+		}
 	}
 }
 

@@ -88,7 +88,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&noProgress, "no-progress", false, "disable progress bars")
 	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable colored output (also respects NO_COLOR env var)")
 	rootCmd.PersistentFlags().StringVar(&targetRepoPath, "repo", "", "target repository root or path inside a repository")
-	rootCmd.PersistentFlags().StringVar(&targetControlRoot, "control-root", "", "explicit separated-control root")
+	rootCmd.PersistentFlags().StringVar(&targetControlRoot, "control-root", "", "external control data root")
 	rootCmd.PersistentFlags().StringVar(&targetWorkspaceName, "workspace", "", "target workspace name")
 	installPublicRootHelpSurface(rootCmd)
 }
@@ -240,6 +240,11 @@ func publicCLIErrorVocabulary(value string) string {
 			if pathEnd, ok := publicCLIErrorPathValueEnd(value, i); ok {
 				out.WriteString(value[i:pathEnd])
 				i = pathEnd
+				continue
+			}
+			if replacement, phraseEnd, ok := publicCLIErrorVocabularyPhrase(value, i); ok {
+				out.WriteString(replacement)
+				i = phraseEnd
 				continue
 			}
 			next := nonSpaceSpanEnd(value, i)
@@ -396,6 +401,50 @@ func publicCLIErrorVocabularySpan(value string) string {
 	}
 
 	return out.String()
+}
+
+type publicCLIErrorPhrase struct {
+	from string
+	to   string
+}
+
+var publicCLIErrorPhrases = []publicCLIErrorPhrase{
+	{from: "payload root", to: "workspace folder"},
+	{from: "payload boundary", to: "workspace folder boundary"},
+	{from: "payload locator", to: "workspace control marker"},
+	{from: "payload symlink", to: "workspace folder symlink"},
+	{from: "workspace registry", to: "control data"},
+	{from: "registry has", to: "control data has"},
+}
+
+func publicCLIErrorVocabularyPhrase(value string, start int) (string, int, bool) {
+	for _, phrase := range publicCLIErrorPhrases {
+		end := start + len(phrase.from)
+		if end > len(value) {
+			continue
+		}
+		if start > 0 && isPublicVocabularyTokenByte(value[start-1]) {
+			continue
+		}
+		if end < len(value) && isPublicVocabularyTokenByte(value[end]) {
+			continue
+		}
+		if !strings.EqualFold(value[start:end], phrase.from) {
+			continue
+		}
+		return applyVocabularyPhraseCase(value[start:end], phrase.to), end, true
+	}
+	return "", 0, false
+}
+
+func applyVocabularyPhraseCase(original, replacement string) string {
+	if original == strings.ToUpper(original) {
+		return strings.ToUpper(replacement)
+	}
+	if len(original) > 0 && isASCIIUpper(original[0]) && original[1:] == strings.ToLower(original[1:]) {
+		return strings.ToUpper(replacement[:1]) + replacement[1:]
+	}
+	return replacement
 }
 
 func publicCLIErrorVocabularyToken(token string) (string, bool) {

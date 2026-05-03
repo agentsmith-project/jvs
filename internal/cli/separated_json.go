@@ -11,14 +11,7 @@ import (
 const separatedDoctorStrictNotRun = "not_run"
 
 type separatedControlJSONFields struct {
-	ControlRoot          string `json:"control_root,omitempty"`
-	PayloadRoot          string `json:"payload_root,omitempty"`
-	RepoMode             string `json:"repo_mode,omitempty"`
-	WorkspaceName        string `json:"workspace_name,omitempty"`
-	SeparatedControl     *bool  `json:"separated_control,omitempty"`
-	BoundaryValidated    *bool  `json:"boundary_validated,omitempty"`
-	LocatorAuthoritative *bool  `json:"locator_authoritative,omitempty"`
-	DoctorStrict         string `json:"doctor_strict,omitempty"`
+	ControlRoot string `json:"control_root,omitempty"`
 }
 
 func separatedControlFields(ctx *repo.SeparatedContext, doctorStrict string) separatedControlJSONFields {
@@ -26,14 +19,7 @@ func separatedControlFields(ctx *repo.SeparatedContext, doctorStrict string) sep
 		return separatedControlJSONFields{}
 	}
 	return separatedControlJSONFields{
-		ControlRoot:          ctx.ControlRoot,
-		PayloadRoot:          ctx.PayloadRoot,
-		RepoMode:             ctx.Repo.Mode,
-		WorkspaceName:        ctx.Workspace,
-		SeparatedControl:     boolPtr(ctx.Repo.Mode == repo.RepoModeSeparatedControl),
-		BoundaryValidated:    boolPtr(ctx.BoundaryValidated),
-		LocatorAuthoritative: boolPtr(ctx.LocatorAuthoritative),
-		DoctorStrict:         doctorStrict,
+		ControlRoot: ctx.ControlRoot,
 	}
 }
 
@@ -42,13 +28,12 @@ func applySeparatedControlMapFields(out map[string]any, ctx *repo.SeparatedConte
 		return
 	}
 	out["control_root"] = ctx.ControlRoot
-	out["payload_root"] = ctx.PayloadRoot
-	out["repo_mode"] = ctx.Repo.Mode
-	out["workspace_name"] = ctx.Workspace
-	out["separated_control"] = ctx.Repo.Mode == repo.RepoModeSeparatedControl
-	out["boundary_validated"] = ctx.BoundaryValidated
-	out["locator_authoritative"] = ctx.LocatorAuthoritative
-	out["doctor_strict"] = doctorStrict
+	if _, ok := out["folder"]; !ok {
+		out["folder"] = ctx.PayloadRoot
+	}
+	if _, ok := out["workspace"]; !ok {
+		out["workspace"] = ctx.Workspace
+	}
 }
 
 func outputJSONWithSeparatedControl(data any, ctx *repo.SeparatedContext, doctorStrict string) error {
@@ -154,8 +139,4 @@ func revalidateSeparatedContext(ctx *repo.SeparatedContext, expectedPayloadRoot 
 		ExpectedRepoID:      ctx.Repo.RepoID,
 		ExpectedPayloadRoot: expectedPayloadRoot,
 	})
-}
-
-func boolPtr(value bool) *bool {
-	return &value
 }

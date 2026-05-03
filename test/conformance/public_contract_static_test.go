@@ -312,48 +312,86 @@ func TestDocs_UserCommandsDocumentsRepoLifecycleManagement(t *testing.T) {
 	}
 }
 
-func TestDocs_UserCommandsDocumentsSeparatedControlPhase1(t *testing.T) {
+func TestDocs_UserCommandsDocumentsExternalControlRoot(t *testing.T) {
 	doc := "docs/user/commands.md"
 	body := readRepoFile(t, doc)
-	section := markdownSectionByHeading(t, doc, body, "## Separated-Control Phase 1")
+	section := markdownSectionByHeading(t, doc, body, "## External Control Root")
 	normalizedSection := strings.Join(strings.Fields(section), " ")
 	for _, required := range []string{
-		"jvs init --control-root C --payload-root P --workspace main",
+		"jvs init [folder] --control-root C --workspace main",
 		"jvs --control-root C --workspace main",
-		"Do not run `jvs init` inside the payload root.",
-		"`--repo` is not a separated-control selector.",
+		"workspace folder's `.jvs/`",
+		"Do not run a plain `jvs init` inside the workspace folder",
+		"`--repo` is not an external control root selector.",
 		"jvs --json --control-root C --workspace main doctor --strict",
 		"doctor --strict --json",
-		"jvs --control-root C --workspace main repo clone --target-control-root TC --target-payload-root TP --save-points main",
-		"main-only split target",
+		"jvs --control-root C --workspace main repo clone <target-folder> --target-control-root TC --save-points main",
+		"main-only target folder",
 		"`--save-points all` fails closed",
 		"repo move, repo rename, repo detach, workspace move, workspace rename, workspace delete, and workspace new are unsupported",
 	} {
-		requireReleaseReadinessText(t, "separated-control Phase 1 documentation", normalizedSection, required)
+		requireReleaseReadinessText(t, "external control root user documentation", normalizedSection, required)
+	}
+	for _, forbidden := range []string{
+		"Separated-Control Phase 1",
+		"separated-control",
+		"--payload-root",
+		"--target-payload-root",
+	} {
+		if strings.Contains(section, forbidden) {
+			t.Fatalf("%s external control root section still teaches old separated-control wording %q:\n%s", doc, forbidden, section)
+		}
+	}
+
+	cliDoc := "docs/02_CLI_SPEC.md"
+	cliBody := readRepoFile(t, cliDoc)
+	cliSection := markdownSectionByHeading(t, cliDoc, cliBody, "## External Control Root")
+	normalizedCLISection := strings.Join(strings.Fields(cliSection), " ")
+	for _, required := range []string{
+		"control data location choice",
+		"jvs init [folder] --control-root C --workspace main",
+		"jvs --control-root C --workspace main <command>",
+		"`--repo` is not an external control root selector",
+		"jvs --json --control-root C --workspace main doctor --strict",
+		"jvs --control-root C --workspace main repo clone <target-folder> --target-control-root TC --save-points main",
+		"`--save-points all` fails closed",
+	} {
+		requireReleaseReadinessText(t, "external control root CLI spec", normalizedCLISection, required)
+	}
+	for _, forbidden := range []string{
+		"Separated-Control Phase 1",
+		"separated-control",
+		"--payload-root",
+		"--target-payload-root",
+	} {
+		if strings.Contains(cliSection, forbidden) {
+			t.Fatalf("%s external control root section still teaches old separated-control wording %q:\n%s", cliDoc, forbidden, cliSection)
+		}
 	}
 }
 
-func TestDocs_OperatorDocsDocumentSeparatedControlPhase1(t *testing.T) {
+func TestDocs_OperatorDocsDocumentExternalControlRoot(t *testing.T) {
 	runbookDoc := "docs/13_OPERATION_RUNBOOK.md"
 	runbook := readRepoFile(t, runbookDoc)
-	runbookSection := markdownSectionByHeading(t, runbookDoc, runbook, "## Separated-Control Operator Entry")
+	runbookSection := markdownSectionByHeading(t, runbookDoc, runbook, "## External Control Root Operator Entry")
 	normalizedRunbook := strings.Join(strings.Fields(runbookSection), " ")
 	for _, required := range []string{
-		"jvs init --control-root C --payload-root P --workspace main --json",
+		"jvs init W --control-root C --workspace main --json",
 		"jvs --control-root C --workspace main status --json",
 		"jvs --control-root C --workspace main doctor --strict --json",
 		"must include `--control-root C --workspace main`",
-		"Do not run `jvs init` from the payload root",
-		"naked payload-root command",
+		"bare workspace folder cannot safely auto-discover an external control root",
+		"platform runner or wrapper must pass the selector",
+		"naked workspace-folder command",
 		"doctor --strict --json",
 		"`--repair-runtime`",
 		"fail closed",
 		"Pending restore/recovery state blocks mutation",
-		"external payload locator",
+		"external workspace locator",
 		"human discovery",
 		"not runtime authority",
 	} {
-		requireReleaseReadinessText(t, "separated-control operator runbook", normalizedRunbook, required)
+		requireReleaseReadinessText(t, "external control root operator runbook", normalizedRunbook, required)
 	}
 
 	migrationDoc := "docs/18_MIGRATION_AND_BACKUP.md"
@@ -361,31 +399,31 @@ func TestDocs_OperatorDocsDocumentSeparatedControlPhase1(t *testing.T) {
 	migrationSection := markdownSectionByHeading(t, migrationDoc, migration, "## Support Boundary")
 	normalizedMigration := strings.Join(strings.Fields(migrationSection), " ")
 	for _, required := range []string{
-		"Embedded-to-separated migration is not delivered",
+		"Moving control data into or out of a workspace is not delivered",
 		"Available now",
 		"Unavailable",
 		"offline whole-folder copy",
-		"jvs init --control-root C --payload-root P --workspace main --json",
-		"jvs --control-root C --workspace main repo clone --target-control-root TC --target-payload-root TP --save-points main --json",
-		"target control root and target payload root must be missing or empty",
+		"jvs init W --control-root C --workspace main --json",
+		"jvs --control-root C --workspace main repo clone <target-folder> --target-control-root TC --save-points main --json",
+		"target control root and target workspace folder must be missing or empty",
 		"main-only",
 		"`--save-points all` fails closed",
-		"backup must preserve control root and payload root as one matched set",
-		"restore to the same repo mode",
+		"workspace folder and control root as one matched set",
+		"Restore to the same control data location",
 	} {
-		requireReleaseReadinessText(t, "separated-control migration boundary", normalizedMigration, required)
+		requireReleaseReadinessText(t, "external control root migration boundary", normalizedMigration, required)
 	}
 }
 
-func TestDocs_ConformancePlanDocumentsSeparatedControlCoverage(t *testing.T) {
+func TestDocs_ConformancePlanDocumentsExternalControlRootCoverage(t *testing.T) {
 	doc := "docs/11_CONFORMANCE_TEST_PLAN.md"
 	body := readRepoFile(t, doc)
-	section := markdownSectionByHeading(t, doc, body, "### Separated-Control Phase 1")
+	section := markdownSectionByHeading(t, doc, body, "### External Control Root Coverage")
 	normalizedSection := strings.Join(strings.Fields(section), " ")
 	for _, required := range []string{
-		"explicit selector",
+		"Explicit external control root selector",
 		"`--control-root C --workspace main`",
-		"payload root fail-closed",
+		"workspace-folder control-marker fail-closed",
 		"E_PAYLOAD_LOCATOR_PRESENT",
 		"doctor strict-json only",
 		"doctor --strict --json",
@@ -394,10 +432,94 @@ func TestDocs_ConformancePlanDocumentsSeparatedControlCoverage(t *testing.T) {
 		"clone main-only",
 		"`--save-points all` fail closed",
 		"E_IMPORTED_HISTORY_PROTECTION_MISSING",
-		"lifecycle unsupported external contract",
+		"Lifecycle currently fail-closed external contract",
 		"E_SEPARATED_LIFECYCLE_UNSUPPORTED",
 	} {
-		requireReleaseReadinessText(t, "separated-control conformance plan", normalizedSection, required)
+		requireReleaseReadinessText(t, "external control root conformance plan", normalizedSection, required)
+	}
+}
+
+func TestDocs_ExternalControlRootProductHandoffUsesControlDataLocationModel(t *testing.T) {
+	doc := "docs/26_EXTERNAL_CONTROL_METADATA_PRODUCT_PLAN.md"
+	body := readRepoFile(t, doc)
+	normalizedBody := strings.Join(strings.Fields(body), " ")
+	for _, required := range []string{
+		"# External Control Root Product Handoff",
+		"control data location",
+		"同一个 workspace",
+		"这不是两种产品",
+		"默认：JVS control data 位于 workspace folder 内的 `.jvs/`",
+		"高级/平台：调用方显式指定 external control root",
+		"普通命令 public JSON",
+		"`data.folder`",
+		"`data.workspace`",
+		"`data.control_root`",
+		"`data.checks[]`",
+		"`workspace_control_marker`",
+		"implementation detail",
+		"jvs init [folder] --control-root C --workspace main",
+		"repo clone <target-folder> --target-control-root TC --save-points main",
+		"moving control data into/out of workspace",
+		"external lifecycle parity",
+		"safe locator/discovery",
+		"library API",
+		"real platform gates",
+		"all save-points protection",
+	} {
+		requireReleaseReadinessText(t, "external control root product handoff", normalizedBody, required)
+	}
+	for _, forbidden := range []string{
+		"# Separated Control Root Repo Product Plan",
+		"## Separated-Control Phase 1",
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("%s still uses old separated-control product-model heading %q", doc, forbidden)
+		}
+	}
+
+	jsonSection := markdownSectionByHeading(t, doc, body, "## JSON 输出合同")
+	normalizedJSONSection := strings.Join(strings.Fields(jsonSection), " ")
+	for _, required := range []string{
+		"external `repo clone --json` 是结果型 JSON 例外",
+		"source selector 不作为 target `data.folder` 输出",
+		"`data.target_folder`",
+		"`data.target_control_root`",
+	} {
+		requireReleaseReadinessText(t, "external control root JSON output contract", normalizedJSONSection, required)
+	}
+	for _, forbidden := range []string{
+		"`workspace_name`",
+		"`payload_root`",
+		"`repo_mode`",
+		"`separated_control`",
+		"`boundary_validated`",
+		"`locator_authoritative`",
+		"`doctor_strict`",
+		"`workspace_locator`",
+		"`payload_locator`",
+	} {
+		if strings.Contains(jsonSection, forbidden) {
+			t.Fatalf("%s JSON output contract still exposes old public JSON field/check %q:\n%s", doc, forbidden, jsonSection)
+		}
+	}
+
+	cloneSection := markdownSectionByHeading(t, doc, body, "## Repo Clone 和 Template Source Workflow 合同")
+	normalizedCloneSection := strings.Join(strings.Fields(cloneSection), " ")
+	for _, required := range []string{
+		"result JSON",
+		"`data.target_folder`",
+		"`data.target_control_root`",
+	} {
+		requireReleaseReadinessText(t, "external repo clone result JSON contract", normalizedCloneSection, required)
+	}
+	for _, forbidden := range []string{
+		"`data.folder`",
+		"`data.workspace`",
+		"`data.control_root`",
+	} {
+		if strings.Contains(cloneSection, forbidden) {
+			t.Fatalf("%s repo clone contract uses ordinary target JSON field %q instead of target_* result fields:\n%s", doc, forbidden, cloneSection)
+		}
 	}
 }
 
@@ -6267,12 +6389,14 @@ func assertTestFileUsesStableCommands(t *testing.T, path string) {
 	}
 
 	hiddenCommandReplacements := map[string]string{
-		"checkpoint": "save or history",
-		"fork":       "workspace new",
-		"gc":         "cleanup preview/run",
-		"verify":     "doctor --strict",
-		"snapshot":   "save point",
-		"worktree":   "workspace",
+		"checkpoint":            "save or history",
+		"fork":                  "workspace new",
+		"gc":                    "cleanup preview/run",
+		"verify":                "doctor --strict",
+		"snapshot":              "save point",
+		"worktree":              "workspace",
+		"--payload-root":        "jvs init <folder> --control-root C --workspace main",
+		"--target-payload-root": "repo clone <target-folder> --target-control-root TC --save-points main",
 	}
 	ast.Inspect(file, func(node ast.Node) bool {
 		call, ok := node.(*ast.CallExpr)

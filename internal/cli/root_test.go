@@ -201,12 +201,17 @@ func TestWorkspaceCommand_HelpListsPublicManagementSubcommands(t *testing.T) {
 	assert.NotContains(t, stdout, "checkpoint")
 }
 
-func TestRepoCloneHelpDocumentsSeparatedSavePointMode(t *testing.T) {
+func TestRepoCloneHelpDocumentsExternalControlTargetWithoutPayloadAlias(t *testing.T) {
 	stdout, err := executeCommand(createTestRootCmd(), "repo", "clone", "--help")
 	require.NoError(t, err)
 
-	assert.Contains(t, stdout, "separated-control split targets support main only")
+	assert.Contains(t, stdout, "control data is outside the target folder")
+	assert.Contains(t, stdout, "default all for ordinary clone")
+	assert.Contains(t, stdout, "external-control clone defaults to main")
 	assert.Contains(t, stdout, "--save-points all fails closed")
+	assert.Contains(t, stdout, "--target-control-root")
+	assert.NotContains(t, stdout, "--target-payload-root")
+	assert.NotContains(t, stdout, "separated-control")
 }
 
 func TestWorkspaceCommand_RenameIsNameOnlyAndUpdatesExternalLocator(t *testing.T) {
@@ -749,7 +754,7 @@ func createTestRootCmd() *cobra.Command {
 	cmd.PersistentFlags().BoolVar(&noProgress, "no-progress", false, "disable progress bars")
 	cmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable colored output (also respects NO_COLOR env var)")
 	cmd.PersistentFlags().StringVar(&targetRepoPath, "repo", "", "target repository root or path inside a repository")
-	cmd.PersistentFlags().StringVar(&targetControlRoot, "control-root", "", "explicit separated-control root")
+	cmd.PersistentFlags().StringVar(&targetControlRoot, "control-root", "", "external control data root")
 	cmd.PersistentFlags().StringVar(&targetWorkspaceName, "workspace", "", "target workspace name")
 
 	cmd.AddCommand(initCmd)

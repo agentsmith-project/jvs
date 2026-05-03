@@ -32,7 +32,6 @@ func TestRepoCloneCommandClonesCurrentRepoToExplicitMissingTarget(t *testing.T) 
 	assert.Contains(t, stdout, "Source workspaces not created: none")
 	assert.Contains(t, stdout, "Save point storage: Copy method:")
 	assert.Contains(t, stdout, "Main workspace: Copy method:")
-	assert.Contains(t, stdout, "Doctor strict: passed")
 
 	sourceRepo, err := repo.Discover(repoRoot)
 	require.NoError(t, err)
@@ -106,7 +105,7 @@ func TestRepoCloneJSONIncludesTwoRepoCloneTransfers(t *testing.T) {
 	assertRepoCloneTransferMap(t, transfers[1], "repo-clone-main-workspace", "main_workspace_materialization", "source_main_current_state", "target_main_workspace", "final", "execution")
 }
 
-func TestRepoCloneSeparatedSourceToSplitTargetReportsAuthoritativeJSON(t *testing.T) {
+func TestRepoCloneExternalControlSourceToExternalControlTargetReportsFolderJSON(t *testing.T) {
 	base := setupSeparatedControlCLICWD(t)
 	sourceControl := filepath.Join(base, "source-control")
 	sourcePayload := filepath.Join(base, "source-payload")
@@ -132,8 +131,8 @@ func TestRepoCloneSeparatedSourceToSplitTargetReportsAuthoritativeJSON(t *testin
 		"--control-root", sourceControl,
 		"--workspace", "main",
 		"repo", "clone",
+		targetPayload,
 		"--target-control-root", targetControl,
-		"--target-payload-root", targetPayload,
 		"--save-points", "main",
 	)
 	require.NoError(t, err, stdout)
@@ -144,12 +143,12 @@ func TestRepoCloneSeparatedSourceToSplitTargetReportsAuthoritativeJSON(t *testin
 	assert.Equal(t, targetControl, *env.RepoRoot)
 	require.NotNil(t, env.Workspace)
 	assert.Equal(t, "main", *env.Workspace)
-	assertSeparatedControlAuthoritativeData(t, data, targetControl, targetPayload, "main")
-	assert.Equal(t, "passed", data["doctor_strict"])
+	assertNoExternalControlImplementationFields(t, data)
 	assert.Equal(t, sourceControl, data["source_repo_root"])
-	assert.Equal(t, targetControl, data["target_repo_root"])
+	assert.NotContains(t, data, "target_repo_root")
+	assert.Equal(t, targetPayload, data["target_folder"])
 	assert.Equal(t, targetControl, data["target_control_root"])
-	assert.Equal(t, targetPayload, data["target_payload_root"])
+	assert.NotContains(t, data, "target_payload_root")
 	assert.Equal(t, "main", data["save_points_mode"])
 	assert.Equal(t, sourceID, data["newest_save_point"])
 	assert.Equal(t, []any{"main"}, data["workspaces_created"])
@@ -170,7 +169,7 @@ func TestRepoCloneSeparatedSourceToSplitTargetReportsAuthoritativeJSON(t *testin
 	assert.FileExists(t, filepath.Join(targetControl, ".jvs", "repo_id"))
 }
 
-func TestRepoCloneSeparatedSourceRejectsPositionalTarget(t *testing.T) {
+func TestRepoCloneExternalControlSourceRequiresTargetControlRoot(t *testing.T) {
 	base := setupSeparatedControlCLICWD(t)
 	sourceControl := filepath.Join(base, "source-control")
 	sourcePayload := filepath.Join(base, "source-payload")
@@ -204,7 +203,7 @@ func TestRepoCloneSeparatedSourceRejectsPositionalTarget(t *testing.T) {
 	require.NotNil(t, env.Error)
 	assert.Equal(t, errclass.ErrExplicitTargetRequired.Code, env.Error.Code)
 	assert.Contains(t, env.Error.Message, "--target-control-root")
-	assert.Contains(t, env.Error.Message, "--target-payload-root")
+	assert.NotContains(t, env.Error.Message, "--target-payload-root")
 	assert.JSONEq(t, `null`, string(env.Data))
 	assert.NoDirExists(t, target)
 }
@@ -241,7 +240,8 @@ func TestRepoCloneRepoFlagSeparatedSourceRejectsPositionalTarget(t *testing.T) {
 	assert.False(t, env.OK)
 	require.NotNil(t, env.Error)
 	assert.Equal(t, errclass.ErrExplicitTargetRequired.Code, env.Error.Code)
-	assert.Contains(t, env.Error.Message, "--repo")
+	assert.Contains(t, env.Error.Message, "control data is outside the folder")
+	assert.NotContains(t, env.Error.Message, "separated-control")
 	assert.Contains(t, env.Error.Hint, "--control-root "+sourceControl)
 	assert.Contains(t, env.Error.Hint, "--workspace main")
 	assert.Contains(t, env.Error.Hint, "repo clone")
@@ -264,10 +264,11 @@ func TestRepoCloneSeparatedErrorsUseStableCodes(t *testing.T) {
 	require.NoError(t, err, saveOut)
 
 	for _, tc := range []struct {
-		name  string
-		setup func(base string) (controlRoot, payloadRoot string)
-		mode  string
-		code  string
+		name        string
+		setup       func(base string) (controlRoot, payloadRoot string)
+		mode        string
+		code        string
+		wantMessage string
 	}{
 		{
 			name: "occupied target",
@@ -278,8 +279,9 @@ func TestRepoCloneSeparatedErrorsUseStableCodes(t *testing.T) {
 				require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "user.txt"), []byte("keep"), 0644))
 				return controlRoot, payloadRoot
 			},
-			mode: "main",
-			code: errclass.ErrTargetRootOccupied.Code,
+			mode:        "main",
+			code:        errclass.ErrTargetRootOccupied.Code,
+			wantMessage: "target folder",
 		},
 		{
 			name: "target same path",
@@ -287,8 +289,19 @@ func TestRepoCloneSeparatedErrorsUseStableCodes(t *testing.T) {
 				root := filepath.Join(base, "same-target")
 				return root, root
 			},
-			mode: "main",
-			code: errclass.ErrControlPayloadOverlap.Code,
+			mode:        "main",
+			code:        errclass.ErrControlPayloadOverlap.Code,
+			wantMessage: "workspace folder",
+		},
+		{
+			name: "target folder inside control root",
+			setup: func(base string) (string, string) {
+				controlRoot := filepath.Join(base, "target-control")
+				return controlRoot, filepath.Join(controlRoot, "target-folder")
+			},
+			mode:        "main",
+			code:        errclass.ErrPayloadInsideControl.Code,
+			wantMessage: "target folder",
 		},
 		{
 			name: "all protection gate",
@@ -306,8 +319,8 @@ func TestRepoCloneSeparatedErrorsUseStableCodes(t *testing.T) {
 				"--control-root", sourceControl,
 				"--workspace", "main",
 				"repo", "clone",
+				payloadRoot,
 				"--target-control-root", controlRoot,
-				"--target-payload-root", payloadRoot,
 				"--save-points", tc.mode,
 			)
 			require.Equal(t, 1, exitCode, "clone unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
@@ -317,6 +330,10 @@ func TestRepoCloneSeparatedErrorsUseStableCodes(t *testing.T) {
 			require.NotNil(t, env.Error)
 			assert.Equal(t, tc.code, env.Error.Code)
 			assert.JSONEq(t, `null`, string(env.Data))
+			if tc.wantMessage != "" {
+				assert.NotContains(t, env.Error.Message, "payload root")
+				assert.Contains(t, env.Error.Message, tc.wantMessage)
+			}
 			if tc.code == errclass.ErrImportedHistoryProtectionMissing.Code {
 				assert.Contains(t, env.Error.Hint, "--save-points main")
 			}

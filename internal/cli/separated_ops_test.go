@@ -547,7 +547,9 @@ func TestSeparatedControlRestoreRunRejectsRegistryDriftAfterPreviewBeforeMutatio
 		"restore", "--run", planID,
 	)
 	env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, "E_PATH_BOUNDARY_ESCAPE")
-	assert.Contains(t, env.Error.Message, "payload root")
+	assert.NotContains(t, env.Error.Message, "payload root")
+	assert.Contains(t, env.Error.Message, "workspace folder")
+	assert.Contains(t, env.Error.Message, "control data")
 	assert.Equal(t, "v2\n", separatedOpsReadFile(t, filepath.Join(payloadRoot, "app.txt")))
 	assert.NoFileExists(t, filepath.Join(driftPayloadRoot, "app.txt"))
 	assertSeparatedControlSentinelsIntact(t, controlRoot)
@@ -612,7 +614,9 @@ func TestSeparatedControlRestorePreviewRejectsRegistryDriftBeforePlanWrite(t *te
 
 			require.Error(t, err, "restore preview unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
 			env := requireSeparatedControlCLIJSONError(t, stdout, stderr, 1, errclass.ErrPathBoundaryEscape.Code)
-			assert.Contains(t, env.Error.Message, "payload root")
+			assert.NotContains(t, env.Error.Message, "payload root")
+			assert.Contains(t, env.Error.Message, "workspace folder")
+			assert.Contains(t, env.Error.Message, "control data")
 			assert.True(t, drifted, "test planner should trigger registry drift")
 			assert.Equal(t, plansBefore, separatedOpsReadDirNames(t, filepath.Join(controlRoot, ".jvs", "restore-plans")))
 			assert.Equal(t, "v2\n", separatedOpsReadFile(t, filepath.Join(payloadRoot, "app.txt")))
@@ -661,8 +665,7 @@ func (fn separatedOpsTransferPlannerFunc) PlanTransfer(req engine.TransferPlanRe
 func assertSeparatedControlOpsData(t *testing.T, data map[string]any, controlRoot, payloadRoot, workspace string) {
 	t.Helper()
 
-	assertSeparatedControlAuthoritativeData(t, data, controlRoot, payloadRoot, workspace)
-	assert.Equal(t, "not_run", data["doctor_strict"])
+	assertExternalControlDataShape(t, data, controlRoot, payloadRoot, workspace)
 }
 
 func seedSeparatedControlMetadataSentinels(t *testing.T, controlRoot string) {

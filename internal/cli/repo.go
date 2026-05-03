@@ -42,7 +42,7 @@ var repoCloneCmd = &cobra.Command{
 		}
 		separatedSource := ctx.Separated != nil || ctx.Repo.Mode == jvsrepo.RepoModeSeparatedControl
 		if repoCloneSplitTargetRequested() && ctx.Separated == nil {
-			return errclass.ErrUsage.WithMessage("--target-control-root and --target-payload-root require an explicit separated source selected with --control-root and --workspace")
+			return errclass.ErrUsage.WithMessage("--target-control-root requires an explicit source selected with --control-root and --workspace")
 		}
 		if separatedSource && !repoCloneSplitTargetRequested() {
 			return separatedCloneExplicitTargetRequiredError()
@@ -67,7 +67,11 @@ var repoCloneCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		recordResolvedTarget(result.TargetRepoRoot, "main")
+		targetRepoRoot := result.TargetRepoRoot
+		if result.TargetControlRoot != "" {
+			targetRepoRoot = result.TargetControlRoot
+		}
+		recordResolvedTarget(targetRepoRoot, "main")
 		if jsonOutput {
 			return outputJSON(result)
 		}
@@ -237,13 +241,21 @@ func resolveRepoCloneSource() (*cliDiscoveryContext, error) {
 
 func validateRepoCloneArgs(cmd *cobra.Command, args []string) error {
 	if repoCloneSplitTargetRequested() {
-		if len(args) != 0 {
-			return errclass.ErrUsage.WithMessage("repo clone with --target-control-root and --target-payload-root does not accept a target folder")
+		if len(args) > 1 {
+			return errclass.ErrUsage.WithMessage("repo clone accepts exactly one target folder")
 		}
-		if repoCloneTargetControlRoot == "" || repoCloneTargetPayloadRoot == "" {
-			return errclass.ErrUsage.WithMessage("--target-control-root and --target-payload-root must be provided together")
+		if strings.TrimSpace(repoCloneTargetControlRoot) == "" {
+			return errclass.ErrUsage.WithMessage("--target-payload-root requires --target-control-root")
 		}
-		if repoclone.IsRemoteLikeInput(repoCloneTargetControlRoot) || repoclone.IsRemoteLikeInput(repoCloneTargetPayloadRoot) {
+		if len(args) == 1 && strings.TrimSpace(repoCloneTargetPayloadRoot) != "" {
+			return errclass.ErrUsage.WithMessage("repo clone target folder cannot be combined with --target-payload-root")
+		}
+		if len(args) == 0 && strings.TrimSpace(repoCloneTargetPayloadRoot) == "" {
+			return errclass.ErrUsage.WithMessage("repo clone with --target-control-root requires a target folder")
+		}
+		if repoclone.IsRemoteLikeInput(repoCloneTargetControlRoot) ||
+			repoclone.IsRemoteLikeInput(repoCloneTargetPayloadRoot) ||
+			(len(args) == 1 && repoclone.IsRemoteLikeInput(args[0])) {
 			return repoCloneRemoteInputError()
 		}
 		return nil
@@ -266,7 +278,7 @@ func repoCloneSplitTargetRequested() bool {
 }
 
 func separatedCloneExplicitTargetRequiredError() error {
-	return errclass.ErrExplicitTargetRequired.WithMessage("separated source repo clone requires --target-control-root and --target-payload-root")
+	return errclass.ErrExplicitTargetRequired.WithMessage("control data is outside the folder; repo clone requires --target-control-root for the target")
 }
 
 func repoCloneRemoteInputError() error {
@@ -313,8 +325,8 @@ func rejectSeparatedLifecycleRunTarget(command string) error {
 
 func separatedLifecycleUnsupportedError(command string) error {
 	return errclass.ErrSeparatedLifecycleUnsupported.
-		WithMessagef("%s is not supported for separated-control repositories yet. No files changed.", command).
-		WithHint("Separated repo and workspace lifecycle commands are disabled until control/payload lifecycle semantics are redesigned.")
+		WithMessagef("%s is not supported when control data is outside the folder yet. No files changed.", command).
+		WithHint("Repo and workspace lifecycle commands are disabled for external control roots until control data and folder lifecycle semantics are redesigned.")
 }
 
 func printRepoCloneResult(result *repoclone.Result) {
@@ -324,21 +336,28 @@ func printRepoCloneResult(result *repoclone.Result) {
 	}
 	fmt.Println("Cloned JVS project")
 	fmt.Printf("Source: %s\n", result.SourceRepoRoot)
-	fmt.Printf("Target: %s\n", result.TargetRepoRoot)
+	if result.TargetControlRoot != "" {
+		fmt.Printf("Target folder: %s\n", result.TargetFolder)
+		fmt.Printf("Target control data: %s\n", result.TargetControlRoot)
+	} else {
+		fmt.Printf("Target: %s\n", result.TargetRepoRoot)
+	}
 	fmt.Printf("Save points copied: %s (%d)\n", repoCloneModeLabel(result.SavePointsMode), result.SavePointsCopiedCount)
 	fmt.Println("Workspaces created: main only")
 	fmt.Printf("Source workspaces not created: %s\n", repoCloneSkippedWorkspaces(result.SourceWorkspacesNotCreated))
 	printRepoCloneTransferSummary("Save point storage", repoCloneTransferByID(result.Transfers, "repo-clone-save-points"), false)
 	printRepoCloneTransferSummary("Main workspace", repoCloneTransferByID(result.Transfers, "repo-clone-main-workspace"), false)
-	if result.DoctorStrict != "" {
-		fmt.Printf("Doctor strict: %s\n", result.DoctorStrict)
-	}
 }
 
 func printRepoCloneDryRun(result *repoclone.Result) {
 	fmt.Println("Repo clone dry run")
 	fmt.Printf("Source: %s\n", result.SourceRepoRoot)
-	fmt.Printf("Target: %s\n", result.TargetRepoRoot)
+	if result.TargetControlRoot != "" {
+		fmt.Printf("Target folder: %s\n", result.TargetFolder)
+		fmt.Printf("Target control data: %s\n", result.TargetControlRoot)
+	} else {
+		fmt.Printf("Target: %s\n", result.TargetRepoRoot)
+	}
 	fmt.Printf("Save points to copy: %s (%d)\n", repoCloneModeLabel(result.SavePointsMode), result.SavePointsCopiedCount)
 	fmt.Println("Workspaces that would be created: main only")
 	fmt.Printf("Source workspaces that would not be created: %s\n", repoCloneSkippedWorkspaces(result.SourceWorkspacesNotCreated))
@@ -431,10 +450,11 @@ func printRepoDetachRunResult(result publicRepoDetachRunResult) {
 }
 
 func init() {
-	repoCloneCmd.Flags().StringVar(&repoCloneSavePoints, "save-points", string(repoclone.SavePointsModeAll), "save points to copy: all or main; separated-control split targets support main only; --save-points all fails closed")
+	repoCloneCmd.Flags().StringVar(&repoCloneSavePoints, "save-points", string(repoclone.SavePointsModeAll), "save points to copy: all or main; default all for ordinary clone; when control data is outside the target folder, external-control clone defaults to main; --save-points all fails closed for external control roots")
 	repoCloneCmd.Flags().BoolVar(&repoCloneDryRun, "dry-run", false, "plan the clone without creating the target")
-	repoCloneCmd.Flags().StringVar(&repoCloneTargetControlRoot, "target-control-root", "", "target separated-control root")
-	repoCloneCmd.Flags().StringVar(&repoCloneTargetPayloadRoot, "target-payload-root", "", "target separated payload root")
+	repoCloneCmd.Flags().StringVar(&repoCloneTargetControlRoot, "target-control-root", "", "target external control data root")
+	repoCloneCmd.Flags().StringVar(&repoCloneTargetPayloadRoot, "target-payload-root", "", "target folder for external-control clone")
+	repoCloneCmd.Flags().Lookup("target-payload-root").Hidden = true
 	repoMoveCmd.Flags().StringVar(&repoMoveRunID, "run", "", "execute a repo move preview plan")
 	repoRenameCmd.Flags().StringVar(&repoRenameRunID, "run", "", "execute a repo rename preview plan")
 	repoDetachCmd.Flags().StringVar(&repoDetachRunID, "run", "", "execute a repo detach preview plan")

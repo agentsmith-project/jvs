@@ -102,31 +102,32 @@ UX.
   while source paths are both offline and still mounted, including external
   workspace siblings that are safely rebound, missing, or content-mismatched.
 
-### Separated-Control Phase 1
+### External Control Root Coverage
 
-- Explicit selector coverage uses `--control-root C --workspace main` from a
-  clean CWD and from another repo CWD. Ambient discovery, `--repo`, and
-  payload-root CWD must not change the target.
-- Payload root fail-closed coverage creates a root-level `.jvs` file,
-  directory, and symlink under the payload root. Each case returns
-  `E_PAYLOAD_LOCATOR_PRESENT`; an external payload locator is human discovery
-  only, not runtime authority.
-- Doctor strict-json only coverage uses `doctor --strict --json` for separated
-  control. `--repair-runtime`, `--repair-list`, and other repair variants fail
-  closed for this mode.
+- Explicit external control root selector coverage uses
+  `--control-root C --workspace main` from a clean CWD and from another repo
+  CWD. Ambient discovery, `--repo`, and workspace-folder CWD must not change
+  the target.
+- Workspace-folder control-marker fail-closed coverage creates a root-level
+  `.jvs` file, directory, and symlink under the workspace folder. Each case
+  returns `E_PAYLOAD_LOCATOR_PRESENT`; an external workspace locator is human
+  discovery only, not runtime authority.
+- Doctor strict-json only coverage uses `doctor --strict --json` for external
+  control roots. `--repair-runtime`, `--repair-list`, and other repair variants
+  fail closed for this control data location.
 - Restore/recovery blocker coverage leaves pending restore/recovery state in
   the selected workspace, then proves new mutation fails with
   `E_RECOVERY_BLOCKING` until recovery status, resume, or rollback resolves it.
 - Clone main-only coverage uses
-  `jvs --control-root C --workspace main repo clone --target-control-root TC --target-payload-root TP --save-points main --json`.
-  The target control root and target payload root must be missing or empty, the
-  target repo gets a new identity, and only the `main` workspace is created.
+  `jvs --control-root C --workspace main repo clone <target-folder> --target-control-root TC --save-points main --json`.
+  The target control root and target workspace folder must be missing or empty,
+  the target repo gets a new identity, and only the `main` workspace is created.
 - `--save-points all` fail closed coverage returns
   `E_IMPORTED_HISTORY_PROTECTION_MISSING` until durable imported-history
-  protection is available for separated split-target clone.
-- Lifecycle unsupported external contract coverage runs repo/workspace
-  lifecycle commands against a separated-control repo and requires
-  `E_SEPARATED_LIFECYCLE_UNSUPPORTED` with no file changes.
+  protection is available for external control root clone.
+- Lifecycle currently fail-closed external contract coverage runs
+  repo/workspace lifecycle commands against an external control root and
+  requires `E_SEPARATED_LIFECYCLE_UNSUPPORTED` with no file changes.
 
 ### Cleanup Layering
 
@@ -169,9 +170,9 @@ UX.
   including backup-unavailable cases that must not recommend stale resume
   commands.
 - Workspace new tests cover `started_from_save_point`.
-- Boundary tests cover managed payload purity: JVS control data and runtime
+- Boundary tests cover managed workspace-file purity: JVS control data and runtime
   state for workspace targeting, active operations, restore plans, recovery
-  plans, and cleanup plans are not user payload.
+  plans, and cleanup plans are not user workspace files.
 - Path restore tests cover unrelated cache-like user files staying untouched
   when another managed path is restored.
 - View tests cover read-only behavior for files and directories, including
@@ -181,10 +182,11 @@ UX.
 - Migration tests cover offline whole-folder copy to a fresh destination,
   destination `jvs doctor --strict --repair-runtime`, a fresh cleanup preview,
   and the restore drill.
-- Separated-control tests cover explicit selector behavior, payload root
-  fail-closed behavior, doctor strict-json only behavior, restore/recovery
-  blockers, clone main-only split targets, `--save-points all` fail-closed
-  behavior, and lifecycle unsupported behavior.
+- External control root tests cover explicit selector behavior,
+  workspace-folder control-marker fail-closed behavior, doctor strict-json only
+  behavior, restore/recovery blockers, clone main-only targets,
+  `--save-points all` fail-closed behavior, and lifecycle currently
+  fail-closed behavior.
 - Performance and benchmark docs scope engine claims and label internal
   package names as implementation facts only.
 - User story tests must match the current coverage stated in

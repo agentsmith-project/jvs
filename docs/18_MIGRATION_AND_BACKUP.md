@@ -1,51 +1,58 @@
 # Migration & Backup
 
-JVS does not provide remote replication or hot migration. Use an offline
-whole-folder copy of the managed folder/repository, then let the destination
-rebuild runtime state before any writes resume.
+JVS does not provide remote replication or hot migration. For the default
+control data location, use an offline whole-folder copy of the managed
+folder/repository, then let the destination rebuild runtime state before any
+writes resume.
 
 ## Support Boundary
 
-Embedded-to-separated migration is not delivered. This document does not define
-an in-place split of an embedded-control folder into a separated control root
-and payload root.
+Moving control data into or out of a workspace is not delivered. This document
+does not define an in-place split of a default `.jvs/` workspace into an
+external control root, and it does not define a merge from an external control
+root back into the workspace folder.
 
 Available now:
 
-- Embedded/current repo backup and migration use the offline whole-folder copy
-  below. The restore to the same repo mode keeps the managed folder/repository
-  whole, then rebuilds destination runtime state before writers resume.
-- Separated-control repo creation uses explicit roots:
+- Default control data backup and migration use the offline whole-folder copy
+  below. The restore keeps the managed folder/repository whole, then rebuilds
+  destination runtime state before writers resume.
+- External control root creation uses an explicit workspace folder and control
+  root:
   ```bash
-  jvs init --control-root C --payload-root P --workspace main --json
+  jvs init W --control-root C --workspace main --json
   ```
-- Separated-control split-target clone uses explicit source and target roots:
+- External control root clone uses an explicit source selector, target
+  workspace folder, and target control root:
   ```bash
-  jvs --control-root C --workspace main repo clone --target-control-root TC --target-payload-root TP --save-points main --json
+  jvs --control-root C --workspace main repo clone <target-folder> --target-control-root TC --save-points main --json
   ```
-  The target control root and target payload root must be missing or empty.
-  The split target is main-only.
+  The target control root and target workspace folder must be missing or empty.
+  The target is main-only.
 
 Unavailable:
 
-- No embedded-to-separated migration command.
-- No hand-built split copy of embedded control data and user files into
-  separated roots.
+- No command that moves control data into or out of a workspace.
+- No hand-built split copy of default `.jvs/` control data and user files into
+  external roots.
+- No hand-built merge of an external control root back into a workspace folder.
 - No hot migration, overlay, merge, overwrite, or adoption of non-empty target
   roots.
-- No separated-control `doctor --repair-runtime` migration step; separated
+- No external control root `doctor --repair-runtime` migration step; external
   doctor repair variants fail closed.
-- `--save-points all` fails closed for separated split-target clone until
-  imported-history protection is available for that mode.
+- `--save-points all` fails closed for external control root clone until
+  imported-history protection is available for that control data location.
 
 Backup boundary:
 
-- An embedded/current backup copies the managed folder/repository as a whole.
-- A separated-control backup must preserve control root and payload root as one
-  matched set while writers are stopped. A backup that captures only one side is
-  not a portable JVS backup.
-- Backup restore is not a mode conversion. Restore to the same repo mode, then
-  run that mode's validation commands before writers resume.
+- A default workspace backup copies the managed folder/repository as a whole,
+  including the workspace folder and its `.jvs/` control data.
+- An external control root backup must preserve the workspace folder and
+  control root as one matched set while writers are stopped. A backup that
+  captures only one side is not a portable JVS backup.
+- Backup restore is not a control data location conversion. Restore to the same
+  control data location, then run that location's validation commands before
+  writers resume.
 
 ## Recommended Method
 
@@ -90,8 +97,8 @@ only: the destination must rebuild runtime state before use.
 
 ## Runtime-State Policy
 
-For embedded/current whole-folder copy, runtime state is non-portable and must
-not be migrated as authoritative state:
+For default whole-folder copy, runtime state is non-portable and must not be
+migrated as authoritative state:
 
 - in-flight write coordination
 - abandoned operation bookkeeping
@@ -116,8 +123,8 @@ does not match the recorded content source, `doctor --strict --repair-runtime`
 remains unhealthy and reports the workspace path binding until the destination
 sibling is present with matching content.
 
-For separated-control repos, do not use runtime repair as a migration bridge.
-Use the explicit separated-control doctor entry instead:
+For external control roots, do not use runtime repair as a migration bridge.
+Use the explicit external control root doctor entry instead:
 
 ```bash
 jvs --control-root C --workspace main doctor --strict --json
@@ -140,8 +147,8 @@ jvs --control-root C --workspace main doctor --strict --json
    The copy is an offline whole-folder copy. Do not hand-select JVS control
    paths, do not overlay a non-empty destination, and do not treat copied
    non-portable JVS runtime state as authoritative.
-3. For an embedded/current whole-folder destination, validate destination and
-   rebuild runtime state before any destination write:
+3. For a default whole-folder destination, validate destination and rebuild
+   runtime state before any destination write:
    ```bash
    cd /mnt/dst/myrepo
    jvs doctor --strict --repair-runtime
@@ -160,16 +167,16 @@ jvs --control-root C --workspace main doctor --strict --json
 
 ## Copy Boundary
 
-Copy the managed folder/repository as a whole. This includes user payload and
-JVS durable control data:
+Copy the managed folder/repository as a whole. This includes workspace files
+and JVS durable control data:
 
 - repository identity and format records
-- save point descriptors and payload storage
+- save point descriptors and workspace file storage
 - workspace metadata
 - audit records
 - durable cleanup evidence when present
 
-Payload state:
+Workspace state:
 
 - the adopted main folder contents
 - selected additional workspace folders
@@ -180,7 +187,7 @@ authoritative product state. Rebuild it on the destination with
 
 ## Backup Restore Drill
 
-For embedded/current backups:
+For default backups:
 
 1. Restore backup to a fresh volume.
 2. Run `jvs doctor --strict --repair-runtime`.
@@ -201,14 +208,14 @@ For embedded/current backups:
 8. Record the source save point, new workspace name, restore plan ID, and final
    status in the operations log.
 
-For separated-control backups, restore the matched control root and payload
-root set to the intended locations, then validate with:
+For external control root backups, restore the matched workspace folder and
+control root set to the intended locations, then validate with:
 
 ```bash
 jvs --control-root C --workspace main doctor --strict --json
 ```
 
-Do not use a separated backup restore as an embedded-to-separated migration.
+Do not use backup restore to move control data into or out of a workspace.
 
 ## Historical/Internal Terminology
 

@@ -70,18 +70,12 @@ type Hooks struct {
 type Result struct {
 	Operation                  string             `json:"operation"`
 	SourceRepoRoot             string             `json:"source_repo_root"`
-	TargetRepoRoot             string             `json:"target_repo_root"`
+	TargetRepoRoot             string             `json:"target_repo_root,omitempty"`
+	TargetFolder               string             `json:"target_folder,omitempty"`
 	TargetControlRoot          string             `json:"target_control_root,omitempty"`
-	TargetPayloadRoot          string             `json:"target_payload_root,omitempty"`
+	TargetPayloadRoot          string             `json:"-"`
 	SourceRepoID               string             `json:"source_repo_id"`
 	TargetRepoID               string             `json:"target_repo_id,omitempty"`
-	ControlRoot                string             `json:"control_root,omitempty"`
-	PayloadRoot                string             `json:"payload_root,omitempty"`
-	RepoMode                   string             `json:"repo_mode,omitempty"`
-	WorkspaceName              string             `json:"workspace_name,omitempty"`
-	SeparatedControl           *bool              `json:"separated_control,omitempty"`
-	BoundaryValidated          *bool              `json:"boundary_validated,omitempty"`
-	LocatorAuthoritative       *bool              `json:"locator_authoritative,omitempty"`
 	SavePointsMode             SavePointsMode     `json:"save_points_mode"`
 	SavePointsCopiedCount      int                `json:"save_points_copied_count"`
 	SavePointsCopied           []model.SnapshotID `json:"save_points_copied"`
@@ -89,7 +83,7 @@ type Result struct {
 	SourceWorkspacesNotCreated []string           `json:"source_workspaces_not_created"`
 	RuntimeStateCopied         bool               `json:"runtime_state_copied"`
 	CloneManifest              string             `json:"clone_manifest,omitempty"`
-	DoctorStrict               string             `json:"doctor_strict,omitempty"`
+	DoctorStrict               string             `json:"-"`
 	DryRun                     bool               `json:"dry_run,omitempty"`
 	Transfers                  []transfer.Record  `json:"transfers"`
 	NewestSavePoint            string             `json:"newest_save_point,omitempty"`
@@ -232,20 +226,29 @@ func normalizeCloneTarget(options Options) (target, controlRoot, payloadRoot str
 		return target, target, target, false, false, false, nil
 	}
 	if strings.TrimSpace(options.TargetPath) != "" {
-		return "", "", "", false, false, false, errclass.ErrUsage.WithMessage("repo clone with --target-control-root and --target-payload-root does not accept a target folder")
+		if strings.TrimSpace(options.TargetPayloadRoot) != "" {
+			return "", "", "", false, false, false, errclass.ErrUsage.WithMessage("repo clone target folder cannot be combined with --target-payload-root")
+		}
 	}
-	if strings.TrimSpace(options.TargetControlRoot) == "" || strings.TrimSpace(options.TargetPayloadRoot) == "" {
-		return "", "", "", false, false, false, errclass.ErrUsage.WithMessage("--target-control-root and --target-payload-root must be provided together")
+	if strings.TrimSpace(options.TargetControlRoot) == "" {
+		return "", "", "", false, false, false, errclass.ErrUsage.WithMessage("--target-payload-root requires --target-control-root")
 	}
-	roots, err := validateSeparatedCloneTargetRoots(options.TargetControlRoot, options.TargetPayloadRoot)
+	targetPayloadRoot := options.TargetPath
+	if strings.TrimSpace(targetPayloadRoot) == "" {
+		targetPayloadRoot = options.TargetPayloadRoot
+	}
+	if strings.TrimSpace(targetPayloadRoot) == "" {
+		return "", "", "", false, false, false, errclass.ErrUsage.WithMessage("repo clone with --target-control-root requires a target folder")
+	}
+	roots, err := validateSeparatedCloneTargetRoots(options.TargetControlRoot, targetPayloadRoot)
 	if err != nil {
 		return "", "", "", false, false, false, err
 	}
-	return roots.controlPath, roots.controlPath, roots.payloadPath, true, roots.controlExisted, roots.payloadExisted, nil
+	return roots.payloadPath, roots.controlPath, roots.payloadPath, true, roots.controlExisted, roots.payloadExisted, nil
 }
 
 func separatedCloneExplicitTargetRequiredError() error {
-	return errclass.ErrExplicitTargetRequired.WithMessage("separated source repo clone requires --target-control-root and --target-payload-root")
+	return errclass.ErrExplicitTargetRequired.WithMessage("control data is outside the folder; repo clone requires --target-control-root for the target")
 }
 
 func cloneTargetRootsForSourceBoundary(controlRoot, payloadRoot string, separated bool) []string {
@@ -315,7 +318,7 @@ func validateSeparatedCloneTargetRoots(controlRoot, payloadRoot string) (separat
 	}
 	payloadPath, err := normalizeTargetPath(payloadRoot)
 	if err != nil {
-		return separatedCloneTargetRoots{}, errclass.ErrUsage.WithMessagef("resolve target payload root: %v", err)
+		return separatedCloneTargetRoots{}, errclass.ErrUsage.WithMessagef("resolve target folder: %v", err)
 	}
 	controlPhysical, err := physicalPathForPossiblyMissingPath(controlPath)
 	if err != nil {
@@ -323,22 +326,22 @@ func validateSeparatedCloneTargetRoots(controlRoot, payloadRoot string) (separat
 	}
 	payloadPhysical, err := physicalPathForPossiblyMissingPath(payloadPath)
 	if err != nil {
-		return separatedCloneTargetRoots{}, errclass.ErrPathBoundaryEscape.WithMessagef("resolve target payload root: %v", err)
+		return separatedCloneTargetRoots{}, errclass.ErrPathBoundaryEscape.WithMessagef("resolve target folder: %v", err)
 	}
 	if controlPath == payloadPath || controlPhysical == payloadPhysical {
-		return separatedCloneTargetRoots{}, errclass.ErrControlPayloadOverlap.WithMessage("target control root and payload root must be distinct")
+		return separatedCloneTargetRoots{}, errclass.ErrControlPayloadOverlap.WithMessage("target control root and workspace folder must be distinct")
 	}
 	if pathInsideOrEqual(controlPath, payloadPath) || pathInsideOrEqual(controlPhysical, payloadPhysical) {
-		return separatedCloneTargetRoots{}, errclass.ErrPayloadInsideControl.WithMessage("target payload root must not be inside target control root")
+		return separatedCloneTargetRoots{}, errclass.ErrPayloadInsideControl.WithMessage("target folder must not be inside target control root")
 	}
 	if pathInsideOrEqual(payloadPath, controlPath) || pathInsideOrEqual(payloadPhysical, controlPhysical) {
-		return separatedCloneTargetRoots{}, errclass.ErrControlInsidePayload.WithMessage("target control root must not be inside target payload root")
+		return separatedCloneTargetRoots{}, errclass.ErrControlInsidePayload.WithMessage("target control root must not be inside target folder")
 	}
 	controlExisted, err := validateSeparatedCloneTargetEmptyOrMissing(controlPath, "target control root")
 	if err != nil {
 		return separatedCloneTargetRoots{}, err
 	}
-	payloadExisted, err := validateSeparatedCloneTargetEmptyOrMissing(payloadPath, "target payload root")
+	payloadExisted, err := validateSeparatedCloneTargetEmptyOrMissing(payloadPath, "target folder")
 	if err != nil {
 		return separatedCloneTargetRoots{}, err
 	}
@@ -917,14 +920,14 @@ func (p *preparedClone) executeSeparated() (*Result, error) {
 	if p.options.Hooks.AfterSeparatedPayloadPublish != nil {
 		if err := p.options.Hooks.AfterSeparatedPayloadPublish(p.targetPayloadRoot, p.targetPayloadRoot); err != nil {
 			if rollbackErr := rollbackSeparatedPublishedRoot(p.targetPayloadRoot, p.targetPayloadExisted, "payload"); rollbackErr != nil {
-				return nil, atomicPublishBlockedError(fmt.Errorf("after separated payload publish hook: %w; rollback target payload root: %v", err, rollbackErr))
+				return nil, atomicPublishBlockedError(fmt.Errorf("after separated payload publish hook: %w; rollback target folder: %v", err, rollbackErr))
 			}
 			return nil, atomicPublishBlockedError(fmt.Errorf("after separated payload publish hook: %w", err))
 		}
 	}
 	if err := publishSeparatedCloneRoot(stagingControl, p.targetControlRoot, p.targetControlExisted, "control"); err != nil {
 		if rollbackErr := rollbackSeparatedPublishedRoot(p.targetPayloadRoot, p.targetPayloadExisted, "payload"); rollbackErr != nil {
-			return nil, atomicPublishBlockedError(fmt.Errorf("%w; rollback target payload root: %v", err, rollbackErr))
+			return nil, atomicPublishBlockedError(fmt.Errorf("%w; rollback target folder: %v", err, rollbackErr))
 		}
 		return nil, atomicPublishBlockedError(err)
 	}
@@ -1132,10 +1135,17 @@ func saturatingAddInt64(left, right int64) int64 {
 }
 
 func (p *preparedClone) baseResult() *Result {
+	targetRepoRoot := p.target
+	targetFolder := ""
+	if p.separatedTarget {
+		targetRepoRoot = ""
+		targetFolder = p.targetPayloadRoot
+	}
 	result := &Result{
 		Operation:                  operationRepoClone,
 		SourceRepoRoot:             p.source.Root,
-		TargetRepoRoot:             p.target,
+		TargetRepoRoot:             targetRepoRoot,
+		TargetFolder:               targetFolder,
 		TargetControlRoot:          cloneSeparatedString(p.separatedTarget, p.targetControlRoot),
 		TargetPayloadRoot:          cloneSeparatedString(p.separatedTarget, p.targetPayloadRoot),
 		SourceRepoID:               p.source.RepoID,
@@ -1149,15 +1159,6 @@ func (p *preparedClone) baseResult() *Result {
 	}
 	if p.sourceMain != nil && p.sourceMain.LatestSnapshotID != "" {
 		result.NewestSavePoint = string(p.sourceMain.LatestSnapshotID)
-	}
-	if p.separatedTarget {
-		result.ControlRoot = p.targetControlRoot
-		result.PayloadRoot = p.targetPayloadRoot
-		result.RepoMode = repo.RepoModeSeparatedControl
-		result.WorkspaceName = "main"
-		result.SeparatedControl = boolPtr(true)
-		result.BoundaryValidated = boolPtr(true)
-		result.LocatorAuthoritative = boolPtr(false)
 	}
 	return result
 }
@@ -1505,10 +1506,6 @@ func appendUniqueStrings(base []string, values ...string) []string {
 		out = append(out, value)
 	}
 	return out
-}
-
-func boolPtr(value bool) *bool {
-	return &value
 }
 
 func remoteLikeInputError() error {

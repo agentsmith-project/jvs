@@ -281,13 +281,13 @@ func resolveRepoFlagTarget(path string) (*repo.Repo, error) {
 
 func separatedRepoFlagExplicitTargetRequiredError(controlRoot string) *errclass.JVSError {
 	return errclass.ErrExplicitTargetRequired.
-		WithMessage("--repo cannot select a separated-control repository in Phase 1").
+		WithMessage("control data is outside the folder; use --control-root <root> --workspace <name>").
 		WithHint(separatedSelectorHint(controlRoot, "main", activeCommandName))
 }
 
 func separatedAmbientExplicitTargetRequiredError(controlRoot string) *errclass.JVSError {
 	return errclass.ErrExplicitTargetRequired.
-		WithMessage("separated-control repositories require an explicit control root and workspace selector").
+		WithMessage("control data is outside the folder; use --control-root <root> --workspace <name>").
 		WithHint(separatedSelectorHint(controlRoot, "main", activeCommandName))
 }
 
@@ -299,19 +299,19 @@ func separatedControlRootRequiresWorkspaceError(controlRoot string) *errclass.JV
 
 func separatedDoctorStrictJSONRequiredError(controlRoot string) *errclass.JVSError {
 	return errclass.ErrExplicitTargetRequired.
-		WithMessage("separated-control doctor supports only doctor --strict --json in Phase 1").
+		WithMessage("doctor with an external control root supports only doctor --strict --json").
 		WithHint(separatedSelectorHint(controlRoot, "main", "doctor --strict --json"))
 }
 
 func separatedInitMainWorkspaceRequiredError(controlRoot, payloadRoot string) *errclass.JVSError {
 	return errclass.ErrWorkspaceMismatch.
-		WithMessage("separated-control init supports only --workspace main in Phase 1").
-		WithHint("Run jvs init --control-root " + cleanHintPath(controlRoot) + " --payload-root " + cleanHintPath(payloadRoot) + " --workspace main.")
+		WithMessage("init with an external control root supports only --workspace main").
+		WithHint("Run jvs init " + cleanHintPath(payloadRoot) + " --control-root " + cleanHintPath(controlRoot) + " --workspace main.")
 }
 
 func separatedRuntimeMainWorkspaceRequiredError(controlRoot string) *errclass.JVSError {
 	return errclass.ErrWorkspaceMismatch.
-		WithMessage("separated-control runtime supports only --workspace main in Phase 1").
+		WithMessage("commands with an external control root support only --workspace main").
 		WithHint(separatedSelectorHint(controlRoot, "main", activeCommandName))
 }
 

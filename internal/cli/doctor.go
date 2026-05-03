@@ -133,7 +133,7 @@ func runSeparatedStrictDoctorJSON() {
 	if err != nil {
 		exitWithCLIError(err)
 	}
-	recordResolvedTarget(result.ControlRoot, result.WorkspaceName)
+	recordResolvedTarget(result.ControlRoot, result.Workspace)
 	outputJSON(result)
 	if !result.Healthy {
 		os.Exit(1)

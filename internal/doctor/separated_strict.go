@@ -24,18 +24,15 @@ type StrictCheck struct {
 }
 
 type SeparatedStrictResult struct {
-	RepoID               string        `json:"repo_id,omitempty"`
-	WorkspaceName        string        `json:"workspace_name"`
-	ControlRoot          string        `json:"control_root"`
-	PayloadRoot          string        `json:"payload_root"`
-	RepoMode             string        `json:"repo_mode"`
-	SeparatedControl     bool          `json:"separated_control"`
-	BoundaryValidated    bool          `json:"boundary_validated"`
-	LocatorAuthoritative bool          `json:"locator_authoritative"`
-	DoctorStrict         string        `json:"doctor_strict"`
-	Healthy              bool          `json:"healthy"`
-	Findings             []Finding     `json:"findings"`
-	Checks               []StrictCheck `json:"checks"`
+	RepoID            string        `json:"repo_id,omitempty"`
+	Workspace         string        `json:"workspace"`
+	ControlRoot       string        `json:"control_root"`
+	Folder            string        `json:"folder"`
+	BoundaryValidated bool          `json:"-"`
+	DoctorStrict      string        `json:"-"`
+	Healthy           bool          `json:"healthy"`
+	Findings          []Finding     `json:"findings"`
+	Checks            []StrictCheck `json:"checks"`
 }
 
 type separatedDoctorContext struct {
@@ -59,14 +56,14 @@ func SetSeparatedStrictPermissionCheckerForTest(checker func(string) error) func
 }
 
 const (
-	separatedCheckRootOverlap      = "root_overlap"
-	separatedCheckPayloadLocator   = "payload_locator"
-	separatedCheckRepoIdentity     = "repo_identity"
-	separatedCheckWorkspaceBinding = "workspace_binding"
-	separatedCheckPathBoundary     = "path_boundary"
-	separatedCheckPermissions      = "permissions"
-	separatedCheckActiveOperation  = "active_operation"
-	separatedCheckRecoveryState    = "recovery_state"
+	separatedCheckRootOverlap            = "root_overlap"
+	separatedCheckWorkspaceControlMarker = "workspace_control_marker"
+	separatedCheckRepoIdentity           = "repo_identity"
+	separatedCheckWorkspaceBinding       = "workspace_binding"
+	separatedCheckPathBoundary           = "path_boundary"
+	separatedCheckPermissions            = "permissions"
+	separatedCheckActiveOperation        = "active_operation"
+	separatedCheckRecoveryState          = "recovery_state"
 )
 
 func CheckSeparatedStrict(req repo.SeparatedContextRequest) (*SeparatedStrictResult, error) {
@@ -76,22 +73,19 @@ func CheckSeparatedStrict(req repo.SeparatedContextRequest) (*SeparatedStrictRes
 	}
 
 	result := &SeparatedStrictResult{
-		RepoID:               ctx.Repo.RepoID,
-		WorkspaceName:        ctx.Workspace,
-		ControlRoot:          ctx.Repo.Root,
-		PayloadRoot:          ctx.PayloadRoot,
-		RepoMode:             ctx.Repo.Mode,
-		SeparatedControl:     ctx.Repo.Mode == repo.RepoModeSeparatedControl,
-		BoundaryValidated:    true,
-		LocatorAuthoritative: false,
-		DoctorStrict:         "passed",
-		Healthy:              true,
-		Findings:             []Finding{},
-		Checks:               separatedStrictPassedChecks(),
+		RepoID:            ctx.Repo.RepoID,
+		Workspace:         ctx.Workspace,
+		ControlRoot:       ctx.Repo.Root,
+		Folder:            ctx.PayloadRoot,
+		BoundaryValidated: true,
+		DoctorStrict:      "passed",
+		Healthy:           true,
+		Findings:          []Finding{},
+		Checks:            separatedStrictPassedChecks(),
 	}
 
 	checkSeparatedRootOverlap(result, ctx.Repo.Root, ctx.PayloadRoot)
-	checkSeparatedPayloadLocator(result, ctx.PayloadRoot)
+	checkSeparatedWorkspaceControlMarker(result, ctx.PayloadRoot)
 	checkSeparatedRepoIdentity(result, ctx.Repo)
 	checkSeparatedWorkspaceBinding(result, req.Workspace, ctx.Workspace, ctx.PayloadRoot)
 	checkSeparatedPathBoundary(result, ctx.Repo, ctx.Workspace, ctx.PayloadRoot)
@@ -127,7 +121,7 @@ func resolveSeparatedDoctorContext(req repo.SeparatedContextRequest) (*separated
 		return nil, openErr
 	}
 	if r.Mode != repo.RepoModeSeparatedControl {
-		return nil, errclass.ErrControlMalformed.WithMessagef("repo_mode is %q, want %q", r.Mode, repo.RepoModeSeparatedControl)
+		return nil, errclass.ErrControlMalformed.WithMessage("control root is not configured for external control data")
 	}
 	cfg, loadErr := repo.LoadWorktreeConfig(r.Root, req.Workspace)
 	if loadErr != nil {
@@ -136,9 +130,9 @@ func resolveSeparatedDoctorContext(req repo.SeparatedContextRequest) (*separated
 	if cfg.Name != req.Workspace {
 		return nil, errclass.ErrWorkspaceMismatch.WithMessagef("workspace selector %q does not match registry entry %q", req.Workspace, cfg.Name)
 	}
-	payloadRoot, cleanErr := cleanSeparatedDoctorRoot(cfg.RealPath, "payload root")
+	payloadRoot, cleanErr := cleanSeparatedDoctorRoot(cfg.RealPath, "workspace folder")
 	if cleanErr != nil {
-		return nil, errclass.ErrControlMalformed.WithMessagef("invalid payload root in workspace registry: %v", cleanErr)
+		return nil, errclass.ErrControlMalformed.WithMessagef("invalid workspace folder in workspace registry: %v", cleanErr)
 	}
 	return &separatedDoctorContext{
 		Repo:        r,
@@ -165,8 +159,8 @@ func separatedDoctorRecoverableContextError(err error) bool {
 
 func separatedStrictPassedChecks() []StrictCheck {
 	return []StrictCheck{
-		{Name: separatedCheckRootOverlap, Status: "passed", Message: "Control and payload roots are separate."},
-		{Name: separatedCheckPayloadLocator, Status: "passed", Message: "No payload-root control marker is present."},
+		{Name: separatedCheckRootOverlap, Status: "passed", Message: "Control root and workspace folder are separate."},
+		{Name: separatedCheckWorkspaceControlMarker, Status: "passed", Message: "No control data marker is present in the workspace folder."},
 		{Name: separatedCheckRepoIdentity, Status: "passed", Message: "Repo identity matches the control root."},
 		{Name: separatedCheckWorkspaceBinding, Status: "passed", Message: "Workspace selector matches the control registry."},
 		{Name: separatedCheckPathBoundary, Status: "passed", Message: "Canonical paths stay within declared boundaries."},
@@ -183,23 +177,23 @@ func checkSeparatedRootOverlap(result *SeparatedStrictResult, controlRoot, paylo
 	}
 }
 
-func checkSeparatedPayloadLocator(result *SeparatedStrictResult, payloadRoot string) {
+func checkSeparatedWorkspaceControlMarker(result *SeparatedStrictResult, payloadRoot string) {
 	locatorPath := filepath.Join(payloadRoot, repo.JVSDirName)
 	if _, err := os.Lstat(locatorPath); err == nil {
 		failSeparatedCheck(
 			result,
-			separatedCheckPayloadLocator,
+			separatedCheckWorkspaceControlMarker,
 			errclass.ErrPayloadLocatorPresent.Code,
-			fmt.Sprintf("Payload root contains root-level %s path: %s", repo.JVSDirName, locatorPath),
+			fmt.Sprintf("Workspace folder contains root-level %s control data marker: %s", repo.JVSDirName, locatorPath),
 		)
 		return
 	} else if os.IsNotExist(err) {
 		return
 	} else if errors.Is(err, os.ErrPermission) {
-		failSeparatedCheck(result, separatedCheckPermissions, errclass.ErrPermissionDenied.Code, fmt.Sprintf("Cannot inspect payload locator: %v", err))
+		failSeparatedCheck(result, separatedCheckPermissions, errclass.ErrPermissionDenied.Code, fmt.Sprintf("Cannot inspect workspace folder control data marker: %v", err))
 		return
 	} else {
-		failSeparatedCheck(result, separatedCheckPayloadLocator, errclass.ErrPayloadLocatorPresent.Code, fmt.Sprintf("Cannot inspect payload locator: %v", err))
+		failSeparatedCheck(result, separatedCheckWorkspaceControlMarker, errclass.ErrPayloadLocatorPresent.Code, fmt.Sprintf("Cannot inspect workspace folder control data marker: %v", err))
 	}
 }
 
@@ -209,7 +203,7 @@ func checkSeparatedRepoIdentity(result *SeparatedStrictResult, r *repo.Repo) {
 		return
 	}
 	if r.Mode != repo.RepoModeSeparatedControl {
-		failSeparatedCheck(result, separatedCheckRepoIdentity, errclass.ErrControlMalformed.Code, "Repo mode is not separated_control.")
+		failSeparatedCheck(result, separatedCheckRepoIdentity, errclass.ErrControlMalformed.Code, "Control root is not configured for external control data.")
 	}
 }
 
@@ -224,7 +218,7 @@ func checkSeparatedWorkspaceBinding(result *SeparatedStrictResult, requested, re
 		return
 	}
 	if strings.TrimSpace(payloadRoot) == "" {
-		failSeparatedCheck(result, separatedCheckWorkspaceBinding, errclass.ErrWorkspaceMismatch.Code, "Workspace payload binding is empty.")
+		failSeparatedCheck(result, separatedCheckWorkspaceBinding, errclass.ErrWorkspaceMismatch.Code, "Workspace folder binding is empty.")
 	}
 }
 
@@ -244,17 +238,17 @@ func checkSeparatedPathBoundary(result *SeparatedStrictResult, r *repo.Repo, wor
 		if errors.Is(err, os.ErrPermission) {
 			code = errclass.ErrPermissionDenied.Code
 		}
-		failSeparatedCheck(result, separatedCheckPathBoundary, code, fmt.Sprintf("Cannot inspect payload root: %v", err))
+		failSeparatedCheck(result, separatedCheckPathBoundary, code, fmt.Sprintf("Cannot inspect workspace folder: %v", err))
 		result.BoundaryValidated = false
 		return
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		failSeparatedCheck(result, separatedCheckPathBoundary, errclass.ErrPathBoundaryEscape.Code, fmt.Sprintf("Payload root must not be a symlink: %s", payloadRoot))
+		failSeparatedCheck(result, separatedCheckPathBoundary, errclass.ErrPathBoundaryEscape.Code, fmt.Sprintf("Workspace folder must not be a symlink: %s", payloadRoot))
 		result.BoundaryValidated = false
 		return
 	}
 	if !info.IsDir() {
-		failSeparatedCheck(result, separatedCheckPathBoundary, errclass.ErrPayloadMissing.Code, fmt.Sprintf("Payload root is not a directory: %s", payloadRoot))
+		failSeparatedCheck(result, separatedCheckPathBoundary, errclass.ErrPayloadMissing.Code, fmt.Sprintf("Workspace folder is not a directory: %s", payloadRoot))
 		result.BoundaryValidated = false
 		return
 	}
@@ -271,9 +265,46 @@ func checkSeparatedPathBoundary(result *SeparatedStrictResult, r *repo.Repo, wor
 		if errors.As(err, &jvsErr) {
 			code = jvsErr.Code
 		}
-		failSeparatedCheck(result, separatedCheckPathBoundary, code, err.Error())
+		failSeparatedCheck(result, separatedCheckPathBoundary, code, separatedPathBoundaryDiagnosticMessage(err))
 		result.BoundaryValidated = false
 	}
+}
+
+func separatedPathBoundaryDiagnosticMessage(err error) string {
+	if err == nil {
+		return "Workspace folder path boundary cannot be verified against the control data boundary."
+	}
+	message := err.Error()
+	var jvsErr *errclass.JVSError
+	if errors.As(err, &jvsErr) && strings.TrimSpace(jvsErr.Message) != "" {
+		message = jvsErr.Message
+	}
+	lower := strings.ToLower(message)
+	if strings.Contains(lower, "symlink") {
+		if strings.Contains(lower, "cannot be resolved") {
+			return "Workspace folder symlink cannot be resolved within the workspace/control data boundary."
+		}
+		return "Workspace folder symlink points outside the workspace/control data boundary."
+	}
+	if strings.Contains(lower, "walk payload boundary") {
+		return "Cannot inspect workspace folder boundary."
+	}
+	if strings.Contains(lower, "resolve payload root boundary") {
+		return "Cannot resolve workspace folder boundary."
+	}
+
+	sanitized := strings.NewReplacer(
+		"payload root", "workspace folder",
+		"Payload root", "Workspace folder",
+		"payload boundary", "workspace boundary",
+		"Payload boundary", "Workspace boundary",
+		"payload", "workspace folder",
+		"Payload", "Workspace folder",
+	).Replace(message)
+	if strings.Contains(strings.ToLower(sanitized), "payload") {
+		return "Workspace folder path boundary cannot be verified against the control data boundary."
+	}
+	return sanitized
 }
 
 func checkSeparatedPermissions(result *SeparatedStrictResult, controlRoot, payloadRoot string) {
@@ -282,7 +313,7 @@ func checkSeparatedPermissions(result *SeparatedStrictResult, controlRoot, paylo
 		path string
 	}{
 		{role: "control metadata", path: filepath.Join(controlRoot, repo.JVSDirName)},
-		{role: "payload root", path: payloadRoot},
+		{role: "workspace folder", path: payloadRoot},
 	} {
 		if err := separatedStrictPermissionChecker(target.path); err != nil {
 			code := errclass.ErrPermissionDenied.Code
@@ -510,13 +541,13 @@ func separatedRootOverlapCode(controlRoot, payloadRoot string) (string, string) 
 	control := filepath.Clean(controlRoot)
 	payload := filepath.Clean(payloadRoot)
 	if control == payload {
-		return errclass.ErrControlPayloadOverlap.Code, "Control root and payload root must be distinct."
+		return errclass.ErrControlPayloadOverlap.Code, "Control root and workspace folder must be distinct."
 	}
 	if pathContains(control, payload) {
-		return errclass.ErrPayloadInsideControl.Code, "Payload root must not be inside control root."
+		return errclass.ErrPayloadInsideControl.Code, "Workspace folder must not be inside control root."
 	}
 	if pathContains(payload, control) {
-		return errclass.ErrControlInsidePayload.Code, "Control root must not be inside payload root."
+		return errclass.ErrControlInsidePayload.Code, "Control root must not be inside workspace folder."
 	}
 	controlPhysical, controlErr := filepath.EvalSymlinks(control)
 	payloadPhysical, payloadErr := filepath.EvalSymlinks(payload)
@@ -524,13 +555,13 @@ func separatedRootOverlapCode(controlRoot, payloadRoot string) (string, string) 
 		controlPhysical = filepath.Clean(controlPhysical)
 		payloadPhysical = filepath.Clean(payloadPhysical)
 		if controlPhysical == payloadPhysical {
-			return errclass.ErrControlPayloadOverlap.Code, "Control root and payload root resolve to the same filesystem location."
+			return errclass.ErrControlPayloadOverlap.Code, "Control root and workspace folder resolve to the same filesystem location."
 		}
 		if pathContains(controlPhysical, payloadPhysical) {
-			return errclass.ErrPayloadInsideControl.Code, "Payload root resolves inside control root."
+			return errclass.ErrPayloadInsideControl.Code, "Workspace folder resolves inside control root."
 		}
 		if pathContains(payloadPhysical, controlPhysical) {
-			return errclass.ErrControlInsidePayload.Code, "Control root resolves inside payload root."
+			return errclass.ErrControlInsidePayload.Code, "Control root resolves inside workspace folder."
 		}
 	}
 	return "", ""

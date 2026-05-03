@@ -22,7 +22,10 @@ var initCmd = &cobra.Command{
 
 When no folder is provided, the current directory is adopted. Existing files stay
 in place; JVS stores control data in .jvs/ and registers the folder as the main
-workspace.`,
+workspace.
+
+Advanced platform workflows can place control data outside the folder with
+--control-root and --workspace main.`,
 	Args: cobra.RangeArgs(0, 1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if targetControlRoot != "" || initPayloadRoot != "" {
@@ -84,14 +87,22 @@ workspace.`,
 }
 
 func runSeparatedInit(args []string) error {
-	if len(args) > 0 {
-		return errclass.ErrUsage.WithMessage("init folder cannot be combined with --control-root or --payload-root")
+	if len(args) > 0 && strings.TrimSpace(initPayloadRoot) != "" {
+		return errclass.ErrUsage.WithMessage("init folder cannot be combined with --payload-root")
 	}
 	if targetRepoPath != "" {
 		return errclass.ErrUsage.WithMessage("--control-root cannot be combined with --repo")
 	}
-	if targetControlRoot == "" || initPayloadRoot == "" {
-		return errclass.ErrUsage.WithMessage("--control-root and --payload-root must be provided together")
+	if targetControlRoot == "" {
+		return errclass.ErrUsage.WithMessage("--payload-root requires --control-root")
+	}
+
+	folder := "."
+	if len(args) > 0 {
+		folder = args[0]
+	}
+	if strings.TrimSpace(initPayloadRoot) != "" {
+		folder = initPayloadRoot
 	}
 
 	workspaceName := strings.TrimSpace(targetWorkspaceName)
@@ -99,9 +110,9 @@ func runSeparatedInit(args []string) error {
 		workspaceName = "main"
 	}
 	if workspaceName != "main" {
-		return separatedInitMainWorkspaceRequiredError(targetControlRoot, initPayloadRoot)
+		return separatedInitMainWorkspaceRequiredError(targetControlRoot, folder)
 	}
-	r, err := repo.InitSeparatedControl(targetControlRoot, initPayloadRoot, workspaceName)
+	r, err := repo.InitSeparatedControl(targetControlRoot, folder, workspaceName)
 	if err != nil {
 		return err
 	}
@@ -118,20 +129,19 @@ func runSeparatedInit(args []string) error {
 		output := map[string]any{
 			"folder":            ctx.PayloadRoot,
 			"workspace":         ctx.Workspace,
-			"repo_root":         ctx.ControlRoot,
+			"control_root":      ctx.ControlRoot,
 			"format_version":    r.FormatVersion,
 			"repo_id":           r.RepoID,
 			"newest_save_point": nil,
 			"unsaved_changes":   true,
 		}
-		applySeparatedControlMapFields(output, ctx, "passed")
 		return outputJSON(output)
 	}
 
-	fmt.Printf("Control root: %s\n", ctx.ControlRoot)
-	fmt.Printf("Payload root: %s\n", ctx.PayloadRoot)
+	fmt.Printf("Folder: %s\n", ctx.PayloadRoot)
+	fmt.Printf("Control data: %s\n", ctx.ControlRoot)
 	fmt.Printf("Workspace: %s\n", ctx.Workspace)
-	fmt.Println("JVS separated control is ready.")
+	fmt.Println("JVS is ready for this folder.")
 	fmt.Println("Next: jvs --control-root " + ctx.ControlRoot + " --workspace " + ctx.Workspace + " save -m \"baseline\"")
 	return nil
 }
@@ -178,6 +188,7 @@ func cleanupCreatedInitFolders(created []string) {
 }
 
 func init() {
-	initCmd.Flags().StringVar(&initPayloadRoot, "payload-root", "", "payload root for separated-control init")
+	initCmd.Flags().StringVar(&initPayloadRoot, "payload-root", "", "folder for external-control init")
+	initCmd.Flags().Lookup("payload-root").Hidden = true
 	rootCmd.AddCommand(initCmd)
 }

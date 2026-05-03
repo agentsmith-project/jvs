@@ -629,6 +629,9 @@ func TestPublicCLIErrorVocabularyPreservesQuotedUserText(t *testing.T) {
 	assert.Equal(t, "save point (/tmp/missing worktree snapshot history) history", got)
 	got = publicCLIErrorVocabulary("snapshot (worktree snapshot history) history")
 	assert.Equal(t, "save point (workspace save point history) history", got)
+	got = publicCLIErrorVocabulary(`workspace "main" payload root changed: registry has /tmp/payload-drift, expected /tmp/payload`)
+	assert.Equal(t, `workspace "main" workspace folder changed: control data has /tmp/payload-drift, expected /tmp/payload`, got)
+	assert.Equal(t, "invalid workspace folder in control data", publicCLIErrorVocabulary("invalid payload root in workspace registry"))
 }
 
 func writePublicCLITestWorkspaceLocator(t *testing.T, dir, repoRoot string) {
