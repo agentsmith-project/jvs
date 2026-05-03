@@ -5,6 +5,120 @@ as active reader content for the published GA line. The active product
 vocabulary is folder, workspace, save point, save, history, view, restore,
 recovery plan, doctor, and cleanup.
 
+## v0.4.6 - 2026-05-03
+
+### Highlights
+
+- GA candidate readiness now covers repo/workspace lifecycle management:
+  repo move/rename/detach and workspace move/rename/delete all have
+  preview/run and recovery posture recorded for the public contract.
+- Repo and workspace lifecycle operations now preserve safer handoffs across
+  folder moves and name changes, including destination checks, registered
+  workspace updates, detach metadata, and fail-closed recovery evidence.
+- External workspace pending lifecycle evidence is surfaced through status and
+  doctor with a machine-readable `recommended_next_command`, so interrupted
+  repo or workspace lifecycle work points to the same command the user should
+  rerun.
+- The repo clone workflow is covered as a user-facing flow, including imported
+  clone history protection and follow-on cleanup boundaries.
+- Filesystem-aware transfer planning/implementation is covered across save,
+  view, restore, workspace creation, and clone paths so copy behavior matches
+  the destination while preserving preview/run review points.
+- Release-facing identity remains `github.com/agentsmith-project/jvs`; release
+  URLs use the canonical GitHub project, for example
+  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.0`.
+
+### Breaking changes
+
+- None for the stable v0 public CLI contract.
+- This main-branch version bump is a GA candidate/readiness record only; it
+  does not create a final tag, publish release artifacts, or change the on-disk
+  repository layout version.
+
+### Known limitations
+
+- v0 does not include remote push/pull.
+- v0 does not include in-JVS signing commands.
+- v0 does not include public partial-save contracts.
+- v0 does not include compression contracts.
+- v0 does not include merge/rebase.
+- v0 does not include complex retention policy flags.
+- v0 does not yet include a first-class user-facing portability or backup
+  workflow.
+- Strict integrity checks can be I/O intensive on large workspaces.
+- Descriptor signing and in-JVS trust policy remain outside the stable v0
+  repository format.
+
+### Risk labels
+
+- `integrity`: descriptor checksum and payload hash detect independent
+  corruption; coordinated descriptor-plus-checksum rewrite remains a v0
+  residual risk.
+- `migration`: non-portable JVS runtime state is destination-local and must be
+  rebuilt at the fresh destination with
+  `jvs doctor --strict --repair-runtime`.
+- `recovery`: interrupted lifecycle operations and restore runs are expected to
+  fail closed and report recovery evidence before another mutating operation
+  continues in the same repo or workspace.
+- `usability`: lifecycle commands rely on preview/run review, explicit target
+  folders or names, and `recommended_next_command` guidance when recovery is
+  needed.
+
+### Migration notes
+
+- Existing repositories do not need an on-disk migration for the `v0.4.6`
+  candidate target; `.jvs/format_version` remains a repository layout version,
+  not the application release version.
+- This candidate records repo/workspace lifecycle, repo clone, and transfer
+  planning readiness for existing v0 repository storage; it does not add a
+  compatibility mode or change repository storage.
+- After upgrading to this candidate, run `jvs doctor --strict` on a
+  representative repo before relying on it for release workflows.
+- For physical backup or storage migration, start with a fresh destination, run
+  an offline whole-folder copy, run
+  `jvs doctor --strict --repair-runtime` at the destination, then run a fresh
+  cleanup preview before any cleanup run.
+- Do not treat non-portable JVS runtime state as authoritative during physical
+  backup or storage migration; rebuild it at the destination before resuming
+  JVS writes.
+- User-facing portability and backup workflow remains a documented product gap,
+  not a new v0 CLI promise.
+- Run the restore drill from `docs/13_OPERATION_RUNBOOK.md`, including
+  preview/run and recovery status/resume/rollback coverage.
+
+### Release evidence
+
+- See the [release evidence ledger](RELEASE_EVIDENCE.md#v046---2026-05-03)
+  for the `v0.4.6` GA candidate readiness record.
+- Evidence class: GA candidate readiness.
+- Candidate target tag: `v0.4.6`
+- Candidate state: not final, not tagged, and not published; the release is
+  pending final tag creation and publication through the normal CI release
+  flow.
+- Source archive boundary: no immutable `v0.4.6` tag snapshot exists yet; when
+  the pending final tag is created, its source archive will record readiness
+  from tag time.
+- publication final evidence remains pending; the future GitHub Release page
+  and post-release main ledger will record workflow run, release state,
+  artifacts, checksums, signing identity, smoke, and coverage facts after the
+  release exists.
+- Readiness scope since `v0.4.5`: repo/workspace lifecycle management,
+  repo move/rename/detach, workspace move/rename/delete preview/run and
+  recovery posture, external workspace pending lifecycle evidence,
+  machine-readable `recommended_next_command`, repo clone workflow, and
+  filesystem-aware transfer planning/implementation.
+
+### Release artifacts
+
+- No final `v0.4.6` release artifacts are published from this main-branch
+  candidate entry.
+- Artifact plan for the pending final tag remains the standard five platform
+  binaries, matching `.bundle` files, `SHA256SUMS`, and `SHA256SUMS.bundle`.
+- Signing remains outside in-JVS commands and is expected to use the release
+  workflow's Sigstore/cosign v3 bundle flow.
+- Final artifact, checksum, signing, and smoke evidence will be recorded only
+  after CI creates the release from the final tag.
+
 ## v0.4.5 - 2026-05-01
 
 ### Highlights

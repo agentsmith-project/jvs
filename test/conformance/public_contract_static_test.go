@@ -2662,13 +2662,13 @@ func TestDocs_V042GAReleaseEvidenceRecordsPublishedRelease(t *testing.T) {
 	}
 }
 
-func TestDocs_ReleaseEvidenceV045GACandidateReadinessRecordsPendingRelease(t *testing.T) {
-	const heading = "## v0.4.5 - 2026-05-01"
-	const evidenceLink = "RELEASE_EVIDENCE.md#v045---2026-05-01"
+func TestDocs_ReleaseEvidenceV046GACandidateReadinessRecordsPendingRelease(t *testing.T) {
+	const heading = "## v0.4.6 - 2026-05-03"
+	const evidenceLink = "RELEASE_EVIDENCE.md#v046---2026-05-03"
 
 	latestHeading := latestChangelogHeading(t)
 	if latestHeading != heading {
-		t.Fatalf("latest changelog entry must be the v0.4.5 GA candidate heading %q, got %q", heading, latestHeading)
+		t.Fatalf("latest changelog entry must be the v0.4.6 GA candidate heading %q, got %q", heading, latestHeading)
 	}
 
 	changelogEntry := changelogEntry(t, readRepoFile(t, "docs/99_CHANGELOG.md"), heading)
@@ -2679,17 +2679,17 @@ func TestDocs_ReleaseEvidenceV045GACandidateReadinessRecordsPendingRelease(t *te
 		"not tagged",
 		"not published",
 		"pending final tag",
-		"Candidate target tag: `v0.4.5`",
-		"workspace user-story",
-		"explicit workspace folder",
-		"folder-local status/save/history/restore",
-		"multi-workspace list/status/path",
-		"`jvs history from` default source",
-		"workspace pointer movement",
-		"implicit workspace creation",
-		"`--name`/folder basename decoupling",
+		"Candidate target tag: `v0.4.6`",
+		"repo/workspace lifecycle management",
+		"repo move/rename/detach",
+		"workspace move/rename/delete preview/run",
+		"recovery posture",
+		"external workspace pending lifecycle evidence",
+		"machine-readable `recommended_next_command`",
+		"repo clone workflow",
+		"filesystem-aware transfer planning/implementation",
 	} {
-		requireReleaseReadinessText(t, "v0.4.5 changelog candidate entry", changelogEntry, required)
+		requireReleaseReadinessText(t, "v0.4.6 changelog candidate entry", changelogEntry, required)
 	}
 
 	entry := releaseEvidenceEntry(t, readRepoFile(t, "docs/RELEASE_EVIDENCE.md"), heading)
@@ -2705,7 +2705,7 @@ func TestDocs_ReleaseEvidenceV045GACandidateReadinessRecordsPendingRelease(t *te
 		{name: "final tagged commit", pattern: releaseEvidenceCommitPattern},
 	} {
 		if forbidden.pattern.MatchString(entry) {
-			t.Fatalf("v0.4.5 candidate release evidence must not claim %s before final publication", forbidden.name)
+			t.Fatalf("v0.4.6 candidate release evidence must not claim %s before final publication", forbidden.name)
 		}
 	}
 }
