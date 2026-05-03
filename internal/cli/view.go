@@ -39,12 +39,12 @@ Examples:
   jvs view 1771589abc src/config.json`,
 	Args: cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		r, workspaceName, err := discoverRequiredWorktree()
+		ctx, err := resolveWorkspaceScoped()
 		if err != nil {
 			return err
 		}
 
-		savePointID, err := resolvePublicSavePointID(r.Root, args[0])
+		savePointID, err := resolvePublicSavePointID(ctx.Repo.Root, args[0])
 		if err != nil {
 			return viewPointError(err)
 		}
@@ -57,12 +57,12 @@ Examples:
 			}
 		}
 
-		result, err := openReadOnlySavePointView(r.Root, workspaceName, savePointID, pathInside)
+		result, err := openReadOnlySavePointView(ctx.Repo.Root, ctx.Workspace, savePointID, pathInside, ctx.Separated)
 		if err != nil {
 			return viewPointError(err)
 		}
 		if jsonOutput {
-			return outputJSON(result)
+			return outputJSONWithSeparatedControl(result, ctx.Separated, separatedDoctorStrictNotRun)
 		}
 
 		printViewResult(result)
@@ -80,16 +80,16 @@ var viewCloseCmd = &cobra.Command{
 		return nil
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
-		r, err := discoverRequiredRepo()
+		ctx, err := resolveRepoScoped()
 		if err != nil {
 			return err
 		}
-		result, err := closeReadOnlySavePointView(r.Root, args[0])
+		result, err := closeReadOnlySavePointView(ctx.Repo.Root, args[0])
 		if err != nil {
 			return viewCloseError(err)
 		}
 		if jsonOutput {
-			return outputJSON(result)
+			return outputJSONWithSeparatedControl(result, ctx.Separated, separatedDoctorStrictNotRun)
 		}
 		printViewCloseResult(result)
 		return nil
@@ -190,9 +190,12 @@ func looksLikeWindowsPath(path string) bool {
 	return false
 }
 
-func openReadOnlySavePointView(repoRoot, workspaceName string, savePointID model.SnapshotID, pathInside string) (result publicViewResult, err error) {
+func openReadOnlySavePointView(repoRoot, workspaceName string, savePointID model.SnapshotID, pathInside string, separated *repo.SeparatedContext) (result publicViewResult, err error) {
 	folder, err := workspaceFolder(repoRoot, workspaceName)
 	if err != nil {
+		return publicViewResult{}, err
+	}
+	if err := preflightSeparatedViewOpen(separated); err != nil {
 		return publicViewResult{}, err
 	}
 
@@ -325,6 +328,73 @@ func openReadOnlySavePointView(repoRoot, workspaceName string, savePointID model
 		ReadOnly:                    true,
 		NoWorkspaceOrHistoryChanged: true,
 	}, nil
+}
+
+func preflightSeparatedViewOpen(ctx *repo.SeparatedContext) error {
+	if ctx == nil {
+		return nil
+	}
+	revalidated, err := repo.RevalidateSeparatedContext(repo.SeparatedContextRevalidationRequest{
+		ControlRoot:         ctx.ControlRoot,
+		Workspace:           ctx.Workspace,
+		ExpectedPayloadRoot: ctx.PayloadRoot,
+	})
+	if err != nil {
+		return err
+	}
+	if err := validateSeparatedViewRuntimeBoundary(revalidated.ControlRoot); err != nil {
+		return err
+	}
+	if _, err := repo.WorktreeManagedPayloadBoundary(revalidated.ControlRoot, revalidated.Workspace); err != nil {
+		return err
+	}
+	return validateSeparatedPayloadSymlinkBoundary(revalidated)
+}
+
+func validateSeparatedViewRuntimeBoundary(controlRoot string) error {
+	cleanControlRoot := filepath.Clean(controlRoot)
+	controlInfo, err := os.Lstat(cleanControlRoot)
+	if err != nil {
+		return errclass.ErrPathBoundaryEscape.WithMessagef("stat control root boundary: %v", err)
+	}
+	if controlInfo.Mode()&os.ModeSymlink != 0 || !controlInfo.IsDir() {
+		return errclass.ErrPathBoundaryEscape.WithMessagef("control root is not a real directory: %s", cleanControlRoot)
+	}
+	controlPhysical, err := filepath.EvalSymlinks(cleanControlRoot)
+	if err != nil {
+		return errclass.ErrPathBoundaryEscape.WithMessagef("resolve control root boundary: %v", err)
+	}
+
+	jvsDir := filepath.Join(cleanControlRoot, repo.JVSDirName)
+	viewsDir := filepath.Join(jvsDir, "views")
+	for _, path := range []string{jvsDir, viewsDir} {
+		info, err := os.Lstat(path)
+		if err != nil {
+			if os.IsNotExist(err) && path == viewsDir {
+				return nil
+			}
+			return errclass.ErrPathBoundaryEscape.WithMessagef("stat control runtime boundary: %v", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return errclass.ErrPathBoundaryEscape.WithMessagef("control runtime path is not a real directory: %s", path)
+		}
+		physical, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return errclass.ErrPathBoundaryEscape.WithMessagef("resolve control runtime boundary: %v", err)
+		}
+		if !viewPathContained(controlPhysical, physical) {
+			return errclass.ErrPathBoundaryEscape.WithMessagef("control runtime path escapes control root: %s", path)
+		}
+	}
+	return nil
+}
+
+func viewPathContained(root, path string) bool {
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && !filepath.IsAbs(rel))
 }
 
 func viewPrimaryTransferIntent(repoRoot string, savePointID model.SnapshotID, sourcePath, payloadRoot, viewPath string) transfer.Intent {
@@ -514,8 +584,17 @@ func prepareViewRoot(viewRoot string) error {
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return fmt.Errorf("JVS control data is not a real directory")
 	}
-	if err := os.MkdirAll(filepath.Dir(viewRoot), 0700); err != nil {
-		return fmt.Errorf("create view area: %w", err)
+	viewsDir := filepath.Dir(viewRoot)
+	viewsInfo, err := os.Lstat(viewsDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat view area: %w", err)
+		}
+		if err := os.Mkdir(viewsDir, 0700); err != nil {
+			return fmt.Errorf("create view area: %w", err)
+		}
+	} else if viewsInfo.Mode()&os.ModeSymlink != 0 || !viewsInfo.IsDir() {
+		return errclass.ErrPathBoundaryEscape.WithMessagef("view area is not a real directory: %s", viewsDir)
 	}
 	if err := os.Mkdir(viewRoot, 0700); err != nil {
 		return fmt.Errorf("create view: %w", err)

@@ -15,12 +15,14 @@ import (
 
 var (
 	targetRepoPath      string
+	targetControlRoot   string
 	targetWorkspaceName string
 )
 
 type cliDiscoveryContext struct {
 	Repo      *repo.Repo
 	Workspace string
+	Separated *repo.SeparatedContext
 }
 
 func discoverRequiredRepo() (*repo.Repo, error) {
@@ -49,6 +51,10 @@ func discoverRequiredWorktree() (*repo.Repo, string, error) {
 
 // resolveRepoScoped resolves commands that only require a repository.
 func resolveRepoScoped() (*cliDiscoveryContext, error) {
+	if targetControlRoot != "" {
+		return resolveSeparatedScoped()
+	}
+
 	repoStart, workspaceStart, err := discoveryStarts()
 	if err != nil {
 		return nil, err
@@ -77,6 +83,10 @@ func resolveRepoScoped() (*cliDiscoveryContext, error) {
 // resolveDoctorScoped resolves doctor against an explicit repository even when
 // the current external workspace locator is stale enough to need doctor repair.
 func resolveDoctorScoped() (*cliDiscoveryContext, error) {
+	if targetControlRoot != "" {
+		return resolveSeparatedScoped()
+	}
+
 	repoStart, workspaceStart, err := discoveryStarts()
 	if err != nil {
 		return nil, err
@@ -124,6 +134,27 @@ func resolveWorkspaceScoped() (*cliDiscoveryContext, error) {
 	ctx.Workspace = workspace
 	recordResolvedTarget(ctx.Repo.Root, ctx.Workspace)
 	return ctx, nil
+}
+
+func resolveSeparatedScoped() (*cliDiscoveryContext, error) {
+	if targetRepoPath != "" {
+		return nil, errclass.ErrUsage.WithMessage("--control-root cannot be combined with --repo")
+	}
+	if strings.TrimSpace(targetWorkspaceName) == "" {
+		return nil, errclass.ErrExplicitTargetRequired.WithMessage("--control-root requires --workspace <name>")
+	}
+	ctx, err := repo.ResolveSeparatedContext(repo.SeparatedContextRequest{
+		ControlRoot: targetControlRoot,
+		Workspace:   targetWorkspaceName,
+	})
+	if err != nil {
+		return nil, err
+	}
+	recordResolvedTarget(ctx.ControlRoot, ctx.Workspace)
+	if err := enforceLifecyclePendingGuard(ctx.ControlRoot); err != nil {
+		return nil, err
+	}
+	return &cliDiscoveryContext{Repo: ctx.Repo, Workspace: ctx.Workspace, Separated: ctx}, nil
 }
 
 func discoveryStarts() (repoStart string, workspaceStart string, err error) {

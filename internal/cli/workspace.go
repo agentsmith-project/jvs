@@ -57,10 +57,14 @@ var workspaceNewCmd = &cobra.Command{
 	Short: "Create a workspace from a save point",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		r, err := discoverRequiredRepo()
+		ctx, err := resolveRepoScoped()
 		if err != nil {
 			return err
 		}
+		if err := rejectSeparatedLifecycleCommand(ctx, "workspace new"); err != nil {
+			return err
+		}
+		r := ctx.Repo
 		folder, err := filepath.Abs(args[0])
 		if err != nil {
 			return workspaceNewError(fmt.Errorf("resolve workspace folder: %w", err))
@@ -185,11 +189,19 @@ var workspaceListCmd = &cobra.Command{
 			return err
 		}
 		if jsonOutput {
-			return outputJSON(records)
+			data := any(records)
+			if ctx.Separated != nil {
+				data = publicWorkspaceListResult{Workspaces: records}
+			}
+			return outputJSONWithSeparatedControl(data, ctx.Separated, separatedDoctorStrictNotRun)
 		}
 		printWorkspaceList(records, workspaceListStatus)
 		return nil
 	},
+}
+
+type publicWorkspaceListResult struct {
+	Workspaces []publicWorkspaceListRecord `json:"workspaces"`
 }
 
 type publicWorkspaceListRecord struct {
@@ -271,17 +283,19 @@ var workspacePathCmd = &cobra.Command{
 	Short: "Print a workspace path",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		r, err := discoverRequiredRepo()
+		ctx, err := resolveRepoScoped()
 		if err != nil {
 			return err
 		}
 		name := ""
 		if len(args) > 0 {
 			var err error
-			name, err = resolveNamedWorkspace(r.Root, args[0])
+			name, err = resolveNamedWorkspace(ctx.Repo.Root, args[0])
 			if err != nil {
 				return err
 			}
+		} else if ctx.Workspace != "" {
+			name = ctx.Workspace
 		} else {
 			_, current, err := discoverRequiredWorktree()
 			if err != nil {
@@ -290,14 +304,14 @@ var workspacePathCmd = &cobra.Command{
 			name = current
 		}
 
-		mgr := worktree.NewManager(r.Root)
+		mgr := worktree.NewManager(ctx.Repo.Root)
 		path, err := mgr.Path(name)
 		if err != nil {
 			return err
 		}
-		recordResolvedTarget(r.Root, name)
+		recordResolvedTarget(ctx.Repo.Root, name)
 		if jsonOutput {
-			return outputJSON(map[string]string{"workspace": name, "path": path})
+			return outputJSONWithSeparatedControl(map[string]string{"workspace": name, "path": path}, ctx.Separated, separatedDoctorStrictNotRun)
 		}
 		fmt.Println(path)
 		return nil
@@ -309,8 +323,11 @@ var workspaceRenameCmd = &cobra.Command{
 	Short: "Rename a workspace",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		r, err := discoverRequiredRepo()
+		ctx, err := resolveRepoScoped()
 		if err != nil {
+			return err
+		}
+		if err := rejectSeparatedLifecycleCommand(ctx, "workspace rename"); err != nil {
 			return err
 		}
 		if err := validatePublicWorkspaceName(args[0]); err != nil {
@@ -319,6 +336,7 @@ var workspaceRenameCmd = &cobra.Command{
 		if err := validatePublicWorkspaceName(args[1]); err != nil {
 			return err
 		}
+		r := ctx.Repo
 		result, err := executeWorkspaceRename(r.Root, args[0], args[1], workspaceRenameDryRun)
 		if err != nil {
 			return err
@@ -336,10 +354,14 @@ var workspaceDeleteCmd = &cobra.Command{
 	Use:   "delete <name> | delete --run <plan-id>",
 	Short: "Delete a workspace",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		r, err := discoverRequiredRepo()
+		ctx, err := resolveRepoScoped()
 		if err != nil {
 			return err
 		}
+		if err := rejectSeparatedLifecycleCommand(ctx, "workspace delete"); err != nil {
+			return err
+		}
+		r := ctx.Repo
 
 		runPlanID, runRequested, err := workspaceRunFlag(cmd, "workspace delete")
 		if err != nil {
@@ -382,10 +404,14 @@ var workspaceMoveCmd = &cobra.Command{
 	Use:   "move <name> <new-folder> | move --run <plan-id>",
 	Short: "Move a workspace folder",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		r, err := discoverRequiredRepo()
+		ctx, err := resolveRepoScoped()
 		if err != nil {
 			return err
 		}
+		if err := rejectSeparatedLifecycleCommand(ctx, "workspace move"); err != nil {
+			return err
+		}
+		r := ctx.Repo
 		runPlanID, runRequested, err := workspaceRunFlag(cmd, "workspace move")
 		if err != nil {
 			return err

@@ -2,21 +2,25 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	jvsrepo "github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/repoclone"
 	"github.com/agentsmith-project/jvs/internal/transfer"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
 )
 
 var (
-	repoCloneSavePoints string
-	repoCloneDryRun     bool
-	repoMoveRunID       string
-	repoRenameRunID     string
-	repoDetachRunID     string
+	repoCloneSavePoints        string
+	repoCloneDryRun            bool
+	repoCloneTargetControlRoot string
+	repoCloneTargetPayloadRoot string
+	repoMoveRunID              string
+	repoRenameRunID            string
+	repoDetachRunID            string
 )
 
 var repoCmd = &cobra.Command{
@@ -25,7 +29,7 @@ var repoCmd = &cobra.Command{
 }
 
 var repoCloneCmd = &cobra.Command{
-	Use:   "clone <target-folder>",
+	Use:   "clone [target-folder]",
 	Short: "Clone a local JVS project",
 	Args:  validateRepoCloneArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -36,12 +40,29 @@ var repoCloneCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		separatedSource := ctx.Separated != nil || ctx.Repo.Mode == jvsrepo.RepoModeSeparatedControl
+		if repoCloneSplitTargetRequested() && ctx.Separated == nil {
+			return errclass.ErrUsage.WithMessage("--target-control-root and --target-payload-root require an explicit separated source selected with --control-root and --workspace")
+		}
+		if separatedSource && !repoCloneSplitTargetRequested() {
+			return separatedCloneExplicitTargetRequiredError()
+		}
+		targetPath := ""
+		if len(args) == 1 {
+			targetPath = args[0]
+		}
+		savePointsMode := repoclone.SavePointsMode(repoCloneSavePoints)
+		if ctx.Separated != nil && !cmd.Flags().Changed("save-points") {
+			savePointsMode = repoclone.SavePointsModeMain
+		}
 		result, err := repoclone.Clone(repoclone.Options{
-			SourceRepoRoot:  ctx.Repo.Root,
-			TargetPath:      args[0],
-			SavePointsMode:  repoclone.SavePointsMode(repoCloneSavePoints),
-			DryRun:          repoCloneDryRun,
-			RequestedEngine: requestedTransferEngine(ctx.Repo.Root),
+			SourceRepoRoot:    ctx.Repo.Root,
+			TargetPath:        targetPath,
+			TargetControlRoot: repoCloneTargetControlRoot,
+			TargetPayloadRoot: repoCloneTargetPayloadRoot,
+			SavePointsMode:    savePointsMode,
+			DryRun:            repoCloneDryRun,
+			RequestedEngine:   requestedTransferEngine(ctx.Repo.Root),
 		})
 		if err != nil {
 			return err
@@ -61,6 +82,9 @@ var repoMoveCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, err := resolveRepoScoped()
 		if err != nil {
+			return err
+		}
+		if err := rejectSeparatedLifecycleCommand(ctx, "repo move"); err != nil {
 			return err
 		}
 		runPlanID, runRequested, err := workspaceRunFlag(cmd, "repo move")
@@ -105,6 +129,9 @@ var repoRenameCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, err := resolveRepoScoped()
 		if err != nil {
+			return err
+		}
+		if err := rejectSeparatedLifecycleCommand(ctx, "repo rename"); err != nil {
 			return err
 		}
 		runPlanID, runRequested, err := workspaceRunFlag(cmd, "repo rename")
@@ -159,6 +186,9 @@ var repoDetachCmd = &cobra.Command{
 			if len(args) != 0 {
 				return fmt.Errorf("repo detach --run accepts only a plan ID")
 			}
+			if err := rejectSeparatedLifecycleRunTarget("repo detach"); err != nil {
+				return err
+			}
 			result, err := executeRepoDetachRunFromCWD(runPlanID)
 			if err != nil {
 				return err
@@ -174,6 +204,9 @@ var repoDetachCmd = &cobra.Command{
 		}
 		ctx, err := resolveRepoScoped()
 		if err != nil {
+			return err
+		}
+		if err := rejectSeparatedLifecycleCommand(ctx, "repo detach"); err != nil {
 			return err
 		}
 		plan, err := createRepoDetachPlan(ctx.Repo.Root)
@@ -203,6 +236,18 @@ func resolveRepoCloneSource() (*cliDiscoveryContext, error) {
 }
 
 func validateRepoCloneArgs(cmd *cobra.Command, args []string) error {
+	if repoCloneSplitTargetRequested() {
+		if len(args) != 0 {
+			return errclass.ErrUsage.WithMessage("repo clone with --target-control-root and --target-payload-root does not accept a target folder")
+		}
+		if repoCloneTargetControlRoot == "" || repoCloneTargetPayloadRoot == "" {
+			return errclass.ErrUsage.WithMessage("--target-control-root and --target-payload-root must be provided together")
+		}
+		if repoclone.IsRemoteLikeInput(repoCloneTargetControlRoot) || repoclone.IsRemoteLikeInput(repoCloneTargetPayloadRoot) {
+			return repoCloneRemoteInputError()
+		}
+		return nil
+	}
 	switch len(args) {
 	case 0:
 		return errclass.ErrUsage.WithMessage("repo clone requires a target folder")
@@ -216,10 +261,60 @@ func validateRepoCloneArgs(cmd *cobra.Command, args []string) error {
 	}
 }
 
+func repoCloneSplitTargetRequested() bool {
+	return strings.TrimSpace(repoCloneTargetControlRoot) != "" || strings.TrimSpace(repoCloneTargetPayloadRoot) != ""
+}
+
+func separatedCloneExplicitTargetRequiredError() error {
+	return errclass.ErrExplicitTargetRequired.WithMessage("separated source repo clone requires --target-control-root and --target-payload-root")
+}
+
 func repoCloneRemoteInputError() error {
 	return errclass.ErrUsage.
 		WithMessage("JVS repo clone only copies a local or mounted JVS project.").
 		WithHint("Remote URLs and git-style sources are not supported. Use a local path with --repo, then provide the target folder.")
+}
+
+func rejectSeparatedLifecycleCommand(ctx *cliDiscoveryContext, command string) error {
+	if ctx == nil || ctx.Repo == nil {
+		return nil
+	}
+	if ctx.Separated == nil && ctx.Repo.Mode != jvsrepo.RepoModeSeparatedControl {
+		return nil
+	}
+	return separatedLifecycleUnsupportedError(command)
+}
+
+func rejectSeparatedLifecycleRunTarget(command string) error {
+	if targetControlRoot != "" {
+		ctx, err := resolveRepoScoped()
+		if err != nil {
+			return err
+		}
+		return rejectSeparatedLifecycleCommand(ctx, command)
+	}
+	if targetRepoPath != "" {
+		r, err := resolveRepoFlagTarget(targetRepoPath)
+		if err != nil {
+			return err
+		}
+		return rejectSeparatedLifecycleCommand(&cliDiscoveryContext{Repo: r}, command)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return errclass.ErrUsage.WithMessagef("cannot get current directory: %v", err)
+	}
+	if r, err := jvsrepo.DiscoverControlRepo(cwd); err == nil && r.Mode == jvsrepo.RepoModeSeparatedControl {
+		recordResolvedTarget(r.Root, "")
+		return separatedLifecycleUnsupportedError(command)
+	}
+	return nil
+}
+
+func separatedLifecycleUnsupportedError(command string) error {
+	return errclass.ErrSeparatedLifecycleUnsupported.
+		WithMessagef("%s is not supported for separated-control repositories yet. No files changed.", command).
+		WithHint("Separated repo and workspace lifecycle commands are disabled until control/payload lifecycle semantics are redesigned.")
 }
 
 func printRepoCloneResult(result *repoclone.Result) {
@@ -338,6 +433,8 @@ func printRepoDetachRunResult(result publicRepoDetachRunResult) {
 func init() {
 	repoCloneCmd.Flags().StringVar(&repoCloneSavePoints, "save-points", string(repoclone.SavePointsModeAll), "save points to copy: all or main")
 	repoCloneCmd.Flags().BoolVar(&repoCloneDryRun, "dry-run", false, "plan the clone without creating the target")
+	repoCloneCmd.Flags().StringVar(&repoCloneTargetControlRoot, "target-control-root", "", "target separated-control root")
+	repoCloneCmd.Flags().StringVar(&repoCloneTargetPayloadRoot, "target-payload-root", "", "target separated payload root")
 	repoMoveCmd.Flags().StringVar(&repoMoveRunID, "run", "", "execute a repo move preview plan")
 	repoRenameCmd.Flags().StringVar(&repoRenameRunID, "run", "", "execute a repo rename preview plan")
 	repoDetachCmd.Flags().StringVar(&repoDetachRunID, "run", "", "execute a repo detach preview plan")

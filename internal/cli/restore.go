@@ -48,48 +48,55 @@ Examples:
   jvs restore 1771589abc --discard-unsaved`,
 	Args: validateRestoreArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		r, workspaceName, err := discoverRequiredWorktree()
+		ctx, err := resolveWorkspaceScoped()
 		if err != nil {
 			return err
 		}
 
 		if restorePathFlagChanged(cmd) {
-			return runRestorePath(cmd, args, r.Root, workspaceName)
+			return runRestorePath(cmd, args, ctx)
 		}
 
 		if restoreRunFlagChanged(cmd) {
-			return runRestorePlan(r.Root, workspaceName, restoreRunPlanID)
+			if err := validateSeparatedPayloadSymlinkBoundary(ctx.Separated); err != nil {
+				return restorePointError(err)
+			}
+			return runRestorePlan(ctx.Repo.Root, ctx.Workspace, restoreRunPlanID, ctx.Separated)
 		}
 
-		targetID, err := resolvePublicSavePointID(r.Root, args[0])
+		if err := validateSeparatedPayloadSymlinkBoundary(ctx.Separated); err != nil {
+			return restorePointError(err)
+		}
+
+		targetID, err := resolvePublicSavePointID(ctx.Repo.Root, args[0])
 		if err != nil {
 			return restorePointError(err)
 		}
 
 		var plan *restoreplan.Plan
 		var decisionReason string
-		err = withActiveOperationSourcePin(r.Root, targetID, "restore preview", func() error {
+		err = withActiveOperationSourcePin(ctx.Repo.Root, targetID, "restore preview", func() error {
 			if restoreDiscardDirty && restoreIncludeWorking {
 				return fmt.Errorf("--discard-unsaved and --save-first cannot be used together")
 			}
-			engineType := requestedTransferEngine(r.Root)
+			engineType := requestedTransferEngine(ctx.Repo.Root)
 			if !restoreDiscardDirty && !restoreIncludeWorking {
-				if err := checkRestorePreviewPreDirtyCapacity(r.Root, workspaceName, targetID, ""); err != nil {
+				if err := checkRestorePreviewPreDirtyCapacity(ctx.Repo.Root, ctx.Workspace, targetID, ""); err != nil {
 					return err
 				}
-				unsavedChanges, err := workspaceDirty(r.Root, workspaceName)
+				unsavedChanges, err := workspaceDirty(ctx.Repo.Root, ctx.Workspace)
 				if err != nil {
 					return err
 				}
 				if unsavedChanges {
 					decisionReason = "folder has unsaved changes"
 					var err error
-					plan, err = restoreplan.CreateDecisionPreview(r.Root, workspaceName, targetID, engineType)
+					plan, err = restoreplan.CreateDecisionPreview(ctx.Repo.Root, ctx.Workspace, targetID, engineType)
 					return err
 				}
 			}
 			var err error
-			plan, err = restoreplan.Create(r.Root, workspaceName, targetID, engineType, restoreplan.Options{
+			plan, err = restoreplan.Create(ctx.Repo.Root, ctx.Workspace, targetID, engineType, restoreplan.Options{
 				DiscardUnsaved: restoreDiscardDirty,
 				SaveFirst:      restoreIncludeWorking,
 			})
@@ -104,7 +111,7 @@ Examples:
 			result.NextCommands = restoreDecisionNextCommands(targetID, "")
 		}
 		if jsonOutput {
-			return outputJSON(result)
+			return outputJSONWithSeparatedControl(result, ctx.Separated, separatedDoctorStrictNotRun)
 		}
 
 		printRestorePreviewResult(result)
@@ -267,7 +274,7 @@ type restoreApplyOutcome struct {
 	HasTransfer bool
 }
 
-func runRestorePlan(repoRoot, workspaceName, planID string) error {
+func runRestorePlan(repoRoot, workspaceName, planID string, separated *repo.SeparatedContext) error {
 	result, err := executeRestorePlanRun(repoRoot, workspaceName, planID)
 	if err != nil {
 		err = restoreRunErrorWithMutationState(err, result)
@@ -276,7 +283,7 @@ func runRestorePlan(repoRoot, workspaceName, planID string) error {
 		}
 		return restorePointError(err)
 	}
-	return outputRestoreRunResult(result)
+	return outputRestoreRunResult(result, separated)
 }
 
 func executeRestorePlanRun(repoRoot, workspaceName, planID string) (restoreRunResult, error) {
@@ -465,12 +472,12 @@ func resolveAppliedRestoreRecovery(repoRoot string, recoveryPlan *recovery.Plan)
 	return recovery.NewManager(repoRoot).MarkResolved(recoveryPlan.PlanID)
 }
 
-func outputRestoreRunResult(result restoreRunResult) error {
+func outputRestoreRunResult(result restoreRunResult, separated *repo.SeparatedContext) error {
 	if jsonOutput {
 		if result.Scope == restoreplan.ScopePath {
-			return outputJSON(result.Path)
+			return outputJSONWithSeparatedControl(result.Path, separated, separatedDoctorStrictNotRun)
 		}
-		return outputJSON(result.Whole)
+		return outputJSONWithSeparatedControl(result.Whole, separated, separatedDoctorStrictNotRun)
 	}
 	if result.Scope == restoreplan.ScopePath {
 		printRestorePathResult(result.Path)
@@ -504,8 +511,13 @@ func restoreRunErrorWithMutationState(err error, result restoreRunResult) error 
 	return &restoreRunFilesChangedError{err: err}
 }
 
-func runRestorePath(cmd *cobra.Command, args []string, repoRoot, workspaceName string) error {
+func runRestorePath(cmd *cobra.Command, args []string, ctx *cliDiscoveryContext) error {
+	repoRoot := ctx.Repo.Root
+	workspaceName := ctx.Workspace
 	if len(args) == 0 {
+		if err := validateSeparatedPayloadSymlinkBoundary(ctx.Separated); err != nil {
+			return restorePathError(err, restorePath)
+		}
 		path, err := normalizeRestorePathFlag(repoRoot, workspaceName, restorePath)
 		if err != nil {
 			return restorePathError(err, restorePath)
@@ -515,7 +527,7 @@ func runRestorePath(cmd *cobra.Command, args []string, repoRoot, workspaceName s
 			return restorePathError(err, path)
 		}
 		if jsonOutput {
-			return outputJSON(result)
+			return outputJSONWithSeparatedControl(result, ctx.Separated, separatedDoctorStrictNotRun)
 		}
 		printRestorePathCandidates(result)
 		return nil
@@ -532,6 +544,9 @@ func runRestorePath(cmd *cobra.Command, args []string, repoRoot, workspaceName s
 	path, err := normalizeRestorePathFlag(repoRoot, workspaceName, restorePath)
 	if err != nil {
 		return restorePathError(err, restorePath)
+	}
+	if err := validateSeparatedPayloadSymlinkBoundary(ctx.Separated); err != nil {
+		return restorePathError(err, restorePath, path)
 	}
 
 	var plan *restoreplan.Plan
@@ -572,7 +587,7 @@ func runRestorePath(cmd *cobra.Command, args []string, repoRoot, workspaceName s
 		result.NextCommands = restoreDecisionNextCommands(targetID, path)
 	}
 	if jsonOutput {
-		return outputJSON(result)
+		return outputJSONWithSeparatedControl(result, ctx.Separated, separatedDoctorStrictNotRun)
 	}
 	printRestorePreviewResult(result)
 	return nil

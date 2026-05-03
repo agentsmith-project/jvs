@@ -28,27 +28,27 @@ var recoveryStatusCmd = &cobra.Command{
 	Short: "Show restore recovery status",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		r, err := discoverRequiredRepo()
+		ctx, err := resolveRepoScoped()
 		if err != nil {
 			return err
 		}
 		if len(args) == 0 {
-			result, err := recoveryStatusList(r.Root)
+			result, err := recoveryStatusList(ctx.Repo.Root)
 			if err != nil {
 				return recoveryError(err)
 			}
 			if jsonOutput {
-				return outputJSON(result)
+				return outputJSONWithSeparatedControl(result, ctx.Separated, separatedDoctorStrictNotRun)
 			}
 			printRecoveryStatusList(result)
 			return nil
 		}
-		result, err := recoveryStatusDetail(r.Root, args[0])
+		result, err := recoveryStatusDetail(ctx.Repo.Root, args[0])
 		if err != nil {
 			return recoveryError(err)
 		}
 		if jsonOutput {
-			return outputJSON(result)
+			return outputJSONWithSeparatedControl(result, ctx.Separated, separatedDoctorStrictNotRun)
 		}
 		printRecoveryStatusDetail(result)
 		return nil
@@ -60,16 +60,19 @@ var recoveryResumeCmd = &cobra.Command{
 	Short: "Resume an interrupted restore",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		r, err := discoverRequiredRepo()
+		ctx, err := resolveRepoScoped()
 		if err != nil {
 			return err
 		}
-		result, err := runRecoveryResume(r.Root, args[0])
+		if err := validateSeparatedPayloadSymlinkBoundary(ctx.Separated); err != nil {
+			return recoveryError(err)
+		}
+		result, err := runRecoveryResume(ctx.Repo.Root, args[0])
 		if err != nil {
 			return recoveryError(err)
 		}
 		if jsonOutput {
-			return outputJSON(result)
+			return outputJSONWithSeparatedControl(result, ctx.Separated, separatedDoctorStrictNotRun)
 		}
 		printRecoveryResumeResult(result)
 		return nil
@@ -81,16 +84,19 @@ var recoveryRollbackCmd = &cobra.Command{
 	Short: "Rollback an interrupted restore",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		r, err := discoverRequiredRepo()
+		ctx, err := resolveRepoScoped()
 		if err != nil {
 			return err
 		}
-		result, err := runRecoveryRollback(r.Root, args[0])
+		if err := validateSeparatedPayloadSymlinkBoundary(ctx.Separated); err != nil {
+			return recoveryError(err)
+		}
+		result, err := runRecoveryRollback(ctx.Repo.Root, args[0])
 		if err != nil {
 			return recoveryError(err)
 		}
 		if jsonOutput {
-			return outputJSON(result)
+			return outputJSONWithSeparatedControl(result, ctx.Separated, separatedDoctorStrictNotRun)
 		}
 		printRecoveryRollbackResult(result)
 		return nil

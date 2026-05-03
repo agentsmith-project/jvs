@@ -57,4 +57,24 @@ var (
 	ErrLifecyclePending          = &JVSError{Code: "E_LIFECYCLE_PENDING"}
 	ErrLifecycleUnsafeCWD        = &JVSError{Code: "E_LIFECYCLE_UNSAFE_CWD"}
 	ErrLifecycleIdentityMismatch = &JVSError{Code: "E_LIFECYCLE_IDENTITY_MISMATCH"}
+
+	ErrControlPayloadOverlap            = &JVSError{Code: "E_CONTROL_PAYLOAD_OVERLAP"}
+	ErrPayloadInsideControl             = &JVSError{Code: "E_PAYLOAD_INSIDE_CONTROL"}
+	ErrControlInsidePayload             = &JVSError{Code: "E_CONTROL_INSIDE_PAYLOAD"}
+	ErrPathBoundaryEscape               = &JVSError{Code: "E_PATH_BOUNDARY_ESCAPE"}
+	ErrControlMissing                   = &JVSError{Code: "E_CONTROL_MISSING"}
+	ErrControlMalformed                 = &JVSError{Code: "E_CONTROL_MALFORMED"}
+	ErrPayloadMissing                   = &JVSError{Code: "E_PAYLOAD_MISSING"}
+	ErrRepoIDMismatch                   = &JVSError{Code: "E_REPO_ID_MISMATCH"}
+	ErrWorkspaceMismatch                = &JVSError{Code: "E_WORKSPACE_MISMATCH"}
+	ErrPermissionDenied                 = &JVSError{Code: "E_PERMISSION_DENIED"}
+	ErrExplicitTargetRequired           = &JVSError{Code: "E_EXPLICIT_TARGET_REQUIRED"}
+	ErrPayloadLocatorPresent            = &JVSError{Code: "E_PAYLOAD_LOCATOR_PRESENT"}
+	ErrTargetRootOccupied               = &JVSError{Code: "E_TARGET_ROOT_OCCUPIED"}
+	ErrSourceDirty                      = &JVSError{Code: "E_SOURCE_DIRTY"}
+	ErrAtomicPublishBlocked             = &JVSError{Code: "E_ATOMIC_PUBLISH_BLOCKED"}
+	ErrImportedHistoryProtectionMissing = &JVSError{Code: "E_IMPORTED_HISTORY_PROTECTION_MISSING"}
+	ErrSeparatedLifecycleUnsupported    = &JVSError{Code: "E_SEPARATED_LIFECYCLE_UNSUPPORTED"}
+	ErrActiveOperationBlocking          = &JVSError{Code: "E_ACTIVE_OPERATION_BLOCKING"}
+	ErrRecoveryBlocking                 = &JVSError{Code: "E_RECOVERY_BLOCKING"}
 )

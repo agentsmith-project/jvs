@@ -13,6 +13,8 @@ import (
 )
 
 type workspaceStatus struct {
+	separatedControlJSONFields
+
 	Repo                 string                     `json:"repo"`
 	Folder               string                     `json:"folder"`
 	Workspace            string                     `json:"workspace"`
@@ -31,13 +33,16 @@ var statusCmd = &cobra.Command{
 	Long: `Show the active folder, workspace, newest save point, file source, and
 whether the folder has unsaved changes.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		r, workspaceName, err := discoverRequiredWorktree()
+		ctx, err := resolveWorkspaceScoped()
 		if err != nil {
 			return err
 		}
-		status, err := buildWorkspaceStatus(r.Root, workspaceName)
+		status, err := buildWorkspaceStatus(ctx.Repo.Root, ctx.Workspace)
 		if err != nil {
 			return err
+		}
+		if ctx.Separated != nil {
+			status.separatedControlJSONFields = separatedControlFields(ctx.Separated, "passed")
 		}
 		if jsonOutput {
 			return outputJSON(status)

@@ -28,7 +28,7 @@ Examples:
   jvs save --message "before cleanup"`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		r, workspaceName, err := discoverRequiredWorktree()
+		ctx, err := resolveWorkspaceScoped()
 		if err != nil {
 			return err
 		}
@@ -38,22 +38,30 @@ Examples:
 			return err
 		}
 
-		desc, transferRecord, err := createSavePointDescriptor(r.Root, workspaceName, message)
+		if err := validateSeparatedPayloadSymlinkBoundary(ctx.Separated); err != nil {
+			return savePointError(err)
+		}
+
+		desc, transferRecord, err := createSavePointDescriptor(ctx.Repo.Root, ctx.Workspace, message)
 		if err != nil {
 			return savePointError(err)
 		}
 
-		unsavedChanges, err := workspaceDirty(r.Root, workspaceName)
+		unsavedChanges, err := workspaceDirty(ctx.Repo.Root, ctx.Workspace)
 		if err != nil {
 			return err
 		}
 
 		if jsonOutput {
-			return outputJSON(publicSavePointCreated(desc, unsavedChanges, transferDataFromRecord(transferRecord)))
+			return outputJSONWithSeparatedControl(
+				publicSavePointCreated(desc, unsavedChanges, transferDataFromRecord(transferRecord)),
+				ctx.Separated,
+				separatedDoctorStrictNotRun,
+			)
 		}
 
 		fmt.Printf("Saved save point %s\n", color.SnapshotID(desc.SnapshotID.String()))
-		fmt.Printf("Workspace: %s\n", workspaceName)
+		fmt.Printf("Workspace: %s\n", ctx.Workspace)
 		if message != "" {
 			fmt.Printf("Message: %s\n", message)
 		}

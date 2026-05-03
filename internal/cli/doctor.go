@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/agentsmith-project/jvs/internal/doctor"
+	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
 )
 
@@ -31,6 +32,11 @@ Use --repair-runtime to execute safe automatic repairs.`,
 		return errclass.ErrUsage.WithMessage("doctor does not accept positional arguments")
 	},
 	Run: func(cmd *cobra.Command, args []string) {
+		if targetControlRoot != "" && doctorStrict && jsonOutput && !doctorRepair && !doctorRepairList {
+			runSeparatedStrictDoctorJSON()
+			return
+		}
+
 		r, err := discoverRequiredRepoForDoctor()
 		if err != nil {
 			exitWithCLIError(err)
@@ -104,6 +110,27 @@ Use --repair-runtime to execute safe automatic repairs.`,
 			os.Exit(1)
 		}
 	},
+}
+
+func runSeparatedStrictDoctorJSON() {
+	if targetRepoPath != "" {
+		exitWithCLIError(errclass.ErrUsage.WithMessage("--control-root cannot be combined with --repo"))
+	}
+	if targetWorkspaceName == "" {
+		exitWithCLIError(errclass.ErrExplicitTargetRequired.WithMessage("--control-root requires --workspace <name>"))
+	}
+	result, err := doctor.CheckSeparatedStrict(repo.SeparatedContextRequest{
+		ControlRoot: targetControlRoot,
+		Workspace:   targetWorkspaceName,
+	})
+	if err != nil {
+		exitWithCLIError(err)
+	}
+	recordResolvedTarget(result.ControlRoot, result.WorkspaceName)
+	outputJSON(result)
+	if !result.Healthy {
+		os.Exit(1)
+	}
 }
 
 func init() {

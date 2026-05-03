@@ -46,7 +46,7 @@ After finding a candidate, open it with:
   jvs view <save> <path>`,
 	Args: validateHistoryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		r, workspaceName, err := discoverRequiredWorktree()
+		ctx, err := resolveWorkspaceScoped()
 		if err != nil {
 			return err
 		}
@@ -58,12 +58,12 @@ After finding a candidate, open it with:
 			if err != nil {
 				return historyPathError(err)
 			}
-			result, err := findHistoryPathCandidates(r.Root, workspaceName, path)
+			result, err := findHistoryPathCandidates(ctx.Repo.Root, ctx.Workspace, path)
 			if err != nil {
 				return historyPathError(err)
 			}
 			if jsonOutput {
-				return outputJSON(result)
+				return outputJSONWithSeparatedControl(result, ctx.Separated, separatedDoctorStrictNotRun)
 			}
 			printHistoryPathCandidates(result)
 			return nil
@@ -77,12 +77,12 @@ After finding a candidate, open it with:
 			return fmt.Errorf("--limit must be 0 or greater")
 		}
 
-		result, err := loadHistoryResult(r.Root, workspaceName, request)
+		result, err := loadHistoryResult(ctx.Repo.Root, ctx.Workspace, request)
 		if err != nil {
 			return err
 		}
 		if jsonOutput {
-			return outputJSON(result)
+			return outputJSONWithSeparatedControl(result, ctx.Separated, separatedDoctorStrictNotRun)
 		}
 		printHistoryResult(result)
 		return nil

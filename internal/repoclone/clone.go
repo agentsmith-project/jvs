@@ -15,6 +15,8 @@ import (
 	"github.com/agentsmith-project/jvs/internal/doctor"
 	"github.com/agentsmith-project/jvs/internal/engine"
 	"github.com/agentsmith-project/jvs/internal/integrity"
+	"github.com/agentsmith-project/jvs/internal/lifecycle"
+	"github.com/agentsmith-project/jvs/internal/recovery"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/internal/snapshotpayload"
@@ -48,25 +50,37 @@ func SetCapacityGateForTest(gate capacitygate.Gate) func() {
 }
 
 type Options struct {
-	SourceRepoRoot  string
-	TargetPath      string
-	SavePointsMode  SavePointsMode
-	DryRun          bool
-	RequestedEngine model.EngineType
-	TransferPlanner transfer.EnginePlanner
-	Hooks           Hooks
+	SourceRepoRoot    string
+	TargetPath        string
+	TargetControlRoot string
+	TargetPayloadRoot string
+	SavePointsMode    SavePointsMode
+	DryRun            bool
+	RequestedEngine   model.EngineType
+	TransferPlanner   transfer.EnginePlanner
+	Hooks             Hooks
 }
 
 type Hooks struct {
-	BeforePublish func(stagingPath, targetPath string) error
+	BeforePublish                func(stagingPath, targetPath string) error
+	AfterSeparatedPayloadPublish func(publishedPayloadRoot, targetPayloadRoot string) error
 }
 
 type Result struct {
 	Operation                  string             `json:"operation"`
 	SourceRepoRoot             string             `json:"source_repo_root"`
 	TargetRepoRoot             string             `json:"target_repo_root"`
+	TargetControlRoot          string             `json:"target_control_root,omitempty"`
+	TargetPayloadRoot          string             `json:"target_payload_root,omitempty"`
 	SourceRepoID               string             `json:"source_repo_id"`
 	TargetRepoID               string             `json:"target_repo_id,omitempty"`
+	ControlRoot                string             `json:"control_root,omitempty"`
+	PayloadRoot                string             `json:"payload_root,omitempty"`
+	RepoMode                   string             `json:"repo_mode,omitempty"`
+	WorkspaceName              string             `json:"workspace_name,omitempty"`
+	SeparatedControl           *bool              `json:"separated_control,omitempty"`
+	BoundaryValidated          *bool              `json:"boundary_validated,omitempty"`
+	LocatorAuthoritative       *bool              `json:"locator_authoritative,omitempty"`
 	SavePointsMode             SavePointsMode     `json:"save_points_mode"`
 	SavePointsCopiedCount      int                `json:"save_points_copied_count"`
 	SavePointsCopied           []model.SnapshotID `json:"save_points_copied"`
@@ -84,6 +98,11 @@ type preparedClone struct {
 	options                    Options
 	source                     *repo.Repo
 	target                     string
+	targetControlRoot          string
+	targetPayloadRoot          string
+	separatedTarget            bool
+	targetControlExisted       bool
+	targetPayloadExisted       bool
 	mode                       SavePointsMode
 	sourceMain                 *model.WorktreeConfig
 	sourceWorkspaces           []*model.WorktreeConfig
@@ -112,15 +131,11 @@ func Clone(options Options) (*Result, error) {
 
 func prepare(options Options) (*preparedClone, error) {
 	mode := options.SavePointsMode
-	if mode == "" {
-		mode = SavePointsModeAll
-	}
-	if mode != SavePointsModeAll && mode != SavePointsModeMain {
+	if mode != "" && mode != SavePointsModeAll && mode != SavePointsModeMain {
 		return nil, errclass.ErrUsage.WithMessage("invalid --save-points value: use all or main")
 	}
-	options.SavePointsMode = mode
 
-	if IsRemoteLikeInput(options.TargetPath) || IsRemoteLikeInput(options.SourceRepoRoot) {
+	if IsRemoteLikeInput(options.TargetPath) || IsRemoteLikeInput(options.TargetControlRoot) || IsRemoteLikeInput(options.TargetPayloadRoot) || IsRemoteLikeInput(options.SourceRepoRoot) {
 		return nil, remoteLikeInputError()
 	}
 
@@ -128,9 +143,24 @@ func prepare(options Options) (*preparedClone, error) {
 	if err != nil {
 		return nil, err
 	}
-	target, err := normalizeTargetPath(options.TargetPath)
+	separatedTargetRequested := options.TargetControlRoot != "" || options.TargetPayloadRoot != ""
+	if source.Mode == repo.RepoModeSeparatedControl && !separatedTargetRequested {
+		return nil, separatedCloneExplicitTargetRequiredError()
+	}
+	if mode == "" {
+		if source.Mode == repo.RepoModeSeparatedControl || separatedTargetRequested {
+			mode = SavePointsModeMain
+		} else {
+			mode = SavePointsModeAll
+		}
+	}
+	options.SavePointsMode = mode
+	target, targetControlRoot, targetPayloadRoot, separatedTarget, controlExisted, payloadExisted, err := normalizeCloneTarget(options)
 	if err != nil {
 		return nil, err
+	}
+	if (source.Mode == repo.RepoModeSeparatedControl || separatedTarget) && mode == SavePointsModeAll {
+		return nil, importedHistoryProtectionMissingError()
 	}
 
 	wtMgr := worktree.NewManager(source.Root)
@@ -139,20 +169,24 @@ func prepare(options Options) (*preparedClone, error) {
 		return nil, fmt.Errorf("cannot clone: source workspaces cannot be listed: %w", err)
 	}
 	sortWorkspaces(workspaces)
-	if err := rejectTargetInsideSourceWorkspaces(source.Root, target, workspaces); err != nil {
-		return nil, err
-	}
-	if err := rejectTargetInsideSourceProject(source.Root, target); err != nil {
-		return nil, err
-	}
-	if err := validateTargetMissing(target); err != nil {
-		return nil, err
+	for _, targetRoot := range cloneTargetRootsForSourceBoundary(targetControlRoot, targetPayloadRoot, separatedTarget) {
+		if err := rejectTargetInsideSourceWorkspaces(source.Root, targetRoot, workspaces); err != nil {
+			return nil, err
+		}
+		if err := rejectTargetInsideSourceProject(source.Root, targetRoot); err != nil {
+			return nil, err
+		}
 	}
 	mainCfg, err := wtMgr.Get("main")
 	if err != nil {
 		return nil, fmt.Errorf("cannot clone: source main workspace is not readable: %w", err)
 	}
-	if err := rejectDirtySourceWorkspaces(source.Root, workspaces); err != nil {
+	if source.Mode == repo.RepoModeSeparatedControl {
+		if err := rejectSeparatedSourceActiveOperation(source.Root); err != nil {
+			return nil, err
+		}
+	}
+	if err := rejectDirtySourceWorkspaces(source.Root, workspaces, source.Mode == repo.RepoModeSeparatedControl); err != nil {
 		return nil, err
 	}
 
@@ -168,12 +202,53 @@ func prepare(options Options) (*preparedClone, error) {
 		options:                    options,
 		source:                     source,
 		target:                     target,
+		targetControlRoot:          targetControlRoot,
+		targetPayloadRoot:          targetPayloadRoot,
+		separatedTarget:            separatedTarget,
+		targetControlExisted:       controlExisted,
+		targetPayloadExisted:       payloadExisted,
 		mode:                       mode,
 		sourceMain:                 mainCfg,
 		sourceWorkspaces:           workspaces,
 		sourceWorkspacesNotCreated: nonMainWorkspaceNames(workspaces),
 		savePoints:                 savePoints,
 	}, nil
+}
+
+func normalizeCloneTarget(options Options) (target, controlRoot, payloadRoot string, separated bool, controlExisted, payloadExisted bool, err error) {
+	separated = options.TargetControlRoot != "" || options.TargetPayloadRoot != ""
+	if !separated {
+		target, err := normalizeTargetPath(options.TargetPath)
+		if err != nil {
+			return "", "", "", false, false, false, err
+		}
+		if err := validateTargetMissing(target); err != nil {
+			return "", "", "", false, false, false, err
+		}
+		return target, target, target, false, false, false, nil
+	}
+	if strings.TrimSpace(options.TargetPath) != "" {
+		return "", "", "", false, false, false, errclass.ErrUsage.WithMessage("repo clone with --target-control-root and --target-payload-root does not accept a target folder")
+	}
+	if strings.TrimSpace(options.TargetControlRoot) == "" || strings.TrimSpace(options.TargetPayloadRoot) == "" {
+		return "", "", "", false, false, false, errclass.ErrUsage.WithMessage("--target-control-root and --target-payload-root must be provided together")
+	}
+	roots, err := validateSeparatedCloneTargetRoots(options.TargetControlRoot, options.TargetPayloadRoot)
+	if err != nil {
+		return "", "", "", false, false, false, err
+	}
+	return roots.controlPath, roots.controlPath, roots.payloadPath, true, roots.controlExisted, roots.payloadExisted, nil
+}
+
+func separatedCloneExplicitTargetRequiredError() error {
+	return errclass.ErrExplicitTargetRequired.WithMessage("separated source repo clone requires --target-control-root and --target-payload-root")
+}
+
+func cloneTargetRootsForSourceBoundary(controlRoot, payloadRoot string, separated bool) []string {
+	if separated {
+		return []string{controlRoot, payloadRoot}
+	}
+	return []string{controlRoot}
 }
 
 func discoverSource(sourceRoot string) (*repo.Repo, error) {
@@ -218,6 +293,83 @@ func validateTargetMissing(target string) error {
 		return fmt.Errorf("stat target folder: %w", err)
 	}
 	return nil
+}
+
+type separatedCloneTargetRoots struct {
+	controlPath     string
+	payloadPath     string
+	controlExisted  bool
+	payloadExisted  bool
+	controlPhysical string
+	payloadPhysical string
+}
+
+func validateSeparatedCloneTargetRoots(controlRoot, payloadRoot string) (separatedCloneTargetRoots, error) {
+	controlPath, err := normalizeTargetPath(controlRoot)
+	if err != nil {
+		return separatedCloneTargetRoots{}, errclass.ErrUsage.WithMessagef("resolve target control root: %v", err)
+	}
+	payloadPath, err := normalizeTargetPath(payloadRoot)
+	if err != nil {
+		return separatedCloneTargetRoots{}, errclass.ErrUsage.WithMessagef("resolve target payload root: %v", err)
+	}
+	controlPhysical, err := physicalPathForPossiblyMissingPath(controlPath)
+	if err != nil {
+		return separatedCloneTargetRoots{}, errclass.ErrPathBoundaryEscape.WithMessagef("resolve target control root: %v", err)
+	}
+	payloadPhysical, err := physicalPathForPossiblyMissingPath(payloadPath)
+	if err != nil {
+		return separatedCloneTargetRoots{}, errclass.ErrPathBoundaryEscape.WithMessagef("resolve target payload root: %v", err)
+	}
+	if controlPath == payloadPath || controlPhysical == payloadPhysical {
+		return separatedCloneTargetRoots{}, errclass.ErrControlPayloadOverlap.WithMessage("target control root and payload root must be distinct")
+	}
+	if pathInsideOrEqual(controlPath, payloadPath) || pathInsideOrEqual(controlPhysical, payloadPhysical) {
+		return separatedCloneTargetRoots{}, errclass.ErrPayloadInsideControl.WithMessage("target payload root must not be inside target control root")
+	}
+	if pathInsideOrEqual(payloadPath, controlPath) || pathInsideOrEqual(payloadPhysical, controlPhysical) {
+		return separatedCloneTargetRoots{}, errclass.ErrControlInsidePayload.WithMessage("target control root must not be inside target payload root")
+	}
+	controlExisted, err := validateSeparatedCloneTargetEmptyOrMissing(controlPath, "target control root")
+	if err != nil {
+		return separatedCloneTargetRoots{}, err
+	}
+	payloadExisted, err := validateSeparatedCloneTargetEmptyOrMissing(payloadPath, "target payload root")
+	if err != nil {
+		return separatedCloneTargetRoots{}, err
+	}
+	return separatedCloneTargetRoots{
+		controlPath:     controlPath,
+		payloadPath:     payloadPath,
+		controlExisted:  controlExisted,
+		payloadExisted:  payloadExisted,
+		controlPhysical: controlPhysical,
+		payloadPhysical: payloadPhysical,
+	}, nil
+}
+
+func validateSeparatedCloneTargetEmptyOrMissing(path, role string) (bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat %s: %w", role, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return true, errclass.ErrTargetRootOccupied.WithMessagef("%s must not be a symlink: %s", role, path)
+	}
+	if !info.IsDir() {
+		return true, errclass.ErrTargetRootOccupied.WithMessagef("%s exists and is not a directory: %s", role, path)
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return true, fmt.Errorf("read %s: %w", role, err)
+	}
+	if len(entries) > 0 {
+		return true, errclass.ErrTargetRootOccupied.WithMessagef("%s must be empty or missing: %s", role, path)
+	}
+	return true, nil
 }
 
 func rejectTargetInsideSourceWorkspaces(repoRoot, target string, workspaces []*model.WorktreeConfig) error {
@@ -337,16 +489,26 @@ func pathInsideOrEqual(root, path string) bool {
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && !filepath.IsAbs(rel))
 }
 
-func rejectDirtySourceWorkspaces(repoRoot string, workspaces []*model.WorktreeConfig) error {
+func rejectDirtySourceWorkspaces(repoRoot string, workspaces []*model.WorktreeConfig, separatedSource bool) error {
 	for _, cfg := range workspaces {
 		if cfg == nil {
 			continue
 		}
 		dirty, err := workspaceDirty(repoRoot, cfg.Name)
 		if err != nil {
+			if separatedSource {
+				return errclass.ErrSourceDirty.
+					WithMessagef("Cannot clone: source workspace %q cannot be inspected safely.", cfg.Name).
+					WithHint("Run doctor --strict, save or discard source changes, then retry with --save-points main.")
+			}
 			return fmt.Errorf("cannot clone: source workspace %q cannot be inspected: %w", cfg.Name, err)
 		}
 		if dirty {
+			if separatedSource {
+				return errclass.ErrSourceDirty.
+					WithMessagef("Cannot clone: source workspace %q has unsaved changes.", cfg.Name).
+					WithHint("Save those changes as a save point first. JVS separated repo clone only creates target workspace \"main\".")
+			}
 			return &errclass.JVSError{
 				Code:    "E_UNSAVED_CHANGES",
 				Message: fmt.Sprintf("Cannot clone: source workspace %q has unsaved changes.", cfg.Name),
@@ -355,6 +517,99 @@ func rejectDirtySourceWorkspaces(repoRoot string, workspaces []*model.WorktreeCo
 		}
 	}
 	return nil
+}
+
+func rejectSeparatedSourceActiveOperation(repoRoot string) error {
+	inspection, err := repo.InspectMutationLock(repoRoot)
+	if err != nil {
+		return errclass.ErrActiveOperationBlocking.
+			WithMessagef("Cannot clone: source active operation state cannot be inspected: %v", err).
+			WithHint("Run doctor --strict for the source control root before cloning.")
+	}
+	if inspection.Status != repo.MutationLockAbsent {
+		return errclass.ErrActiveOperationBlocking.
+			WithMessagef("Cannot clone: source repository has an active operation lock (%s).", inspection.Status).
+			WithHint("Wait for the operation to finish, or run doctor --strict for the source control root.")
+	}
+	pending, err := lifecycle.ListPendingOperations(repoRoot)
+	if err != nil {
+		return errclass.ErrActiveOperationBlocking.
+			WithMessagef("Cannot clone: source lifecycle operations cannot be inspected: %v", err).
+			WithHint("Run doctor --strict for the source control root before cloning.")
+	}
+	if len(pending) > 0 {
+		return errclass.ErrActiveOperationBlocking.
+			WithMessagef("Cannot clone: source lifecycle operation %s is pending.", pending[0].OperationID).
+			WithHint("Resume or resolve the pending source operation before cloning.")
+	}
+	if entry, err := firstActiveControlEntry(filepath.Join(repoRoot, repo.JVSDirName, "intents"), nil); err != nil {
+		return errclass.ErrActiveOperationBlocking.
+			WithMessagef("Cannot clone: source operation intents cannot be inspected: %v", err).
+			WithHint("Run doctor --strict for the source control root before cloning.")
+	} else if entry != "" {
+		return errclass.ErrActiveOperationBlocking.
+			WithMessagef("Cannot clone: source repository has an active operation intent (%s).", entry).
+			WithHint("Wait for the operation to finish, or run doctor --strict for the source control root.")
+	}
+	if entry, err := firstActiveControlEntry(filepath.Join(repoRoot, repo.JVSDirName, "gc"), cleanupPlanEntry); err != nil {
+		return errclass.ErrActiveOperationBlocking.
+			WithMessagef("Cannot clone: source cleanup plans cannot be inspected: %v", err).
+			WithHint("Run doctor --strict for the source control root before cloning.")
+	} else if entry != "" {
+		return errclass.ErrActiveOperationBlocking.
+			WithMessagef("Cannot clone: source cleanup plan %s is pending.", entry).
+			WithHint("Run or remove the pending source cleanup plan before cloning.")
+	}
+	if entry, err := firstActiveControlEntry(filepath.Join(repoRoot, repo.JVSDirName, "restore-plans"), nil); err != nil {
+		return errclass.ErrActiveOperationBlocking.
+			WithMessagef("Cannot clone: source restore plans cannot be inspected: %v", err).
+			WithHint("Run doctor --strict for the source control root before cloning.")
+	} else if entry != "" {
+		return errclass.ErrActiveOperationBlocking.
+			WithMessagef("Cannot clone: source restore plan %s is pending.", entry).
+			WithHint("Run or remove the pending source restore plan before cloning.")
+	}
+	recoveryPlans, err := recovery.NewManager(repoRoot).List()
+	if err != nil {
+		return errclass.ErrRecoveryBlocking.
+			WithMessagef("Cannot clone: source recovery state cannot be inspected: %v", err).
+			WithHint("Run recovery status or doctor --strict for the source control root before cloning.")
+	}
+	for _, plan := range recoveryPlans {
+		if plan.Status == recovery.StatusActive {
+			return errclass.ErrRecoveryBlocking.
+				WithMessagef("Cannot clone: source recovery plan %s is active.", plan.PlanID).
+				WithHint("Resolve or roll back the source recovery plan before cloning.")
+		}
+	}
+	return nil
+}
+
+func firstActiveControlEntry(dir string, include func(os.DirEntry) bool) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+	for _, entry := range entries {
+		if include != nil && !include(entry) {
+			continue
+		}
+		return entry.Name(), nil
+	}
+	return "", nil
+}
+
+func cleanupPlanEntry(entry os.DirEntry) bool {
+	if entry.IsDir() {
+		return false
+	}
+	return strings.HasSuffix(entry.Name(), ".json")
+}
+
+func importedHistoryProtectionMissingError() error {
+	return errclass.ErrImportedHistoryProtectionMissing.
+		WithMessage("Cannot clone with --save-points all yet.").
+		WithHint("Use --save-points main, or upgrade to a build that supports imported history protection.")
 }
 
 func selectedSavePoints(repoRoot string, mode SavePointsMode, mainCfg *model.WorktreeConfig) ([]model.SnapshotID, error) {
@@ -461,7 +716,7 @@ func (p *preparedClone) dryRunResult() (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("source main workspace path: %w", err)
 	}
-	intents := p.transferIntents(p.target, mainBoundary, transfer.ResultKindExpected, transfer.PermissionScopePreviewOnly)
+	intents := p.transferIntents(p.targetControlRoot, p.targetPayloadRoot, mainBoundary, transfer.ResultKindExpected, transfer.PermissionScopePreviewOnly)
 	records, err := p.planTransferRecords(intents)
 	if err != nil {
 		return nil, err
@@ -473,6 +728,13 @@ func (p *preparedClone) dryRunResult() (*Result, error) {
 }
 
 func (p *preparedClone) execute() (*Result, error) {
+	if p.separatedTarget {
+		return p.executeSeparated()
+	}
+	return p.executeEmbedded()
+}
+
+func (p *preparedClone) executeEmbedded() (*Result, error) {
 	parent := filepath.Dir(p.target)
 	if _, err := os.Stat(parent); err != nil {
 		return nil, fmt.Errorf("stat target parent: %w", err)
@@ -501,7 +763,7 @@ func (p *preparedClone) execute() (*Result, error) {
 		return nil, fmt.Errorf("initialize target staging repo: %w", err)
 	}
 
-	intents := p.transferIntents(staging, mainBoundary, transfer.ResultKindFinal, transfer.PermissionScopeExecution)
+	intents := p.transferIntents(staging, staging, mainBoundary, transfer.ResultKindFinal, transfer.PermissionScopeExecution)
 	plans, records, err := p.planTransfers(intents)
 	if err != nil {
 		return nil, err
@@ -563,6 +825,155 @@ func (p *preparedClone) execute() (*Result, error) {
 	return result, nil
 }
 
+func (p *preparedClone) executeSeparated() (*Result, error) {
+	for _, parent := range []string{filepath.Dir(p.targetControlRoot), filepath.Dir(p.targetPayloadRoot)} {
+		if _, err := os.Stat(parent); err != nil {
+			return nil, fmt.Errorf("stat target parent: %w", err)
+		}
+	}
+	mainBoundary, err := repo.WorktreeManagedPayloadBoundary(p.source.Root, "main")
+	if err != nil {
+		return nil, fmt.Errorf("source main workspace path: %w", err)
+	}
+	if err := p.checkCapacity(mainBoundary); err != nil {
+		return nil, err
+	}
+
+	stagingControl, err := os.MkdirTemp(filepath.Dir(p.targetControlRoot), "."+filepath.Base(p.targetControlRoot)+".clone-control-staging-")
+	if err != nil {
+		return nil, fmt.Errorf("create clone control staging: %w", err)
+	}
+	stagingPayload, err := os.MkdirTemp(filepath.Dir(p.targetPayloadRoot), "."+filepath.Base(p.targetPayloadRoot)+".clone-payload-staging-")
+	if err != nil {
+		_ = os.RemoveAll(stagingControl)
+		return nil, fmt.Errorf("create clone payload staging: %w", err)
+	}
+	published := false
+	defer func() {
+		if !published {
+			_ = os.RemoveAll(stagingControl)
+			_ = os.RemoveAll(stagingPayload)
+		}
+	}()
+
+	targetRepo, err := repo.InitSeparatedControl(stagingControl, stagingPayload, "main")
+	if err != nil {
+		return nil, fmt.Errorf("initialize separated target staging repo: %w", err)
+	}
+
+	intents := p.transferIntents(stagingControl, stagingPayload, mainBoundary, transfer.ResultKindFinal, transfer.PermissionScopeExecution)
+	plans, records, err := p.planTransfers(intents)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := p.copySavePointStorage(stagingControl, plans.savePlan, intents.saveIntent, &records[0]); err != nil {
+		return nil, err
+	}
+	mainSourceBoundary, cleanupMainSource, err := p.materializeMainWorkspaceForSeparatedClone(mainBoundary)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanupMainSource()
+	if err := p.copyMainWorkspace(mainSourceBoundary, stagingPayload, plans.mainPlan, intents.mainIntent, &records[1]); err != nil {
+		return nil, err
+	}
+	if err := writeTargetMainConfig(stagingControl, p.sourceMain, stagingPayload); err != nil {
+		return nil, err
+	}
+	if err := validateCopiedSavePoints(stagingControl, p.savePoints); err != nil {
+		return nil, err
+	}
+	if err := checkSeparatedDoctorStrict(stagingControl); err != nil {
+		return nil, fmt.Errorf("doctor strict before publish: %w", err)
+	}
+	if err := writeTargetMainConfig(stagingControl, p.sourceMain, p.targetPayloadRoot); err != nil {
+		return nil, err
+	}
+	if p.options.Hooks.BeforePublish != nil {
+		if err := p.options.Hooks.BeforePublish(stagingControl, p.targetControlRoot); err != nil {
+			return nil, fmt.Errorf("before publish hook: %w", err)
+		}
+	}
+	if _, err := validateSeparatedCloneTargetRoots(p.targetControlRoot, p.targetPayloadRoot); err != nil {
+		return nil, atomicPublishBlockedError(err)
+	}
+	if err := publishSeparatedCloneRoot(stagingPayload, p.targetPayloadRoot, p.targetPayloadExisted, "payload"); err != nil {
+		return nil, atomicPublishBlockedError(err)
+	}
+	if p.options.Hooks.AfterSeparatedPayloadPublish != nil {
+		if err := p.options.Hooks.AfterSeparatedPayloadPublish(p.targetPayloadRoot, p.targetPayloadRoot); err != nil {
+			if rollbackErr := rollbackSeparatedPublishedRoot(p.targetPayloadRoot, p.targetPayloadExisted, "payload"); rollbackErr != nil {
+				return nil, atomicPublishBlockedError(fmt.Errorf("after separated payload publish hook: %w; rollback target payload root: %v", err, rollbackErr))
+			}
+			return nil, atomicPublishBlockedError(fmt.Errorf("after separated payload publish hook: %w", err))
+		}
+	}
+	if err := publishSeparatedCloneRoot(stagingControl, p.targetControlRoot, p.targetControlExisted, "control"); err != nil {
+		if rollbackErr := rollbackSeparatedPublishedRoot(p.targetPayloadRoot, p.targetPayloadExisted, "payload"); rollbackErr != nil {
+			return nil, atomicPublishBlockedError(fmt.Errorf("%w; rollback target payload root: %v", err, rollbackErr))
+		}
+		return nil, atomicPublishBlockedError(err)
+	}
+	published = true
+
+	if err := checkSeparatedDoctorStrict(p.targetControlRoot); err != nil {
+		return nil, fmt.Errorf("doctor strict after publish: %w", err)
+	}
+
+	result := p.baseResult()
+	result.TargetRepoID = targetRepo.RepoID
+	result.DoctorStrict = "passed"
+	result.Transfers = records
+	return result, nil
+}
+
+func (p *preparedClone) materializeMainWorkspaceForSeparatedClone(liveBoundary repo.WorktreePayloadBoundary) (repo.WorktreePayloadBoundary, func(), error) {
+	expectedRoot, cleanup, err := workspacepath.MaterializeExpectedWorkspace(p.source.Root, p.sourceMain, liveBoundary)
+	if err != nil {
+		return repo.WorktreePayloadBoundary{}, nil, fmt.Errorf("materialize source main saved state: %w", err)
+	}
+	return repo.WorktreePayloadBoundary{
+		Root:              expectedRoot,
+		ExcludedRootNames: append([]string(nil), liveBoundary.ExcludedRootNames...),
+	}, cleanup, nil
+}
+
+func publishSeparatedCloneRoot(stagingRoot, targetRoot string, targetExisted bool, role string) error {
+	if targetExisted {
+		if existed, err := validateSeparatedCloneTargetEmptyOrMissing(targetRoot, "target "+role+" root"); err != nil {
+			return err
+		} else if !existed {
+			return errclass.ErrAtomicPublishBlocked.WithMessagef("target %s root disappeared before publish: %s", role, targetRoot)
+		}
+		if err := os.Remove(targetRoot); err != nil {
+			return fmt.Errorf("remove empty target %s root before publish: %w", role, err)
+		}
+	}
+	if err := fsutil.RenameNoReplaceAndSync(stagingRoot, targetRoot); err != nil {
+		return fmt.Errorf("publish target %s root: %w", role, err)
+	}
+	return nil
+}
+
+func rollbackSeparatedPublishedRoot(targetRoot string, targetExisted bool, role string) error {
+	if err := os.RemoveAll(targetRoot); err != nil {
+		return fmt.Errorf("remove published target %s root: %w", role, err)
+	}
+	if targetExisted {
+		if err := os.Mkdir(targetRoot, 0755); err != nil && !os.IsExist(err) {
+			return fmt.Errorf("restore empty target %s root: %w", role, err)
+		}
+	}
+	return fsutil.FsyncDir(filepath.Dir(targetRoot))
+}
+
+func atomicPublishBlockedError(err error) error {
+	return errclass.ErrAtomicPublishBlocked.
+		WithMessagef("Cannot publish clone target atomically: %v", err).
+		WithHint("The target was not activated. Choose missing or empty target roots and retry.")
+}
+
 func (p *preparedClone) checkCapacity(mainBoundary repo.WorktreePayloadBoundary) error {
 	mainBytes, err := capacitygate.TreeSize(mainBoundary.Root, mainBoundary.ExcludesRelativePath)
 	if err != nil {
@@ -578,9 +989,9 @@ func (p *preparedClone) checkCapacity(mainBoundary repo.WorktreePayloadBoundary)
 		Folder:    p.target,
 		Workspace: "main",
 		Components: []capacitygate.Component{
-			{Name: "repo clone save point storage", Path: filepath.Join(p.target, repo.JVSDirName, "snapshots"), Bytes: savePointBytes},
-			{Name: "repo clone main workspace", Path: p.target, Bytes: mainBytes},
-			{Name: "repo clone control metadata", Path: filepath.Join(p.target, repo.JVSDirName), Bytes: cloneMetadataFloor},
+			{Name: "repo clone save point storage", Path: filepath.Join(p.targetControlRoot, repo.JVSDirName, "snapshots"), Bytes: savePointBytes},
+			{Name: "repo clone main workspace", Path: p.targetPayloadRoot, Bytes: mainBytes},
+			{Name: "repo clone control metadata", Path: filepath.Join(p.targetControlRoot, repo.JVSDirName), Bytes: cloneMetadataFloor},
 		},
 		FailureMessages: []string{"Source was not changed.", "Target was not created."},
 	})
@@ -628,6 +1039,8 @@ func (p *preparedClone) baseResult() *Result {
 		Operation:                  operationRepoClone,
 		SourceRepoRoot:             p.source.Root,
 		TargetRepoRoot:             p.target,
+		TargetControlRoot:          cloneSeparatedString(p.separatedTarget, p.targetControlRoot),
+		TargetPayloadRoot:          cloneSeparatedString(p.separatedTarget, p.targetPayloadRoot),
 		SourceRepoID:               p.source.RepoID,
 		SavePointsMode:             p.mode,
 		SavePointsCopied:           append([]model.SnapshotID(nil), p.savePoints...),
@@ -640,19 +1053,35 @@ func (p *preparedClone) baseResult() *Result {
 	if p.sourceMain != nil && p.sourceMain.LatestSnapshotID != "" {
 		result.NewestSavePoint = string(p.sourceMain.LatestSnapshotID)
 	}
+	if p.separatedTarget {
+		result.ControlRoot = p.targetControlRoot
+		result.PayloadRoot = p.targetPayloadRoot
+		result.RepoMode = repo.RepoModeSeparatedControl
+		result.WorkspaceName = "main"
+		result.SeparatedControl = boolPtr(true)
+		result.BoundaryValidated = boolPtr(true)
+		result.LocatorAuthoritative = boolPtr(false)
+	}
 	return result
 }
 
-func (p *preparedClone) transferIntents(materializationRoot string, mainBoundary repo.WorktreePayloadBoundary, kind transfer.ResultKind, scope transfer.PermissionScope) transferPlans {
-	saveDestination := filepath.Join(materializationRoot, repo.JVSDirName)
-	savePublished := filepath.Join(p.target, repo.JVSDirName)
+func cloneSeparatedString(separated bool, value string) string {
+	if !separated {
+		return ""
+	}
+	return value
+}
+
+func (p *preparedClone) transferIntents(materializationControlRoot, materializationPayloadRoot string, mainBoundary repo.WorktreePayloadBoundary, kind transfer.ResultKind, scope transfer.PermissionScope) transferPlans {
+	saveDestination := filepath.Join(materializationControlRoot, repo.JVSDirName)
+	savePublished := filepath.Join(p.targetControlRoot, repo.JVSDirName)
 	if kind == transfer.ResultKindExpected {
 		saveDestination = savePublished
 	}
-	mainDestination := materializationRoot
-	mainPublished := p.target
+	mainDestination := materializationPayloadRoot
+	mainPublished := p.targetPayloadRoot
 	if kind == transfer.ResultKindExpected {
-		mainDestination = p.target
+		mainDestination = p.targetPayloadRoot
 	}
 	return transferPlans{
 		saveIntent: transfer.Intent{
@@ -681,7 +1110,7 @@ func (p *preparedClone) transferIntents(materializationRoot string, mainBoundary
 			SourcePath:                 mainBoundary.Root,
 			DestinationRole:            "target_main_workspace",
 			MaterializationDestination: mainDestination,
-			CapabilityProbePath:        filepath.Dir(p.target),
+			CapabilityProbePath:        filepath.Dir(p.targetPayloadRoot),
 			PublishedDestination:       mainPublished,
 			RequestedEngine:            p.options.RequestedEngine,
 		},
@@ -837,6 +1266,32 @@ func checkDoctorStrict(repoRoot string) error {
 	return fmt.Errorf("%s: %s", result.Findings[0].ErrorCode, result.Findings[0].Description)
 }
 
+func checkSeparatedDoctorStrict(controlRoot string) error {
+	result, err := doctor.CheckSeparatedStrict(repo.SeparatedContextRequest{
+		ControlRoot: controlRoot,
+		Workspace:   "main",
+	})
+	if err != nil {
+		return err
+	}
+	if result.Healthy {
+		return nil
+	}
+	for _, check := range result.Checks {
+		if check.Status == "failed" {
+			code := ""
+			if check.ErrorCode != nil {
+				code = *check.ErrorCode
+			}
+			if code != "" {
+				return fmt.Errorf("%s: %s", code, check.Message)
+			}
+			return fmt.Errorf("%s: %s", check.Name, check.Message)
+		}
+	}
+	return fmt.Errorf("separated repository is unhealthy")
+}
+
 func workspaceDirty(repoRoot, workspaceName string) (bool, error) {
 	mgr := worktree.NewManager(repoRoot)
 	cfg, err := mgr.Get(workspaceName)
@@ -953,6 +1408,10 @@ func appendUniqueStrings(base []string, values ...string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }
 
 func remoteLikeInputError() error {

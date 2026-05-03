@@ -14,6 +14,7 @@ import (
 	"github.com/agentsmith-project/jvs/internal/gc"
 	"github.com/agentsmith-project/jvs/internal/integrity"
 	"github.com/agentsmith-project/jvs/internal/lifecycle"
+	"github.com/agentsmith-project/jvs/internal/recovery"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/internal/worktree"
@@ -28,6 +29,17 @@ func setupTestRepo(t *testing.T) string {
 	_, err := repo.Init(dir, "test")
 	require.NoError(t, err)
 	return dir
+}
+
+func setupSeparatedDoctorTestRepo(t *testing.T) (base, controlRoot, payloadRoot string) {
+	t.Helper()
+
+	base = t.TempDir()
+	controlRoot = filepath.Join(base, "control")
+	payloadRoot = filepath.Join(base, "payload")
+	_, err := repo.InitSeparatedControl(controlRoot, payloadRoot, "main")
+	require.NoError(t, err)
+	return base, controlRoot, payloadRoot
 }
 
 func createTestSnapshot(t *testing.T, repoPath string) model.SnapshotID {
@@ -195,6 +207,119 @@ func assertWorktreeInvalidSnapshotIDFinding(t *testing.T, result *doctor.Result,
 		}
 	}
 	t.Fatalf("expected invalid %s worktree finding in %#v", field, result.Findings)
+}
+
+func assertSeparatedStrictCheckFailed(t *testing.T, result *doctor.SeparatedStrictResult, name, code string) {
+	t.Helper()
+
+	for _, check := range result.Checks {
+		if check.Name != name {
+			continue
+		}
+		require.Equal(t, "failed", check.Status, "check %q should fail in %#v", name, result.Checks)
+		require.NotNil(t, check.ErrorCode, "check %q should include an error code", name)
+		assert.Equal(t, code, *check.ErrorCode)
+		return
+	}
+	t.Fatalf("missing separated strict check %q in %#v", name, result.Checks)
+}
+
+func TestSeparatedStrictDoctorActiveOperationFixturesFail(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		seed func(t *testing.T, controlRoot string)
+	}{
+		{
+			name: "intent",
+			seed: func(t *testing.T, controlRoot string) {
+				t.Helper()
+				writeSnapshotIntent(t, controlRoot, model.SnapshotID("1708300800000-deadbeef"), "main")
+			},
+		},
+		{
+			name: "cleanup plan",
+			seed: func(t *testing.T, controlRoot string) {
+				t.Helper()
+				r, err := repo.OpenControlRoot(controlRoot)
+				require.NoError(t, err)
+				plan := model.GCPlan{
+					SchemaVersion: model.GCPlanSchemaVersion,
+					RepoID:        r.RepoID,
+					PlanID:        "cleanup-pending",
+					CreatedAt:     time.Now().UTC(),
+					ProtectedSet:  []model.SnapshotID{},
+					ToDelete:      []model.SnapshotID{},
+				}
+				data, err := json.MarshalIndent(plan, "", "  ")
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(filepath.Join(controlRoot, ".jvs", "gc", "cleanup-pending.json"), data, 0644))
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, controlRoot, _ := setupSeparatedDoctorTestRepo(t)
+			tc.seed(t, controlRoot)
+
+			result, err := doctor.CheckSeparatedStrict(repo.SeparatedContextRequest{ControlRoot: controlRoot, Workspace: "main"})
+			require.NoError(t, err)
+			assert.False(t, result.Healthy)
+			assert.Equal(t, "failed", result.DoctorStrict)
+			assertSeparatedStrictCheckFailed(t, result, "active_operation", errclass.ErrActiveOperationBlocking.Code)
+		})
+	}
+}
+
+func TestSeparatedStrictDoctorRecoveryStateFixturesFail(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		seed func(t *testing.T, base, controlRoot, payloadRoot string)
+	}{
+		{
+			name: "restore plan",
+			seed: func(t *testing.T, base, controlRoot, payloadRoot string) {
+				t.Helper()
+				require.NoError(t, os.WriteFile(filepath.Join(controlRoot, ".jvs", "restore-plans", "restore-pending.json"), []byte("{}\n"), 0644))
+			},
+		},
+		{
+			name: "active recovery plan",
+			seed: func(t *testing.T, base, controlRoot, payloadRoot string) {
+				t.Helper()
+				r, err := repo.OpenControlRoot(controlRoot)
+				require.NoError(t, err)
+				now := time.Now().UTC()
+				plan := &recovery.Plan{
+					SchemaVersion:          recovery.SchemaVersion,
+					RepoID:                 r.RepoID,
+					PlanID:                 "RP-separated-active",
+					Status:                 recovery.StatusActive,
+					Operation:              recovery.OperationRestore,
+					RestorePlanID:          "restore-preview",
+					Workspace:              "main",
+					Folder:                 payloadRoot,
+					SourceSavePoint:        model.SnapshotID("1708300800000-deadbeef"),
+					CreatedAt:              now,
+					UpdatedAt:              now,
+					PreWorktreeState:       recovery.WorktreeState{Name: "main", RealPath: payloadRoot},
+					Backup:                 recovery.Backup{Path: filepath.Join(base, "backup"), Scope: recovery.BackupScopeWhole, State: recovery.BackupStatePending},
+					Phase:                  recovery.PhasePending,
+					RecommendedNextCommand: "jvs recovery status RP-separated-active",
+				}
+				require.NoError(t, recovery.NewManager(controlRoot).Write(plan))
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base, controlRoot, payloadRoot := setupSeparatedDoctorTestRepo(t)
+			tc.seed(t, base, controlRoot, payloadRoot)
+
+			result, err := doctor.CheckSeparatedStrict(repo.SeparatedContextRequest{ControlRoot: controlRoot, Workspace: "main"})
+			require.NoError(t, err)
+			assert.False(t, result.Healthy)
+			assert.Equal(t, "failed", result.DoctorStrict)
+			assertSeparatedStrictCheckFailed(t, result, "recovery_state", errclass.ErrRecoveryBlocking.Code)
+		})
+	}
 }
 
 func setMainWorktreeSnapshots(t *testing.T, repoPath string, head, latest model.SnapshotID) {

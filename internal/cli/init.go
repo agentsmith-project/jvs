@@ -4,12 +4,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/agentsmith-project/jvs/internal/engine"
 	"github.com/agentsmith-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
 )
+
+var initPayloadRoot string
 
 var initCmd = &cobra.Command{
 	Use:   "init [folder]",
@@ -21,6 +25,10 @@ in place; JVS stores control data in .jvs/ and registers the folder as the main
 workspace.`,
 	Args: cobra.RangeArgs(0, 1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if targetControlRoot != "" || initPayloadRoot != "" {
+			return runSeparatedInit(args)
+		}
+
 		folder := "."
 		if len(args) > 0 {
 			folder = args[0]
@@ -75,6 +83,56 @@ workspace.`,
 	},
 }
 
+func runSeparatedInit(args []string) error {
+	if len(args) > 0 {
+		return errclass.ErrUsage.WithMessage("init folder cannot be combined with --control-root or --payload-root")
+	}
+	if targetRepoPath != "" {
+		return errclass.ErrUsage.WithMessage("--control-root cannot be combined with --repo")
+	}
+	if targetControlRoot == "" || initPayloadRoot == "" {
+		return errclass.ErrUsage.WithMessage("--control-root and --payload-root must be provided together")
+	}
+
+	workspaceName := strings.TrimSpace(targetWorkspaceName)
+	if workspaceName == "" {
+		workspaceName = "main"
+	}
+	r, err := repo.InitSeparatedControl(targetControlRoot, initPayloadRoot, workspaceName)
+	if err != nil {
+		return err
+	}
+	ctx, err := repo.ResolveSeparatedContext(repo.SeparatedContextRequest{
+		ControlRoot: r.Root,
+		Workspace:   workspaceName,
+	})
+	if err != nil {
+		return err
+	}
+	recordResolvedTarget(ctx.ControlRoot, ctx.Workspace)
+
+	if jsonOutput {
+		output := map[string]any{
+			"folder":            ctx.PayloadRoot,
+			"workspace":         ctx.Workspace,
+			"repo_root":         ctx.ControlRoot,
+			"format_version":    r.FormatVersion,
+			"repo_id":           r.RepoID,
+			"newest_save_point": nil,
+			"unsaved_changes":   true,
+		}
+		applySeparatedControlMapFields(output, ctx, "passed")
+		return outputJSON(output)
+	}
+
+	fmt.Printf("Control root: %s\n", ctx.ControlRoot)
+	fmt.Printf("Payload root: %s\n", ctx.PayloadRoot)
+	fmt.Printf("Workspace: %s\n", ctx.Workspace)
+	fmt.Println("JVS separated control is ready.")
+	fmt.Println("Next: jvs --control-root " + ctx.ControlRoot + " --workspace " + ctx.Workspace + " save -m \"baseline\"")
+	return nil
+}
+
 func ensureInitFolderExists(folder string) ([]string, error) {
 	target, err := filepath.Abs(folder)
 	if err != nil {
@@ -117,5 +175,6 @@ func cleanupCreatedInitFolders(created []string) {
 }
 
 func init() {
+	initCmd.Flags().StringVar(&initPayloadRoot, "payload-root", "", "payload root for separated-control init")
 	rootCmd.AddCommand(initCmd)
 }

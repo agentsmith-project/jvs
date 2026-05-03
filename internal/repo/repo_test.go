@@ -235,6 +235,36 @@ func TestDiscoverWorktree_NamedWorktree(t *testing.T) {
 	assert.Equal(t, "feature", wtName)
 }
 
+func TestWorktreeManagedPayloadBoundaryEmbeddedMainExcludesControlDir(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "myrepo")
+	_, err := repo.Init(repoPath, "myrepo")
+	require.NoError(t, err)
+
+	boundary, err := repo.WorktreeManagedPayloadBoundary(repoPath, "main")
+	require.NoError(t, err)
+	assert.Equal(t, repoPath, boundary.Root)
+	assert.Equal(t, []string{repo.JVSDirName}, boundary.ExcludedRootNames)
+}
+
+func TestWorktreeManagedPayloadBoundaryEmbeddedExternalLocatorStillExcluded(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "myrepo")
+	_, err := repo.Init(repoPath, "myrepo")
+	require.NoError(t, err)
+
+	wtPath := filepath.Join(dir, "feature")
+	require.NoError(t, os.MkdirAll(wtPath, 0755))
+	require.NoError(t, repo.WriteWorkspaceLocator(wtPath, repoPath, "feature"))
+	require.NoError(t, os.MkdirAll(filepath.Join(repoPath, ".jvs", "worktrees", "feature"), 0755))
+	require.NoError(t, repo.WriteWorktreeConfig(repoPath, "feature", &model.WorktreeConfig{Name: "feature", RealPath: wtPath}))
+
+	boundary, err := repo.WorktreeManagedPayloadBoundary(repoPath, "feature")
+	require.NoError(t, err)
+	assert.Equal(t, wtPath, boundary.Root)
+	assert.Equal(t, []string{repo.JVSDirName}, boundary.ExcludedRootNames)
+}
+
 func TestDiscoverWorktreeTreatsLegacyPayloadFolderUnderRepoRootAsMain(t *testing.T) {
 	dir := t.TempDir()
 	repoPath := filepath.Join(dir, "myrepo")

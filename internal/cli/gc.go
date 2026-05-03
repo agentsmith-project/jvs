@@ -28,12 +28,12 @@ var cleanupPreviewCmd = &cobra.Command{
 	Short: "Preview cleanup work",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		r, err := discoverRequiredRepo()
+		ctx, err := resolveRepoScoped()
 		if err != nil {
 			return err
 		}
 
-		collector := gc.NewCollector(r.Root)
+		collector := gc.NewCollector(ctx.Repo.Root)
 		plan, err := collector.Plan()
 		if err != nil {
 			return fmt.Errorf("create cleanup plan: %w", err)
@@ -44,7 +44,7 @@ var cleanupPreviewCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			return outputJSON(record)
+			return outputJSONWithSeparatedControl(record, ctx.Separated, separatedDoctorStrictNotRun)
 		}
 
 		fmt.Printf("Plan ID: %s\n", plan.PlanID)
@@ -63,7 +63,7 @@ var cleanupRunCmd = &cobra.Command{
 	Short: "Run a cleanup plan",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		r, err := discoverRequiredRepo()
+		ctx, err := resolveRepoScoped()
 		if err != nil {
 			return err
 		}
@@ -72,7 +72,7 @@ var cleanupRunCmd = &cobra.Command{
 			return fmt.Errorf("--plan-id is required")
 		}
 
-		collector := gc.NewCollector(r.Root)
+		collector := gc.NewCollector(ctx.Repo.Root)
 
 		// Add progress callback if enabled
 		if progressEnabled() {
@@ -95,7 +95,7 @@ var cleanupRunCmd = &cobra.Command{
 		}
 
 		if jsonOutput {
-			return outputJSON(map[string]string{"plan_id": cleanupPlanID, "status": "completed"})
+			return outputJSONWithSeparatedControl(map[string]any{"plan_id": cleanupPlanID, "status": "completed"}, ctx.Separated, separatedDoctorStrictNotRun)
 		}
 		fmt.Println("Cleanup completed successfully.")
 		return nil

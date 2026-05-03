@@ -26,6 +26,12 @@ const (
 	FormatVersionFile = "format_version"
 	// RepoIDFile is the name of the file storing the repository ID.
 	RepoIDFile = "repo_id"
+	// RepoModeFile is the durable metadata file storing the repository mode.
+	RepoModeFile = "repo_mode"
+	// RepoModeEmbeddedControl is the classic repo layout with .jvs under the payload root.
+	RepoModeEmbeddedControl = "embedded_control"
+	// RepoModeSeparatedControl is the layout with trusted control and payload roots split.
+	RepoModeSeparatedControl = "separated_control"
 )
 
 const (
@@ -38,6 +44,7 @@ type Repo struct {
 	Root          string
 	FormatVersion int
 	RepoID        string
+	Mode          string
 }
 
 type workspaceLocatorFile struct {
@@ -258,7 +265,7 @@ func InitAdoptedWorkspace(folder string) (*Repo, error) {
 }
 
 func initAt(path string) (*Repo, error) {
-	repoID, err := createControlPlane(path)
+	repoID, err := createControlPlane(path, RepoModeEmbeddedControl)
 	if err != nil {
 		return nil, err
 	}
@@ -282,11 +289,12 @@ func initAt(path string) (*Repo, error) {
 		Root:          path,
 		FormatVersion: FormatVersion,
 		RepoID:        repoID,
+		Mode:          RepoModeEmbeddedControl,
 	}, nil
 }
 
 func initAdoptedAt(path string) (*Repo, error) {
-	repoID, err := createControlPlane(path)
+	repoID, err := createControlPlane(path, RepoModeEmbeddedControl)
 	if err != nil {
 		return nil, err
 	}
@@ -308,10 +316,11 @@ func initAdoptedAt(path string) (*Repo, error) {
 		Root:          path,
 		FormatVersion: FormatVersion,
 		RepoID:        repoID,
+		Mode:          RepoModeEmbeddedControl,
 	}, nil
 }
 
-func createControlPlane(path string) (string, error) {
+func createControlPlane(path, mode string) (string, error) {
 	jvsDir := filepath.Join(path, JVSDirName)
 	dirs := []string{
 		jvsDir,
@@ -336,6 +345,9 @@ func createControlPlane(path string) (string, error) {
 
 	if err := os.WriteFile(filepath.Join(jvsDir, FormatVersionFile), []byte("1\n"), 0600); err != nil {
 		return "", fmt.Errorf("write format_version: %w", err)
+	}
+	if err := writeRepoModeFile(jvsDir, mode); err != nil {
+		return "", err
 	}
 
 	repoID := uuidutil.NewV4()
@@ -693,11 +705,16 @@ func loadRepoAtRoot(root string) (*Repo, error) {
 		return nil, errclass.ErrFormatUnsupported.WithMessagef(
 			"format version %d > supported %d", version, FormatVersion)
 	}
+	mode, err := readRepoMode(jvsDir)
+	if err != nil {
+		return nil, err
+	}
 	repoID, _ := readRepoID(jvsDir)
 	return &Repo{
 		Root:          root,
 		FormatVersion: version,
 		RepoID:        repoID,
+		Mode:          mode,
 	}, nil
 }
 
@@ -1643,6 +1660,21 @@ func WorktreeManagedPayloadBoundary(repoRoot, name string) (WorktreePayloadBound
 	if err != nil {
 		return WorktreePayloadBoundary{}, err
 	}
+	mode, err := LoadRepoMode(repoRoot)
+	if err != nil {
+		return WorktreePayloadBoundary{}, err
+	}
+	if mode == RepoModeSeparatedControl {
+		ctx, err := RevalidateSeparatedContext(SeparatedContextRevalidationRequest{
+			ControlRoot:         repoRoot,
+			Workspace:           name,
+			ExpectedPayloadRoot: root,
+		})
+		if err != nil {
+			return WorktreePayloadBoundary{}, err
+		}
+		return WorktreePayloadBoundary{Root: ctx.PayloadRoot}, nil
+	}
 	if err := validatePayloadBoundaryRoot(repoRoot, root); err != nil {
 		return WorktreePayloadBoundary{}, err
 	}
@@ -1977,6 +2009,16 @@ func validatePayloadBoundaryRoot(repoRoot, root string) error {
 }
 
 func worktreeControlExclusions(repoRoot, payloadRoot string) ([]string, error) {
+	mode, err := LoadRepoMode(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	if mode == RepoModeSeparatedControl {
+		if err := rejectPayloadLocatorPresent(payloadRoot); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
 	controlDir := filepath.Join(repoRoot, JVSDirName)
 	containsControl, err := pathContainsLexicalPath(payloadRoot, controlDir)
 	if err != nil {
@@ -2487,6 +2529,56 @@ func readFormatVersion(jvsDir string) (int, error) {
 		return 0, fmt.Errorf("parse format_version: %w", err)
 	}
 	return version, nil
+}
+
+// LoadRepoMode reads the durable repository mode. Repositories created before
+// the mode file existed are embedded-control repos by definition.
+func LoadRepoMode(repoRoot string) (string, error) {
+	root, err := cleanAbsPath(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	jvsDir := filepath.Join(root, JVSDirName)
+	info, err := os.Lstat(jvsDir)
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("repo mode control directory is symlink: %s", jvsDir)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("repo mode control path is not directory: %s", jvsDir)
+	}
+	return readRepoMode(jvsDir)
+}
+
+func writeRepoModeFile(jvsDir, mode string) error {
+	if !validRepoMode(mode) {
+		return fmt.Errorf("unsupported repo mode %q", mode)
+	}
+	if err := os.WriteFile(filepath.Join(jvsDir, RepoModeFile), []byte(mode+"\n"), 0600); err != nil {
+		return fmt.Errorf("write repo_mode: %w", err)
+	}
+	return nil
+}
+
+func readRepoMode(jvsDir string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(jvsDir, RepoModeFile))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return RepoModeEmbeddedControl, nil
+		}
+		return "", fmt.Errorf("read repo_mode: %w", err)
+	}
+	mode := strings.TrimSpace(string(data))
+	if !validRepoMode(mode) {
+		return "", fmt.Errorf("unsupported repo_mode %q", mode)
+	}
+	return mode, nil
+}
+
+func validRepoMode(mode string) bool {
+	return mode == RepoModeEmbeddedControl || mode == RepoModeSeparatedControl
 }
 
 func readRepoID(jvsDir string) (string, error) {

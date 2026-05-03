@@ -88,6 +88,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&noProgress, "no-progress", false, "disable progress bars")
 	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable colored output (also respects NO_COLOR env var)")
 	rootCmd.PersistentFlags().StringVar(&targetRepoPath, "repo", "", "target repository root or path inside a repository")
+	rootCmd.PersistentFlags().StringVar(&targetControlRoot, "control-root", "", "explicit separated-control root")
 	rootCmd.PersistentFlags().StringVar(&targetWorkspaceName, "workspace", "", "target workspace name")
 	installPublicRootHelpSurface(rootCmd)
 }

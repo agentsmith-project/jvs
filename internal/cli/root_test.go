@@ -689,6 +689,7 @@ func createTestRootCmd() *cobra.Command {
 	noColor = false
 	autoProgressEnabled = defaultAutoProgressEnabled
 	targetRepoPath = ""
+	targetControlRoot = ""
 	targetWorkspaceName = ""
 	activeCommand = nil
 	activeCommandName = ""
@@ -704,6 +705,8 @@ func createTestRootCmd() *cobra.Command {
 	workspaceListStatus = false
 	repoCloneSavePoints = "all"
 	repoCloneDryRun = false
+	repoCloneTargetControlRoot = ""
+	repoCloneTargetPayloadRoot = ""
 	repoMoveRunID = ""
 	repoRenameRunID = ""
 	repoDetachRunID = ""
@@ -720,6 +723,7 @@ func createTestRootCmd() *cobra.Command {
 	doctorStrict = false
 	doctorRepair = false
 	doctorRepairList = false
+	initPayloadRoot = ""
 
 	cmd := &cobra.Command{
 		Use:              "jvs",
@@ -735,6 +739,7 @@ func createTestRootCmd() *cobra.Command {
 	cmd.PersistentFlags().BoolVar(&noProgress, "no-progress", false, "disable progress bars")
 	cmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable colored output (also respects NO_COLOR env var)")
 	cmd.PersistentFlags().StringVar(&targetRepoPath, "repo", "", "target repository root or path inside a repository")
+	cmd.PersistentFlags().StringVar(&targetControlRoot, "control-root", "", "explicit separated-control root")
 	cmd.PersistentFlags().StringVar(&targetWorkspaceName, "workspace", "", "target workspace name")
 
 	cmd.AddCommand(initCmd)

@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/agentsmith-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -102,6 +104,212 @@ func TestRepoCloneJSONIncludesTwoRepoCloneTransfers(t *testing.T) {
 	transfers := requireRepoCloneTransferMaps(t, data, 2)
 	assertRepoCloneTransferMap(t, transfers[0], "repo-clone-save-points", "save_point_storage_copy", "save_point_storage", "target_save_point_storage", "final", "execution")
 	assertRepoCloneTransferMap(t, transfers[1], "repo-clone-main-workspace", "main_workspace_materialization", "source_main_current_state", "target_main_workspace", "final", "execution")
+}
+
+func TestRepoCloneSeparatedSourceToSplitTargetReportsAuthoritativeJSON(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	sourceControl := filepath.Join(base, "source-control")
+	sourcePayload := filepath.Join(base, "source-payload")
+	initSeparatedControlForCLITest(t, sourceControl, sourcePayload, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("source v1"), 0644))
+	saveOut, err := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", sourceControl,
+		"--workspace", "main",
+		"save", "-m", "source baseline",
+	)
+	require.NoError(t, err, saveOut)
+	sourceID := decodeContractDataMap(t, saveOut)["save_point_id"]
+
+	cleanCWD := filepath.Join(base, "clean")
+	require.NoError(t, os.MkdirAll(cleanCWD, 0755))
+	require.NoError(t, os.Chdir(cleanCWD))
+
+	targetControl := filepath.Join(base, "target-control")
+	targetPayload := filepath.Join(base, "target-payload")
+	stdout, err := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", sourceControl,
+		"--workspace", "main",
+		"repo", "clone",
+		"--target-control-root", targetControl,
+		"--target-payload-root", targetPayload,
+		"--save-points", "main",
+	)
+	require.NoError(t, err, stdout)
+
+	env, data := decodeSeparatedControlDataMap(t, stdout)
+	require.True(t, env.OK, stdout)
+	require.NotNil(t, env.RepoRoot)
+	assert.Equal(t, targetControl, *env.RepoRoot)
+	require.NotNil(t, env.Workspace)
+	assert.Equal(t, "main", *env.Workspace)
+	assertSeparatedControlAuthoritativeData(t, data, targetControl, targetPayload, "main")
+	assert.Equal(t, "passed", data["doctor_strict"])
+	assert.Equal(t, sourceControl, data["source_repo_root"])
+	assert.Equal(t, targetControl, data["target_repo_root"])
+	assert.Equal(t, targetControl, data["target_control_root"])
+	assert.Equal(t, targetPayload, data["target_payload_root"])
+	assert.Equal(t, "main", data["save_points_mode"])
+	assert.Equal(t, sourceID, data["newest_save_point"])
+	assert.Equal(t, []any{"main"}, data["workspaces_created"])
+	assert.Equal(t, false, data["runtime_state_copied"])
+	assert.NotEqual(t, data["source_repo_id"], data["target_repo_id"])
+	assertFileContent(t, filepath.Join(targetPayload, "app.txt"), "source v1")
+	assert.NoDirExists(t, filepath.Join(targetPayload, ".jvs"))
+	assert.FileExists(t, filepath.Join(targetControl, ".jvs", "repo_id"))
+}
+
+func TestRepoCloneSeparatedSourceRejectsPositionalTarget(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	sourceControl := filepath.Join(base, "source-control")
+	sourcePayload := filepath.Join(base, "source-payload")
+	initSeparatedControlForCLITest(t, sourceControl, sourcePayload, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("source v1"), 0644))
+	saveOut, err := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", sourceControl,
+		"--workspace", "main",
+		"save", "-m", "source baseline",
+	)
+	require.NoError(t, err, saveOut)
+
+	cleanCWD := filepath.Join(base, "clean")
+	require.NoError(t, os.MkdirAll(cleanCWD, 0755))
+	require.NoError(t, os.Chdir(cleanCWD))
+	target := filepath.Join(base, "positional-target")
+	stdout, stderr, exitCode := runContractSubprocess(t, base,
+		"--json",
+		"--control-root", sourceControl,
+		"--workspace", "main",
+		"repo", "clone",
+		target,
+		"--save-points", "main",
+	)
+
+	require.Equal(t, 1, exitCode, "clone unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	env := decodeContractEnvelope(t, stdout)
+	assert.False(t, env.OK)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, errclass.ErrExplicitTargetRequired.Code, env.Error.Code)
+	assert.Contains(t, env.Error.Message, "--target-control-root")
+	assert.Contains(t, env.Error.Message, "--target-payload-root")
+	assert.JSONEq(t, `null`, string(env.Data))
+	assert.NoDirExists(t, target)
+}
+
+func TestRepoCloneRepoFlagSeparatedSourceRejectsPositionalTarget(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	sourceControl := filepath.Join(base, "source-control")
+	sourcePayload := filepath.Join(base, "source-payload")
+	initSeparatedControlForCLITest(t, sourceControl, sourcePayload, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("source v1"), 0644))
+	saveOut, err := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", sourceControl,
+		"--workspace", "main",
+		"save", "-m", "source baseline",
+	)
+	require.NoError(t, err, saveOut)
+
+	cleanCWD := filepath.Join(base, "clean")
+	require.NoError(t, os.MkdirAll(cleanCWD, 0755))
+	require.NoError(t, os.Chdir(cleanCWD))
+	target := filepath.Join(base, "repo-flag-positional-target")
+	stdout, stderr, exitCode := runContractSubprocess(t, cleanCWD,
+		"--json",
+		"--repo", sourceControl,
+		"repo", "clone",
+		target,
+		"--save-points", "main",
+	)
+
+	require.Equal(t, 1, exitCode, "clone unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	env := decodeContractEnvelope(t, stdout)
+	assert.False(t, env.OK)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, errclass.ErrExplicitTargetRequired.Code, env.Error.Code)
+	assert.Contains(t, env.Error.Message, "--target-control-root")
+	assert.Contains(t, env.Error.Message, "--target-payload-root")
+	assert.JSONEq(t, `null`, string(env.Data))
+	assert.NoDirExists(t, filepath.Join(target, ".jvs"))
+}
+
+func TestRepoCloneSeparatedErrorsUseStableCodes(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	sourceControl := filepath.Join(base, "source-control")
+	sourcePayload := filepath.Join(base, "source-payload")
+	initSeparatedControlForCLITest(t, sourceControl, sourcePayload, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("source v1"), 0644))
+	saveOut, err := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", sourceControl,
+		"--workspace", "main",
+		"save", "-m", "source baseline",
+	)
+	require.NoError(t, err, saveOut)
+
+	for _, tc := range []struct {
+		name  string
+		setup func(base string) (controlRoot, payloadRoot string)
+		mode  string
+		code  string
+	}{
+		{
+			name: "occupied target",
+			setup: func(base string) (string, string) {
+				controlRoot := filepath.Join(base, "occupied-control")
+				payloadRoot := filepath.Join(base, "occupied-payload")
+				require.NoError(t, os.MkdirAll(payloadRoot, 0755))
+				require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "user.txt"), []byte("keep"), 0644))
+				return controlRoot, payloadRoot
+			},
+			mode: "main",
+			code: errclass.ErrTargetRootOccupied.Code,
+		},
+		{
+			name: "target same path",
+			setup: func(base string) (string, string) {
+				root := filepath.Join(base, "same-target")
+				return root, root
+			},
+			mode: "main",
+			code: errclass.ErrControlPayloadOverlap.Code,
+		},
+		{
+			name: "all protection gate",
+			setup: func(base string) (string, string) {
+				return filepath.Join(base, "all-control"), filepath.Join(base, "all-payload")
+			},
+			mode: "all",
+			code: errclass.ErrImportedHistoryProtectionMissing.Code,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			controlRoot, payloadRoot := tc.setup(t.TempDir())
+			stdout, stderr, exitCode := runContractSubprocess(t, base,
+				"--json",
+				"--control-root", sourceControl,
+				"--workspace", "main",
+				"repo", "clone",
+				"--target-control-root", controlRoot,
+				"--target-payload-root", payloadRoot,
+				"--save-points", tc.mode,
+			)
+			require.Equal(t, 1, exitCode, "clone unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+			assert.Empty(t, strings.TrimSpace(stderr))
+			env := decodeContractEnvelope(t, stdout)
+			assert.False(t, env.OK)
+			require.NotNil(t, env.Error)
+			assert.Equal(t, tc.code, env.Error.Code)
+			assert.JSONEq(t, `null`, string(env.Data))
+			if tc.code == errclass.ErrImportedHistoryProtectionMissing.Code {
+				assert.Contains(t, env.Error.Hint, "--save-points main")
+			}
+		})
+	}
 }
 
 func TestRepoCloneDryRunDoesNotCreateTargetAndUsesExpectedTransferRecords(t *testing.T) {
