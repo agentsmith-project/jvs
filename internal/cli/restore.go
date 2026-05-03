@@ -875,14 +875,6 @@ func printRestoreRunTransferSummary(transfers []transfer.Record) {
 	printRestoreAdditionalTransferSummary(transfers, primaryIndex)
 }
 
-func restoreRunPrimaryTransfer(transfers []transfer.Record) *transfer.Record {
-	primaryIndex := restoreRunPrimaryTransferIndex(transfers)
-	if primaryIndex < 0 {
-		return nil
-	}
-	return &transfers[primaryIndex]
-}
-
 func restoreRunPrimaryTransferIndex(transfers []transfer.Record) int {
 	for i := range transfers {
 		if transfers[i].Primary && transfers[i].Operation == "restore" && transfers[i].Phase == "materialization" {

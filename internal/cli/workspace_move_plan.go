@@ -443,36 +443,13 @@ func deleteWorkspaceMovePlan(repoRoot, planID string) {
 }
 
 func loadWorkspaceMovePlan(repoRoot, planID string) (*workspaceMovePlan, error) {
-	path, err := workspaceMovePlanPath(repoRoot, planID, false)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("workspace move plan %q not found", planID)
-		}
-		return nil, fmt.Errorf("workspace move plan %q is not readable", planID)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("workspace move plan %q not found", planID)
-		}
-		return nil, fmt.Errorf("workspace move plan %q is not readable", planID)
-	}
 	var plan workspaceMovePlan
-	if err := json.Unmarshal(data, &plan); err != nil {
-		return nil, fmt.Errorf("workspace move plan %q is not valid JSON", planID)
-	}
-	if plan.SchemaVersion != workspaceMovePlanSchemaVersion {
-		return nil, fmt.Errorf("workspace move plan %q has unsupported schema version", planID)
-	}
-	if plan.PlanID != planID {
-		return nil, fmt.Errorf("workspace move plan %q plan_id does not match request", planID)
-	}
-	repoID, err := workspaceCurrentRepoID(repoRoot)
-	if err != nil {
+	if err := loadRepoScopedPlan(repoRoot, planID, &plan, repoScopedPlanLoadOptions{
+		name:          "workspace move plan",
+		schemaVersion: workspaceMovePlanSchemaVersion,
+		path:          workspaceMovePlanPath,
+	}); err != nil {
 		return nil, err
-	}
-	if plan.RepoID != repoID {
-		return nil, fmt.Errorf("workspace move plan %q belongs to a different repository", planID)
 	}
 	return &plan, nil
 }

@@ -11,21 +11,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDetectEngine_UsesSnapshotEngineEnvFullValue(t *testing.T) {
+func TestRequestedTransferEngine_UsesSnapshotEngineEnvFullValue(t *testing.T) {
 	t.Setenv("JVS_SNAPSHOT_ENGINE", string(model.EngineJuiceFSClone))
 	t.Setenv("JVS_ENGINE", "copy")
 
-	require.Equal(t, model.EngineJuiceFSClone, detectEngine(t.TempDir()))
+	require.Equal(t, model.EngineJuiceFSClone, requestedTransferEngine(t.TempDir()))
 }
 
-func TestDetectEngine_UsesLegacySimpleEngineEnv(t *testing.T) {
+func TestRequestedTransferEngine_UsesLegacySimpleEngineEnv(t *testing.T) {
 	t.Setenv("JVS_SNAPSHOT_ENGINE", "")
 	t.Setenv("JVS_ENGINE", "reflink")
 
-	require.Equal(t, model.EngineReflinkCopy, detectEngine(t.TempDir()))
+	require.Equal(t, model.EngineReflinkCopy, requestedTransferEngine(t.TempDir()))
 }
 
-func TestDetectEngine_UsesConfigDefaultEngine(t *testing.T) {
+func TestRequestedTransferEngine_UsesConfigDefaultEngine(t *testing.T) {
 	t.Setenv("JVS_SNAPSHOT_ENGINE", "")
 	t.Setenv("JVS_ENGINE", "")
 	repoRoot := initEngineResolverRepo(t)
@@ -34,10 +34,10 @@ func TestDetectEngine_UsesConfigDefaultEngine(t *testing.T) {
 	cfg.DefaultEngine = model.EngineJuiceFSClone
 	require.NoError(t, config.Save(repoRoot, cfg))
 
-	require.Equal(t, model.EngineJuiceFSClone, detectEngine(repoRoot))
+	require.Equal(t, model.EngineJuiceFSClone, requestedTransferEngine(repoRoot))
 }
 
-func TestWorktreeCloneEngine_UsesEffectiveResolver(t *testing.T) {
+func TestRequestedTransferEngine_EnvPrecedenceOverConfig(t *testing.T) {
 	t.Setenv("JVS_SNAPSHOT_ENGINE", string(model.EngineReflinkCopy))
 	t.Setenv("JVS_ENGINE", "")
 	repoRoot := initEngineResolverRepo(t)
@@ -46,7 +46,7 @@ func TestWorktreeCloneEngine_UsesEffectiveResolver(t *testing.T) {
 	cfg.DefaultEngine = model.EngineCopy
 	require.NoError(t, config.Save(repoRoot, cfg))
 
-	require.Equal(t, model.EngineReflinkCopy, newCloneEngine(repoRoot).Name())
+	require.Equal(t, model.EngineReflinkCopy, requestedTransferEngine(repoRoot))
 }
 
 func initEngineResolverRepo(t *testing.T) string {

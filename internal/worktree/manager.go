@@ -710,36 +710,6 @@ func (m *Manager) existingPayloadPathForMoveOrRemove(name string) (string, error
 	return m.payloadPathForMutation(name)
 }
 
-func (m *Manager) newPayloadPathForRename(newName string, oldCfg *model.WorktreeConfig) (payloadPath string, realPath string, err error) {
-	if oldCfg.RealPath == "" {
-		payloadPath, err := m.newPayloadPathForMutation(newName)
-		return payloadPath, "", err
-	}
-
-	payloadPath, err = renamedWorkspaceRealPath(oldCfg.RealPath, newName)
-	if err != nil {
-		return "", "", err
-	}
-	if err := m.validateExternalPayloadTarget(payloadPath); err != nil {
-		return "", "", err
-	}
-	return payloadPath, payloadPath, nil
-}
-
-func renamedWorkspaceRealPath(oldRealPath, newName string) (string, error) {
-	if oldRealPath == "" {
-		return "", fmt.Errorf("workspace real path is empty")
-	}
-	if !filepath.IsAbs(oldRealPath) {
-		return "", fmt.Errorf("workspace real path must be absolute: %s", oldRealPath)
-	}
-	path, err := filepath.Abs(filepath.Join(filepath.Dir(oldRealPath), newName))
-	if err != nil {
-		return "", err
-	}
-	return filepath.Clean(path), nil
-}
-
 type renameRollbackLedger struct {
 	steps []renameRollbackStep
 }
@@ -1171,19 +1141,6 @@ func (m *Manager) payloadPathForMutation(name string) (string, error) {
 	}
 	if err := m.validatePathForMutation(payloadPath, "payload"); err != nil {
 		return "", err
-	}
-	return payloadPath, nil
-}
-
-func (m *Manager) newPayloadPathForMutation(name string) (string, error) {
-	payloadPath, err := m.payloadPathForMutation(name)
-	if err != nil {
-		return "", err
-	}
-	if _, err := os.Lstat(payloadPath); err == nil {
-		return "", fmt.Errorf("payload path already exists: %s", payloadPath)
-	} else if !os.IsNotExist(err) {
-		return "", fmt.Errorf("stat payload path: %w", err)
 	}
 	return payloadPath, nil
 }

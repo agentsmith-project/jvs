@@ -532,10 +532,7 @@ func repoDetachExternalWorkspacePlans(repoRoot, repoID string) ([]repoDetachExte
 	}
 	external := make([]repoDetachExternalWorkspace, 0, len(moveExternal))
 	for _, item := range moveExternal {
-		external = append(external, repoDetachExternalWorkspace{
-			Workspace: item.Workspace,
-			Folder:    item.Folder,
-		})
+		external = append(external, repoDetachExternalWorkspace(item))
 	}
 	return external, nil
 }
@@ -550,10 +547,7 @@ func validateRepoDetachExternalWorkspaces(plan *repoDetachPlan) error {
 }
 
 func validateRepoDetachExternalWorkspace(plan *repoDetachPlan, external repoDetachExternalWorkspace) error {
-	return validateRepoMoveExternalWorkspace(&repoMovePlan{RepoID: plan.RepoID}, repoMoveExternalWorkspace{
-		Workspace: external.Workspace,
-		Folder:    external.Folder,
-	}, plan.RepoRoot)
+	return validateRepoMoveExternalWorkspace(&repoMovePlan{RepoID: plan.RepoID}, repoMoveExternalWorkspace(external), plan.RepoRoot)
 }
 
 func pendingRepoDetachPlanRecord(controlRoot string, plan *repoDetachPlan) (lifecycle.OperationRecord, bool, error) {
@@ -668,39 +662,19 @@ func writeRepoDetachPlan(controlRoot string, plan *repoDetachPlan) error {
 }
 
 func loadRepoDetachPlan(controlRoot, planID string) (*repoDetachPlan, error) {
-	path, err := repoDetachPlanPath(controlRoot, planID, false)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("repo detach plan %q not found", planID)
-		}
-		return nil, fmt.Errorf("repo detach plan %q is not readable", planID)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("repo detach plan %q not found", planID)
-		}
-		return nil, fmt.Errorf("repo detach plan %q is not readable", planID)
-	}
 	var plan repoDetachPlan
-	if err := json.Unmarshal(data, &plan); err != nil {
-		return nil, fmt.Errorf("repo detach plan %q is not valid JSON", planID)
-	}
-	if plan.SchemaVersion != repoDetachPlanSchemaVersion {
-		return nil, fmt.Errorf("repo detach plan %q has unsupported schema version", planID)
-	}
-	if plan.PlanID != planID {
-		return nil, fmt.Errorf("repo detach plan %q plan_id does not match request", planID)
-	}
-	if err := pathutil.ValidateName(plan.OperationID); err != nil {
-		return nil, fmt.Errorf("repo detach plan %q has invalid operation_id: %w", planID, err)
-	}
-	repoID, err := workspaceCurrentRepoID(controlRoot)
-	if err != nil {
+	if err := loadRepoScopedPlan(controlRoot, planID, &plan, repoScopedPlanLoadOptions{
+		name:          "repo detach plan",
+		schemaVersion: repoDetachPlanSchemaVersion,
+		path:          repoDetachPlanPath,
+		validate: func() error {
+			if err := pathutil.ValidateName(plan.OperationID); err != nil {
+				return fmt.Errorf("repo detach plan %q has invalid operation_id: %w", planID, err)
+			}
+			return nil
+		},
+	}); err != nil {
 		return nil, err
-	}
-	if plan.RepoID != repoID {
-		return nil, fmt.Errorf("repo detach plan %q belongs to a different repository", planID)
 	}
 	return &plan, nil
 }

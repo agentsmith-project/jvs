@@ -23,15 +23,6 @@ type cliDiscoveryContext struct {
 	Workspace string
 }
 
-// requireRepo discovers the repo from CWD and returns it, or exits with error.
-func requireRepo() *repo.Repo {
-	r, err := discoverRequiredRepo()
-	if err != nil {
-		exitWithCLIError(err)
-	}
-	return r
-}
-
 func discoverRequiredRepo() (*repo.Repo, error) {
 	ctx, err := resolveRepoScoped()
 	if err != nil {

@@ -212,7 +212,7 @@ func TestRestoreWholePreviewAndRunHumanOutputShowTransferMethod(t *testing.T) {
 	assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "v1")
 }
 
-func TestRestoreRunPrimaryTransferPrefersRestoreMaterialization(t *testing.T) {
+func TestRestoreRunPrimaryTransferIndexPrefersRestoreMaterialization(t *testing.T) {
 	transfers := []transfer.Record{
 		{
 			TransferID:       "save-primary",
@@ -230,9 +230,10 @@ func TestRestoreRunPrimaryTransferPrefersRestoreMaterialization(t *testing.T) {
 		},
 	}
 
-	primary := restoreRunPrimaryTransfer(transfers)
+	primaryIndex := restoreRunPrimaryTransferIndex(transfers)
 
-	require.NotNil(t, primary)
+	require.NotEqual(t, -1, primaryIndex)
+	primary := &transfers[primaryIndex]
 	require.Equal(t, "restore-run-primary", primary.TransferID)
 	require.Equal(t, transfer.PerformanceClassNormalCopy, primary.PerformanceClass)
 }
@@ -361,7 +362,7 @@ func TestRestoreDirtyDecisionPreviewPlanCannotRun(t *testing.T) {
 	repoRoot, firstID, secondID := setupWholeRestoreImpactRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("local edit"), 0644))
 
-	decisionPlan, err := restoreplan.CreateDecisionPreview(repoRoot, "main", model.SnapshotID(firstID), detectEngine(repoRoot))
+	decisionPlan, err := restoreplan.CreateDecisionPreview(repoRoot, "main", model.SnapshotID(firstID), requestedTransferEngine(repoRoot))
 	require.NoError(t, err)
 	decisionPlan.PlanID = "decision-preview"
 	decisionPlan.RunCommand = ""

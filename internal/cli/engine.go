@@ -9,15 +9,6 @@ import (
 	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
-// detectEngine returns the best available engine for the repository.
-func detectEngine(repoRoot string) model.EngineType {
-	return resolveEffectiveEngine(repoRoot)
-}
-
-func newCloneEngine(repoRoot string) engine.Engine {
-	return engine.NewEngine(detectEngine(repoRoot))
-}
-
 func requestedTransferEngine(repoRoot string) model.EngineType {
 	if selected, ok := snapshotEngineFromEnv(); ok {
 		return normalizeRequestedTransferEngine(selected)
@@ -38,23 +29,6 @@ func normalizeRequestedTransferEngine(selected model.EngineType) model.EngineTyp
 	default:
 		return engine.EngineAuto
 	}
-}
-
-func resolveEffectiveEngine(repoRoot string) model.EngineType {
-	return resolveEffectiveEngineWithProbe(repoRoot, true)
-}
-
-func resolveEffectiveEngineWithProbe(repoRoot string, writeProbe bool) model.EngineType {
-	if selected, ok := snapshotEngineFromEnv(); ok {
-		return resolveEngineChoice(repoRoot, selected, writeProbe)
-	}
-	if selected, ok := legacyEngineFromEnv(); ok {
-		return resolveEngineChoice(repoRoot, selected, writeProbe)
-	}
-	if cfg, err := config.Load(repoRoot); err == nil && cfg.DefaultEngine != "" {
-		return resolveEngineChoice(repoRoot, cfg.DefaultEngine, writeProbe)
-	}
-	return autoDetectEngine(repoRoot, writeProbe)
 }
 
 func snapshotEngineFromEnv() (model.EngineType, bool) {
@@ -89,30 +63,4 @@ func parseSnapshotEngineValue(value string) (model.EngineType, bool) {
 	default:
 		return "", false
 	}
-}
-
-func resolveEngineChoice(repoRoot string, selected model.EngineType, writeProbe bool) model.EngineType {
-	switch selected {
-	case model.EngineJuiceFSClone, model.EngineReflinkCopy, model.EngineCopy:
-		return selected
-	case "", model.EngineType("auto"):
-		return autoDetectEngine(repoRoot, writeProbe)
-	default:
-		return autoDetectEngine(repoRoot, writeProbe)
-	}
-}
-
-func autoDetectEngine(repoRoot string, writeProbe bool) model.EngineType {
-	if !writeProbe {
-		report, err := engine.ProbeCapabilities(repoRoot, false)
-		if err != nil {
-			return model.EngineCopy
-		}
-		return report.RecommendedEngine
-	}
-	eng, err := engine.DetectEngineAuto(repoRoot)
-	if err != nil {
-		return model.EngineCopy // fallback
-	}
-	return eng.Name()
 }

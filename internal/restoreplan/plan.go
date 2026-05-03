@@ -563,11 +563,6 @@ func checkPreviewCapacity(repoRoot, folder, workspaceName string, sourceID model
 	})
 }
 
-func validateSourcePayload(repoRoot, workspaceName string, sourceID model.SnapshotID, engineType model.EngineType) (string, func(), error) {
-	sourceRoot, cleanup, _, err := validateSourcePayloadWithTransfer(repoRoot, workspaceName, sourceID, engineType, sourceTransferOptions{})
-	return sourceRoot, cleanup, err
-}
-
 func validateSourcePayloadWithTransfer(repoRoot, workspaceName string, sourceID model.SnapshotID, engineType model.EngineType, transferOptions sourceTransferOptions) (string, func(), *transfer.Record, error) {
 	if err := snapshot.VerifySnapshot(repoRoot, sourceID, true); err != nil {
 		return "", func() {}, nil, err

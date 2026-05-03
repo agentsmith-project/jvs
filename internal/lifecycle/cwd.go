@@ -31,7 +31,7 @@ func (e *UnsafeCWDError) Error() string {
 }
 
 func (e *UnsafeCWDError) Is(target error) bool {
-	return errors.Is(errclass.ErrLifecycleUnsafeCWD, target)
+	return errors.Is(e.jvsError(), target)
 }
 
 func (e *UnsafeCWDError) As(target any) bool {

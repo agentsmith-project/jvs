@@ -95,31 +95,30 @@ func TestOutputJSONBasicTests(t *testing.T) {
 	})
 }
 
-// TestDetectEngine_Coverage tests the detectEngine function.
-func TestDetectEngine_Coverage(t *testing.T) {
-	t.Run("Non-existent path returns Copy as fallback", func(t *testing.T) {
-		engine := detectEngine("/nonexistent/path/that/does/not/exist/12345")
-		assert.Equal(t, "copy", string(engine))
+func TestRequestedTransferEngine_Coverage(t *testing.T) {
+	t.Setenv("JVS_SNAPSHOT_ENGINE", "")
+	t.Setenv("JVS_ENGINE", "")
+
+	t.Run("Non-existent path keeps auto request", func(t *testing.T) {
+		engine := requestedTransferEngine("/nonexistent/path/that/does/not/exist/12345")
+		assert.Equal(t, "auto", string(engine))
 	})
 
-	t.Run("Common paths return Copy as fallback", func(t *testing.T) {
-		engine := detectEngine("/tmp")
-		assert.Equal(t, "copy", string(engine))
+	t.Run("Common paths keep auto request", func(t *testing.T) {
+		engine := requestedTransferEngine("/tmp")
+		assert.Equal(t, "auto", string(engine))
 	})
 
-	t.Run("Empty string uses auto detection", func(t *testing.T) {
-		engine := detectEngine("")
-		assert.Contains(t, []string{"copy", "reflink-copy", "juicefs-clone"}, string(engine))
+	t.Run("Empty string keeps auto request", func(t *testing.T) {
+		engine := requestedTransferEngine("")
+		assert.Equal(t, "auto", string(engine))
 	})
 
-	t.Run("Current directory returns valid engine", func(t *testing.T) {
-		// Get current directory which should exist
+	t.Run("Current directory keeps auto request", func(t *testing.T) {
 		cwd, err := os.Getwd()
 		if err == nil {
-			engine := detectEngine(cwd)
-			assert.NotEmpty(t, string(engine))
-			// Should be one of the valid engines
-			assert.Contains(t, []string{"copy", "reflink-copy", "juicefs-clone"}, string(engine))
+			engine := requestedTransferEngine(cwd)
+			assert.Equal(t, "auto", string(engine))
 		}
 	})
 }
@@ -207,10 +206,9 @@ func TestContextFunctionsOutsideRepo(t *testing.T) {
 	// Change to a directory that's not a JVS repo
 	assert.NoError(t, os.Chdir(dir))
 
-	t.Run("requireRepo outside repo calls os.Exit", func(t *testing.T) {
-		// This would normally call os.Exit, so we can't test it directly
-		// But we can verify the function exists
-		_ = requireRepo
+	t.Run("discoverRequiredRepo outside repo returns error", func(t *testing.T) {
+		_, err := discoverRequiredRepo()
+		assert.Error(t, err)
 	})
 
 }
@@ -258,9 +256,11 @@ func TestCleanupRunWithNoPlan(t *testing.T) {
 	assert.Contains(t, err.Error(), "--plan-id")
 }
 
-// TestDetectEngine_EdgeCases tests detectEngine with more edge cases.
-func TestDetectEngine_EdgeCases(t *testing.T) {
-	t.Run("Detect with valid JVS repo path", func(t *testing.T) {
+func TestRequestedTransferEngine_EdgeCases(t *testing.T) {
+	t.Setenv("JVS_SNAPSHOT_ENGINE", "")
+	t.Setenv("JVS_ENGINE", "")
+
+	t.Run("Valid JVS repo path keeps auto request", func(t *testing.T) {
 		dir := t.TempDir()
 		cmd := createTestRootCmd()
 
@@ -272,16 +272,13 @@ func TestDetectEngine_EdgeCases(t *testing.T) {
 		_, err := executeCommand(cmd, "init", "testrepo")
 		assert.NoError(t, err)
 
-		// Test detection on the repo
-		engine := detectEngine(filepath.Join(dir, "testrepo"))
-		// Should return a valid engine (even if just copy)
-		assert.NotEmpty(t, string(engine))
+		engine := requestedTransferEngine(filepath.Join(dir, "testrepo"))
+		assert.Equal(t, "auto", string(engine))
 	})
 
-	t.Run("Detect with path containing special characters", func(t *testing.T) {
-		// Test that paths with special chars don't cause panics
-		engine := detectEngine("/path/with spaces/and-dashes/under_score")
-		assert.NotEmpty(t, string(engine))
+	t.Run("Path containing special characters keeps auto request", func(t *testing.T) {
+		engine := requestedTransferEngine("/path/with spaces/and-dashes/under_score")
+		assert.Equal(t, "auto", string(engine))
 	})
 }
 

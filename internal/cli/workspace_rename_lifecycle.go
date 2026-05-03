@@ -38,7 +38,7 @@ func executeWorkspaceRename(repoRoot, oldName, newName string, dryRun bool) (pub
 		return publicWorkspaceRenameResult{}, err
 	}
 	if oldName == "main" {
-		return publicWorkspaceRenameResult{}, fmt.Errorf(workspaceRenameMainGuidance)
+		return publicWorkspaceRenameResult{}, errors.New(workspaceRenameMainGuidance)
 	}
 
 	var result publicWorkspaceRenameResult

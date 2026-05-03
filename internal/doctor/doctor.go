@@ -521,46 +521,6 @@ func (d *Doctor) currentWorkspaceLocatorMatchesRepairIdentity(locator repo.Works
 	return true, "", nil
 }
 
-func (d *Doctor) externalWorkspaceCandidateMatchesRecordedSource(cfg *model.WorktreeConfig, candidate string) (bool, string) {
-	if cfg.HeadSnapshotID == "" {
-		return false, "workspace has no recorded content source"
-	}
-	if len(cfg.PathSources) > 0 {
-		return false, "workspace has restored path sources"
-	}
-	desc, err := snapshot.LoadDescriptor(d.repoRoot, cfg.HeadSnapshotID)
-	if err != nil {
-		return false, fmt.Sprintf("load content source save point: %v", err)
-	}
-	if len(desc.PartialPaths) > 0 {
-		return false, "content source is a partial save point"
-	}
-	excluded, err := destinationWorkspaceControlExclusions(candidate)
-	if err != nil {
-		return false, fmt.Sprintf("inspect destination workspace locator: %v", err)
-	}
-	hash, err := integrity.ComputePayloadRootHashWithExclusions(candidate, excluded)
-	if err != nil {
-		return false, fmt.Sprintf("hash destination sibling folder: %v", err)
-	}
-	if hash != desc.PayloadRootHash {
-		return false, "destination sibling content does not match recorded content source"
-	}
-	return true, ""
-}
-
-func destinationWorkspaceControlExclusions(candidate string) (func(string) bool, error) {
-	hasLocator, err := repo.WorkspaceLocatorPresent(candidate)
-	if err != nil {
-		return nil, err
-	}
-	if !hasLocator {
-		return nil, nil
-	}
-	boundary := repo.WorktreePayloadBoundary{Root: candidate, ExcludedRootNames: []string{repo.JVSDirName}}
-	return boundary.ExcludesRelativePath, nil
-}
-
 func pathsReferToSameLocation(left, right string) bool {
 	leftAbs, leftOK := cleanAbsPathForCompare(left)
 	rightAbs, rightOK := cleanAbsPathForCompare(right)
