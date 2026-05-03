@@ -31,7 +31,10 @@ Use --repair-runtime to execute safe automatic repairs.`,
 		return errclass.ErrUsage.WithMessage("doctor does not accept positional arguments")
 	},
 	Run: func(cmd *cobra.Command, args []string) {
-		r := requireRepo()
+		r, err := discoverRequiredRepoForDoctor()
+		if err != nil {
+			exitWithCLIError(err)
+		}
 
 		doc := doctor.NewDoctor(r.Root)
 

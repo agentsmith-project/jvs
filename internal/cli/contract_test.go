@@ -27,9 +27,10 @@ type contractEnvelope struct {
 }
 
 type contractError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-	Hint    string `json:"hint"`
+	Code                   string `json:"code"`
+	Message                string `json:"message"`
+	Hint                   string `json:"hint"`
+	RecommendedNextCommand string `json:"recommended_next_command,omitempty"`
 }
 
 func TestCLIJSONEnvelope_CurrentCommandsAreSingleObjects(t *testing.T) {

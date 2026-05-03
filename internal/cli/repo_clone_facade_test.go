@@ -183,7 +183,7 @@ func TestRepoCloneRepoFlagRejectsTargetInsideSourceProjectWithClearError(t *test
 	repoRoot := filepath.Join(t.TempDir(), "source")
 	_, err := repo.Init(repoRoot, "source")
 	require.NoError(t, err)
-	mainWorkspace := filepath.Join(repoRoot, "main")
+	mainWorkspace := repoRoot
 	require.NoError(t, os.WriteFile(filepath.Join(mainWorkspace, "app.txt"), []byte("v1"), 0644))
 	_, err = snapshot.NewCreator(repoRoot, model.EngineCopy).CreateSavePoint("main", "source", nil)
 	require.NoError(t, err)
@@ -198,7 +198,7 @@ func TestRepoCloneRepoFlagRejectsTargetInsideSourceProjectWithClearError(t *test
 	require.Error(t, err)
 
 	assert.Empty(t, stdout)
-	assert.Contains(t, stderr, "target cannot be inside the source project")
+	assert.Contains(t, stderr, "target cannot be inside a source workspace")
 	assert.Contains(t, stderr, "Choose a folder outside the source project/workspaces")
 	assert.NotContains(t, stderr, "nested")
 	assert.NotContains(t, stderr, "staging")

@@ -40,6 +40,14 @@ func discoverRequiredRepo() (*repo.Repo, error) {
 	return ctx.Repo, nil
 }
 
+func discoverRequiredRepoForDoctor() (*repo.Repo, error) {
+	ctx, err := resolveDoctorScoped()
+	if err != nil {
+		return nil, err
+	}
+	return ctx.Repo, nil
+}
+
 func discoverRequiredWorktree() (*repo.Repo, string, error) {
 	ctx, err := resolveWorkspaceScoped()
 	if err != nil {
@@ -69,6 +77,40 @@ func resolveRepoScoped() (*cliDiscoveryContext, error) {
 	}
 
 	recordResolvedTarget(r.Root, workspace)
+	if err := enforceLifecyclePendingGuard(r.Root); err != nil {
+		return nil, err
+	}
+	return &cliDiscoveryContext{Repo: r, Workspace: workspace}, nil
+}
+
+// resolveDoctorScoped resolves doctor against an explicit repository even when
+// the current external workspace locator is stale enough to need doctor repair.
+func resolveDoctorScoped() (*cliDiscoveryContext, error) {
+	repoStart, workspaceStart, err := discoveryStarts()
+	if err != nil {
+		return nil, err
+	}
+
+	r, err := repo.Discover(repoStart)
+	if err != nil {
+		return nil, errclass.ErrNotRepo.
+			WithMessage("not a JVS repository (or any parent)").
+			WithHint(suggestInit())
+	}
+	recordResolvedTarget(r.Root, "")
+
+	workspace, err := resolveOptionalWorkspace(r, workspaceStart)
+	if err != nil {
+		if targetRepoPath == "" {
+			return nil, err
+		}
+		workspace = ""
+	}
+
+	recordResolvedTarget(r.Root, workspace)
+	if err := enforceLifecyclePendingGuard(r.Root); err != nil {
+		return nil, err
+	}
 	return &cliDiscoveryContext{Repo: r, Workspace: workspace}, nil
 }
 
@@ -129,6 +171,13 @@ func discoveryStarts() (repoStart string, workspaceStart string, err error) {
 
 	currentRepo, err := repo.Discover(cwd)
 	if err != nil {
+		var jvsErr *errclass.JVSError
+		if errors.As(err, &jvsErr) {
+			switch jvsErr.Code {
+			case errclass.ErrNotRepo.Code, errclass.ErrLifecyclePending.Code:
+				return "", "", err
+			}
+		}
 		return "", "", errclass.ErrNotRepo.
 			WithMessage("not a JVS repository (or any parent)").
 			WithHint(suggestInit())
@@ -149,6 +198,17 @@ func resolveRepoFlagTarget(path string) (*repo.Repo, error) {
 	}
 	info, err := os.Stat(abs)
 	if err != nil {
+		if os.IsNotExist(err) {
+			if cwd, cwdErr := os.Getwd(); cwdErr == nil {
+				pendingRepo, pendingErr := repo.DiscoverPendingLifecycleRepoFromWorkspace(cwd, abs)
+				if pendingErr == nil {
+					return pendingRepo, nil
+				}
+				if !errors.Is(pendingErr, repo.ErrControlRepoNotFound) {
+					return nil, pendingErr
+				}
+			}
+		}
 		return nil, errclass.ErrNotRepo.
 			WithMessagef("--repo is not inside a JVS repository: %s", path).
 			WithHint("Pass --repo as this repository root or a path inside it.")
@@ -254,6 +314,10 @@ func workspaceFromPath(repoRoot, path string) (string, error) {
 	r, workspace, err := repo.DiscoverWorktree(path)
 	if err != nil {
 		if errors.Is(err, repo.ErrControlRepoNotFound) {
+			return "", nil
+		}
+		var jvsErr *errclass.JVSError
+		if targetRepoPath != "" && errors.As(err, &jvsErr) && jvsErr.Code == errclass.ErrLifecyclePending.Code {
 			return "", nil
 		}
 		return "", err

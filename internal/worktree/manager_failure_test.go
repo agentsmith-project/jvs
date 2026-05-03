@@ -64,6 +64,10 @@ func createFailureTestSnapshot(t *testing.T, repoPath string) model.SnapshotID {
 	return snapshotID
 }
 
+func failureManagedPayloadPath(repoPath, name string) string {
+	return filepath.Join(filepath.Dir(repoPath), name)
+}
+
 func copyFailureTestSnapshotTree(src, dst string) error {
 	_, err := engine.NewCopyEngine().Clone(src, dst)
 	return err
@@ -72,7 +76,7 @@ func copyFailureTestSnapshotTree(src, dst string) error {
 func assertNoFailureTestStagingPayloads(t *testing.T, repoPath, name string) {
 	t.Helper()
 
-	matches, err := filepath.Glob(filepath.Join(repoPath, "worktrees", "."+name+".staging-*"))
+	matches, err := filepath.Glob(filepath.Join(filepath.Dir(repoPath), "."+name+".staging-*"))
 	require.NoError(t, err)
 	assert.Empty(t, matches, "staged payloads should be cleaned up")
 }
@@ -103,7 +107,7 @@ func TestManager_CreateLikeConfigWriteFailureRemovesFinalPayload(t *testing.T) {
 			}
 
 			require.Error(t, err)
-			_, statErr := os.Lstat(filepath.Join(repoPath, "worktrees", "cfg-fail"))
+			_, statErr := os.Lstat(failureManagedPayloadPath(repoPath, "cfg-fail"))
 			require.True(t, os.IsNotExist(statErr), "final payload must not remain after config write failure")
 			assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "worktrees", "cfg-fail", "config.json"))
 			assertNoFailureTestStagingPayloads(t, repoPath, "cfg-fail")
@@ -145,7 +149,7 @@ func TestManager_CreateLikeUncertainConfigWriteKeepsPayloadAndVisibleConfig(t *t
 			require.Error(t, err)
 			assert.True(t, fsutil.IsCommitUncertain(err), "uncertain config write must remain detectable")
 
-			payloadPath := filepath.Join(repoPath, "worktrees", name)
+			payloadPath := failureManagedPayloadPath(repoPath, name)
 			assert.DirExists(t, payloadPath, "visible config may point at this payload")
 			if op != "create" {
 				assert.FileExists(t, filepath.Join(payloadPath, "snapshot.txt"))
@@ -172,7 +176,7 @@ func TestManager_CreateStartedFromPublishFailureLeavesNoWorkspaceOrMetadataResid
 	mgr := NewManager(repoPath)
 	snapshotID := createFailureTestSnapshot(t, repoPath)
 	name := "started-publish-fail"
-	payloadPath := filepath.Join(repoPath, "worktrees", name)
+	payloadPath := failureManagedPayloadPath(repoPath, name)
 	configDir := filepath.Join(repoPath, ".jvs", "worktrees", name)
 
 	oldRename := renamePath
@@ -203,7 +207,7 @@ func TestManager_CreateStartedFromPublishCommitUncertainLeavesNoOrphanWorkspace(
 	mgr := NewManager(repoPath)
 	snapshotID := createFailureTestSnapshot(t, repoPath)
 	name := "started-publish-uncertain"
-	payloadPath := filepath.Join(repoPath, "worktrees", name)
+	payloadPath := failureManagedPayloadPath(repoPath, name)
 	configDir := filepath.Join(repoPath, ".jvs", "worktrees", name)
 
 	oldRename := renamePath
@@ -249,7 +253,7 @@ func TestManager_CreateStartedFromConfigWriteFailureRemovesWorkspaceAndMetadataR
 	mgr := NewManager(repoPath)
 	snapshotID := createFailureTestSnapshot(t, repoPath)
 	name := "started-config-fail"
-	payloadPath := filepath.Join(repoPath, "worktrees", name)
+	payloadPath := failureManagedPayloadPath(repoPath, name)
 	configDir := filepath.Join(repoPath, ".jvs", "worktrees", name)
 
 	oldWrite := writeWorktreeConfig
@@ -277,7 +281,7 @@ func TestManager_CreateStartedFromUncertainConfigWriteKeepsVisibleWorkspace(t *t
 	mgr := NewManager(repoPath)
 	snapshotID := createFailureTestSnapshot(t, repoPath)
 	name := "started-config-uncertain"
-	payloadPath := filepath.Join(repoPath, "worktrees", name)
+	payloadPath := failureManagedPayloadPath(repoPath, name)
 
 	oldWrite := writeWorktreeConfig
 	writeWorktreeConfig = func(repoRoot, name string, cfg *model.WorktreeConfig) error {
@@ -346,7 +350,7 @@ func TestManager_RemoveFailsClosedWhenAuditLogMalformed(t *testing.T) {
 	_, err := mgr.Create("audit-blocked", nil)
 	require.NoError(t, err)
 
-	payloadPath := filepath.Join(repoPath, "worktrees", "audit-blocked")
+	payloadPath := failureManagedPayloadPath(repoPath, "audit-blocked")
 	require.NoError(t, os.WriteFile(filepath.Join(payloadPath, "payload.txt"), []byte("keep"), 0644))
 	configPath := filepath.Join(repoPath, ".jvs", "worktrees", "audit-blocked", "config.json")
 	require.FileExists(t, configPath)
@@ -375,8 +379,8 @@ func TestManager_RenameRollsBackPayloadWhenConfigDirRenameFails(t *testing.T) {
 	_, err := mgr.Create("old-name", nil)
 	require.NoError(t, err)
 
-	oldPayload := filepath.Join(repoPath, "worktrees", "old-name")
-	newPayload := filepath.Join(repoPath, "worktrees", "new-name")
+	oldPayload := failureManagedPayloadPath(repoPath, "old-name")
+	newPayload := failureManagedPayloadPath(repoPath, "new-name")
 	oldConfigDir := filepath.Join(repoPath, ".jvs", "worktrees", "old-name")
 	newConfigDir := filepath.Join(repoPath, ".jvs", "worktrees", "new-name")
 	require.NoError(t, os.WriteFile(filepath.Join(oldPayload, "payload.txt"), []byte("payload"), 0644))
@@ -406,35 +410,24 @@ func TestManager_RenameRollsBackPayloadWhenConfigDirRenameFails(t *testing.T) {
 	assert.Equal(t, "old-name", cfg.Name)
 }
 
-func TestManager_RenamePayloadRenameIsNoReplaceAfterPrecheck(t *testing.T) {
+func TestManager_MoveRejectsExistingTargetWithoutChangingSource(t *testing.T) {
 	repoPath := setupFailureTestRepo(t)
 	mgr := NewManager(repoPath)
 	_, err := mgr.Create("old-name", nil)
 	require.NoError(t, err)
 
-	oldPayload := filepath.Join(repoPath, "worktrees", "old-name")
-	newPayload := filepath.Join(repoPath, "worktrees", "new-name")
+	oldPayload := failureManagedPayloadPath(repoPath, "old-name")
+	newPayload := filepath.Join(filepath.Dir(repoPath), "new-name")
 	require.NoError(t, os.WriteFile(filepath.Join(oldPayload, "payload.txt"), []byte("payload"), 0644))
+	require.NoError(t, os.Mkdir(newPayload, 0755))
 
-	oldRename := renamePath
-	renamePath = func(oldpath, newpath string) error {
-		if oldpath == oldPayload && newpath == newPayload {
-			require.NoError(t, os.Mkdir(newPayload, 0755))
-		}
-		return oldRename(oldpath, newpath)
-	}
-	t.Cleanup(func() {
-		renamePath = oldRename
-	})
-
-	err = mgr.Rename("old-name", "new-name")
+	err = mgr.Move("old-name", newPayload)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "rename payload")
+	assert.Contains(t, err.Error(), "already exists")
 
 	assert.FileExists(t, filepath.Join(oldPayload, "payload.txt"))
 	assert.NoFileExists(t, filepath.Join(newPayload, "payload.txt"))
 	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "worktrees", "old-name", "config.json"))
-	assert.NoFileExists(t, filepath.Join(repoPath, ".jvs", "worktrees", "new-name", "config.json"))
 }
 
 func TestManager_RenameConfigDirRenameIsNoReplaceAfterPrecheckAndRollsBackPayload(t *testing.T) {
@@ -443,8 +436,7 @@ func TestManager_RenameConfigDirRenameIsNoReplaceAfterPrecheckAndRollsBackPayloa
 	_, err := mgr.Create("old-name", nil)
 	require.NoError(t, err)
 
-	oldPayload := filepath.Join(repoPath, "worktrees", "old-name")
-	newPayload := filepath.Join(repoPath, "worktrees", "new-name")
+	oldPayload := failureManagedPayloadPath(repoPath, "old-name")
 	oldConfigDir := filepath.Join(repoPath, ".jvs", "worktrees", "old-name")
 	newConfigDir := filepath.Join(repoPath, ".jvs", "worktrees", "new-name")
 	require.NoError(t, os.WriteFile(filepath.Join(oldPayload, "payload.txt"), []byte("payload"), 0644))
@@ -465,7 +457,6 @@ func TestManager_RenameConfigDirRenameIsNoReplaceAfterPrecheckAndRollsBackPayloa
 	assert.Contains(t, err.Error(), "rename config directory")
 
 	assert.FileExists(t, filepath.Join(oldPayload, "payload.txt"))
-	assert.NoDirExists(t, newPayload)
 	assert.FileExists(t, filepath.Join(oldConfigDir, "config.json"))
 	assert.NoFileExists(t, filepath.Join(newConfigDir, "config.json"))
 
@@ -474,52 +465,13 @@ func TestManager_RenameConfigDirRenameIsNoReplaceAfterPrecheckAndRollsBackPayloa
 	assert.Equal(t, "old-name", cfg.Name)
 }
 
-func TestManager_RenamePayloadCommitUncertainDoesNotRollback(t *testing.T) {
-	repoPath := setupFailureTestRepo(t)
-	mgr := NewManager(repoPath)
-	_, err := mgr.Create("old-name", nil)
-	require.NoError(t, err)
-
-	oldPayload := filepath.Join(repoPath, "worktrees", "old-name")
-	newPayload := filepath.Join(repoPath, "worktrees", "new-name")
-	oldConfigDir := filepath.Join(repoPath, ".jvs", "worktrees", "old-name")
-	newConfigDir := filepath.Join(repoPath, ".jvs", "worktrees", "new-name")
-	require.NoError(t, os.WriteFile(filepath.Join(oldPayload, "payload.txt"), []byte("payload"), 0644))
-
-	oldRename := renamePath
-	renamePath = func(oldpath, newpath string) error {
-		if oldpath == oldPayload && newpath == newPayload {
-			require.NoError(t, oldRename(oldpath, newpath))
-			return &fsutil.CommitUncertainError{
-				Op:   "rename no-replace",
-				Path: newpath,
-				Err:  errors.New("injected parent fsync failure"),
-			}
-		}
-		return oldRename(oldpath, newpath)
-	}
-	t.Cleanup(func() {
-		renamePath = oldRename
-	})
-
-	err = mgr.Rename("old-name", "new-name")
-	require.Error(t, err)
-	assert.True(t, fsutil.IsCommitUncertain(err), "payload rename fsync failure must fail closed")
-
-	assert.NoDirExists(t, oldPayload)
-	assert.FileExists(t, filepath.Join(newPayload, "payload.txt"))
-	assert.FileExists(t, filepath.Join(oldConfigDir, "config.json"))
-	assert.NoDirExists(t, newConfigDir)
-}
-
 func TestManager_RenameConfigDirCommitUncertainDoesNotRollbackPayload(t *testing.T) {
 	repoPath := setupFailureTestRepo(t)
 	mgr := NewManager(repoPath)
 	_, err := mgr.Create("old-name", nil)
 	require.NoError(t, err)
 
-	oldPayload := filepath.Join(repoPath, "worktrees", "old-name")
-	newPayload := filepath.Join(repoPath, "worktrees", "new-name")
+	oldPayload := failureManagedPayloadPath(repoPath, "old-name")
 	oldConfigDir := filepath.Join(repoPath, ".jvs", "worktrees", "old-name")
 	newConfigDir := filepath.Join(repoPath, ".jvs", "worktrees", "new-name")
 	require.NoError(t, os.WriteFile(filepath.Join(oldPayload, "payload.txt"), []byte("payload"), 0644))
@@ -544,20 +496,18 @@ func TestManager_RenameConfigDirCommitUncertainDoesNotRollbackPayload(t *testing
 	require.Error(t, err)
 	assert.True(t, fsutil.IsCommitUncertain(err), "config directory rename fsync failure must fail closed")
 
-	assert.NoDirExists(t, oldPayload)
-	assert.FileExists(t, filepath.Join(newPayload, "payload.txt"))
+	assert.FileExists(t, filepath.Join(oldPayload, "payload.txt"))
 	assert.NoDirExists(t, oldConfigDir)
 	assert.FileExists(t, filepath.Join(newConfigDir, "config.json"))
 }
 
-func TestManager_RenameRollbackPayloadRenameIsNoReplace(t *testing.T) {
+func TestManager_RenameConfigDirFailureLeavesPayloadInPlace(t *testing.T) {
 	repoPath := setupFailureTestRepo(t)
 	mgr := NewManager(repoPath)
 	_, err := mgr.Create("old-name", nil)
 	require.NoError(t, err)
 
-	oldPayload := filepath.Join(repoPath, "worktrees", "old-name")
-	newPayload := filepath.Join(repoPath, "worktrees", "new-name")
+	oldPayload := failureManagedPayloadPath(repoPath, "old-name")
 	oldConfigDir := filepath.Join(repoPath, ".jvs", "worktrees", "old-name")
 	newConfigDir := filepath.Join(repoPath, ".jvs", "worktrees", "new-name")
 	require.NoError(t, os.WriteFile(filepath.Join(oldPayload, "payload.txt"), []byte("payload"), 0644))
@@ -565,7 +515,6 @@ func TestManager_RenameRollbackPayloadRenameIsNoReplace(t *testing.T) {
 	oldRename := renamePath
 	renamePath = func(oldpath, newpath string) error {
 		if oldpath == oldConfigDir && newpath == newConfigDir {
-			require.NoError(t, os.Mkdir(oldPayload, 0755))
 			return errors.New("injected config rename failure")
 		}
 		return oldRename(oldpath, newpath)
@@ -576,10 +525,9 @@ func TestManager_RenameRollbackPayloadRenameIsNoReplace(t *testing.T) {
 
 	err = mgr.Rename("old-name", "new-name")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "rollback payload rename failed")
+	assert.Contains(t, err.Error(), "rename config directory")
 
-	assert.NoFileExists(t, filepath.Join(oldPayload, "payload.txt"))
-	assert.FileExists(t, filepath.Join(newPayload, "payload.txt"))
+	assert.FileExists(t, filepath.Join(oldPayload, "payload.txt"))
 	assert.FileExists(t, filepath.Join(oldConfigDir, "config.json"))
 	assert.NoDirExists(t, newConfigDir)
 }
@@ -590,8 +538,7 @@ func TestManager_RenameRollsBackConfigDirAndPayloadWhenConfigRewriteFails(t *tes
 	_, err := mgr.Create("old-name", nil)
 	require.NoError(t, err)
 
-	oldPayload := filepath.Join(repoPath, "worktrees", "old-name")
-	newPayload := filepath.Join(repoPath, "worktrees", "new-name")
+	oldPayload := failureManagedPayloadPath(repoPath, "old-name")
 	oldConfigDir := filepath.Join(repoPath, ".jvs", "worktrees", "old-name")
 	newConfigDir := filepath.Join(repoPath, ".jvs", "worktrees", "new-name")
 	require.NoError(t, os.WriteFile(filepath.Join(oldPayload, "payload.txt"), []byte("payload"), 0644))
@@ -612,7 +559,6 @@ func TestManager_RenameRollsBackConfigDirAndPayloadWhenConfigRewriteFails(t *tes
 	assert.Contains(t, err.Error(), "write config")
 
 	assert.FileExists(t, filepath.Join(oldPayload, "payload.txt"))
-	assert.NoDirExists(t, newPayload)
 	assert.FileExists(t, filepath.Join(oldConfigDir, "config.json"))
 	assert.NoFileExists(t, filepath.Join(newConfigDir, "config.json"))
 
@@ -627,8 +573,7 @@ func TestManager_RenameConfigRewriteCommitUncertainLeavesRenamedMapping(t *testi
 	_, err := mgr.Create("old-name", nil)
 	require.NoError(t, err)
 
-	oldPayload := filepath.Join(repoPath, "worktrees", "old-name")
-	newPayload := filepath.Join(repoPath, "worktrees", "new-name")
+	oldPayload := failureManagedPayloadPath(repoPath, "old-name")
 	oldConfigDir := filepath.Join(repoPath, ".jvs", "worktrees", "old-name")
 	newConfigDir := filepath.Join(repoPath, ".jvs", "worktrees", "new-name")
 	require.NoError(t, os.WriteFile(filepath.Join(oldPayload, "payload.txt"), []byte("payload"), 0644))
@@ -650,12 +595,12 @@ func TestManager_RenameConfigRewriteCommitUncertainLeavesRenamedMapping(t *testi
 	require.Error(t, err)
 	assert.True(t, fsutil.IsCommitUncertain(err), "uncertain rewrite should remain detectable")
 
-	assert.NoDirExists(t, oldPayload)
-	assert.FileExists(t, filepath.Join(newPayload, "payload.txt"))
+	assert.FileExists(t, filepath.Join(oldPayload, "payload.txt"))
 	assert.NoDirExists(t, oldConfigDir)
 	assert.FileExists(t, filepath.Join(newConfigDir, "config.json"))
 
 	cfg, loadErr := repo.LoadWorktreeConfig(repoPath, "new-name")
 	require.NoError(t, loadErr)
 	assert.Equal(t, "new-name", cfg.Name)
+	assert.Equal(t, oldPayload, cfg.RealPath)
 }

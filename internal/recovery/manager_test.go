@@ -24,6 +24,7 @@ import (
 
 func TestManagerWriteLoadListAndResolveReleasesProtection(t *testing.T) {
 	repoRoot, repoID := setupRecoveryManagerRepo(t)
+	mainPath := recoveryMainPayloadPath(t, repoRoot)
 	sourceID := model.NewSnapshotID()
 	pin, err := sourcepin.NewManager(repoRoot).CreateWithID(sourceID, "recovery-RP-test", "active recovery plan RP-test")
 	require.NoError(t, err)
@@ -36,12 +37,12 @@ func TestManagerWriteLoadListAndResolveReleasesProtection(t *testing.T) {
 		Operation:               recovery.OperationRestore,
 		RestorePlanID:           "restore-preview",
 		Workspace:               "main",
-		Folder:                  filepath.Join(repoRoot, "main"),
+		Folder:                  mainPath,
 		SourceSavePoint:         sourceID,
 		CreatedAt:               time.Now().UTC(),
 		UpdatedAt:               time.Now().UTC(),
-		PreWorktreeState:        recovery.WorktreeState{Name: "main", HeadSnapshotID: sourceID},
-		Backup:                  recovery.Backup{Path: filepath.Join(repoRoot, "main.restore-backup-test"), Scope: recovery.BackupScopeWhole, State: recovery.BackupStatePending},
+		PreWorktreeState:        recovery.WorktreeState{Name: "main", RealPath: mainPath, HeadSnapshotID: sourceID},
+		Backup:                  recovery.Backup{Path: recoveryBackupPath(t, mainPath), Scope: recovery.BackupScopeWhole, State: recovery.BackupStatePending},
 		CompletedSteps:          []string{"recovery plan created"},
 		PendingSteps:            []string{"resume restore or rollback"},
 		RecommendedNextCommand:  "jvs recovery status RP-test",
@@ -73,6 +74,7 @@ func TestManagerWriteLoadListAndResolveReleasesProtection(t *testing.T) {
 
 func TestManagerLoadRejectsRepoMismatchUnsafeIDAndUnsafeLeaf(t *testing.T) {
 	repoRoot, _ := setupRecoveryManagerRepo(t)
+	mainPath := recoveryMainPayloadPath(t, repoRoot)
 	mgr := recovery.NewManager(repoRoot)
 
 	require.NoError(t, writeRawRecoveryPlan(t, repoRoot, "RP-other", map[string]any{
@@ -82,10 +84,10 @@ func TestManagerLoadRejectsRepoMismatchUnsafeIDAndUnsafeLeaf(t *testing.T) {
 		"status":            recovery.StatusActive,
 		"operation":         recovery.OperationRestore,
 		"workspace":         "main",
-		"folder":            filepath.Join(repoRoot, "main"),
+		"folder":            mainPath,
 		"source_save_point": model.NewSnapshotID(),
 		"backup": map[string]any{
-			"path":  filepath.Join(repoRoot, "main.restore-backup-test"),
+			"path":  recoveryBackupPath(t, mainPath),
 			"scope": recovery.BackupScopeWhole,
 		},
 	}))
@@ -113,18 +115,19 @@ func TestManagerLoadRejectsRepoMismatchUnsafeIDAndUnsafeLeaf(t *testing.T) {
 
 func TestCreateActiveForRestoreRecordsRecoveryEvidence(t *testing.T) {
 	repoRoot, _ := setupRecoveryManagerRepo(t)
+	mainPath := recoveryMainPayloadPath(t, repoRoot)
 	sourceID := model.NewSnapshotID()
 	evidence, err := restoreplan.WorkspaceEvidence(repoRoot, "main")
 	require.NoError(t, err)
 	preview := &restoreplan.Plan{
 		PlanID:                 "restore-preview",
 		Workspace:              "main",
-		Folder:                 filepath.Join(repoRoot, "main"),
+		Folder:                 mainPath,
 		SourceSavePoint:        sourceID,
 		ExpectedFolderEvidence: evidence,
 	}
 
-	plan, err := recovery.NewManager(repoRoot).CreateActiveForRestore(preview, filepath.Join(repoRoot, "main.restore-backup-test"))
+	plan, err := recovery.NewManager(repoRoot).CreateActiveForRestore(preview, recoveryBackupPath(t, mainPath))
 	require.NoError(t, err)
 	assert.NotEmpty(t, plan.RecoveryEvidence)
 	assert.Equal(t, evidence, plan.RecoveryEvidence)
@@ -134,11 +137,12 @@ func TestCreateActiveForRestoreRecordsRecoveryEvidence(t *testing.T) {
 
 func TestCreateActiveForRestoreDefiniteWriteFailureReleasesHiddenSourceProtection(t *testing.T) {
 	repoRoot, _ := setupRecoveryManagerRepo(t)
+	mainPath := recoveryMainPayloadPath(t, repoRoot)
 	sourceID := model.NewSnapshotID()
 	preview := &restoreplan.Plan{
 		PlanID:          "restore-preview",
 		Workspace:       "main",
-		Folder:          filepath.Join(repoRoot, "main"),
+		Folder:          mainPath,
 		SourceSavePoint: sourceID,
 	}
 	restoreWrite := recovery.SetWriteHookForTest(func(string, []byte, os.FileMode) error {
@@ -146,7 +150,7 @@ func TestCreateActiveForRestoreDefiniteWriteFailureReleasesHiddenSourceProtectio
 	})
 	defer restoreWrite()
 
-	plan, err := recovery.NewManager(repoRoot).CreateActiveForRestore(preview, filepath.Join(repoRoot, "main.restore-backup-test"))
+	plan, err := recovery.NewManager(repoRoot).CreateActiveForRestore(preview, recoveryBackupPath(t, mainPath))
 	require.Error(t, err)
 	require.Nil(t, plan)
 
@@ -157,11 +161,12 @@ func TestCreateActiveForRestoreDefiniteWriteFailureReleasesHiddenSourceProtectio
 
 func TestCreateActiveForRestoreCommitUncertainVisiblePlanReturnsErrorWithoutHiddenProtection(t *testing.T) {
 	repoRoot, _ := setupRecoveryManagerRepo(t)
+	mainPath := recoveryMainPayloadPath(t, repoRoot)
 	sourceID := model.NewSnapshotID()
 	preview := &restoreplan.Plan{
 		PlanID:          "restore-preview",
 		Workspace:       "main",
-		Folder:          filepath.Join(repoRoot, "main"),
+		Folder:          mainPath,
 		SourceSavePoint: sourceID,
 	}
 	restoreWrite := recovery.SetWriteHookForTest(func(path string, data []byte, perm os.FileMode) error {
@@ -170,7 +175,7 @@ func TestCreateActiveForRestoreCommitUncertainVisiblePlanReturnsErrorWithoutHidd
 	})
 	defer restoreWrite()
 
-	plan, err := recovery.NewManager(repoRoot).CreateActiveForRestore(preview, filepath.Join(repoRoot, "main.restore-backup-test"))
+	plan, err := recovery.NewManager(repoRoot).CreateActiveForRestore(preview, recoveryBackupPath(t, mainPath))
 	require.Error(t, err)
 	require.Nil(t, plan)
 	assert.Contains(t, err.Error(), "jvs recovery status")
@@ -186,6 +191,7 @@ func TestCreateActiveForRestoreCommitUncertainVisiblePlanReturnsErrorWithoutHidd
 
 func TestMarkResolvedRetriesProtectionReleaseForResolvedPlan(t *testing.T) {
 	repoRoot, repoID := setupRecoveryManagerRepo(t)
+	mainPath := recoveryMainPayloadPath(t, repoRoot)
 	sourceID := model.NewSnapshotID()
 	pin, err := sourcepin.NewManager(repoRoot).CreateWithID(sourceID, "recovery-RP-resolved", "active recovery plan RP-resolved")
 	require.NoError(t, err)
@@ -198,13 +204,13 @@ func TestMarkResolvedRetriesProtectionReleaseForResolvedPlan(t *testing.T) {
 		Operation:               recovery.OperationRestore,
 		RestorePlanID:           "restore-preview",
 		Workspace:               "main",
-		Folder:                  filepath.Join(repoRoot, "main"),
+		Folder:                  mainPath,
 		SourceSavePoint:         sourceID,
 		CreatedAt:               now,
 		UpdatedAt:               now,
 		ResolvedAt:              &now,
-		PreWorktreeState:        recovery.WorktreeState{Name: "main"},
-		Backup:                  recovery.Backup{Path: filepath.Join(repoRoot, "main.restore-backup-test"), Scope: recovery.BackupScopeWhole, State: recovery.BackupStatePending},
+		PreWorktreeState:        recovery.WorktreeState{Name: "main", RealPath: mainPath},
+		Backup:                  recovery.Backup{Path: recoveryBackupPath(t, mainPath), Scope: recovery.BackupScopeWhole, State: recovery.BackupStatePending},
 		CleanupProtectionPinIDs: []string{pin.Pin.PinID},
 		CleanupProtectionPins:   []model.Pin{pin.Pin},
 	}
@@ -216,8 +222,9 @@ func TestMarkResolvedRetriesProtectionReleaseForResolvedPlan(t *testing.T) {
 
 func TestRestoreBackupRejectsMismatchedFolderWithoutMutatingWorkspace(t *testing.T) {
 	repoRoot, repoID := setupRecoveryManagerRepo(t)
-	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "main", "file.txt"), []byte("current"), 0644))
-	backupPath := filepath.Join(repoRoot, "wrong-main.restore-backup-test")
+	mainPath := recoveryMainPayloadPath(t, repoRoot)
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("current"), 0644))
+	backupPath := recoveryBackupPath(t, mainPath)
 	require.NoError(t, os.MkdirAll(backupPath, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(backupPath, "file.txt"), []byte("backup"), 0644))
 	plan := recovery.Plan{
@@ -232,22 +239,23 @@ func TestRestoreBackupRejectsMismatchedFolderWithoutMutatingWorkspace(t *testing
 		SourceSavePoint:  model.NewSnapshotID(),
 		CreatedAt:        time.Now().UTC(),
 		UpdatedAt:        time.Now().UTC(),
-		PreWorktreeState: recovery.WorktreeState{Name: "main"},
+		PreWorktreeState: recovery.WorktreeState{Name: "main", RealPath: mainPath},
 		Backup:           recovery.Backup{Path: backupPath, Scope: recovery.BackupScopeWhole, State: recovery.BackupStateRequired},
 	}
 
 	err := recovery.NewManager(repoRoot).RestoreBackup(&plan)
 	require.Error(t, err)
-	content, readErr := os.ReadFile(filepath.Join(repoRoot, "main", "file.txt"))
+	content, readErr := os.ReadFile(filepath.Join(mainPath, "file.txt"))
 	require.NoError(t, readErr)
 	assert.Equal(t, "current", string(content))
 }
 
 func TestRestoreBackupRejectsSiblingBackupNotGeneratedForWorkspaceBoundary(t *testing.T) {
 	repoRoot, repoID := setupRecoveryManagerRepo(t)
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := recoveryMainPayloadPath(t, repoRoot)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("current"), 0644))
-	backupPath := filepath.Join(repoRoot, "other.restore-backup-test")
+	backupPath := filepath.Join(filepath.Dir(mainPath), "other.restore-backup-test")
+	t.Cleanup(func() { _ = os.RemoveAll(backupPath) })
 	require.NoError(t, os.MkdirAll(backupPath, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(backupPath, "file.txt"), []byte("wrong backup"), 0644))
 	plan := recovery.Plan{
@@ -262,7 +270,7 @@ func TestRestoreBackupRejectsSiblingBackupNotGeneratedForWorkspaceBoundary(t *te
 		SourceSavePoint:  model.NewSnapshotID(),
 		CreatedAt:        time.Now().UTC(),
 		UpdatedAt:        time.Now().UTC(),
-		PreWorktreeState: recovery.WorktreeState{Name: "main"},
+		PreWorktreeState: recovery.WorktreeState{Name: "main", RealPath: mainPath},
 		Backup:           recovery.Backup{Path: backupPath, Scope: recovery.BackupScopeWhole, State: recovery.BackupStateRequired},
 	}
 
@@ -307,9 +315,9 @@ func TestRestoreBackupDoesNotRestoreControlDataFromBackup(t *testing.T) {
 
 func TestRestorePathBackupRequiredEntryMissingFailsClosedWithoutDeletingCurrentPath(t *testing.T) {
 	repoRoot, repoID := setupRecoveryManagerRepo(t)
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := recoveryMainPayloadPath(t, repoRoot)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "app.txt"), []byte("restored current"), 0644))
-	backupPath := filepath.Join(repoRoot, "main.restore-backup-test")
+	backupPath := recoveryBackupPath(t, mainPath)
 	require.NoError(t, os.MkdirAll(backupPath, 0755))
 	plan := recovery.Plan{
 		SchemaVersion:    recovery.SchemaVersion,
@@ -324,7 +332,7 @@ func TestRestorePathBackupRequiredEntryMissingFailsClosedWithoutDeletingCurrentP
 		Path:             "app.txt",
 		CreatedAt:        time.Now().UTC(),
 		UpdatedAt:        time.Now().UTC(),
-		PreWorktreeState: recovery.WorktreeState{Name: "main"},
+		PreWorktreeState: recovery.WorktreeState{Name: "main", RealPath: mainPath},
 		Backup: recovery.Backup{
 			Path:         backupPath,
 			Scope:        recovery.BackupScopePath,
@@ -343,10 +351,10 @@ func TestRestorePathBackupRequiredEntryMissingFailsClosedWithoutDeletingCurrentP
 
 func TestRestorePathPlanRejectsWholeBackupScopeWithoutMutatingWorkspace(t *testing.T) {
 	repoRoot, repoID := setupRecoveryManagerRepo(t)
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := recoveryMainPayloadPath(t, repoRoot)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "app.txt"), []byte("current app"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "other.txt"), []byte("current other"), 0644))
-	backupPath := filepath.Join(repoRoot, "main.restore-backup-test")
+	backupPath := recoveryBackupPath(t, mainPath)
 	require.NoError(t, os.MkdirAll(backupPath, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(backupPath, "app.txt"), []byte("backup app"), 0644))
 	plan := recovery.Plan{
@@ -362,7 +370,7 @@ func TestRestorePathPlanRejectsWholeBackupScopeWithoutMutatingWorkspace(t *testi
 		Path:             "app.txt",
 		CreatedAt:        time.Now().UTC(),
 		UpdatedAt:        time.Now().UTC(),
-		PreWorktreeState: recovery.WorktreeState{Name: "main"},
+		PreWorktreeState: recovery.WorktreeState{Name: "main", RealPath: mainPath},
 		Backup:           recovery.Backup{Path: backupPath, Scope: recovery.BackupScopeWhole, State: recovery.BackupStateRequired},
 	}
 
@@ -378,9 +386,9 @@ func TestRestorePathPlanRejectsWholeBackupScopeWithoutMutatingWorkspace(t *testi
 
 func TestRestoreWholePlanRejectsPathBackupScopeWithoutMutatingWorkspace(t *testing.T) {
 	repoRoot, repoID := setupRecoveryManagerRepo(t)
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := recoveryMainPayloadPath(t, repoRoot)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "app.txt"), []byte("current app"), 0644))
-	backupPath := filepath.Join(repoRoot, "main.restore-backup-test")
+	backupPath := recoveryBackupPath(t, mainPath)
 	require.NoError(t, os.MkdirAll(backupPath, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(backupPath, "app.txt"), []byte("backup app"), 0644))
 	plan := recovery.Plan{
@@ -395,7 +403,7 @@ func TestRestoreWholePlanRejectsPathBackupScopeWithoutMutatingWorkspace(t *testi
 		SourceSavePoint:  model.NewSnapshotID(),
 		CreatedAt:        time.Now().UTC(),
 		UpdatedAt:        time.Now().UTC(),
-		PreWorktreeState: recovery.WorktreeState{Name: "main"},
+		PreWorktreeState: recovery.WorktreeState{Name: "main", RealPath: mainPath},
 		Backup: recovery.Backup{
 			Path:    backupPath,
 			Scope:   recovery.BackupScopePath,
@@ -414,10 +422,10 @@ func TestRestoreWholePlanRejectsPathBackupScopeWithoutMutatingWorkspace(t *testi
 func TestRestorePathBackupRejectsTamperedEntriesBeforeMutation(t *testing.T) {
 	t.Run("extra path", func(t *testing.T) {
 		repoRoot, repoID := setupRecoveryManagerRepo(t)
-		mainPath := filepath.Join(repoRoot, "main")
+		mainPath := recoveryMainPayloadPath(t, repoRoot)
 		require.NoError(t, os.WriteFile(filepath.Join(mainPath, "app.txt"), []byte("current app"), 0644))
 		require.NoError(t, os.WriteFile(filepath.Join(mainPath, "other.txt"), []byte("current other"), 0644))
-		backupPath := filepath.Join(repoRoot, "main.restore-backup-test")
+		backupPath := recoveryBackupPath(t, mainPath)
 		require.NoError(t, os.MkdirAll(backupPath, 0755))
 		require.NoError(t, os.WriteFile(filepath.Join(backupPath, "app.txt"), []byte("backup app"), 0644))
 		require.NoError(t, os.WriteFile(filepath.Join(backupPath, "other.txt"), []byte("backup other"), 0644))
@@ -434,7 +442,7 @@ func TestRestorePathBackupRejectsTamperedEntriesBeforeMutation(t *testing.T) {
 			Path:             "app.txt",
 			CreatedAt:        time.Now().UTC(),
 			UpdatedAt:        time.Now().UTC(),
-			PreWorktreeState: recovery.WorktreeState{Name: "main"},
+			PreWorktreeState: recovery.WorktreeState{Name: "main", RealPath: mainPath},
 			Backup: recovery.Backup{
 				Path:    backupPath,
 				Scope:   recovery.BackupScopePath,
@@ -496,9 +504,9 @@ func TestRestorePathBackupRejectsTamperedEntriesBeforeMutation(t *testing.T) {
 
 func TestRestorePathBackupCopyFailureKeepsBackupReusable(t *testing.T) {
 	repoRoot, repoID := setupRecoveryManagerRepo(t)
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := recoveryMainPayloadPath(t, repoRoot)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "app.txt"), []byte("restored current"), 0644))
-	backupPath := filepath.Join(repoRoot, "main.restore-backup-test")
+	backupPath := recoveryBackupPath(t, mainPath)
 	require.NoError(t, os.MkdirAll(backupPath, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(backupPath, "app.txt"), []byte("original backup"), 0644))
 	plan := recovery.Plan{
@@ -514,7 +522,7 @@ func TestRestorePathBackupCopyFailureKeepsBackupReusable(t *testing.T) {
 		Path:             "app.txt",
 		CreatedAt:        time.Now().UTC(),
 		UpdatedAt:        time.Now().UTC(),
-		PreWorktreeState: recovery.WorktreeState{Name: "main"},
+		PreWorktreeState: recovery.WorktreeState{Name: "main", RealPath: mainPath},
 		Backup: recovery.Backup{
 			Path:         backupPath,
 			Scope:        recovery.BackupScopePath,
@@ -543,9 +551,9 @@ func TestRestorePathBackupCopyFailureKeepsBackupReusable(t *testing.T) {
 
 func TestRestoreWholeBackupCopyFailureKeepsBackupReusable(t *testing.T) {
 	repoRoot, repoID := setupRecoveryManagerRepo(t)
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := recoveryMainPayloadPath(t, repoRoot)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "current.txt"), []byte("restored current"), 0644))
-	backupPath := filepath.Join(repoRoot, "main.restore-backup-test")
+	backupPath := recoveryBackupPath(t, mainPath)
 	require.NoError(t, os.MkdirAll(backupPath, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(backupPath, "original.txt"), []byte("original backup"), 0644))
 	plan := recovery.Plan{
@@ -560,7 +568,7 @@ func TestRestoreWholeBackupCopyFailureKeepsBackupReusable(t *testing.T) {
 		SourceSavePoint:  model.NewSnapshotID(),
 		CreatedAt:        time.Now().UTC(),
 		UpdatedAt:        time.Now().UTC(),
-		PreWorktreeState: recovery.WorktreeState{Name: "main"},
+		PreWorktreeState: recovery.WorktreeState{Name: "main", RealPath: mainPath},
 		Backup:           recovery.Backup{Path: backupPath, Scope: recovery.BackupScopeWhole, State: recovery.BackupStateRequired},
 	}
 	restoreClone := recovery.SetRestoreBackupCloneHookForTest(func(src, dst string) error {
@@ -584,9 +592,9 @@ func TestRestoreWholeBackupCopyFailureKeepsBackupReusable(t *testing.T) {
 
 func TestRestoreWholeBackupCapacityFailurePreventsCopyAndPreservesPayloads(t *testing.T) {
 	repoRoot, repoID := setupRecoveryManagerRepo(t)
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := recoveryMainPayloadPath(t, repoRoot)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "current.txt"), []byte("current"), 0644))
-	backupPath := filepath.Join(repoRoot, "main.restore-backup-test")
+	backupPath := recoveryBackupPath(t, mainPath)
 	require.NoError(t, os.MkdirAll(filepath.Join(backupPath, ".jvs"), 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(backupPath, "original.txt"), []byte("12345"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(backupPath, ".jvs", "control"), []byte("0123456789"), 0644))
@@ -602,7 +610,7 @@ func TestRestoreWholeBackupCapacityFailurePreventsCopyAndPreservesPayloads(t *te
 		SourceSavePoint:  model.NewSnapshotID(),
 		CreatedAt:        time.Now().UTC(),
 		UpdatedAt:        time.Now().UTC(),
-		PreWorktreeState: recovery.WorktreeState{Name: "main"},
+		PreWorktreeState: recovery.WorktreeState{Name: "main", RealPath: mainPath},
 		Backup:           recovery.Backup{Path: backupPath, Scope: recovery.BackupScopeWhole, State: recovery.BackupStateRequired},
 	}
 	restoreCapacity := recovery.SetRestoreBackupCapacityGateForTest(capacitygate.Gate{Meter: &recoveryStaticMeter{available: 5}, SafetyMarginBytes: 0})
@@ -632,9 +640,9 @@ func TestRestoreWholeBackupCapacityFailurePreventsCopyAndPreservesPayloads(t *te
 
 func TestRestoreWholeBackupRecordsFinalTransferForRecoveryCopyPoint(t *testing.T) {
 	repoRoot, repoID := setupRecoveryManagerRepo(t)
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := recoveryMainPayloadPath(t, repoRoot)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "current.txt"), []byte("current"), 0644))
-	backupPath := filepath.Join(repoRoot, "main.restore-backup-test")
+	backupPath := recoveryBackupPath(t, mainPath)
 	require.NoError(t, os.MkdirAll(backupPath, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(backupPath, "original.txt"), []byte("original backup"), 0644))
 	plan := recovery.Plan{
@@ -649,7 +657,7 @@ func TestRestoreWholeBackupRecordsFinalTransferForRecoveryCopyPoint(t *testing.T
 		SourceSavePoint:  model.NewSnapshotID(),
 		CreatedAt:        time.Now().UTC(),
 		UpdatedAt:        time.Now().UTC(),
-		PreWorktreeState: recovery.WorktreeState{Name: "main"},
+		PreWorktreeState: recovery.WorktreeState{Name: "main", RealPath: mainPath},
 		Backup:           recovery.Backup{Path: backupPath, Scope: recovery.BackupScopeWhole, State: recovery.BackupStateRequired},
 	}
 	planner := &recoveryRecordingPlanner{}
@@ -687,9 +695,9 @@ func TestRestoreWholeBackupRecordsFinalTransferForRecoveryCopyPoint(t *testing.T
 
 func TestRestorePathBackupAbsentOriginalRemovesRestoredPath(t *testing.T) {
 	repoRoot, repoID := setupRecoveryManagerRepo(t)
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := recoveryMainPayloadPath(t, repoRoot)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "created.txt"), []byte("restored current"), 0644))
-	backupPath := filepath.Join(repoRoot, "main.restore-backup-test")
+	backupPath := recoveryBackupPath(t, mainPath)
 	require.NoError(t, os.MkdirAll(backupPath, 0755))
 	plan := recovery.Plan{
 		SchemaVersion:    recovery.SchemaVersion,
@@ -704,7 +712,7 @@ func TestRestorePathBackupAbsentOriginalRemovesRestoredPath(t *testing.T) {
 		Path:             "created.txt",
 		CreatedAt:        time.Now().UTC(),
 		UpdatedAt:        time.Now().UTC(),
-		PreWorktreeState: recovery.WorktreeState{Name: "main"},
+		PreWorktreeState: recovery.WorktreeState{Name: "main", RealPath: mainPath},
 		Backup: recovery.Backup{
 			Path:         backupPath,
 			Scope:        recovery.BackupScopePath,
@@ -720,9 +728,9 @@ func TestRestorePathBackupAbsentOriginalRemovesRestoredPath(t *testing.T) {
 
 func TestRestorePathBackupAbsentOriginalDoesNotGateCopyOrRecordTransfer(t *testing.T) {
 	repoRoot, repoID := setupRecoveryManagerRepo(t)
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := recoveryMainPayloadPath(t, repoRoot)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "created.txt"), []byte("restored current"), 0644))
-	backupPath := filepath.Join(repoRoot, "main.restore-backup-test")
+	backupPath := recoveryBackupPath(t, mainPath)
 	require.NoError(t, os.MkdirAll(backupPath, 0755))
 	plan := recovery.Plan{
 		SchemaVersion:    recovery.SchemaVersion,
@@ -737,7 +745,7 @@ func TestRestorePathBackupAbsentOriginalDoesNotGateCopyOrRecordTransfer(t *testi
 		Path:             "created.txt",
 		CreatedAt:        time.Now().UTC(),
 		UpdatedAt:        time.Now().UTC(),
-		PreWorktreeState: recovery.WorktreeState{Name: "main"},
+		PreWorktreeState: recovery.WorktreeState{Name: "main", RealPath: mainPath},
 		Backup: recovery.Backup{
 			Path:         backupPath,
 			Scope:        recovery.BackupScopePath,
@@ -765,9 +773,9 @@ func TestRestorePathBackupAbsentOriginalDoesNotGateCopyOrRecordTransfer(t *testi
 
 func TestRestorePathBackupOriginalRecordsTransferOnlyForCopiedEntry(t *testing.T) {
 	repoRoot, repoID := setupRecoveryManagerRepo(t)
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := recoveryMainPayloadPath(t, repoRoot)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "app.txt"), []byte("restored current"), 0644))
-	backupPath := filepath.Join(repoRoot, "main.restore-backup-test")
+	backupPath := recoveryBackupPath(t, mainPath)
 	require.NoError(t, os.MkdirAll(backupPath, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(backupPath, "app.txt"), []byte("original backup"), 0644))
 	plan := recovery.Plan{
@@ -783,7 +791,7 @@ func TestRestorePathBackupOriginalRecordsTransferOnlyForCopiedEntry(t *testing.T
 		Path:             "app.txt",
 		CreatedAt:        time.Now().UTC(),
 		UpdatedAt:        time.Now().UTC(),
-		PreWorktreeState: recovery.WorktreeState{Name: "main"},
+		PreWorktreeState: recovery.WorktreeState{Name: "main", RealPath: mainPath},
 		Backup: recovery.Backup{
 			Path:         backupPath,
 			Scope:        recovery.BackupScopePath,
@@ -820,6 +828,20 @@ func setupRecoveryManagerRepo(t *testing.T) (repoRoot string, repoID string) {
 	r, err := repo.Init(repoRoot, "test")
 	require.NoError(t, err)
 	return repoRoot, r.RepoID
+}
+
+func recoveryMainPayloadPath(t *testing.T, repoRoot string) string {
+	t.Helper()
+	path, err := repo.WorktreePayloadPath(repoRoot, "main")
+	require.NoError(t, err)
+	return path
+}
+
+func recoveryBackupPath(t *testing.T, payloadPath string) string {
+	t.Helper()
+	path := payloadPath + ".restore-backup-test"
+	t.Cleanup(func() { _ = os.RemoveAll(path) })
+	return path
 }
 
 type recoveryStaticMeter struct {

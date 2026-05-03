@@ -37,5 +37,5 @@ func TestManagerForkMaterializesSnapshotIntoMissingStagingDestination(t *testing
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
 	require.Len(t, destinations, 1)
-	assert.FileExists(t, filepath.Join(repoPath, "worktrees", "strict-fork", "snapshot.txt"))
+	assert.FileExists(t, filepath.Join(managedPayloadPath(repoPath, "strict-fork"), "snapshot.txt"))
 }

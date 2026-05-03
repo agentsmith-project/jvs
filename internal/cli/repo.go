@@ -14,6 +14,9 @@ import (
 var (
 	repoCloneSavePoints string
 	repoCloneDryRun     bool
+	repoMoveRunID       string
+	repoRenameRunID     string
+	repoDetachRunID     string
 )
 
 var repoCmd = &cobra.Command{
@@ -48,6 +51,141 @@ var repoCloneCmd = &cobra.Command{
 			return outputJSON(result)
 		}
 		printRepoCloneResult(result)
+		return nil
+	},
+}
+
+var repoMoveCmd = &cobra.Command{
+	Use:   "move <new-folder> | move --run <plan-id>",
+	Short: "Move a JVS project folder",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, err := resolveRepoScoped()
+		if err != nil {
+			return err
+		}
+		runPlanID, runRequested, err := workspaceRunFlag(cmd, "repo move")
+		if err != nil {
+			return err
+		}
+		if runRequested {
+			if len(args) != 0 {
+				return fmt.Errorf("repo move --run accepts only a plan ID")
+			}
+			result, err := executeRepoMovePlan(ctx.Repo.Root, runPlanID, "move")
+			if err != nil {
+				return err
+			}
+			recordResolvedTarget(result.RepoRoot, "main")
+			if jsonOutput {
+				return outputJSON(result)
+			}
+			printRepoMoveRunResult(result)
+			return nil
+		}
+		if len(args) != 1 {
+			return fmt.Errorf("repo move requires a new folder")
+		}
+		plan, err := createRepoMovePlan(ctx.Repo.Root, args[0], repoMoveCommandOperation("move"), "move")
+		if err != nil {
+			return err
+		}
+		recordResolvedTarget(plan.SourceRepoRoot, "main")
+		result := publicRepoMovePreviewFromPlan(plan)
+		if jsonOutput {
+			return outputJSON(result)
+		}
+		printRepoMovePreviewResult(result)
+		return nil
+	},
+}
+
+var repoRenameCmd = &cobra.Command{
+	Use:   "rename <new-folder-name> | rename --run <plan-id>",
+	Short: "Rename a JVS project folder",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, err := resolveRepoScoped()
+		if err != nil {
+			return err
+		}
+		runPlanID, runRequested, err := workspaceRunFlag(cmd, "repo rename")
+		if err != nil {
+			return err
+		}
+		if runRequested {
+			if len(args) != 0 {
+				return fmt.Errorf("repo rename --run accepts only a plan ID")
+			}
+			result, err := executeRepoMovePlan(ctx.Repo.Root, runPlanID, "rename")
+			if err != nil {
+				return err
+			}
+			recordResolvedTarget(result.RepoRoot, "main")
+			if jsonOutput {
+				return outputJSON(result)
+			}
+			printRepoMoveRunResult(result)
+			return nil
+		}
+		if len(args) != 1 {
+			return fmt.Errorf("repo rename requires a new folder name")
+		}
+		target, err := repoRenameTarget(ctx.Repo.Root, args[0])
+		if err != nil {
+			return err
+		}
+		plan, err := createRepoMovePlan(ctx.Repo.Root, target, repoMoveCommandOperation("rename"), "rename")
+		if err != nil {
+			return err
+		}
+		recordResolvedTarget(plan.SourceRepoRoot, "main")
+		result := publicRepoMovePreviewFromPlan(plan)
+		if jsonOutput {
+			return outputJSON(result)
+		}
+		printRepoMovePreviewResult(result)
+		return nil
+	},
+}
+
+var repoDetachCmd = &cobra.Command{
+	Use:   "detach | detach --run <plan-id>",
+	Short: "Stop JVS managing the current project folder",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		runPlanID, runRequested, err := workspaceRunFlag(cmd, "repo detach")
+		if err != nil {
+			return err
+		}
+		if runRequested {
+			if len(args) != 0 {
+				return fmt.Errorf("repo detach --run accepts only a plan ID")
+			}
+			result, err := executeRepoDetachRunFromCWD(runPlanID)
+			if err != nil {
+				return err
+			}
+			if jsonOutput {
+				return outputJSON(result)
+			}
+			printRepoDetachRunResult(result)
+			return nil
+		}
+		if len(args) != 0 {
+			return fmt.Errorf("repo detach does not accept arguments")
+		}
+		ctx, err := resolveRepoScoped()
+		if err != nil {
+			return err
+		}
+		plan, err := createRepoDetachPlan(ctx.Repo.Root)
+		if err != nil {
+			return err
+		}
+		recordResolvedTarget(plan.RepoRoot, "main")
+		result := publicRepoDetachPreviewFromPlan(plan)
+		if jsonOutput {
+			return outputJSON(result)
+		}
+		printRepoDetachPreviewResult(result)
 		return nil
 	},
 }
@@ -154,9 +292,58 @@ func printRepoCloneTransferSummary(label string, record *transfer.Record, expect
 	}
 }
 
+func printRepoMovePreviewResult(result publicRepoMovePreviewResult) {
+	fmt.Printf("%s preview\n", publicRepoMovePrintLabel(result.Operation))
+	fmt.Printf("Old folder: %s\n", result.SourceRepoRoot)
+	fmt.Printf("New folder: %s\n", result.TargetRepoRoot)
+	fmt.Printf("Repo ID unchanged: %s\n", result.RepoID)
+	fmt.Printf("Move method: %s\n", result.MoveMethod)
+	fmt.Printf("External workspace connections to update: %d\n", result.ExternalWorkspaces)
+	fmt.Printf("Plan: %s\n", result.PlanID)
+	fmt.Println("No files were moved.")
+	fmt.Printf("Run: `%s`\n", result.RunCommand)
+	fmt.Printf("Safe run: `%s`\n", result.SafeRunCommand)
+}
+
+func printRepoMoveRunResult(result publicRepoMoveRunResult) {
+	fmt.Printf("Moved JVS project.\n")
+	fmt.Printf("Old folder: %s\n", result.SourceRepoRoot)
+	fmt.Printf("New folder: %s\n", result.TargetRepoRoot)
+	fmt.Printf("Repo ID unchanged: %s\n", result.RepoID)
+	fmt.Printf("Updated workspace connections: %d\n", result.ExternalWorkspacesUpdated)
+}
+
+func printRepoDetachPreviewResult(result publicRepoDetachPreviewResult) {
+	fmt.Println("Repo detach preview")
+	fmt.Printf("Folder: %s\n", result.RepoRoot)
+	fmt.Printf("Repo ID: %s\n", result.RepoID)
+	fmt.Printf("Archive: %s\n", result.ArchivePath)
+	fmt.Printf("External workspace connections to detach: %d\n", result.ExternalWorkspaces)
+	fmt.Printf("Plan: %s\n", result.PlanID)
+	fmt.Println("No files were moved.")
+	fmt.Println("No JVS metadata was archived.")
+	fmt.Printf("Run: `%s`\n", result.RunCommand)
+}
+
+func printRepoDetachRunResult(result publicRepoDetachRunResult) {
+	fmt.Println("Detached JVS project.")
+	fmt.Printf("Folder: %s\n", result.RepoRoot)
+	fmt.Printf("Archive: %s\n", result.ArchivePath)
+	fmt.Printf("Detached workspace connections: %d\n", result.ExternalWorkspacesUpdated)
+	fmt.Println("Working files preserved: yes")
+	fmt.Println("Save point storage deleted: no")
+	fmt.Println("Current folder is no longer an active JVS repo.")
+}
+
 func init() {
 	repoCloneCmd.Flags().StringVar(&repoCloneSavePoints, "save-points", string(repoclone.SavePointsModeAll), "save points to copy: all or main")
 	repoCloneCmd.Flags().BoolVar(&repoCloneDryRun, "dry-run", false, "plan the clone without creating the target")
+	repoMoveCmd.Flags().StringVar(&repoMoveRunID, "run", "", "execute a repo move preview plan")
+	repoRenameCmd.Flags().StringVar(&repoRenameRunID, "run", "", "execute a repo rename preview plan")
+	repoDetachCmd.Flags().StringVar(&repoDetachRunID, "run", "", "execute a repo detach preview plan")
 	repoCmd.AddCommand(repoCloneCmd)
+	repoCmd.AddCommand(repoMoveCmd)
+	repoCmd.AddCommand(repoRenameCmd)
+	repoCmd.AddCommand(repoDetachCmd)
 	rootCmd.AddCommand(repoCmd)
 }

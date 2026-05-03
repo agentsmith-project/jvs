@@ -47,7 +47,7 @@ These commands are safe review steps:
 ```bash
 jvs restore <save>
 jvs restore <save> --path src/config.yaml
-jvs workspace remove experiment
+jvs workspace delete experiment
 jvs cleanup preview
 ```
 
@@ -60,12 +60,12 @@ These commands run a reviewed plan:
 
 ```bash
 jvs restore --run <restore-plan-id>
-jvs workspace remove --run <remove-plan-id>
+jvs workspace delete --run <workspace-delete-plan-id>
 jvs cleanup run --plan-id <cleanup-plan-id>
 ```
 
-`restore --run` changes workspace files named by the plan. `workspace remove
---run` removes the selected workspace folder. `cleanup run` deletes only save
+`restore --run` changes workspace files named by the plan. `workspace delete
+--run` deletes the selected workspace folder. `cleanup run` deletes only save
 point storage listed by a cleanup plan.
 
 ## Why Does Restore Stop When I Have Unsaved Changes?
@@ -140,20 +140,20 @@ jvs workspace new ../experiment --from <save>
 
 The command prints the new folder path. The original workspace is unchanged.
 
-## How Do I Remove A Workspace Folder?
+## How Do I Delete A Workspace Folder?
 
-Use the two-step remove flow:
+Use the two-step delete flow:
 
 ```bash
-jvs workspace remove experiment
-jvs workspace remove --run <remove-plan-id>
+jvs workspace delete experiment
+jvs workspace delete --run <workspace-delete-plan-id>
 ```
 
 The first command is a preview. Check the folder path, workspace name, and
-local-change status. The run removes that workspace folder and workspace entry.
+local-change status. The run deletes that workspace folder and workspace entry.
 It does not remove save point storage.
 
-The `main` workspace cannot be removed.
+The `main` workspace cannot be deleted.
 
 ## Should I Use Cleanup To Delete A Workspace?
 
@@ -166,19 +166,12 @@ jvs cleanup preview
 jvs cleanup run --plan-id <cleanup-plan-id>
 ```
 
-If you want to remove a workspace folder, use `jvs workspace remove <name>`.
+If you want to delete a workspace folder, use `jvs workspace delete <name>`.
 
-## What Does `--force` Mean For Workspace Remove?
+## What If Workspace Delete Sees Local Changes?
 
-`--force` means the local changes in that workspace can be discarded by the
-remove run. Use it only after checking the folder path:
-
-```bash
-jvs workspace remove experiment --force
-```
-
-It still creates a preview first. Run only the printed `Run:` command after
-review.
+JVS fails closed. Save or restore those local changes before previewing
+workspace deletion again. Run only the printed `Run:` command after review.
 
 ## Are History And View Read-Only?
 

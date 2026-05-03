@@ -16,7 +16,7 @@ import (
 
 func TestRestoreMaterializesSnapshotIntoMissingTempDestination(t *testing.T) {
 	repoPath := setupFailureTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("snapshot"), 0644))
 
 	desc, err := snapshot.NewCreator(repoPath, model.EngineCopy).Create("main", "base", nil)

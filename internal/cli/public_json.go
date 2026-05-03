@@ -37,10 +37,11 @@ type publicDoctorResult struct {
 }
 
 type publicDoctorFinding struct {
-	Category    string `json:"category"`
-	Description string `json:"description"`
-	Severity    string `json:"severity"`
-	ErrorCode   string `json:"error_code,omitempty"`
+	Category               string `json:"category"`
+	Description            string `json:"description"`
+	Severity               string `json:"severity"`
+	ErrorCode              string `json:"error_code,omitempty"`
+	RecommendedNextCommand string `json:"recommended_next_command,omitempty"`
 }
 
 type publicDoctorRepair struct {
@@ -131,10 +132,11 @@ func publicDoctor(result *clidoctor.Result) publicDoctorResult {
 	findings := make([]publicDoctorFinding, 0, len(result.Findings))
 	for _, finding := range result.Findings {
 		findings = append(findings, publicDoctorFinding{
-			Category:    publicContractVocabulary(finding.Category),
-			Description: publicContractVocabulary(finding.Description),
-			Severity:    finding.Severity,
-			ErrorCode:   publicErrorCodeVocabulary(finding.ErrorCode),
+			Category:               publicContractVocabulary(finding.Category),
+			Description:            publicContractVocabulary(finding.Description),
+			Severity:               finding.Severity,
+			ErrorCode:              publicErrorCodeVocabulary(finding.ErrorCode),
+			RecommendedNextCommand: finding.RecommendedNextCommand,
 		})
 	}
 	return publicDoctorResult{

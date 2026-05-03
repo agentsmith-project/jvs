@@ -45,7 +45,7 @@ func setupCatalogTestRepo(t *testing.T) string {
 }
 
 func createCatalogSnapshot(t *testing.T, repoPath, note string, tags []string) *model.Descriptor {
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)

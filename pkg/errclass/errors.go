@@ -39,19 +39,22 @@ func (e *JVSError) WithHint(hint string) *JVSError {
 
 // All stable error classes for v0.x.
 var (
-	ErrNotRepo             = &JVSError{Code: "E_NOT_REPO"}
-	ErrNotWorkspace        = &JVSError{Code: "E_NOT_WORKSPACE"}
-	ErrTargetMismatch      = &JVSError{Code: "E_TARGET_MISMATCH"}
-	ErrUsage               = &JVSError{Code: "E_USAGE"}
-	ErrNameInvalid         = &JVSError{Code: "E_NAME_INVALID"}
-	ErrPathEscape          = &JVSError{Code: "E_PATH_ESCAPE"}
-	ErrDescriptorCorrupt   = &JVSError{Code: "E_DESCRIPTOR_CORRUPT"}
-	ErrPayloadHashMismatch = &JVSError{Code: "E_PAYLOAD_HASH_MISMATCH"}
-	ErrLineageBroken       = &JVSError{Code: "E_LINEAGE_BROKEN"}
-	ErrPartialSnapshot     = &JVSError{Code: "E_PARTIAL_SNAPSHOT"}
-	ErrGCPlanMismatch      = &JVSError{Code: "E_GC_PLAN_MISMATCH"}
-	ErrFormatUnsupported   = &JVSError{Code: "E_FORMAT_UNSUPPORTED"}
-	ErrAuditChainBroken    = &JVSError{Code: "E_AUDIT_CHAIN_BROKEN"}
-	ErrRepoBusy            = &JVSError{Code: "E_REPO_BUSY"}
-	ErrLockConflict        = &JVSError{Code: "E_LOCK_CONFLICT"}
+	ErrNotRepo                   = &JVSError{Code: "E_NOT_REPO"}
+	ErrNotWorkspace              = &JVSError{Code: "E_NOT_WORKSPACE"}
+	ErrTargetMismatch            = &JVSError{Code: "E_TARGET_MISMATCH"}
+	ErrUsage                     = &JVSError{Code: "E_USAGE"}
+	ErrNameInvalid               = &JVSError{Code: "E_NAME_INVALID"}
+	ErrPathEscape                = &JVSError{Code: "E_PATH_ESCAPE"}
+	ErrDescriptorCorrupt         = &JVSError{Code: "E_DESCRIPTOR_CORRUPT"}
+	ErrPayloadHashMismatch       = &JVSError{Code: "E_PAYLOAD_HASH_MISMATCH"}
+	ErrLineageBroken             = &JVSError{Code: "E_LINEAGE_BROKEN"}
+	ErrPartialSnapshot           = &JVSError{Code: "E_PARTIAL_SNAPSHOT"}
+	ErrGCPlanMismatch            = &JVSError{Code: "E_GC_PLAN_MISMATCH"}
+	ErrFormatUnsupported         = &JVSError{Code: "E_FORMAT_UNSUPPORTED"}
+	ErrAuditChainBroken          = &JVSError{Code: "E_AUDIT_CHAIN_BROKEN"}
+	ErrRepoBusy                  = &JVSError{Code: "E_REPO_BUSY"}
+	ErrLockConflict              = &JVSError{Code: "E_LOCK_CONFLICT"}
+	ErrLifecyclePending          = &JVSError{Code: "E_LIFECYCLE_PENDING"}
+	ErrLifecycleUnsafeCWD        = &JVSError{Code: "E_LIFECYCLE_UNSAFE_CWD"}
+	ErrLifecycleIdentityMismatch = &JVSError{Code: "E_LIFECYCLE_IDENTITY_MISMATCH"}
 )

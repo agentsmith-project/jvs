@@ -9,8 +9,10 @@ import (
 	"regexp"
 	"testing"
 
+	"github.com/agentsmith-project/jvs/internal/lifecycle"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/terminal"
+	"github.com/agentsmith-project/jvs/internal/worktree"
 	"github.com/agentsmith-project/jvs/pkg/color"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -191,14 +193,15 @@ func TestWorkspaceCommand_HelpListsPublicManagementSubcommands(t *testing.T) {
 	stdout, err := executeCommand(createTestRootCmd(), "workspace", "--help")
 	require.NoError(t, err)
 
-	for _, command := range []string{"new", "list", "path", "rename", "remove"} {
+	for _, command := range []string{"new", "list", "path", "rename", "move", "delete"} {
 		assertRootHelpListsCommand(t, stdout, command)
 	}
+	assert.NotContains(t, stdout, "  remove")
 	assert.NotContains(t, stdout, "worktree")
 	assert.NotContains(t, stdout, "checkpoint")
 }
 
-func TestWorkspaceCommand_RenameUsesWorkspaceNames(t *testing.T) {
+func TestWorkspaceCommand_RenameIsNameOnlyAndUpdatesExternalLocator(t *testing.T) {
 	dir := setupTestDir(t)
 	repoPath := filepath.Join(dir, "testrepo")
 	require.NoError(t, os.Mkdir(repoPath, 0755))
@@ -208,24 +211,105 @@ func TestWorkspaceCommand_RenameUsesWorkspaceNames(t *testing.T) {
 	require.NoError(t, os.WriteFile("file.txt", []byte("baseline"), 0644))
 
 	saveID := createRootTestSavePoint(t, "baseline")
-	newOut, err := executeCommand(createTestRootCmd(), "--json", "workspace", "new", "../feature", "--from", saveID)
+	newOut, err := executeCommand(createTestRootCmd(), "--json", "workspace", "new", "../folder-stays", "--from", saveID, "--name", "old-feature")
 	require.NoError(t, err, newOut)
+	originalFolder := filepath.Join(filepath.Dir(repoPath), "folder-stays")
 
-	stdout, err := executeCommand(createTestRootCmd(), "--json", "workspace", "rename", "feature", "renamed-feature")
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "workspace", "rename", "old-feature", "new-feature")
 	require.NoError(t, err, stdout)
 	env := decodeContractEnvelope(t, stdout)
 	require.True(t, env.OK, stdout)
 	assert.Equal(t, "workspace rename", env.Command)
-	var data map[string]string
+	var data map[string]any
 	require.NoError(t, json.Unmarshal(env.Data, &data), stdout)
-	assert.Equal(t, "renamed-feature", data["workspace"])
-	assert.NoDirExists(t, filepath.Join(filepath.Dir(repoPath), "feature"))
-	assert.DirExists(t, filepath.Join(filepath.Dir(repoPath), "renamed-feature"))
-	assert.NoDirExists(t, filepath.Join(repoPath, "feature"))
-	assert.NoDirExists(t, filepath.Join(repoPath, "renamed-feature"))
+	assert.Equal(t, "new-feature", data["workspace"])
+	assert.Equal(t, "old-feature", data["old_workspace"])
+	assert.Equal(t, originalFolder, data["folder"])
+	assert.Equal(t, false, data["folder_moved"])
+	assert.DirExists(t, originalFolder)
+	assert.NoDirExists(t, filepath.Join(filepath.Dir(repoPath), "new-feature"))
+
+	stdout, err = executeCommand(createTestRootCmd(), "--json", "workspace", "path", "old-feature")
+	require.Error(t, err, stdout)
+	assert.Empty(t, stdout)
+
+	stdout, err = executeCommand(createTestRootCmd(), "--json", "workspace", "path", "new-feature")
+	require.NoError(t, err, stdout)
+	var pathData map[string]string
+	decodeRootJSONData(t, stdout, &pathData)
+	assert.Equal(t, originalFolder, pathData["path"])
+
+	locator, ok, err := repo.ReadWorkspaceLocator(originalFolder)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, "new-feature", locator.WorkspaceName)
+
+	require.NoError(t, os.Chdir(originalFolder))
+	statusOut, err := executeCommand(createTestRootCmd(), "--json", "status")
+	require.NoError(t, err, statusOut)
+	var status statusCommandOutput
+	decodeRootJSONData(t, statusOut, &status)
+	assert.Equal(t, "new-feature", status.Workspace)
+	assert.Equal(t, originalFolder, status.Folder)
 }
 
-func TestWorkspaceCommand_ListPathAndRemove(t *testing.T) {
+func TestWorkspaceCommand_RenameMainFailsWithRepoRenameGuidance(t *testing.T) {
+	setupCoverageRepo(t, "wsmainrename")
+
+	stdout, err := executeCommand(createTestRootCmd(), "workspace", "rename", "main", "trunk")
+	require.Error(t, err)
+	assert.Empty(t, stdout)
+	assert.Equal(t, "main workspace is the repo root; use jvs repo rename to rename the folder.", err.Error())
+}
+
+func TestWorkspaceCommand_RenameRerunResumesPendingLocatorRewrite(t *testing.T) {
+	repoPath, _ := setupCoverageRepo(t, "wspendingrename")
+	require.NoError(t, os.WriteFile("file.txt", []byte("baseline"), 0644))
+	saveID := createRootTestSavePoint(t, "baseline")
+	newOut, err := executeCommand(createTestRootCmd(), "workspace", "new", "../folder-stays", "--from", saveID, "--name", "old-feature")
+	require.NoError(t, err, newOut)
+	originalFolder := testExternalWorkspacePath(repoPath, "folder-stays")
+
+	require.NoError(t, worktree.NewManager(repoPath).Rename("old-feature", "new-feature"))
+	repoID, err := workspaceCurrentRepoID(repoPath)
+	require.NoError(t, err)
+	record := workspaceLifecycleOperationRecord(repoID, workspaceRenameOperationID("old-feature", "new-feature"), "workspace rename", "config_renamed", "jvs workspace rename old-feature new-feature", map[string]any{
+		"old_workspace":   "old-feature",
+		"new_workspace":   "new-feature",
+		"folder":          originalFolder,
+		"locator_present": true,
+	})
+	require.NoError(t, lifecycle.WriteOperation(repoPath, record))
+
+	require.NoError(t, os.Chdir(originalFolder))
+	statusOut, err := executeCommand(createTestRootCmd(), "status")
+	require.Error(t, err)
+	assert.Empty(t, statusOut)
+
+	require.NoError(t, os.Chdir(repoPath))
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "workspace", "rename", "old-feature", "new-feature")
+	require.NoError(t, err, stdout)
+	var data publicWorkspaceRenameResult
+	decodeRootJSONData(t, stdout, &data)
+	assert.Equal(t, "renamed", data.Status)
+	assert.Equal(t, originalFolder, data.Folder)
+
+	pending, err := lifecycle.ListPendingOperations(repoPath)
+	require.NoError(t, err)
+	assert.Empty(t, pending)
+	locator, ok, err := repo.ReadWorkspaceLocator(originalFolder)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, "new-feature", locator.WorkspaceName)
+	require.NoError(t, os.Chdir(originalFolder))
+	statusOut, err = executeCommand(createTestRootCmd(), "--json", "status")
+	require.NoError(t, err, statusOut)
+	var status statusCommandOutput
+	decodeRootJSONData(t, statusOut, &status)
+	assert.Equal(t, "new-feature", status.Workspace)
+}
+
+func TestWorkspaceCommand_ListPathAndDelete(t *testing.T) {
 	dir := setupTestDir(t)
 	repoPath := filepath.Join(dir, "testrepo")
 	require.NoError(t, os.Mkdir(repoPath, 0755))
@@ -252,22 +336,22 @@ func TestWorkspaceCommand_ListPathAndRemove(t *testing.T) {
 	assert.Equal(t, "feature", pathData["workspace"])
 	assert.DirExists(t, pathData["path"])
 
-	stdout, err = executeCommand(createTestRootCmd(), "--json", "workspace", "remove", "--force", "feature")
+	stdout, err = executeCommand(createTestRootCmd(), "--json", "workspace", "delete", "feature")
 	require.NoError(t, err, stdout)
 	env = decodeContractEnvelope(t, stdout)
 	require.True(t, env.OK, stdout)
-	assert.Equal(t, "workspace remove", env.Command)
+	assert.Equal(t, "workspace delete", env.Command)
 	var preview map[string]any
 	require.NoError(t, json.Unmarshal(env.Data, &preview), stdout)
 	planID, ok := preview["plan_id"].(string)
-	require.True(t, ok, "workspace remove preview should expose plan_id: %#v", preview)
+	require.True(t, ok, "workspace delete preview should expose plan_id: %#v", preview)
 	assert.DirExists(t, pathData["path"])
 
-	stdout, err = executeCommand(createTestRootCmd(), "--json", "workspace", "remove", "--run", planID)
+	stdout, err = executeCommand(createTestRootCmd(), "--json", "workspace", "delete", "--run", planID)
 	require.NoError(t, err, stdout)
 	env = decodeContractEnvelope(t, stdout)
 	require.True(t, env.OK, stdout)
-	assert.Equal(t, "workspace remove", env.Command)
+	assert.Equal(t, "workspace delete", env.Command)
 	assert.NoDirExists(t, pathData["path"])
 }
 
@@ -290,7 +374,7 @@ func TestInitCommand_CreatesRepo(t *testing.T) {
 func TestHistoryCommand_Empty(t *testing.T) {
 	setupTestDir(t)
 	repoPath := initLegacyRepoForCLITest(t, "testrepo")
-	require.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
+	require.NoError(t, os.Chdir(repoPath))
 
 	stdout, err := executeCommand(createTestRootCmd(), "history")
 	require.NoError(t, err)
@@ -302,7 +386,7 @@ func TestHistoryCommand_Empty(t *testing.T) {
 func TestHistoryCommand_WithSavePoints(t *testing.T) {
 	setupTestDir(t)
 	repoPath := initLegacyRepoForCLITest(t, "testrepo")
-	require.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
+	require.NoError(t, os.Chdir(repoPath))
 	require.NoError(t, os.WriteFile("file.txt", []byte("one"), 0644))
 	firstID := createRootTestSavePoint(t, "first save point")
 	require.NoError(t, os.WriteFile("file.txt", []byte("two"), 0644))
@@ -320,7 +404,7 @@ func TestHistoryCommand_WithSavePoints(t *testing.T) {
 func TestRestoreCommand_RestoresSavePoint(t *testing.T) {
 	setupTestDir(t)
 	repoPath := initLegacyRepoForCLITest(t, "testrepo")
-	require.NoError(t, os.Chdir(filepath.Join(repoPath, "main")))
+	require.NoError(t, os.Chdir(repoPath))
 	require.NoError(t, os.WriteFile("file.txt", []byte("version1"), 0644))
 	firstID := createRootTestSavePoint(t, "first save point")
 	require.NoError(t, os.WriteFile("file.txt", []byte("version2"), 0644))
@@ -606,17 +690,23 @@ func createTestRootCmd() *cobra.Command {
 	autoProgressEnabled = defaultAutoProgressEnabled
 	targetRepoPath = ""
 	targetWorkspaceName = ""
+	activeCommand = nil
 	activeCommandName = ""
+	activeCommandArgs = nil
 	resolvedRepoRoot = ""
 	resolvedWorkspace = ""
 	jsonErrorEmitted = false
-	workspaceRemoveForce = false
-	workspaceRemoveRunID = ""
+	workspaceRenameDryRun = false
+	workspaceDeleteRunID = ""
+	workspaceMoveRunID = ""
 	workspaceNewFromRef = ""
 	workspaceNewName = ""
 	workspaceListStatus = false
 	repoCloneSavePoints = "all"
 	repoCloneDryRun = false
+	repoMoveRunID = ""
+	repoRenameRunID = ""
+	repoDetachRunID = ""
 	historyLimit = defaultHistoryLimit
 	historyNoteFilter = ""
 	historyPath = ""

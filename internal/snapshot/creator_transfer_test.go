@@ -15,7 +15,7 @@ import (
 
 func TestCreatorCreateSavePointRecordsPrimaryTransferFromWorkspaceToSnapshotStaging(t *testing.T) {
 	repoPath := setupCreatorFailureRepo(t)
-	require.NoError(t, os.WriteFile(filepath.Join(repoPath, "main", "app.txt"), []byte("v1"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(mainPayloadPath(t, repoPath), "app.txt"), []byte("v1"), 0644))
 
 	planner := &recordingTransferPlanner{
 		plan: &engine.TransferPlan{
@@ -34,7 +34,7 @@ func TestCreatorCreateSavePointRecordsPrimaryTransferFromWorkspaceToSnapshotStag
 	require.NotNil(t, desc)
 
 	req := planner.request
-	require.Equal(t, filepath.Join(repoPath, "main"), req.SourcePath)
+	require.Equal(t, mainPayloadPath(t, repoPath), req.SourcePath)
 	require.True(t, strings.HasSuffix(req.DestinationPath, ".tmp"), "save should materialize into unpublished snapshot tmp: %s", req.DestinationPath)
 	require.Equal(t, filepath.Dir(req.DestinationPath), req.CapabilityPath)
 	require.DirExists(t, req.CapabilityPath)
@@ -67,7 +67,7 @@ func TestCreatorCreateSavePointRecordsPrimaryTransferFromWorkspaceToSnapshotStag
 
 func TestCreatorCreateSavePointWithAutoPersistsConcreteEngineAndAuditsTransferEvidence(t *testing.T) {
 	repoPath := setupCreatorFailureRepo(t)
-	require.NoError(t, os.WriteFile(filepath.Join(repoPath, "main", "app.txt"), []byte("v1"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(mainPayloadPath(t, repoPath), "app.txt"), []byte("v1"), 0644))
 
 	creator := NewCreator(repoPath, engine.EngineAuto)
 	desc, err := creator.CreateSavePoint("main", "auto concrete", nil)

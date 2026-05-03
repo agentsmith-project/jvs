@@ -20,7 +20,7 @@ func setupRestoreBenchRepo(b *testing.B, contentSize int) string {
 		b.Fatal(err)
 	}
 
-	mainPath := filepath.Join(dir, "main")
+	mainPath := mainPayloadPath(b, dir)
 
 	// Create content of specified size
 	if contentSize > 0 {
@@ -44,7 +44,7 @@ func setupRestoreBenchRepoWithFiles(b *testing.B, fileCount int) string {
 		b.Fatal(err)
 	}
 
-	mainPath := filepath.Join(dir, "main")
+	mainPath := mainPayloadPath(b, dir)
 
 	// Create multiple files and directories
 	for i := 0; i < fileCount; i++ {
@@ -73,7 +73,7 @@ func BenchmarkRestore_CopyEngine_Small(b *testing.B) {
 	}
 
 	// Modify content to ensure restore changes it
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(b, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "data.bin"), []byte("modified"), 0644)
 
 	restorer := restore.NewRestorer(repoPath, model.EngineCopy)
@@ -98,7 +98,7 @@ func BenchmarkRestore_CopyEngine_Medium(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(b, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "data.bin"), []byte("modified"), 0644)
 
 	restorer := restore.NewRestorer(repoPath, model.EngineCopy)
@@ -123,7 +123,7 @@ func BenchmarkRestore_CopyEngine_Large(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(b, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "data.bin"), []byte("modified"), 0644)
 
 	restorer := restore.NewRestorer(repoPath, model.EngineCopy)
@@ -147,7 +147,7 @@ func BenchmarkRestore_ReflinkEngine_Small(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(b, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "data.bin"), []byte("modified"), 0644)
 
 	restorer := restore.NewRestorer(repoPath, model.EngineReflinkCopy)
@@ -171,7 +171,7 @@ func BenchmarkRestore_ReflinkEngine_Medium(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(b, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "data.bin"), []byte("modified"), 0644)
 
 	restorer := restore.NewRestorer(repoPath, model.EngineReflinkCopy)
@@ -196,7 +196,7 @@ func BenchmarkRestore_MultiFile(b *testing.B) {
 	}
 
 	// Modify a file to ensure restore changes it
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(b, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "dir", "0", "file0.txt"), []byte("modified"), 0644)
 
 	restorer := restore.NewRestorer(repoPath, model.EngineCopy)
@@ -220,7 +220,7 @@ func BenchmarkRestore_MultiFile_Large(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(b, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "dir", "0", "file0.txt"), []byte("modified"), 0644)
 
 	restorer := restore.NewRestorer(repoPath, model.EngineCopy)
@@ -246,7 +246,7 @@ func BenchmarkRestoreToLatest(b *testing.B) {
 	}
 
 	// Create second snapshot (latest)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(b, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "data.bin"), []byte("second content"), 0644)
 	_, err = creator.Create("main", "second snapshot", nil)
 	if err != nil {
@@ -278,7 +278,7 @@ func BenchmarkRestore_DetachedState(b *testing.B) {
 	}
 
 	// Create second snapshot (latest)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(b, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "data.bin"), []byte("second content"), 0644)
 	_, err = creator.Create("main", "second snapshot", nil)
 	if err != nil {
@@ -308,7 +308,7 @@ func BenchmarkRestore_IntegrityVerification(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(b, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "data.bin"), []byte("modified"), 0644)
 
 	restorer := restore.NewRestorer(repoPath, model.EngineCopy)
@@ -332,7 +332,7 @@ func BenchmarkRestore_SnapshotToSnapshot(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(b, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "data.bin"), []byte("second content"), 0644)
 	desc2, err := creator.Create("main", "second snapshot", nil)
 	if err != nil {
@@ -364,14 +364,13 @@ func BenchmarkRestore_EmptyWorktree(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(b, repoPath)
 	restorer := restore.NewRestorer(repoPath, model.EngineCopy)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		// Remove all content
-		os.RemoveAll(mainPath)
-		os.MkdirAll(mainPath, 0755)
+		// Remove user payload without deleting repo control data.
+		os.Remove(filepath.Join(mainPath, "data.bin"))
 		// Restore
 		err := restorer.Restore("main", desc.SnapshotID)
 		if err != nil {

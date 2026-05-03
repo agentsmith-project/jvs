@@ -28,14 +28,53 @@ func (e *CopyEngine) Name() model.EngineType {
 // Clone recursively copies src to dst.
 // Returns a degraded result if hardlinks were detected (they become separate copies).
 func (e *CopyEngine) Clone(src, dst string) (*CloneResult, error) {
-	result := NewCloneResult(model.EngineCopy)
+	result, _, err := e.cloneInto(src, dst)
+	if err != nil {
+		return nil, err
+	}
 
+	if err := fsutil.FsyncDir(dst); err != nil {
+		return nil, fmt.Errorf("fsync dst: %w", err)
+	}
+
+	return result, nil
+}
+
+// CloneToNew clones src into an owned destination path whose leaf does not
+// already exist. File and symlink roots are materialized as leaf paths, so the
+// durable parent is the destination parent rather than the leaf itself.
+func (e *CopyEngine) CloneToNew(src, dst string) (*CloneResult, error) {
+	if err := PrepareCloneToNewDestination(dst); err != nil {
+		return nil, err
+	}
+	result, rootInfo, err := e.cloneInto(src, dst)
+	if err != nil {
+		return nil, err
+	}
+
+	fsyncPath := dst
+	if rootInfo != nil && !rootInfo.IsDir() {
+		fsyncPath = filepath.Dir(dst)
+	}
+	if err := fsutil.FsyncDir(fsyncPath); err != nil {
+		return nil, fmt.Errorf("fsync dst: %w", err)
+	}
+
+	return result, nil
+}
+
+func (e *CopyEngine) cloneInto(src, dst string) (*CloneResult, os.FileInfo, error) {
+	result := NewCloneResult(model.EngineCopy)
 	seenInodes := make(map[uint64]string)
 	var dirs []dirMode
+	var rootInfo os.FileInfo
 
 	err := filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
+		}
+		if path == src {
+			rootInfo = info
 		}
 
 		rel, err := filepath.Rel(src, path)
@@ -71,18 +110,14 @@ func (e *CopyEngine) Clone(src, dst string) (*CloneResult, error) {
 	})
 
 	if err != nil {
-		return nil, fmt.Errorf("copy: %w", err)
+		return nil, nil, fmt.Errorf("copy: %w", err)
 	}
 
 	if err := chmodDirs(dirs); err != nil {
-		return nil, fmt.Errorf("copy: %w", err)
+		return nil, nil, fmt.Errorf("copy: %w", err)
 	}
 
-	if err := fsutil.FsyncDir(dst); err != nil {
-		return nil, fmt.Errorf("fsync dst: %w", err)
-	}
-
-	return result, nil
+	return result, rootInfo, nil
 }
 
 func (e *CopyEngine) copyDir(src, dst string, info os.FileInfo) error {

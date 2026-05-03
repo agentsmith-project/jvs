@@ -208,7 +208,7 @@ func setupLegacyRepoWithRemovedWorkspaceSavePoint(t *testing.T) (repoRoot string
 	t.Cleanup(func() { require.NoError(t, os.Chdir(originalWd)) })
 	_, err = repo.Init(repoRoot, "test")
 	require.NoError(t, err)
-	require.NoError(t, os.Chdir(filepath.Join(repoRoot, "main")))
+	require.NoError(t, os.Chdir(repoRoot))
 
 	mgr := worktree.NewManager(repoRoot)
 	_, err = mgr.Create("temp", nil)

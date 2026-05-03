@@ -22,7 +22,7 @@ func setupBenchRepo(b *testing.B, contentSize int) string {
 		b.Fatal(err)
 	}
 
-	mainPath := filepath.Join(dir, "main")
+	mainPath := mainPayloadPath(b, dir)
 
 	// Create content of specified size
 	if contentSize > 0 {
@@ -46,7 +46,7 @@ func setupBenchRepoWithFiles(b *testing.B, fileCount int) string {
 		b.Fatal(err)
 	}
 
-	mainPath := filepath.Join(dir, "main")
+	mainPath := mainPayloadPath(b, dir)
 
 	// Create multiple files and directories
 	for i := 0; i < fileCount; i++ {
@@ -635,7 +635,7 @@ func BenchmarkEngineComparison_Mixed(b *testing.B) {
 				b.Fatal(err)
 			}
 
-			mainPath := filepath.Join(repoPath, "main")
+			mainPath := mainPayloadPath(b, repoPath)
 
 			// Create mixed file sizes: 1KB, 10KB, 100KB, 1MB
 			sizes := []int{1024, 10 * 1024, 100 * 1024, 1024 * 1024}
@@ -718,7 +718,7 @@ func BenchmarkEngine_PartialSnapshot(b *testing.B) {
 				b.Fatal(err)
 			}
 
-			mainPath := filepath.Join(repoPath, "main")
+			mainPath := mainPayloadPath(b, repoPath)
 
 			// Create 100 files in subdirectories
 			for i := 0; i < 100; i++ {
@@ -765,7 +765,7 @@ func BenchmarkEngine_SnapshotWithCompression(b *testing.B) {
 			repoPath := setupBenchRepo(b, 1024*1024) // 1MB of compressible data
 
 			// Use compressible data
-			mainPath := filepath.Join(repoPath, "main")
+			mainPath := mainPayloadPath(b, repoPath)
 			compressibleData := make([]byte, 1024*1024)
 			for i := range compressibleData {
 				compressibleData[i] = byte(i % 64) // Highly repetitive
@@ -807,7 +807,7 @@ func BenchmarkEngine_DeepDirectoryTree(b *testing.B) {
 				b.Fatal(err)
 			}
 
-			mainPath := filepath.Join(repoPath, "main")
+			mainPath := mainPayloadPath(b, repoPath)
 
 			// Create a deep directory tree (10 levels deep, 10 files per level)
 			for level := 0; level < 10; level++ {

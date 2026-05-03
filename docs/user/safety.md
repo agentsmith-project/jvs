@@ -11,7 +11,7 @@ run only the command JVS prints after `Run:`.
 
 ## Quick Safety Checklist
 
-Before a restore, workspace removal, or cleanup:
+Before a restore, workspace deletion, or cleanup:
 
 - Run `jvs status` and check that the `Folder` is the folder you meant to use.
 - Run `jvs history` or `jvs history --path <path>` to find the save point you
@@ -19,8 +19,8 @@ Before a restore, workspace removal, or cleanup:
 - Use `jvs view <save> [path]` to inspect saved content before changing files.
 - Prefer path restore when you only need one file or directory.
 - Use `--save-first` when current local changes matter.
-- Use `--discard-unsaved` or `--force` only when current local changes are
-  intentionally disposable.
+- Use `--discard-unsaved` only when current local changes are intentionally
+  disposable.
 
 Seeing `Preview`, `Plan`, `No files were changed`, or a printed `Run:` command
 means JVS has not made the destructive change yet.
@@ -36,7 +36,7 @@ jvs history --path src/config.yaml
 jvs view <save> src/config.yaml
 jvs restore <save>
 jvs restore <save> --path src/config.yaml
-jvs workspace remove experiment
+jvs workspace delete experiment
 jvs cleanup preview
 ```
 
@@ -45,7 +45,7 @@ What you should see:
 - `jvs history` prints save point messages with copyable IDs or short IDs.
 - `jvs view` prints a read-only view path.
 - `jvs restore <save>` prints a plan and a `Run:` command.
-- `jvs workspace remove <name>` says preview only and prints a remove plan.
+- `jvs workspace delete <name>` says preview only and prints a delete plan.
 - `jvs cleanup preview` prints what save point storage can be cleaned.
 
 If the output says `No files were changed`, that is good. It means you are
@@ -57,7 +57,7 @@ These commands perform the reviewed action:
 
 ```bash
 jvs restore --run <restore-plan-id>
-jvs workspace remove --run <remove-plan-id>
+jvs workspace delete --run <workspace-delete-plan-id>
 jvs cleanup run --plan-id <cleanup-plan-id>
 ```
 
@@ -66,7 +66,7 @@ What they change:
 | Command | What it can change | What it does not change |
 | --- | --- | --- |
 | `jvs restore --run <restore-plan-id>` | Workspace files in the restore plan | Save point history |
-| `jvs workspace remove --run <remove-plan-id>` | The selected workspace folder and workspace entry | Save point storage |
+| `jvs workspace delete --run <workspace-delete-plan-id>` | The selected workspace folder and workspace entry | Save point storage |
 | `jvs cleanup run --plan-id <cleanup-plan-id>` | Save point storage listed by the cleanup plan | Workspace folders |
 
 Run commands are tied to the preview plan. If the folder changed after preview,
@@ -142,19 +142,19 @@ deleted by that run.
 
 Seeing the requested path in the preview is the key safety check.
 
-## Workspace Remove Is Not Cleanup
+## Workspace Delete Is Not Cleanup
 
-Use workspace removal when you want to remove a separate workspace folder:
+Use workspace deletion when you want to delete a separate workspace folder:
 
 ```bash
-jvs workspace remove experiment
-jvs workspace remove --run <remove-plan-id>
+jvs workspace delete experiment
+jvs workspace delete --run <workspace-delete-plan-id>
 ```
 
 The first command is only a preview. It should show the folder, workspace name,
 local-change status, and `Run:` command.
 
-The run removes the selected workspace folder and workspace entry. It does not
+The run deletes the selected workspace folder and workspace entry. It does not
 remove save point storage. To review save point storage cleanup later, use:
 
 ```bash
@@ -162,13 +162,13 @@ jvs cleanup preview
 jvs cleanup run --plan-id <cleanup-plan-id>
 ```
 
-The `main` workspace cannot be removed. If you want to stop using JVS for a
+The `main` workspace cannot be deleted. If you want to stop using JVS for a
 folder, keep a normal backup first and ask for project-specific guidance.
 
-Use `jvs workspace remove <name> --force` only when local changes in that
-workspace are intentionally disposable.
+If the workspace has local changes, save or restore them before deleting the
+workspace.
 
-## Cleanup Is Not Workspace Removal
+## Cleanup Is Not Workspace Deletion
 
 Cleanup is for save point storage that JVS no longer needs:
 
@@ -178,7 +178,7 @@ jvs cleanup run --plan-id <cleanup-plan-id>
 ```
 
 Cleanup does not delete workspace folders. If `jvs workspace list` shows a
-workspace you no longer want, use `jvs workspace remove <name>` and review its
+workspace you no longer want, use `jvs workspace delete <name>` and review its
 plan.
 
 ## Health Checks And Backups

@@ -46,11 +46,19 @@ history
 init
 recovery
 repo clone
+repo detach
+repo move
+repo rename
 restore
 save
 status
 view
+workspace delete
+workspace list
+workspace move
 workspace new
+workspace path
+workspace rename
 ```
 
 Commands outside this visible surface are not part of this public contract.
@@ -174,6 +182,178 @@ Required JSON `data` fields include:
 - `transfers`
 - `clone_manifest` when `--save-points all` completes
 - `dry_run` for dry runs
+
+## Repo Move
+
+### `jvs repo move <new-folder> [--json]`
+
+Preview moving the whole JVS project folder to `<new-folder>`. This is not
+`repo clone`: the command keeps the same `repo_id`, save point history,
+workspace names, and external workspace folders. The preview writes only a
+repo move plan and must not move files.
+
+Rules:
+
+- `<new-folder>` must not already exist.
+- The move uses same-filesystem no-overwrite atomic rename in the public v0
+  contract.
+- The preview and run must verify every registered external workspace
+  connection is reachable, writable, well-formed, and fresh for the current
+  repo identity.
+- The preview prints a reviewed run command. When the current directory is
+  inside the source repo folder, the safe run command must use
+  `jvs --repo <old-repo-root> repo move --run <repo-move-plan-id>` from a safe
+  parent folder.
+
+Required preview JSON `data` fields include:
+
+- `mode: "preview"`
+- `operation: "repo_move"`
+- `plan_id`
+- `source_repo_root`
+- `target_repo_root`
+- `repo_id`
+- `move_method`
+- `folder_moved: false`
+- `repo_id_changed: false`
+- `save_point_history_changed: false`
+- `main_workspace_updated: false`
+- `external_workspaces`
+- `run_command`
+- `safe_run_command`
+
+### `jvs repo move --run <repo-move-plan-id> [--json]`
+
+Run a reviewed repo move plan. Run must revalidate the source and destination
+identities, external workspace connections, locks, and current directory safety
+before writing a durable lifecycle operation journal or moving the repo folder.
+
+Required run JSON `data` fields include:
+
+- `mode: "run"`
+- `operation: "repo_move"`
+- `plan_id`
+- `status: "moved"`
+- `source_repo_root`
+- `target_repo_root`
+- `repo_root`
+- `repo_id`
+- `folder_moved: true`
+- `repo_id_changed: false`
+- `save_point_history_changed: false`
+- `main_workspace_updated: true`
+- `external_workspaces_updated`
+
+## Repo Rename
+
+### `jvs repo rename <new-folder-name> [--json]`
+
+Preview renaming the project folder within the same parent directory. Repo
+rename is basename-only sugar over repo move: `<new-folder-name>` must be a
+folder basename, not an absolute path, relative path, `.`, `..`, or a string
+with a path separator. It preserves `repo_id`, save point history, workspace
+names, and external workspace folders.
+
+Required preview JSON `data` fields include:
+
+- `mode: "preview"`
+- `operation: "repo_rename"`
+- `plan_id`
+- `source_repo_root`
+- `target_repo_root`
+- `repo_id`
+- `move_method`
+- `folder_moved: false`
+- `repo_id_changed: false`
+- `save_point_history_changed: false`
+- `main_workspace_updated: false`
+- `external_workspaces`
+- `run_command`
+- `safe_run_command`
+
+### `jvs repo rename --run <repo-rename-plan-id> [--json]`
+
+Run a reviewed repo rename plan. Run follows the same safety and lifecycle
+journal rules as `repo move`; safe retry from outside the old repo folder uses
+`jvs --repo <old-repo-root> repo rename --run <repo-rename-plan-id>`.
+
+Required run JSON `data` fields include:
+
+- `mode: "run"`
+- `operation: "repo_rename"`
+- `plan_id`
+- `status: "moved"`
+- `source_repo_root`
+- `target_repo_root`
+- `repo_root`
+- `repo_id`
+- `folder_moved: true`
+- `repo_id_changed: false`
+- `save_point_history_changed: false`
+- `main_workspace_updated: true`
+- `external_workspaces_updated`
+
+## Repo Detach
+
+### `jvs repo detach [--json]`
+
+Preview stopping JVS management of the current project folder while preserving
+working files. This command is not destructive project deletion.
+
+Preview rules:
+
+- The current project must be an active JVS repo.
+- Workspace `main` must be the project folder.
+- All registered external workspace connections must be reachable, writable,
+  well-formed, and fresh for the current repo identity.
+- The preview writes only the detach plan. It must not write a lifecycle
+  journal, archive metadata, move files, or delete files.
+
+Required preview JSON `data` fields include:
+
+- `mode: "preview"`
+- `plan_id`
+- `operation_id`
+- `repo_root`
+- `repo_id`
+- `archive_path`
+- `external_workspaces`
+- `run_command`
+
+### `jvs repo detach --run <repo-detach-plan-id> [--json]`
+
+Run a reviewed detach plan. Before archiving active metadata, the command must
+write a durable lifecycle operation journal whose `operation_id` is distinct
+from and not derived from the plan ID.
+
+Run rules:
+
+- Archive active `.jvs` metadata under `.jvs-detached/<repo-id>-<operation-id>-<utc-timestamp>/`.
+- Write a durable `DETACHING` marker in the archive directory before moving
+  active metadata.
+- Publish `DETACHED` metadata after external workspace locators are marked
+  detached/orphaned.
+- Preserve project working files and save point storage.
+- After success, ordinary discovery from the project folder must not report an
+  active JVS repo.
+- If active metadata was archived but the lifecycle did not finish, rerunning
+  this command from the project folder must resume by scanning only the local
+  `.jvs-detached` archive markers.
+
+Required run JSON `data` fields include:
+
+- `mode: "run"`
+- `status: "detached"`
+- `plan_id`
+- `operation_id`
+- `repo_root`
+- `repo_id`
+- `archive_path`
+- `working_files_preserved`
+- `active_repo_detached`
+- `save_point_storage_removed`
+- `external_workspaces_updated`
+- `recommended_next_command`
 
 ## Status
 
@@ -432,12 +612,103 @@ Print the folder path for a workspace so users can jump with shell commands
 such as `cd "$(jvs workspace path <name>)"`. JVS cannot change the caller's
 shell directory after a command finishes.
 
-### `jvs workspace remove <name>`
+### `jvs workspace rename <old> <new> [--dry-run] [--json]`
 
-Workspace removal is a preview-first reviewed-plan flow in the public spec.
+Rename a workspace without moving its folder. Workspace rename is a name-only
+metadata operation: the workspace folder path, save point history, and managed
+files stay unchanged. `main` is immutable; renaming the project folder uses
+`jvs repo rename <new-folder-name>`.
+
+Rules:
+
+- `<old>` must be an existing non-main workspace name.
+- `<new>` must be a valid unused workspace name.
+- `--dry-run` checks and reports the planned metadata change without writing a
+  lifecycle operation journal or changing workspace metadata.
+- A normal rename writes a durable lifecycle operation journal before changing
+  registry or external workspace connection metadata.
+- If an external workspace connection is present, it must be reachable,
+  writable, well-formed, and fresh for the old workspace name before the
+  command updates it.
+
+Required JSON `data` fields include:
+
+- `mode`
+- `status`
+- `operation`
+- `operation_id` when metadata was changed
+- `old_workspace`
+- `workspace`
+- `folder`
+- `folder_moved: false`
+- `workspace_connection_updated`
+- `save_point_history_changed: false`
+
+### `jvs workspace move <name> <new-folder>`
+
+Preview moving a workspace folder without changing its workspace name. This is
+a preview-first reviewed-plan flow. The preview must change no files and must
+show the old folder, new folder, selected workspace, and the reviewed run
+command.
+
+Rules:
+
+- `<name>` must be an existing non-main workspace.
+- `<new-folder>` must not already exist.
+- The move uses same-filesystem no-overwrite atomic rename in the public v0
+  contract.
+- The workspace name and save point history are unchanged.
+- Run must fail closed before mutation if the current directory is inside the
+  source workspace folder, and must print a safe command to rerun the same plan
+  from outside the affected folder.
+
+Required preview JSON `data` fields include:
+
+- `mode: "preview"`
+- `plan_id`
+- `workspace`
+- `source_folder`
+- `target_folder`
+- `newest_save_point`
+- `content_source`
+- `expected_newest_save_point`
+- `expected_content_source`
+- `expected_folder_evidence`
+- `unsaved_changes`
+- `files_state`
+- `folder_moved: false`
+- `files_changed: false`
+- `workspace_name_changed: false`
+- `save_point_history_changed: false`
+- `move_method`
+- `run_command`
+
+### `jvs workspace move --run <workspace-move-plan-id> [--json]`
+
+Run a reviewed workspace move plan. Run must reload and revalidate the plan,
+write a durable lifecycle operation journal, move the workspace folder, update
+the workspace registry path, and consume the plan only after verification.
+
+Required run JSON `data` fields include:
+
+- `mode: "run"`
+- `plan_id`
+- `status: "moved"`
+- `workspace`
+- `source_folder`
+- `target_folder`
+- `folder`
+- `folder_moved: true`
+- `files_changed: true`
+- `workspace_name_changed: false`
+- `save_point_history_changed: false`
+
+### `jvs workspace delete <name>`
+
+Workspace deletion is a preview-first reviewed-plan flow in the public spec.
 Preview must change no files, protect unsaved work, and show the selected
 workspace folder and registry change. Run must bind to a reviewed plan and
-remove only the selected workspace folder and workspace registry entry. Save
+delete only the selected workspace folder and workspace registry entry. Save
 point storage is unchanged; deleting unprotected save point storage is a
 separate reviewed cleanup flow.
 
@@ -462,11 +733,19 @@ Required preview JSON `data` fields:
 - `run_command`
 - `cleanup_preview_run`
 
+### `jvs workspace delete --run <workspace-delete-plan-id> [--json]`
+
+Run a reviewed workspace delete plan. Run must reload and revalidate the plan,
+fail closed if the current directory is inside the target workspace folder,
+write a durable lifecycle operation journal, delete only the selected workspace
+folder and workspace registry entry, and leave save point storage to the
+separate cleanup flow.
+
 Required run JSON `data` fields:
 
 - `mode: "run"`
 - `plan_id`
-- `status: "removed"`
+- `status: "deleted"`
 - `workspace`
 - `folder`
 - `newest_save_point`

@@ -76,7 +76,7 @@ func TestStoryJSON_InitExistingFolderAdoptsWithoutMovingOrRewritingFiles(t *test
 	}
 }
 
-func TestStoryJSON_WorkspaceRemoveIsPreviewFirstAndKeepsSavePointStorageForCleanupReview(t *testing.T) {
+func TestStoryJSON_WorkspaceDeleteIsPreviewFirstAndKeepsSavePointStorageForCleanupReview(t *testing.T) {
 	repoPath, cleanup := initTestRepo(t)
 	defer cleanup()
 
@@ -90,47 +90,47 @@ func TestStoryJSON_WorkspaceRemoveIsPreviewFirstAndKeepsSavePointStorageForClean
 	createFiles(t, workspacePath, map[string]string{"result.txt": "experiment result\n"})
 	experimentSave := savePointFromCWD(t, workspacePath, "experiment result")
 
-	stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "workspace", "remove", "experiment")
+	stdout, stderr, code := runJVSInRepo(t, repoPath, "--json", "workspace", "delete", "experiment")
 	if _, err := os.Stat(workspacePath); err != nil {
-		t.Fatalf("workspace remove preview must not delete workspace folder before run: %v\nstdout=%s\nstderr=%s", err, stdout, stderr)
+		t.Fatalf("workspace delete preview must not delete workspace folder before run: %v\nstdout=%s\nstderr=%s", err, stdout, stderr)
 	}
 	pathAfterPreview := jvsJSONData(t, repoPath, "workspace", "path", "experiment")
 	if pathAfterPreview["path"] != workspacePath {
-		t.Fatalf("workspace remove preview must keep workspace metadata: %#v", pathAfterPreview)
+		t.Fatalf("workspace delete preview must keep workspace metadata: %#v", pathAfterPreview)
 	}
 	if code != 0 {
-		t.Fatalf("workspace remove preview failed: stdout=%s stderr=%s", stdout, stderr)
+		t.Fatalf("workspace delete preview failed: stdout=%s stderr=%s", stdout, stderr)
 	}
 	requirePureJSONEnvelope(t, stdout, stderr, true)
 	preview := decodeContractDataMap(t, stdout)
 	planID, _ := preview["plan_id"].(string)
 	if preview["mode"] != "preview" || preview["workspace"] != "experiment" || planID == "" {
-		t.Fatalf("workspace remove should return a preview with a runnable plan id: %#v", preview)
+		t.Fatalf("workspace delete should return a preview with a runnable plan id: %#v", preview)
 	}
 	if preview["folder"] != workspacePath || preview["folder_removed"] != false || preview["files_changed"] != false {
-		t.Fatalf("workspace remove preview should report no file mutation: %#v", preview)
+		t.Fatalf("workspace delete preview should report no file mutation: %#v", preview)
 	}
-	if preview["run_command"] != "jvs workspace remove --run "+planID {
-		t.Fatalf("workspace remove preview should provide the bound run command: %#v", preview)
+	if preview["run_command"] != "jvs workspace delete --run "+planID {
+		t.Fatalf("workspace delete preview should provide the bound run command: %#v", preview)
 	}
 	if cleanupCommand, _ := preview["cleanup_preview_run"].(string); !strings.Contains(cleanupCommand, "jvs cleanup preview") {
-		t.Fatalf("workspace remove preview should point cleanup to a later reviewed preview: %#v", preview)
+		t.Fatalf("workspace delete preview should point cleanup to a later reviewed preview: %#v", preview)
 	}
 
-	run := jvsJSONData(t, repoPath, "workspace", "remove", "--run", planID)
-	if run["mode"] != "run" || run["workspace"] != "experiment" || run["status"] != "removed" {
-		t.Fatalf("workspace remove run mismatch: %#v", run)
+	run := jvsJSONData(t, repoPath, "workspace", "delete", "--run", planID)
+	if run["mode"] != "run" || run["workspace"] != "experiment" || run["status"] != "deleted" {
+		t.Fatalf("workspace delete run mismatch: %#v", run)
 	}
 	if run["folder"] != workspacePath || run["folder_removed"] != true || run["workspace_metadata_removed"] != true || run["save_point_storage_removed"] != false {
-		t.Fatalf("workspace remove run should delete only workspace folder/metadata: %#v", run)
+		t.Fatalf("workspace delete run should delete only workspace folder/metadata: %#v", run)
 	}
 	if cleanupCommand, _ := run["cleanup_command"].(string); !strings.Contains(cleanupCommand, "jvs cleanup preview") {
-		t.Fatalf("workspace remove run should leave cleanup as a later reviewed step: %#v", run)
+		t.Fatalf("workspace delete run should leave cleanup as a later reviewed step: %#v", run)
 	}
 	requireAbsolutePathMissing(t, workspacePath)
 	pathOut, pathErr, pathCode := runJVSInRepo(t, repoPath, "--json", "workspace", "path", "experiment")
 	if pathCode == 0 {
-		t.Fatalf("workspace metadata should be removed after run: stdout=%s stderr=%s", pathOut, pathErr)
+		t.Fatalf("workspace metadata should be deleted after run: stdout=%s stderr=%s", pathOut, pathErr)
 	}
 	requirePureJSONEnvelope(t, pathOut, pathErr, false)
 
@@ -138,7 +138,7 @@ func TestStoryJSON_WorkspaceRemoveIsPreviewFirstAndKeepsSavePointStorageForClean
 	viewData := decodeContractDataMap(t, viewOut)
 	viewPath, _ := viewData["view_path"].(string)
 	if got := readAbsoluteFile(t, viewPath); got != "experiment result\n" {
-		t.Fatalf("removed workspace save point storage should still be viewable before cleanup: %q", got)
+		t.Fatalf("deleted workspace save point storage should still be viewable before cleanup: %q", got)
 	}
 	closeView(t, repoPath, viewOut)
 
@@ -205,25 +205,25 @@ func TestStoryJSON_CleanupPreviewProtectsOpenReadOnlyViewUntilClosed(t *testing.
 
 	listOut := jvsJSON(t, repoPath, "workspace", "list")
 	if strings.Contains(listOut, "view-check") {
-		t.Fatalf("removed workspace should not reappear during cleanup previews: %s", listOut)
+		t.Fatalf("deleted workspace should not reappear during cleanup previews: %s", listOut)
 	}
 }
 
 func removeWorkspaceForStorySetup(t *testing.T, repoPath, workspaceName string) {
 	t.Helper()
-	remove := jvsJSONData(t, repoPath, "workspace", "remove", workspaceName, "--force")
-	if remove["status"] == "removed" {
+	remove := jvsJSONData(t, repoPath, "workspace", "delete", workspaceName)
+	if remove["status"] == "deleted" {
 		return
 	}
 	if remove["mode"] != "preview" {
-		t.Fatalf("workspace remove setup should remove or preview removal: %#v", remove)
+		t.Fatalf("workspace delete setup should delete or preview deletion: %#v", remove)
 	}
 	planID, _ := remove["plan_id"].(string)
 	if planID == "" {
-		t.Fatalf("workspace remove setup preview missing plan id: %#v", remove)
+		t.Fatalf("workspace delete setup preview missing plan id: %#v", remove)
 	}
-	run := jvsJSONData(t, repoPath, "workspace", "remove", "--run", planID)
-	if run["status"] != "removed" {
-		t.Fatalf("workspace remove setup run failed: %#v", run)
+	run := jvsJSONData(t, repoPath, "workspace", "delete", "--run", planID)
+	if run["status"] != "deleted" {
+		t.Fatalf("workspace delete setup run failed: %#v", run)
 	}
 }

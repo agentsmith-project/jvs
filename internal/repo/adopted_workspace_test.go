@@ -152,6 +152,24 @@ func TestWorktreePayloadPath_RejectsConfiguredRealPathNameMismatch(t *testing.T)
 	assert.Contains(t, err.Error(), "config name mismatch")
 }
 
+func TestWorktreePayloadPath_RejectsMissingRealPathInsteadOfLegacyFallback(t *testing.T) {
+	folder := filepath.Join(t.TempDir(), "project")
+	require.NoError(t, os.MkdirAll(folder, 0755))
+	r, err := repo.InitAdoptedWorkspace(folder)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Join(r.Root, "main"), 0755))
+
+	cfg, err := repo.LoadWorktreeConfig(r.Root, "main")
+	require.NoError(t, err)
+	cfg.RealPath = ""
+	require.NoError(t, repo.WriteWorktreeConfig(r.Root, "main", cfg))
+
+	_, err = repo.WorktreePayloadPath(r.Root, "main")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "real path")
+	assert.NotContains(t, err.Error(), filepath.Join(r.Root, "main"))
+}
+
 func TestWorktreePayloadPath_RejectsConfiguredRealPathInsideControlDir(t *testing.T) {
 	folder := filepath.Join(t.TempDir(), "project")
 	require.NoError(t, os.MkdirAll(folder, 0755))
@@ -176,7 +194,7 @@ func TestWorktreePayloadPath_RejectsNestedFallbackUnderAdoptedMain(t *testing.T)
 
 	_, err = repo.WorktreePayloadPath(r.Root, "feature")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "overlap")
+	assert.Contains(t, err.Error(), "config")
 }
 
 func TestWorktreePayloadPath_RejectsMetadataEntryMissingConfig(t *testing.T) {
@@ -209,11 +227,11 @@ func TestWorktreePayloadPath_RejectsConfiguredRelativeRealPath(t *testing.T) {
 
 	_, err = repo.WorktreePayloadPath(r.Root, "main")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "absolute")
+	assert.Contains(t, err.Error(), "real path")
 
 	err = repo.ValidateWorktreeRealPathRegistry(r.Root)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "absolute")
+	assert.Contains(t, err.Error(), "real path")
 }
 
 func TestWorktreePayloadPath_RejectsConfiguredWhitespaceRealPath(t *testing.T) {
@@ -229,11 +247,11 @@ func TestWorktreePayloadPath_RejectsConfiguredWhitespaceRealPath(t *testing.T) {
 
 	_, err = repo.WorktreePayloadPath(r.Root, "main")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "absolute")
+	assert.Contains(t, err.Error(), "real path")
 
 	err = repo.ValidateWorktreeRealPathRegistry(r.Root)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "absolute")
+	assert.Contains(t, err.Error(), "real path")
 }
 
 func TestWorktreeRealPathRegistry_RejectsEqualRealPaths(t *testing.T) {

@@ -53,6 +53,7 @@ var staleMigrationRuntimeExcludePattern = regexp.MustCompile(`(?i)\bexclud(?:e|e
 var staleMigrationSyncVocabularyPattern = regexp.MustCompile(`(?i)\b(?:sync|syncs|synced|syncing|synchroni[sz](?:e|es|ed|ing|ation))\b`)
 var userDocTypedPlaceholderPattern = regexp.MustCompile(`<[a-z][a-z0-9]*(?:-[a-z0-9]+)+>`)
 var implicitWorkspaceNewBareNamePattern = regexp.MustCompile(`\bjvs\s+workspace\s+new\s+[A-Za-z0-9][A-Za-z0-9_-]*\s+--from\b`)
+var userDocRemoveWorkspaceMentalModelPattern = regexp.MustCompile(`(?i)\bremov(?:e|es|ed|ing)\s+(?:a|the|that|this|selected\s+)?workspace\b|\bworkspace\s+folders?\b[^.\n]*\bremoved\b`)
 
 type unsupportedPublicCLIExampleRule struct {
 	name        string
@@ -251,21 +252,63 @@ func TestDocs_UserCommandsDocumentsWorkspaceManagement(t *testing.T) {
 		"jvs workspace list",
 		"jvs workspace path [name]",
 		"jvs workspace rename <old> <new>",
+		"jvs workspace move <name> <new-folder>",
+		"jvs workspace move --run <workspace-move-plan-id>",
 		"jvs workspace new <folder> --from <save>",
 		"--name <name>",
-		"jvs workspace remove <name>",
-		"jvs workspace remove --run <remove-plan-id>",
+		"jvs workspace delete <name>",
+		"jvs workspace delete --run <workspace-delete-plan-id>",
 		"preview-first",
 		"does not remove save point storage",
 		"jvs cleanup preview",
 	} {
 		requireReleaseReadinessText(t, "workspace command documentation", section, required)
 	}
-	if strings.Contains(section, "jvs workspace remove --run <plan-id>") {
-		t.Fatalf("%s workspace command section uses generic remove plan placeholder; use <remove-plan-id> to avoid mixing preview plan IDs:\n%s", doc, section)
+	if strings.Contains(section, "jvs workspace remove") {
+		t.Fatalf("%s workspace command section exposes old remove command:\n%s", doc, section)
+	}
+	if strings.Contains(section, "jvs workspace delete --run <plan-id>") || strings.Contains(section, "jvs workspace move --run <plan-id>") {
+		t.Fatalf("%s workspace command section uses generic workspace lifecycle plan placeholder:\n%s", doc, section)
 	}
 	if strings.Contains(strings.ToLower(section), "worktree") {
 		t.Fatalf("%s workspace command section leaks old worktree vocabulary:\n%s", doc, section)
+	}
+}
+
+func TestDocs_UserDocsUseDeleteOrDetachWorkspaceVocabulary(t *testing.T) {
+	for _, doc := range markdownDocsUnder(t, "docs/user") {
+		t.Run(doc, func(t *testing.T) {
+			scanPublicDocLines(t, doc, func(lineNo int, line string) {
+				if strings.Contains(strings.ToLower(line), "jvs workspace remove") ||
+					userDocRemoveWorkspaceMentalModelPattern.MatchString(line) {
+					t.Fatalf("%s:%d exposes old remove-workspace mental model; use delete/detach vocabulary:\n%s", doc, lineNo, line)
+				}
+			})
+		})
+	}
+}
+
+func TestDocs_UserCommandsDocumentsRepoLifecycleManagement(t *testing.T) {
+	doc := "docs/user/commands.md"
+	body := readRepoFile(t, doc)
+	section := markdownSectionByHeading(t, doc, body, "## `jvs repo`")
+	for _, required := range []string{
+		"jvs repo clone <target-folder>",
+		"jvs repo move <new-folder>",
+		"jvs repo move --run <repo-move-plan-id>",
+		"jvs repo rename <new-folder-name>",
+		"jvs repo rename --run <repo-rename-plan-id>",
+		"jvs repo detach",
+		"jvs repo detach --run <repo-detach-plan-id>",
+		"repo_id",
+		"save point history",
+		"preview-first",
+		"basename",
+	} {
+		requireReleaseReadinessText(t, "repo command documentation", section, required)
+	}
+	if strings.Contains(section, "jvs repo remove") {
+		t.Fatalf("%s repo command section exposes old remove command:\n%s", doc, section)
 	}
 }
 
@@ -334,7 +377,7 @@ func TestDocs_UserFacingDocsUseTypedPlanIDPlaceholders(t *testing.T) {
 		t.Run(doc, func(t *testing.T) {
 			for lineNo, line := range strings.Split(readRepoFile(t, doc), "\n") {
 				if strings.Contains(line, "<plan-id>") {
-					t.Fatalf("%s:%d uses generic <plan-id>; user docs must distinguish <restore-plan-id>, <remove-plan-id>, and <cleanup-plan-id>:\n%s", doc, lineNo+1, line)
+					t.Fatalf("%s:%d uses generic <plan-id>; user docs must distinguish <restore-plan-id>, <workspace-delete-plan-id>, <workspace-move-plan-id>, and <cleanup-plan-id>:\n%s", doc, lineNo+1, line)
 				}
 			}
 		})
@@ -2066,11 +2109,15 @@ func TestDocs_StablePublicCommandPathMatchesCurrentHelpSurface(t *testing.T) {
 		{"recovery", "resume"},
 		{"recovery", "rollback"},
 		{"repo", "clone"},
+		{"repo", "move"},
+		{"repo", "rename"},
+		{"repo", "detach"},
 		{"workspace", "new"},
 		{"workspace", "list"},
 		{"workspace", "path"},
 		{"workspace", "rename"},
-		{"workspace", "remove"},
+		{"workspace", "move"},
+		{"workspace", "delete"},
 		{"status"},
 		{"doctor"},
 	} {
@@ -2100,13 +2147,48 @@ func TestDocs_StablePublicCommandPathMatchesCurrentHelpSurface(t *testing.T) {
 	}
 }
 
-func TestDocs_CLISpecVisiblePublicCommandsIncludeCleanupAndRepoCloneSurface(t *testing.T) {
+func TestDocs_CLISpecVisiblePublicCommandsIncludeLifecycleSurface(t *testing.T) {
 	doc := "docs/02_CLI_SPEC.md"
 	body := readRepoFile(t, doc)
 	section := markdownSectionByHeading(t, doc, body, "## Root Help Surface")
-	for _, required := range []string{"cleanup preview", "cleanup run", "repo clone"} {
+	for _, required := range []string{
+		"cleanup preview",
+		"cleanup run",
+		"repo clone",
+		"repo move",
+		"repo rename",
+		"repo detach",
+		"workspace list",
+		"workspace path",
+		"workspace rename",
+		"workspace move",
+		"workspace new",
+		"workspace delete",
+	} {
 		if !strings.Contains(section, required) {
 			t.Fatalf("%s visible public commands must include %q", doc, required)
+		}
+	}
+}
+
+func TestDocs_CLISpecDocumentsRepoAndWorkspaceLifecycleCommands(t *testing.T) {
+	doc := "docs/02_CLI_SPEC.md"
+	body := readRepoFile(t, doc)
+	for _, heading := range []string{
+		"### `jvs repo move <new-folder> [--json]`",
+		"### `jvs repo move --run <repo-move-plan-id> [--json]`",
+		"### `jvs repo rename <new-folder-name> [--json]`",
+		"### `jvs repo rename --run <repo-rename-plan-id> [--json]`",
+		"### `jvs repo detach [--json]`",
+		"### `jvs repo detach --run <repo-detach-plan-id> [--json]`",
+		"### `jvs workspace rename <old> <new> [--dry-run] [--json]`",
+		"### `jvs workspace move <name> <new-folder>`",
+		"### `jvs workspace move --run <workspace-move-plan-id> [--json]`",
+		"### `jvs workspace delete <name>`",
+		"### `jvs workspace delete --run <workspace-delete-plan-id> [--json]`",
+	} {
+		if !strings.Contains(body, heading) {
+			t.Fatalf("%s missing lifecycle command heading %q", doc, heading)
 		}
 	}
 }
@@ -3866,6 +3948,7 @@ func activeNonReleaseFacingDesignDocs() []string {
 		"docs/22_WORKSPACE_EXPLICIT_PATH_BEHAVIOR.md",
 		"docs/23_FILESYSTEM_AWARE_TRANSFER_PLANNING.md",
 		"docs/24_REPO_CLONE_PRODUCT_PLAN.md",
+		"docs/25_REPO_WORKSPACE_LIFECYCLE_PRODUCT_PLAN.md",
 	}
 }
 
@@ -4348,10 +4431,14 @@ func stablePublicCommandPath(commandPath []string, publicRootCommands map[string
 		"workspace list",
 		"workspace path",
 		"workspace rename",
-		"workspace remove",
+		"workspace move",
+		"workspace delete",
 		"cleanup preview",
 		"cleanup run",
 		"repo clone",
+		"repo move",
+		"repo rename",
+		"repo detach",
 		"view close",
 		"recovery status",
 		"recovery resume",
@@ -4391,7 +4478,6 @@ func publicDocForbiddenTerms() []string {
 		"jvs snapshot",
 		"jvs worktree",
 		"restore HEAD",
-		"detached",
 		"snapshots",
 		"worktrees",
 		"detached state",

@@ -151,25 +151,21 @@ For a smaller restore, name one path:
 jvs restore <save> --path notes.md
 ```
 
-## Workspace Removal
+## Workspace Deletion
 
-Removing a workspace is also preview-first:
+Deleting a workspace is also preview-first:
 
 ```bash
-jvs workspace remove experiment
-jvs workspace remove --run <remove-plan-id>
+jvs workspace delete experiment
+jvs workspace delete --run <workspace-delete-plan-id>
 ```
 
 The preview does not delete the folder. Read the folder path and workspace name
-before running the plan. Running the plan removes that workspace folder and its
+before running the plan. Running the plan deletes that workspace folder and its
 workspace entry. It does not remove save point storage.
 
-If the workspace has unsaved changes, JVS refuses the normal preview. Add
-`--force` to the preview only when those changes are intentionally disposable:
-
-```bash
-jvs workspace remove experiment --force
-```
+If the workspace has unsaved changes, JVS fails closed. Save or restore those
+changes before deleting the workspace.
 
 ## Cleanup
 

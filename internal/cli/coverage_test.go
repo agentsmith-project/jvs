@@ -23,9 +23,13 @@ func setupCoverageRepo(t *testing.T, name string) (repoPath string, mainPath str
 
 	require.NoError(t, os.Chdir(dir))
 	repoPath = initLegacyRepoForCLITest(t, name)
-	mainPath = filepath.Join(repoPath, "main")
+	mainPath = repoPath
 	require.NoError(t, os.Chdir(mainPath))
 	return repoPath, mainPath
+}
+
+func testExternalWorkspacePath(repoPath, name string) string {
+	return filepath.Join(filepath.Dir(repoPath), name)
 }
 
 // TestProgressEnabled tests the progressEnabled function.
@@ -103,9 +107,9 @@ func TestDetectEngine_Coverage(t *testing.T) {
 		assert.Equal(t, "copy", string(engine))
 	})
 
-	t.Run("Empty string returns Copy as fallback", func(t *testing.T) {
+	t.Run("Empty string uses auto detection", func(t *testing.T) {
 		engine := detectEngine("")
-		assert.Equal(t, "copy", string(engine))
+		assert.Contains(t, []string{"copy", "reflink-copy", "juicefs-clone"}, string(engine))
 	})
 
 	t.Run("Current directory returns valid engine", func(t *testing.T) {

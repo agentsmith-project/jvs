@@ -23,8 +23,16 @@ func setupCreatorFailureRepo(t *testing.T) string {
 	dir := t.TempDir()
 	_, err := repo.Init(dir, "test")
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "main", "file.txt"), []byte("content"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(mainPayloadPath(t, dir), "file.txt"), []byte("content"), 0644))
 	return dir
+}
+
+func mainPayloadPath(t *testing.T, repoPath string) string {
+	t.Helper()
+
+	payloadPath, err := repo.WorktreePayloadPath(repoPath, "main")
+	require.NoError(t, err)
+	return payloadPath
 }
 
 func TestCreator_DescriptorWriteFailureDoesNotPublishReadyAndRemovesIntent(t *testing.T) {

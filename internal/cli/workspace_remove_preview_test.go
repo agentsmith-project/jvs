@@ -1,37 +1,42 @@
 package cli
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/agentsmith-project/jvs/internal/lifecycle"
 	"github.com/agentsmith-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-type workspaceRemovePreviewData struct {
-	Mode              string                      `json:"mode"`
-	PlanID            string                      `json:"plan_id"`
-	Workspace         string                      `json:"workspace"`
-	Folder            string                      `json:"folder"`
-	UnsavedChanges    bool                        `json:"unsaved_changes"`
-	FilesState        string                      `json:"files_state"`
-	NewestSavePoint   *string                     `json:"newest_save_point"`
-	ContentSource     *string                     `json:"content_source"`
-	FolderRemoved     bool                        `json:"folder_removed"`
-	FilesChanged      bool                        `json:"files_changed"`
-	RunCommand        string                      `json:"run_command"`
-	Options           workspaceRemovePreviewFlags `json:"options"`
-	CleanupPreviewRun string                      `json:"cleanup_preview_run"`
+type workspaceDeletePreviewData struct {
+	Mode                  string                      `json:"mode"`
+	PlanID                string                      `json:"plan_id"`
+	Workspace             string                      `json:"workspace"`
+	Folder                string                      `json:"folder"`
+	UnsavedChanges        bool                        `json:"unsaved_changes"`
+	FilesState            string                      `json:"files_state"`
+	NewestSavePoint       *string                     `json:"newest_save_point"`
+	ContentSource         *string                     `json:"content_source"`
+	FolderRemoved         bool                        `json:"folder_removed"`
+	FilesChanged          bool                        `json:"files_changed"`
+	RunCommand            string                      `json:"run_command"`
+	SafeRunCommand        string                      `json:"safe_run_command"`
+	CWDInsideAffectedTree bool                        `json:"cwd_inside_affected_tree"`
+	Options               workspaceDeletePreviewFlags `json:"options"`
+	CleanupPreviewRun     string                      `json:"cleanup_preview_run"`
 }
 
-type workspaceRemovePreviewFlags struct {
+type workspaceDeletePreviewFlags struct {
 	DiscardUnsaved     bool `json:"discard_unsaved,omitempty"`
 	RemovesUnsavedWork bool `json:"removes_unsaved_work,omitempty"`
 }
 
-type workspaceRemoveRunData struct {
+type workspaceDeleteRunData struct {
 	Mode                     string `json:"mode"`
 	PlanID                   string `json:"plan_id"`
 	Status                   string `json:"status"`
@@ -44,12 +49,12 @@ type workspaceRemoveRunData struct {
 	CleanupCommand           string `json:"cleanup_command"`
 }
 
-func TestWorkspaceRemovePreviewFirstDoesNotDeleteFolder(t *testing.T) {
-	repoPath, _, savePointID, featurePath := setupWorkspaceRemoveRepo(t, "wspreviewfirst", "feature")
+func TestWorkspaceDeletePreviewFirstDoesNotDeleteFolder(t *testing.T) {
+	repoPath, _, savePointID, featurePath := setupWorkspaceDeleteRepo(t, "wspreviewfirst", "feature")
 
-	stdout, err := executeCommand(createTestRootCmd(), "--json", "workspace", "remove", "feature")
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "workspace", "delete", "feature")
 	require.NoError(t, err, stdout)
-	preview := decodeWorkspaceRemovePreview(t, stdout)
+	preview := decodeWorkspaceDeletePreview(t, stdout)
 
 	assert.Equal(t, "preview", preview.Mode)
 	require.NotEmpty(t, preview.PlanID)
@@ -62,27 +67,32 @@ func TestWorkspaceRemovePreviewFirstDoesNotDeleteFolder(t *testing.T) {
 	assert.Equal(t, savePointID, *preview.ContentSource)
 	assert.False(t, preview.FolderRemoved)
 	assert.False(t, preview.FilesChanged)
-	assert.Equal(t, "jvs workspace remove --run "+preview.PlanID, preview.RunCommand)
+	assert.Equal(t, "jvs workspace delete --run "+preview.PlanID, preview.RunCommand)
 	assert.Contains(t, preview.CleanupPreviewRun, "jvs cleanup preview")
 	assert.DirExists(t, featurePath)
 	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "worktrees", "feature", "config.json"))
 	assertSavePointStorageExists(t, repoPath, savePointID)
 }
 
-func TestWorkspaceRemoveRunDeletesOnlyWorkspaceFolderAndMetadata(t *testing.T) {
-	repoPath, _, savePointID, featurePath := setupWorkspaceRemoveRepo(t, "wsremoverun", "feature")
-	previewOut, err := executeCommand(createTestRootCmd(), "--json", "workspace", "remove", "feature")
-	require.NoError(t, err, previewOut)
-	preview := decodeWorkspaceRemovePreview(t, previewOut)
-	planPath := requireWorkspaceRemovePlanFile(t, repoPath, preview.PlanID)
+func TestWorkspaceDeleteRunDeletesOnlyWorkspaceFolderAndMetadata(t *testing.T) {
+	repoPath, _, savePointID, featurePath := setupWorkspaceDeleteRepo(t, "wsdeleterun", "feature")
+	require.NoError(t, os.WriteFile(filepath.Join(featurePath, "result.txt"), []byte("kept in save point"), 0644))
+	require.NoError(t, os.Chdir(featurePath))
+	workspaceSavePointID := createRootTestSavePoint(t, "feature result")
+	require.NoError(t, os.Chdir(repoPath))
 
-	stdout, err := executeCommand(createTestRootCmd(), "--json", "workspace", "remove", "--run", preview.PlanID)
+	previewOut, err := executeCommand(createTestRootCmd(), "--json", "workspace", "delete", "feature")
+	require.NoError(t, err, previewOut)
+	preview := decodeWorkspaceDeletePreview(t, previewOut)
+	planPath := requireWorkspaceDeletePlanFile(t, repoPath, preview.PlanID)
+
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "workspace", "delete", "--run", preview.PlanID)
 	require.NoError(t, err, stdout)
-	run := decodeWorkspaceRemoveRun(t, stdout)
+	run := decodeWorkspaceDeleteRun(t, stdout)
 
 	assert.Equal(t, "run", run.Mode)
 	assert.Equal(t, preview.PlanID, run.PlanID)
-	assert.Equal(t, "removed", run.Status)
+	assert.Equal(t, "deleted", run.Status)
 	assert.Equal(t, "feature", run.Workspace)
 	assert.Equal(t, featurePath, run.Folder)
 	assert.True(t, run.FolderRemoved)
@@ -95,60 +105,55 @@ func TestWorkspaceRemoveRunDeletesOnlyWorkspaceFolderAndMetadata(t *testing.T) {
 	assertSavePointStorageExists(t, repoPath, savePointID)
 	assert.NoFileExists(t, planPath)
 
-	stdout, err = executeCommand(createTestRootCmd(), "workspace", "remove", "--run", preview.PlanID)
+	viewOut, err := executeCommand(createTestRootCmd(), "--json", "view", workspaceSavePointID, "result.txt")
+	require.NoError(t, err, viewOut)
+	var viewResult publicViewResult
+	decodeRootJSONData(t, viewOut, &viewResult)
+	closeOut, err := executeCommand(createTestRootCmd(), "--json", "view", "close", viewResult.ViewID)
+	require.NoError(t, err, closeOut)
+
+	stdout, err = executeCommand(createTestRootCmd(), "workspace", "delete", "--run", preview.PlanID)
 	require.Error(t, err)
 	assert.Empty(t, stdout)
 	assert.Contains(t, err.Error(), "not found")
 }
 
-func TestWorkspaceRemoveDirtyRequiresForceBeforeRunnablePlan(t *testing.T) {
-	repoPath, _, savePointID, featurePath := setupWorkspaceRemoveRepo(t, "wsremovedirty", "feature")
+func TestWorkspaceDeleteDirtyFailsClosedAndHasNoForceCompatibility(t *testing.T) {
+	repoPath, _, savePointID, featurePath := setupWorkspaceDeleteRepo(t, "wsdeletedirty", "feature")
 	require.NoError(t, os.WriteFile(filepath.Join(featurePath, "remove-base.txt"), []byte("dirty"), 0644))
 
-	stdout, err := executeCommand(createTestRootCmd(), "workspace", "remove", "feature")
+	stdout, err := executeCommand(createTestRootCmd(), "workspace", "delete", "feature")
 	require.Error(t, err)
 	assert.Empty(t, stdout)
 	assert.Contains(t, err.Error(), "unsaved changes")
+	assert.NotContains(t, err.Error(), "--force")
 	assert.DirExists(t, featurePath)
 	assertSavePointStorageExists(t, repoPath, savePointID)
 
-	stdout, err = executeCommand(createTestRootCmd(), "--json", "workspace", "remove", "--force", "feature")
-	require.NoError(t, err, stdout)
-	preview := decodeWorkspaceRemovePreview(t, stdout)
-
-	assert.Equal(t, "preview", preview.Mode)
-	assert.True(t, preview.UnsavedChanges)
-	assert.True(t, preview.Options.DiscardUnsaved)
-	assert.True(t, preview.Options.RemovesUnsavedWork)
-	assert.False(t, preview.FolderRemoved)
-	assert.False(t, preview.FilesChanged)
-	assert.DirExists(t, featurePath)
-	assertSavePointStorageExists(t, repoPath, savePointID)
-
-	stdout, err = executeCommand(createTestRootCmd(), "workspace", "remove", "--run", preview.PlanID, "--force")
+	stdout, err = executeCommand(createTestRootCmd(), "workspace", "delete", "--force", "feature")
 	require.Error(t, err)
 	assert.Empty(t, stdout)
-	assert.Contains(t, err.Error(), "options are fixed by the preview plan")
+	assert.Contains(t, err.Error(), "unknown flag: --force")
 	assert.DirExists(t, featurePath)
 	assertSavePointStorageExists(t, repoPath, savePointID)
 }
 
-func TestWorkspaceRemoveMainUsesWorkspaceVocabulary(t *testing.T) {
-	_, _, _, _ = setupWorkspaceRemoveRepo(t, "wsremovemain", "feature")
+func TestWorkspaceDeleteMainUsesWorkspaceVocabulary(t *testing.T) {
+	_, _, _, _ = setupWorkspaceDeleteRepo(t, "wsdeletemain", "feature")
 
-	stdout, err := executeCommand(createTestRootCmd(), "workspace", "remove", "main")
+	stdout, err := executeCommand(createTestRootCmd(), "workspace", "delete", "main")
 	require.Error(t, err)
 	assert.Empty(t, stdout)
-	assert.Contains(t, err.Error(), "cannot remove main workspace")
+	assert.Contains(t, err.Error(), "cannot delete main workspace")
 	assert.NotContains(t, err.Error(), "worktree")
 }
 
-func TestWorkspaceRemoveRunAcquiresMutationLockBeforeRevalidate(t *testing.T) {
-	repoPath, _, savePointID, featurePath := setupWorkspaceRemoveRepo(t, "wsremovelockboundary", "feature")
-	previewOut, err := executeCommand(createTestRootCmd(), "--json", "workspace", "remove", "feature")
+func TestWorkspaceDeleteRunAcquiresMutationLockBeforeRevalidate(t *testing.T) {
+	repoPath, _, savePointID, featurePath := setupWorkspaceDeleteRepo(t, "wsdeletelockboundary", "feature")
+	previewOut, err := executeCommand(createTestRootCmd(), "--json", "workspace", "delete", "feature")
 	require.NoError(t, err, previewOut)
-	preview := decodeWorkspaceRemovePreview(t, previewOut)
-	planPath := requireWorkspaceRemovePlanFile(t, repoPath, preview.PlanID)
+	preview := decodeWorkspaceDeletePreview(t, previewOut)
+	planPath := requireWorkspaceDeletePlanFile(t, repoPath, preview.PlanID)
 
 	lock, err := repo.AcquireMutationLock(repoPath, "test concurrent workspace mutation")
 	require.NoError(t, err)
@@ -157,7 +162,7 @@ func TestWorkspaceRemoveRunAcquiresMutationLockBeforeRevalidate(t *testing.T) {
 	}()
 
 	require.NoError(t, os.WriteFile(filepath.Join(featurePath, "remove-base.txt"), []byte("changed while locked"), 0644))
-	stdout, err := executeCommand(createTestRootCmd(), "workspace", "remove", "--run", preview.PlanID)
+	stdout, err := executeCommand(createTestRootCmd(), "workspace", "delete", "--run", preview.PlanID)
 	require.Error(t, err)
 	assert.Empty(t, stdout)
 	assert.Contains(t, err.Error(), "repository mutation lock")
@@ -167,24 +172,110 @@ func TestWorkspaceRemoveRunAcquiresMutationLockBeforeRevalidate(t *testing.T) {
 	assertSavePointStorageExists(t, repoPath, savePointID)
 }
 
-func TestWorkspaceRemoveRunFailsIfWorkspaceChangedSincePreview(t *testing.T) {
-	repoPath, _, savePointID, featurePath := setupWorkspaceRemoveRepo(t, "wsremovechanged", "feature")
-	previewOut, err := executeCommand(createTestRootCmd(), "--json", "workspace", "remove", "feature")
+func TestWorkspaceDeleteRunFailsIfWorkspaceChangedSincePreview(t *testing.T) {
+	repoPath, _, savePointID, featurePath := setupWorkspaceDeleteRepo(t, "wsdeletechanged", "feature")
+	previewOut, err := executeCommand(createTestRootCmd(), "--json", "workspace", "delete", "feature")
 	require.NoError(t, err, previewOut)
-	preview := decodeWorkspaceRemovePreview(t, previewOut)
+	preview := decodeWorkspaceDeletePreview(t, previewOut)
 	require.NoError(t, os.WriteFile(filepath.Join(featurePath, "remove-base.txt"), []byte("changed after preview"), 0644))
 
-	stdout, err := executeCommand(createTestRootCmd(), "workspace", "remove", "--run", preview.PlanID)
+	stdout, err := executeCommand(createTestRootCmd(), "workspace", "delete", "--run", preview.PlanID)
 	require.Error(t, err)
 	assert.Empty(t, stdout)
 	assert.Contains(t, err.Error(), "changed since preview")
-	assert.Contains(t, err.Error(), "No workspace was removed")
+	assert.Contains(t, err.Error(), "No workspace was deleted")
 	assert.DirExists(t, featurePath)
 	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "worktrees", "feature", "config.json"))
 	assertSavePointStorageExists(t, repoPath, savePointID)
 }
 
-func setupWorkspaceRemoveRepo(t *testing.T, repoName, workspaceName string) (repoPath, mainPath, savePointID, workspacePath string) {
+func TestWorkspaceDeleteRunFromInsideTargetFailsBeforeJournalOrMutation(t *testing.T) {
+	repoPath, _, savePointID, featurePath := setupWorkspaceDeleteRepo(t, "wsdeleteunsafecwd", "feature")
+	previewOut, err := executeCommand(createTestRootCmd(), "--json", "workspace", "delete", "feature")
+	require.NoError(t, err, previewOut)
+	preview := decodeWorkspaceDeletePreview(t, previewOut)
+	planPath := requireWorkspaceDeletePlanFile(t, repoPath, preview.PlanID)
+
+	require.NoError(t, os.Chdir(featurePath))
+	stdout, err := executeCommand(createTestRootCmd(), "workspace", "delete", "--run", preview.PlanID)
+	require.Error(t, err)
+	assert.Empty(t, stdout)
+	assert.ErrorIs(t, err, errclass.ErrLifecycleUnsafeCWD)
+	var jvsErr *errclass.JVSError
+	require.True(t, errors.As(err, &jvsErr))
+	assert.Equal(t, "E_LIFECYCLE_UNSAFE_CWD", jvsErr.Code)
+	assert.Contains(t, err.Error(), preview.SafeRunCommand)
+	assert.DirExists(t, featurePath)
+	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "worktrees", "feature", "config.json"))
+	assert.FileExists(t, planPath)
+	pending, pendingErr := lifecycle.ListPendingOperations(repoPath)
+	require.NoError(t, pendingErr)
+	assert.Empty(t, pending)
+	assertSavePointStorageExists(t, repoPath, savePointID)
+}
+
+func TestWorkspaceDeletePreviewFromInsideExternalWorkspaceIncludesExplicitSafeRun(t *testing.T) {
+	repoPath, _, savePointID, featurePath := setupWorkspaceLifecycleExternalRepo(t, "wsdeletepreviewsafecwd", "feature")
+	require.NoError(t, os.Chdir(featurePath))
+
+	previewOut, err := executeCommand(createTestRootCmd(), "--json", "workspace", "delete", "feature")
+	require.NoError(t, err, previewOut)
+	preview := decodeWorkspaceDeletePreview(t, previewOut)
+	require.NotEmpty(t, preview.PlanID)
+	assert.True(t, preview.CWDInsideAffectedTree)
+	assert.Equal(t, "jvs workspace delete --run "+preview.PlanID, preview.RunCommand)
+	assert.Equal(t, "cd "+filepath.Dir(featurePath)+" && jvs --repo "+repoPath+" workspace delete --run "+preview.PlanID, preview.SafeRunCommand)
+	assert.DirExists(t, featurePath)
+	assertSavePointStorageExists(t, repoPath, savePointID)
+}
+
+func TestWorkspaceDeleteRunResumesAfterFolderAndConfigRemovedBeforePhase(t *testing.T) {
+	repoPath, _, savePointID, featurePath := setupWorkspaceDeleteRepo(t, "wsdeleteresume", "feature")
+	require.NoError(t, os.Chdir(repoPath))
+
+	previewOut, err := executeCommand(createTestRootCmd(), "--json", "workspace", "delete", "feature")
+	require.NoError(t, err, previewOut)
+	preview := decodeWorkspaceDeletePreview(t, previewOut)
+	planPath := requireWorkspaceDeletePlanFile(t, repoPath, preview.PlanID)
+
+	oldHooks := workspaceDeleteRunHooks
+	workspaceDeleteRunHooks.afterRemoveLocked = func() error {
+		return errors.New("injected crash after workspace delete")
+	}
+	t.Cleanup(func() {
+		workspaceDeleteRunHooks = oldHooks
+	})
+
+	stdout, err := executeCommand(createTestRootCmd(), "workspace", "delete", "--run", preview.PlanID)
+	require.Error(t, err)
+	assert.Empty(t, stdout)
+	assert.Contains(t, err.Error(), "injected crash")
+	assert.NoDirExists(t, featurePath)
+	assert.NoDirExists(t, filepath.Join(repoPath, ".jvs", "worktrees", "feature"))
+	pending, pendingErr := lifecycle.ListPendingOperations(repoPath)
+	require.NoError(t, pendingErr)
+	require.Len(t, pending, 1)
+	assert.Equal(t, preview.PlanID, pending[0].OperationID)
+
+	workspaceDeleteRunHooks = oldHooks
+	runOut, err := executeCommand(createTestRootCmd(), "--json", "workspace", "delete", "--run", preview.PlanID)
+	require.NoError(t, err, runOut)
+	run := decodeWorkspaceDeleteRun(t, runOut)
+	assert.Equal(t, "deleted", run.Status)
+	assert.Equal(t, "feature", run.Workspace)
+	assert.Equal(t, featurePath, run.Folder)
+	assert.True(t, run.FolderRemoved)
+	assert.True(t, run.WorkspaceMetadataRemoved)
+	assert.NoDirExists(t, featurePath)
+	assert.NoDirExists(t, filepath.Join(repoPath, ".jvs", "worktrees", "feature"))
+	assertSavePointStorageExists(t, repoPath, savePointID)
+	assert.NoFileExists(t, planPath)
+	pending, pendingErr = lifecycle.ListPendingOperations(repoPath)
+	require.NoError(t, pendingErr)
+	assert.Empty(t, pending)
+}
+
+func setupWorkspaceDeleteRepo(t *testing.T, repoName, workspaceName string) (repoPath, mainPath, savePointID, workspacePath string) {
 	t.Helper()
 
 	repoPath, mainPath = setupCoverageRepo(t, repoName)
@@ -192,22 +283,22 @@ func setupWorkspaceRemoveRepo(t *testing.T, repoName, workspaceName string) (rep
 	savePointID = createRootTestSavePoint(t, "remove base")
 	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "../"+workspaceName, "--from", savePointID)
 	require.NoError(t, err, stdout)
-	workspacePath = filepath.Join(repoPath, workspaceName)
+	workspacePath = testExternalWorkspacePath(repoPath, workspaceName)
 	return repoPath, mainPath, savePointID, workspacePath
 }
 
-func decodeWorkspaceRemovePreview(t *testing.T, stdout string) workspaceRemovePreviewData {
+func decodeWorkspaceDeletePreview(t *testing.T, stdout string) workspaceDeletePreviewData {
 	t.Helper()
 
-	var preview workspaceRemovePreviewData
+	var preview workspaceDeletePreviewData
 	decodeRootJSONData(t, stdout, &preview)
 	return preview
 }
 
-func decodeWorkspaceRemoveRun(t *testing.T, stdout string) workspaceRemoveRunData {
+func decodeWorkspaceDeleteRun(t *testing.T, stdout string) workspaceDeleteRunData {
 	t.Helper()
 
-	var run workspaceRemoveRunData
+	var run workspaceDeleteRunData
 	decodeRootJSONData(t, stdout, &run)
 	return run
 }
@@ -219,10 +310,10 @@ func assertSavePointStorageExists(t *testing.T, repoPath, savePointID string) {
 	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "descriptors", savePointID+".json"))
 }
 
-func requireWorkspaceRemovePlanFile(t *testing.T, repoPath, planID string) string {
+func requireWorkspaceDeletePlanFile(t *testing.T, repoPath, planID string) string {
 	t.Helper()
 
-	path, err := workspaceRemovePlanPath(repoPath, planID, false)
+	path, err := workspaceDeletePlanPath(repoPath, planID, false)
 	require.NoError(t, err)
 	require.FileExists(t, path)
 	return path

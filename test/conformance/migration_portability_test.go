@@ -179,7 +179,7 @@ func TestMigrationPhysicalCopyRepairRuntimeRebindsAdoptedMainWorkspaceWhenSource
 	}
 }
 
-func TestMigrationPhysicalCopyRepairRuntimeRebindsExternalWorkspaceWhenSourceStillExistsAndContentMatches(t *testing.T) {
+func TestMigrationPhysicalCopyRepairRuntimeFailsClosedForCopiedExternalWorkspaceWithoutCwdEvidenceWhenSourceStillExistsAndContentMatches(t *testing.T) {
 	sourceRepo, cleanup := initTestRepo(t)
 	defer cleanup()
 
@@ -197,28 +197,25 @@ func TestMigrationPhysicalCopyRepairRuntimeRebindsExternalWorkspaceWhenSourceSti
 	copyMigrationTree(t, sourceFeature, copiedFeature)
 
 	stdout, stderr, code = runJVSInRepo(t, copiedRepo, "--json", "doctor", "--strict", "--repair-runtime")
-	if code != 0 {
-		t.Fatalf("doctor repair-runtime failed after physical copy with external workspace: stdout=%s stderr=%s", stdout, stderr)
+	if code == 0 {
+		t.Fatalf("doctor repair-runtime should fail closed without copied external workspace cwd evidence: stdout=%s stderr=%s", stdout, stderr)
 	}
-	doctorData := decodeContractDataMap(t, stdout)
-	if doctorData["healthy"] != true {
-		t.Fatalf("doctor repair-runtime should leave copied external workspace healthy: %#v\n%s", doctorData, stdout)
-	}
+	assertMigrationDoctorFinding(t, stdout, stderr, "E_WORKSPACE_PATH_BINDING_INVALID")
 
 	stdout, stderr, code = runJVSInRepo(t, copiedRepo, "--json", "workspace", "path", "feature")
 	if code != 0 {
-		t.Fatalf("workspace path feature after repair failed: stdout=%s stderr=%s", stdout, stderr)
+		t.Fatalf("workspace path feature after skipped repair failed: stdout=%s stderr=%s", stdout, stderr)
 	}
 	workspacePath := decodeContractDataMap(t, stdout)
-	if workspacePath["path"] != copiedFeature {
-		t.Fatalf("workspace path feature = %#v, want copied sibling %s", workspacePath["path"], copiedFeature)
+	if workspacePath["path"] != sourceFeature {
+		t.Fatalf("workspace path feature = %#v, want original source binding %s", workspacePath["path"], sourceFeature)
 	}
-	if workspacePath["path"] == sourceFeature {
-		t.Fatalf("workspace path feature still points at source sibling %s", sourceFeature)
+	if workspacePath["path"] == copiedFeature {
+		t.Fatalf("workspace path feature was rebound by copied sibling heuristic to %s", copiedFeature)
 	}
 }
 
-func TestMigrationPhysicalCopyRepairRuntimeRewritesCopiedExternalWorkspaceLocatorWhenSourceOffline(t *testing.T) {
+func TestMigrationPhysicalCopyRepairRuntimeRewritesCopiedExternalWorkspaceLocatorFromExternalWorkspaceCwdWhenSourceOffline(t *testing.T) {
 	sourceRepo, cleanup := initTestRepo(t)
 	defer cleanup()
 
@@ -242,12 +239,27 @@ func TestMigrationPhysicalCopyRepairRuntimeRewritesCopiedExternalWorkspaceLocato
 	}
 
 	stdout, stderr, code = runJVSInRepo(t, copiedRepo, "--json", "doctor", "--strict", "--repair-runtime")
+	if code == 0 {
+		t.Fatalf("doctor repair-runtime should fail closed from copied repo root without external workspace cwd evidence: stdout=%s stderr=%s", stdout, stderr)
+	}
+	assertMigrationDoctorFinding(t, stdout, stderr, "E_WORKSPACE_PATH_BINDING_INVALID")
+
+	stdout, stderr, code = runJVS(t, copiedFeature, "--json", "--repo", copiedRepo, "doctor", "--strict", "--repair-runtime")
 	if code != 0 {
-		t.Fatalf("doctor repair-runtime failed after physical copy with offline external workspace: stdout=%s stderr=%s", stdout, stderr)
+		t.Fatalf("doctor repair-runtime from copied external workspace cwd failed: stdout=%s stderr=%s", stdout, stderr)
 	}
 	doctorData := decodeContractDataMap(t, stdout)
 	if doctorData["healthy"] != true {
-		t.Fatalf("doctor repair-runtime should leave copied external workspace healthy: %#v\n%s", doctorData, stdout)
+		t.Fatalf("doctor repair-runtime from copied external workspace cwd should leave repo healthy: %#v\n%s", doctorData, stdout)
+	}
+
+	stdout, stderr, code = runJVSInRepo(t, copiedRepo, "--json", "workspace", "path", "feature")
+	if code != 0 {
+		t.Fatalf("workspace path feature after cwd repair failed: stdout=%s stderr=%s", stdout, stderr)
+	}
+	workspacePath := decodeContractDataMap(t, stdout)
+	if workspacePath["path"] != copiedFeature {
+		t.Fatalf("workspace path feature = %#v, want copied external workspace cwd %s", workspacePath["path"], copiedFeature)
 	}
 
 	statusOut := jvsJSON(t, copiedFeature, "status")

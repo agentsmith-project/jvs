@@ -16,8 +16,17 @@ func TestInitTarget_AllowsAbsoluteMultiLevelMissingTarget(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, target, r.Root)
 	require.DirExists(t, filepath.Join(target, ".jvs"))
-	require.DirExists(t, filepath.Join(target, "main"))
-	require.DirExists(t, filepath.Join(target, "worktrees"))
+
+	cfg, err := LoadWorktreeConfig(target, "main")
+	require.NoError(t, err)
+	require.Equal(t, "main", cfg.Name)
+	require.Equal(t, target, cfg.RealPath)
+
+	payloadPath, err := WorktreePayloadPath(target, "main")
+	require.NoError(t, err)
+	require.Equal(t, target, payloadPath)
+	require.NoDirExists(t, filepath.Join(target, "main"))
+	require.NoDirExists(t, filepath.Join(target, "worktrees"))
 }
 
 func TestInitTarget_AllowsEmptyExistingTarget(t *testing.T) {
@@ -69,8 +78,8 @@ func TestInitTarget_RejectsPhysicalNestedRepositoryViaSymlinkParent(t *testing.T
 	_, err := InitTarget(root)
 	require.NoError(t, err)
 
-	linkParent := filepath.Join(base, "link-to-main")
-	if err := os.Symlink(filepath.Join(root, "main"), linkParent); err != nil {
+	linkParent := filepath.Join(base, "link-to-root")
+	if err := os.Symlink(root, linkParent); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 
@@ -78,5 +87,5 @@ func TestInitTarget_RejectsPhysicalNestedRepositoryViaSymlinkParent(t *testing.T
 	_, err = InitTarget(target)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "nested repository")
-	require.NoDirExists(t, filepath.Join(root, "main", "nested", ".jvs"))
+	require.NoDirExists(t, filepath.Join(root, "nested", ".jvs"))
 }

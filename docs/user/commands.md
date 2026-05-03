@@ -149,10 +149,12 @@ jvs workspace list
 jvs workspace list --status
 jvs workspace path [name]
 jvs workspace rename <old> <new>
+jvs workspace move <name> <new-folder>
+jvs workspace move --run <workspace-move-plan-id>
 jvs workspace new ../experiment --from <save>
 jvs workspace new ../experiment --from <save> --name test-copy
-jvs workspace remove experiment
-jvs workspace remove --run <remove-plan-id>
+jvs workspace delete experiment
+jvs workspace delete --run <workspace-delete-plan-id>
 ```
 
 Common commands:
@@ -162,10 +164,12 @@ Common commands:
 | `jvs workspace list` | Show known workspaces, their folders, current pointer, newest save point, and source save point when known |
 | `jvs workspace list --status` | Also check whether listed workspaces have unsaved changes |
 | `jvs workspace path [name]` | Print the folder path for a workspace |
-| `jvs workspace rename <old> <new>` | Rename a workspace |
+| `jvs workspace rename <old> <new>` | Rename a workspace without moving its folder |
+| `jvs workspace move <name> <new-folder>` | Preview moving a workspace folder without changing its workspace name |
+| `jvs workspace move --run <workspace-move-plan-id>` | Run a reviewed workspace move plan |
 | `jvs workspace new <folder> --from <save>` | Create another workspace folder at a path you choose |
-| `jvs workspace remove <name>` | Preview removal of a workspace folder |
-| `jvs workspace remove --run <remove-plan-id>` | Run a reviewed remove plan |
+| `jvs workspace delete <name>` | Preview deletion of a workspace folder |
+| `jvs workspace delete --run <workspace-delete-plan-id>` | Run a reviewed delete plan |
 
 For `workspace new`, `<folder>` is the target folder path. The folder must not
 already exist. The workspace name defaults to the folder name; use
@@ -186,26 +190,52 @@ directories:
 cd "$(jvs workspace path experiment)"
 ```
 
-`workspace remove` is preview-first. The preview does not delete the folder.
+`workspace delete` is preview-first. The preview does not delete the folder.
 Review the folder path, workspace name, unsaved-change status, and printed
 `Run:` command before running the plan.
 
-Use the remove plan ID from the workspace remove preview you just reviewed. Do
-not reuse a restore or cleanup plan ID for workspace removal.
+Use the delete plan ID from the workspace delete preview you just reviewed. Do
+not reuse a restore or cleanup plan ID for workspace deletion.
 
-`workspace remove --run <remove-plan-id>` removes the selected workspace folder
+`workspace move` is preview-first. The preview does not move files. Run the
+printed `jvs workspace move --run <workspace-move-plan-id>` command from
+outside the source workspace folder.
+
+`workspace delete --run <workspace-delete-plan-id>` deletes the selected workspace folder
 and workspace entry. It does not remove save point storage. Use
 `jvs cleanup preview`, then `jvs cleanup run --plan-id <cleanup-plan-id>` for
 reviewed cleanup of save point storage.
 
-If the workspace has unsaved changes, add `--force` to the preview command
-only when those local changes are intentionally disposable:
+If the workspace has unsaved changes, `workspace delete` fails closed. Save or
+restore those changes before deleting the workspace.
+
+## `jvs repo`
+
+Manage JVS project folders.
 
 ```bash
-jvs workspace remove experiment --force
+jvs repo clone <target-folder>
+jvs repo move <new-folder>
+jvs repo move --run <repo-move-plan-id>
+jvs repo rename <new-folder-name>
+jvs repo rename --run <repo-rename-plan-id>
+jvs repo detach
+jvs repo detach --run <repo-detach-plan-id>
 ```
 
-## `jvs repo clone <target-folder> [--save-points all|main] [--dry-run]`
+Common commands:
+
+| Command | Use |
+| --- | --- |
+| `jvs repo clone <target-folder>` | Copy the current local JVS project into a new folder with a new repo identity |
+| `jvs repo move <new-folder>` | Preview moving the current project folder while keeping `repo_id` and save point history |
+| `jvs repo move --run <repo-move-plan-id>` | Run a reviewed repo move plan |
+| `jvs repo rename <new-folder-name>` | Preview renaming the project folder within the same parent directory |
+| `jvs repo rename --run <repo-rename-plan-id>` | Run a reviewed repo rename plan |
+| `jvs repo detach` | Preview stopping JVS management of the current project folder while keeping working files |
+| `jvs repo detach --run <repo-detach-plan-id>` | Run a reviewed detach plan |
+
+### `jvs repo clone <target-folder> [--save-points all|main] [--dry-run]`
 
 Copy the current local JVS project into a new folder. The source is the project
 you are in, or the project named by global `--repo <path>`.
@@ -237,6 +267,60 @@ Behavior:
   the target folder or any files.
 
 The source project is unchanged.
+
+### `jvs repo move`
+
+Move the current JVS project folder. This is preview-first: the preview writes
+a plan and does not move files. Run the printed command after review.
+
+```bash
+jvs repo move ../project-on-ssd
+jvs repo move --run <repo-move-plan-id>
+jvs --repo <old-repo-root> repo move --run <repo-move-plan-id>
+```
+
+`repo move` keeps the same `repo_id`, save point history, workspace names, and
+external workspace folders. It updates the main workspace path and registered
+external workspace connections to the new project folder. If your shell is
+inside the old project folder, use the printed safe run command from a parent
+folder.
+
+### `jvs repo rename`
+
+Rename the current JVS project folder inside its current parent directory. This
+is basename-only sugar over `repo move`: pass a folder basename such as
+`project-review`, not a path.
+
+```bash
+jvs repo rename project-review
+jvs repo rename --run <repo-rename-plan-id>
+jvs --repo <old-repo-root> repo rename --run <repo-rename-plan-id>
+```
+
+`repo rename` is preview-first and keeps the same `repo_id`, save point
+history, workspace names, and external workspace folders.
+
+### `jvs repo detach`
+
+Stop JVS managing the current project folder while keeping the project working
+files in place. This is preview-first.
+
+`jvs repo detach` checks the active project identity, verifies that `main` is
+the project folder, and verifies registered external workspace connections
+before it prints a plan. The preview does not archive metadata and does not
+move or delete files.
+
+Run the printed command after review:
+
+```bash
+jvs repo detach
+jvs repo detach --run <repo-detach-plan-id>
+```
+
+The run archives JVS metadata under `.jvs-detached`, marks registered external
+workspace connections as detached/orphaned, and leaves save point storage in
+the archive. After success, ordinary `jvs status` from the project folder no
+longer treats it as an active JVS repo.
 
 ## `jvs recovery`
 

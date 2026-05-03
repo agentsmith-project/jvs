@@ -169,9 +169,9 @@ func TestContract_WorkspaceAndCleanupUseCurrentPublicCommands(t *testing.T) {
 		t.Fatalf("workspace path after rename missing path: %s", renamedPathOut)
 	}
 
-	removeOut, stderr, code := runJVSInRepo(t, repoPath, "--json", "workspace", "remove", "renamed-feature", "--force")
+	removeOut, stderr, code := runJVSInRepo(t, repoPath, "--json", "workspace", "delete", "renamed-feature")
 	if code != 0 {
-		t.Fatalf("workspace remove preview failed: stdout=%s stderr=%s", removeOut, stderr)
+		t.Fatalf("workspace delete preview failed: stdout=%s stderr=%s", removeOut, stderr)
 	}
 	removePreview := decodeContractDataMap(t, removeOut)
 	removePlanID, _ := removePreview["plan_id"].(string)
@@ -180,25 +180,25 @@ func TestContract_WorkspaceAndCleanupUseCurrentPublicCommands(t *testing.T) {
 		removePreview["folder"] != featurePath ||
 		removePreview["folder_removed"] != false ||
 		removePreview["files_changed"] != false ||
-		removePreview["run_command"] != "jvs workspace remove --run "+removePlanID ||
+		removePreview["run_command"] != "jvs workspace delete --run "+removePlanID ||
 		removePreview["save_point_storage_removed"] != false {
-		t.Fatalf("workspace remove preview data mismatch: %#v", removePreview)
+		t.Fatalf("workspace delete preview data mismatch: %#v", removePreview)
 	}
 
-	removeRunOut, stderr, code := runJVSInRepo(t, repoPath, "--json", "workspace", "remove", "--run", removePlanID)
+	removeRunOut, stderr, code := runJVSInRepo(t, repoPath, "--json", "workspace", "delete", "--run", removePlanID)
 	if code != 0 {
-		t.Fatalf("workspace remove run failed: stdout=%s stderr=%s", removeRunOut, stderr)
+		t.Fatalf("workspace delete run failed: stdout=%s stderr=%s", removeRunOut, stderr)
 	}
 	removeRun := decodeContractDataMap(t, removeRunOut)
-	if removeRun["status"] != "removed" ||
+	if removeRun["status"] != "deleted" ||
 		removeRun["folder_removed"] != true ||
 		removeRun["workspace_metadata_removed"] != true ||
 		removeRun["save_point_storage_removed"] != false {
-		t.Fatalf("workspace remove run data mismatch: %#v", removeRun)
+		t.Fatalf("workspace delete run data mismatch: %#v", removeRun)
 	}
 	removedPathOut, stderr, code := runJVSInRepo(t, repoPath, "--json", "workspace", "path", "renamed-feature")
 	if code == 0 {
-		t.Fatalf("workspace remove run left workspace metadata: stdout=%s stderr=%s", removedPathOut, stderr)
+		t.Fatalf("workspace delete run left workspace metadata: stdout=%s stderr=%s", removedPathOut, stderr)
 	}
 
 	previewOut, stderr, code := runJVSInRepo(t, repoPath, "--json", "cleanup", "preview")
@@ -277,10 +277,13 @@ func TestContract_PublicHelpOnlyAdvertisesGACommands(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("workspace help failed: stdout=%s stderr=%s", workspaceHelp, stderr)
 	}
-	for _, required := range []string{"new", "list", "path", "rename", "remove"} {
+	for _, required := range []string{"new", "list", "path", "rename", "move", "delete"} {
 		if !strings.Contains(workspaceHelp, required) {
 			t.Fatalf("workspace help missing public subcommand %q:\n%s", required, workspaceHelp)
 		}
+	}
+	if strings.Contains(workspaceHelp, "remove") {
+		t.Fatalf("workspace help exposes old remove subcommand:\n%s", workspaceHelp)
 	}
 
 	cleanupHelp, stderr, code := runJVS(t, conformanceRepoRoot, "cleanup", "--help")

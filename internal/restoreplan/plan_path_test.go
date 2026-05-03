@@ -17,7 +17,7 @@ import (
 
 func TestPathEvidenceOnlyCoversTargetPath(t *testing.T) {
 	repoRoot := setupRestorePlanRepo(t)
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := restorePlanMainPayloadPath(t, repoRoot)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "app.txt"), []byte("v1"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "outside.txt"), []byte("outside v1"), 0644))
 
@@ -37,7 +37,7 @@ func TestPathEvidenceOnlyCoversTargetPath(t *testing.T) {
 
 func TestCreatePathPlanAndValidatePathTarget(t *testing.T) {
 	repoRoot := setupRestorePlanRepo(t)
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := restorePlanMainPayloadPath(t, repoRoot)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "app.txt"), []byte("v1"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "outside.txt"), []byte("outside v1"), 0644))
 	first, err := snapshot.NewCreator(repoRoot, model.EngineCopy).CreateSavePoint("main", "first", nil)
@@ -65,7 +65,7 @@ func TestCreatePathPlanAndValidatePathTarget(t *testing.T) {
 
 func TestCreateWholePlanIncludesExpectedPreviewTransfer(t *testing.T) {
 	repoRoot := setupRestorePlanRepo(t)
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := restorePlanMainPayloadPath(t, repoRoot)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "app.txt"), []byte("v1"), 0644))
 	first, err := snapshot.NewCreator(repoRoot, model.EngineCopy).CreateSavePoint("main", "first", nil)
 	require.NoError(t, err)
@@ -97,7 +97,7 @@ func TestCreateWholePlanIncludesExpectedPreviewTransfer(t *testing.T) {
 
 func TestCreatePathPlanIncludesExpectedPreviewTransfer(t *testing.T) {
 	repoRoot := setupRestorePlanRepo(t)
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := restorePlanMainPayloadPath(t, repoRoot)
 	require.NoError(t, os.MkdirAll(filepath.Join(mainPath, "src"), 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "src", "app.txt"), []byte("v1"), 0644))
 	first, err := snapshot.NewCreator(repoRoot, model.EngineCopy).CreateSavePoint("main", "first", nil)
@@ -130,7 +130,7 @@ func TestCreatePathPlanIncludesExpectedPreviewTransfer(t *testing.T) {
 
 func TestValidateSourceReturnsRunValidationTransfer(t *testing.T) {
 	repoRoot := setupRestorePlanRepo(t)
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := restorePlanMainPayloadPath(t, repoRoot)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "app.txt"), []byte("v1"), 0644))
 	first, err := snapshot.NewCreator(repoRoot, model.EngineCopy).CreateSavePoint("main", "first", nil)
 	require.NoError(t, err)
@@ -149,7 +149,7 @@ func TestValidateSourceReturnsRunValidationTransfer(t *testing.T) {
 
 func TestValidateSourcePathReturnsRunValidationTransfer(t *testing.T) {
 	repoRoot := setupRestorePlanRepo(t)
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := restorePlanMainPayloadPath(t, repoRoot)
 	require.NoError(t, os.MkdirAll(filepath.Join(mainPath, "src"), 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "src", "app.txt"), []byte("v1"), 0644))
 	first, err := snapshot.NewCreator(repoRoot, model.EngineCopy).CreateSavePoint("main", "first", nil)
@@ -170,7 +170,7 @@ func TestValidateSourcePathReturnsRunValidationTransfer(t *testing.T) {
 
 func TestCreatePlansReleaseOperationPins(t *testing.T) {
 	repoRoot := setupRestorePlanRepo(t)
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := restorePlanMainPayloadPath(t, repoRoot)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "app.txt"), []byte("v1"), 0644))
 	first, err := snapshot.NewCreator(repoRoot, model.EngineCopy).CreateSavePoint("main", "first", nil)
 	require.NoError(t, err)
@@ -190,7 +190,7 @@ func TestCreatePlansReleaseOperationPins(t *testing.T) {
 
 func TestValidateSourcePathRejectsMissingSourcePath(t *testing.T) {
 	repoRoot := setupRestorePlanRepo(t)
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := restorePlanMainPayloadPath(t, repoRoot)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "present.txt"), []byte("v1"), 0644))
 	first, err := snapshot.NewCreator(repoRoot, model.EngineCopy).CreateSavePoint("main", "first", nil)
 	require.NoError(t, err)
@@ -233,6 +233,13 @@ func setupRestorePlanRepo(t *testing.T) string {
 	_, err := repo.Init(dir, "test")
 	require.NoError(t, err)
 	return dir
+}
+
+func restorePlanMainPayloadPath(t *testing.T, repoRoot string) string {
+	t.Helper()
+	path, err := repo.WorktreePayloadPath(repoRoot, "main")
+	require.NoError(t, err)
+	return path
 }
 
 func restorePlanDocumentedPinCount(t *testing.T, repoRoot string) int {

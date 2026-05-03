@@ -42,7 +42,7 @@ Then keep these nearby:
 | Restore a folder after a bad edit | [Quickstart: Restore safely](quickstart.md#6-restore-safely) |
 | Restore one file or folder | [Quickstart: Restore one path](quickstart.md#7-restore-one-path) |
 | Start a second workspace from a save point | [Quickstart: Create another workspace](quickstart.md#8-create-another-workspace) |
-| Remove a workspace | [Command Reference: workspace remove](commands.md#jvs-workspace) |
+| Delete a workspace | [Command Reference: workspace delete](commands.md#jvs-workspace) |
 | Free old save point storage | [Command Reference: cleanup](commands.md#jvs-cleanup) |
 
 ## What Changes Files?
@@ -57,8 +57,8 @@ treat as important moments.
 | `jvs restore <save>` | Preview only. No files change. |
 | `jvs restore --run <restore-plan-id>` | Changes files in the workspace according to the previewed restore plan. |
 | `jvs workspace new <folder> --from <save>` | Creates another real folder at the path you choose. |
-| `jvs workspace remove <name>` | Preview only. The workspace folder is not removed. |
-| `jvs workspace remove --run <remove-plan-id>` | Removes that workspace folder and its workspace entry. Save point storage stays. |
+| `jvs workspace delete <name>` | Preview only. The workspace folder is not deleted. |
+| `jvs workspace delete --run <workspace-delete-plan-id>` | Deletes that workspace folder and its workspace entry. Save point storage stays. |
 | `jvs cleanup preview` | Preview only. No storage is removed. |
 | `jvs cleanup run --plan-id <cleanup-plan-id>` | Removes save point storage that the reviewed cleanup plan selected. |
 | `jvs recovery resume <plan>` | Continues an interrupted restore and may change files. |
@@ -74,7 +74,7 @@ JVS uses reviewed plans for the higher-impact operations:
 
 ```text
 restore preview -> restore run
-workspace remove preview -> workspace remove run
+workspace delete preview -> workspace delete run
 cleanup preview -> cleanup run
 ```
 

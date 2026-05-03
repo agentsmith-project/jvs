@@ -32,8 +32,11 @@ func TestInit_CreatesDirectoryStructure(t *testing.T) {
 	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "audit"))
 	assert.DirExists(t, filepath.Join(repoPath, ".jvs", "gc"))
 
-	// Verify main/ payload directory
-	assert.DirExists(t, filepath.Join(repoPath, "main"))
+	// Verify main workspace is the repo root, without a legacy main/ payload.
+	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	assert.Equal(t, repoPath, cfg.RealPath)
+	assert.NoDirExists(t, filepath.Join(repoPath, "main"))
 
 	// Verify format_version content
 	content, err := os.ReadFile(filepath.Join(repoPath, ".jvs", "format_version"))
@@ -96,6 +99,7 @@ func TestInit_MainWorktreeConfig(t *testing.T) {
 	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
 	require.NoError(t, err)
 	assert.Equal(t, "main", cfg.Name)
+	assert.Equal(t, repoPath, cfg.RealPath)
 	assert.NotZero(t, cfg.CreatedAt)
 }
 
@@ -194,14 +198,14 @@ func TestDiscoverWorktree_MainWorktree(t *testing.T) {
 	_, err := repo.Init(repoPath, "myrepo")
 	require.NoError(t, err)
 
-	// From main/ directory
-	r, wtName, err := repo.DiscoverWorktree(filepath.Join(repoPath, "main"))
+	// From repo root, which is the main workspace folder.
+	r, wtName, err := repo.DiscoverWorktree(repoPath)
 	require.NoError(t, err)
 	assert.Equal(t, repoPath, r.Root)
 	assert.Equal(t, "main", wtName)
 
-	// From nested path in main/
-	nested := filepath.Join(repoPath, "main", "deep", "path")
+	// From nested path in the repo root.
+	nested := filepath.Join(repoPath, "deep", "path")
 	require.NoError(t, os.MkdirAll(nested, 0755))
 	r, wtName, err = repo.DiscoverWorktree(nested)
 	require.NoError(t, err)
@@ -214,14 +218,15 @@ func TestDiscoverWorktree_NamedWorktree(t *testing.T) {
 	_, err := repo.Init(repoPath, "myrepo")
 	require.NoError(t, err)
 
-	// Create a named worktree
-	wtPath := filepath.Join(repoPath, "worktrees", "feature")
+	// Create a named external workspace.
+	wtPath := filepath.Join(dir, "feature")
 	require.NoError(t, os.MkdirAll(wtPath, 0755))
+	require.NoError(t, repo.WriteWorkspaceLocator(wtPath, repoPath, "feature"))
 
 	// Create config for worktree
 	cfgDir := filepath.Join(repoPath, ".jvs", "worktrees", "feature")
 	require.NoError(t, os.MkdirAll(cfgDir, 0755))
-	require.NoError(t, repo.WriteWorktreeConfig(repoPath, "feature", &model.WorktreeConfig{Name: "feature"}))
+	require.NoError(t, repo.WriteWorktreeConfig(repoPath, "feature", &model.WorktreeConfig{Name: "feature", RealPath: wtPath}))
 
 	// Discover from named worktree
 	r, wtName, err := repo.DiscoverWorktree(wtPath)
@@ -230,19 +235,19 @@ func TestDiscoverWorktree_NamedWorktree(t *testing.T) {
 	assert.Equal(t, "feature", wtName)
 }
 
-func TestDiscoverWorktreeRejectsFakePayloadWithRegisteredName(t *testing.T) {
+func TestDiscoverWorktreeTreatsLegacyPayloadFolderUnderRepoRootAsMain(t *testing.T) {
 	dir := t.TempDir()
 	repoPath := filepath.Join(dir, "myrepo")
 	_, err := repo.Init(repoPath, "myrepo")
 	require.NoError(t, err)
 
-	fakeMain := filepath.Join(repoPath, "worktrees", "main", "nested")
-	require.NoError(t, os.MkdirAll(fakeMain, 0755))
+	legacyPathInsideMain := filepath.Join(repoPath, "worktrees", "main", "nested")
+	require.NoError(t, os.MkdirAll(legacyPathInsideMain, 0755))
 
-	r, wtName, err := repo.DiscoverWorktree(fakeMain)
+	r, wtName, err := repo.DiscoverWorktree(legacyPathInsideMain)
 	require.NoError(t, err)
 	assert.Equal(t, repoPath, r.Root)
-	assert.Equal(t, "", wtName)
+	assert.Equal(t, "main", wtName)
 }
 
 func TestDiscoverWorktree_FromJvsDir(t *testing.T) {
@@ -270,13 +275,22 @@ func TestWorktreeConfigPath(t *testing.T) {
 }
 
 func TestWorktreePayloadPath(t *testing.T) {
-	path, err := repo.WorktreePayloadPath("/repo", "main")
+	repoPath := filepath.Join(t.TempDir(), "repo")
+	_, err := repo.Init(repoPath, "repo")
 	require.NoError(t, err)
-	assert.Equal(t, "/repo/main", path)
 
-	path, err = repo.WorktreePayloadPath("/repo", "feature")
+	path, err := repo.WorktreePayloadPath(repoPath, "main")
 	require.NoError(t, err)
-	assert.Equal(t, "/repo/worktrees/feature", path)
+	assert.Equal(t, repoPath, path)
+
+	featurePath := filepath.Join(filepath.Dir(repoPath), "feature")
+	require.NoError(t, os.MkdirAll(featurePath, 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(repoPath, ".jvs", "worktrees", "feature"), 0755))
+	require.NoError(t, repo.WriteWorktreeConfig(repoPath, "feature", &model.WorktreeConfig{Name: "feature", RealPath: featurePath}))
+
+	path, err = repo.WorktreePayloadPath(repoPath, "feature")
+	require.NoError(t, err)
+	assert.Equal(t, featurePath, path)
 }
 
 func TestWorktreePathHelpersRejectInvalidNames(t *testing.T) {
@@ -474,6 +488,113 @@ func TestDiscoverWorktreeLocatorRepoIDMismatchFailsClearly(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "locator")
 	assert.Contains(t, err.Error(), "repo_id")
+}
+
+func TestWorkspaceLocatorMatchesRepoWorkspaceRejectsWrongWorkspaceName(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "testrepo")
+	r, err := repo.Init(repoPath, "testrepo")
+	require.NoError(t, err)
+	workspace := filepath.Join(dir, "workspace")
+	require.NoError(t, os.MkdirAll(workspace, 0755))
+	writeRepoTestWorkspaceLocator(t, workspace, repoPath, r.RepoID, "wrong-name")
+
+	matches, err := repo.WorkspaceLocatorMatchesRepoWorkspace(workspace, repoPath, "feature")
+	require.NoError(t, err)
+	assert.False(t, matches)
+
+	diagnostic, err := repo.InspectWorkspaceLocator(repo.WorkspaceLocatorCheck{
+		WorkspaceRoot:         workspace,
+		ExpectedRepoRoot:      repoPath,
+		ExpectedRepoID:        r.RepoID,
+		ExpectedWorkspaceName: "feature",
+	})
+	require.NoError(t, err)
+	assert.True(t, diagnostic.Present)
+	assert.False(t, diagnostic.Matches)
+	assert.Contains(t, diagnostic.Reason, "workspace_name")
+}
+
+func TestRewriteWorkspaceLocatorRequiresExpectedIdentity(t *testing.T) {
+	dir := t.TempDir()
+	repoPath := filepath.Join(dir, "testrepo")
+	r, err := repo.Init(repoPath, "testrepo")
+	require.NoError(t, err)
+
+	t.Run("rewrites workspace name after all expected identity matches", func(t *testing.T) {
+		workspace := filepath.Join(dir, "workspace-success")
+		require.NoError(t, os.MkdirAll(workspace, 0755))
+		require.NoError(t, repo.WriteWorkspaceLocator(workspace, repoPath, "feature"))
+
+		err := repo.RewriteWorkspaceLocator(repo.RewriteWorkspaceLocatorRequest{
+			WorkspaceRoot:         workspace,
+			ExpectedRepoID:        r.RepoID,
+			ExpectedRepoRoot:      repoPath,
+			ExpectedWorkspaceName: "feature",
+			NewRepoRoot:           repoPath,
+			NewWorkspaceName:      "review",
+		})
+		require.NoError(t, err)
+
+		diagnostic, err := repo.InspectWorkspaceLocator(repo.WorkspaceLocatorCheck{
+			WorkspaceRoot:         workspace,
+			ExpectedRepoRoot:      repoPath,
+			ExpectedRepoID:        r.RepoID,
+			ExpectedWorkspaceName: "review",
+		})
+		require.NoError(t, err)
+		assert.True(t, diagnostic.Matches, diagnostic.Reason)
+	})
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(repo.RewriteWorkspaceLocatorRequest) repo.RewriteWorkspaceLocatorRequest
+	}{
+		{
+			name: "repo id mismatch",
+			mutate: func(req repo.RewriteWorkspaceLocatorRequest) repo.RewriteWorkspaceLocatorRequest {
+				req.ExpectedRepoID = "wrong-repo-id"
+				return req
+			},
+		},
+		{
+			name: "old repo root mismatch",
+			mutate: func(req repo.RewriteWorkspaceLocatorRequest) repo.RewriteWorkspaceLocatorRequest {
+				req.ExpectedRepoRoot = filepath.Join(dir, "different-old-root")
+				return req
+			},
+		},
+		{
+			name: "workspace name mismatch",
+			mutate: func(req repo.RewriteWorkspaceLocatorRequest) repo.RewriteWorkspaceLocatorRequest {
+				req.ExpectedWorkspaceName = "wrong-name"
+				return req
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workspace := filepath.Join(dir, "workspace-"+tc.name)
+			require.NoError(t, os.MkdirAll(workspace, 0755))
+			require.NoError(t, repo.WriteWorkspaceLocator(workspace, repoPath, "feature"))
+			before, err := os.ReadFile(filepath.Join(workspace, repo.JVSDirName))
+			require.NoError(t, err)
+
+			req := repo.RewriteWorkspaceLocatorRequest{
+				WorkspaceRoot:         workspace,
+				ExpectedRepoID:        r.RepoID,
+				ExpectedRepoRoot:      repoPath,
+				ExpectedWorkspaceName: "feature",
+				NewRepoRoot:           repoPath,
+				NewWorkspaceName:      "review",
+			}
+			err = repo.RewriteWorkspaceLocator(tc.mutate(req))
+			require.ErrorIs(t, err, errclass.ErrLifecycleIdentityMismatch)
+
+			after, readErr := os.ReadFile(filepath.Join(workspace, repo.JVSDirName))
+			require.NoError(t, readErr)
+			assert.JSONEq(t, string(before), string(after))
+		})
+	}
 }
 
 func writeRepoTestWorkspaceLocator(t *testing.T, dir, repoRoot string, fields ...string) []byte {

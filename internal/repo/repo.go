@@ -28,7 +28,10 @@ const (
 	RepoIDFile = "repo_id"
 )
 
-const workspaceLocatorType = "jvs-workspace"
+const (
+	workspaceLocatorType         = "jvs-workspace"
+	detachedWorkspaceLocatorType = "jvs-detached-workspace"
+)
 
 // Repo represents an initialized JVS repository.
 type Repo struct {
@@ -38,11 +41,97 @@ type Repo struct {
 }
 
 type workspaceLocatorFile struct {
-	Type          string `json:"type"`
-	FormatVersion int    `json:"format_version"`
-	RepoRoot      string `json:"repo_root"`
-	RepoID        string `json:"repo_id"`
-	WorkspaceName string `json:"workspace_name"`
+	Type             string                            `json:"type"`
+	FormatVersion    int                               `json:"format_version"`
+	RepoRoot         string                            `json:"repo_root"`
+	RepoID           string                            `json:"repo_id"`
+	WorkspaceName    string                            `json:"workspace_name"`
+	PendingLifecycle *WorkspaceLocatorPendingLifecycle `json:"pending_lifecycle_operation,omitempty"`
+}
+
+type detachedWorkspaceLocatorFile struct {
+	Type                   string    `json:"type"`
+	FormatVersion          int       `json:"format_version"`
+	Status                 string    `json:"status"`
+	PreviousRepoRoot       string    `json:"previous_repo_root"`
+	RepoID                 string    `json:"repo_id"`
+	WorkspaceName          string    `json:"workspace_name"`
+	OperationID            string    `json:"operation_id"`
+	DetachedAt             time.Time `json:"detached_at"`
+	RecommendedNextCommand string    `json:"recommended_next_command"`
+}
+
+// WorkspaceLocator is the external workspace discovery record stored at
+// <workspace>/.jvs.
+type WorkspaceLocator = workspaceLocatorFile
+
+// WorkspaceLocatorPendingLifecycle is durable recovery evidence written into an
+// external workspace locator before moving a repo root.
+type WorkspaceLocatorPendingLifecycle struct {
+	OperationID            string `json:"operation_id"`
+	OperationType          string `json:"operation_type"`
+	RepoID                 string `json:"repo_id"`
+	Phase                  string `json:"phase"`
+	SourceRepoRoot         string `json:"source_repo_root"`
+	TargetRepoRoot         string `json:"target_repo_root"`
+	RecommendedNextCommand string `json:"recommended_next_command"`
+}
+
+// WorkspaceLocatorCheck is an expected-identity locator inspection request.
+type WorkspaceLocatorCheck struct {
+	WorkspaceRoot         string
+	ExpectedRepoRoot      string
+	ExpectedRepoID        string
+	ExpectedWorkspaceName string
+}
+
+// WorkspaceLocatorDiagnostic reports whether a locator matched the expected
+// repo and workspace identity, with a stable reason for fail-closed callers.
+type WorkspaceLocatorDiagnostic struct {
+	Present bool
+	Matches bool
+	Reason  string
+	Locator WorkspaceLocator
+}
+
+// RewriteWorkspaceLocatorRequest updates a locator only when every expected
+// identity field still matches the on-disk record.
+type RewriteWorkspaceLocatorRequest struct {
+	WorkspaceRoot         string
+	ExpectedRepoID        string
+	ExpectedRepoRoot      string
+	ExpectedWorkspaceName string
+	NewRepoRoot           string
+	NewWorkspaceName      string
+}
+
+// MarkWorkspaceLocatorPendingLifecycleRequest records pending lifecycle
+// recovery evidence without changing the locator's current repo_root binding.
+type MarkWorkspaceLocatorPendingLifecycleRequest struct {
+	WorkspaceRoot          string
+	ExpectedRepoID         string
+	ExpectedRepoRoot       string
+	ExpectedWorkspaceName  string
+	OperationID            string
+	OperationType          string
+	Phase                  string
+	SourceRepoRoot         string
+	TargetRepoRoot         string
+	RecommendedNextCommand string
+}
+
+// DetachWorkspaceLocatorRequest marks a previously active external workspace
+// locator as intentionally detached/orphaned. The rewrite only commits when
+// the active locator still matches the expected repo and workspace identity, or
+// when the locator is already detached by the same operation.
+type DetachWorkspaceLocatorRequest struct {
+	WorkspaceRoot          string
+	ExpectedRepoID         string
+	ExpectedRepoRoot       string
+	ExpectedWorkspaceName  string
+	OperationID            string
+	DetachedAt             time.Time
+	RecommendedNextCommand string
 }
 
 var (
@@ -157,21 +246,10 @@ func initAt(path string) (*Repo, error) {
 		return nil, err
 	}
 
-	// Create main/ payload directory
-	mainDir := filepath.Join(path, "main")
-	if err := os.MkdirAll(mainDir, 0755); err != nil {
-		return nil, fmt.Errorf("create main directory: %w", err)
-	}
-
-	// Create worktrees/ payload directory
-	worktreesPayload := filepath.Join(path, "worktrees")
-	if err := os.MkdirAll(worktreesPayload, 0755); err != nil {
-		return nil, fmt.Errorf("create worktrees directory: %w", err)
-	}
-
 	// Write main worktree config
 	cfg := &model.WorktreeConfig{
 		Name:      "main",
+		RealPath:  path,
 		CreatedAt: time.Now().UTC(),
 	}
 	if err := WriteWorktreeConfig(path, "main", cfg); err != nil {
@@ -467,6 +545,75 @@ func DiscoverControlRepo(cwd string) (*Repo, error) {
 	}
 }
 
+// DiscoverPendingLifecycleRepoFromWorkspace resolves a moved repo root using
+// only the pending lifecycle marker in cwd's workspace locator. It is used for
+// recommended --repo <old-root> recovery commands after the old root no longer
+// exists.
+func DiscoverPendingLifecycleRepoFromWorkspace(cwd, sourceRepoRoot string) (*Repo, error) {
+	expectedSourceRoot, err := cleanWorkspaceLocatorRepoRoot(sourceRepoRoot)
+	if err != nil {
+		return nil, err
+	}
+	path, err := filepath.Abs(cwd)
+	if err != nil {
+		return nil, err
+	}
+	path = filepath.Clean(path)
+	if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		path = filepath.Dir(path)
+	} else if err != nil {
+		return nil, fmt.Errorf("stat pending lifecycle locator scan start %s: %w", path, err)
+	}
+
+	for {
+		locatorPath := filepath.Join(path, JVSDirName)
+		locator, ok, err := readWorkspaceLocator(locatorPath)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			return pendingLifecycleTargetRepoFromWorkspaceLocator(locatorPath, locator, expectedSourceRoot)
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return nil, fmt.Errorf("%w: no pending lifecycle workspace locator found", ErrControlRepoNotFound)
+		}
+		path = parent
+	}
+}
+
+func pendingLifecycleTargetRepoFromWorkspaceLocator(locatorPath string, locator workspaceLocatorFile, expectedSourceRoot string) (*Repo, error) {
+	if locator.PendingLifecycle == nil {
+		return nil, fmt.Errorf("%w: workspace locator has no pending lifecycle marker", ErrControlRepoNotFound)
+	}
+	pending := *locator.PendingLifecycle
+	if pending.SourceRepoRoot != expectedSourceRoot {
+		return nil, fmt.Errorf("%w: pending lifecycle source does not match requested repository", ErrControlRepoNotFound)
+	}
+	locatorRoot, err := cleanWorkspaceLocatorRepoRoot(locator.RepoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("invalid JVS workspace locator %s pending lifecycle source: %w", locatorPath, err)
+	}
+	if pending.SourceRepoRoot != locatorRoot {
+		return nil, fmt.Errorf("invalid JVS workspace locator %s pending lifecycle source mismatch", locatorPath)
+	}
+	if pending.RepoID != locator.RepoID {
+		return nil, fmt.Errorf("invalid JVS workspace locator %s pending lifecycle repo_id mismatch", locatorPath)
+	}
+	targetRoot, err := cleanExistingWorkspaceLocatorRepoRoot(pending.TargetRepoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("JVS workspace locator %s has pending lifecycle operation %s, but target repository is not reachable: %w", locatorPath, pending.OperationID, err)
+	}
+	targetRepo, err := loadRepoAtRoot(targetRoot)
+	if err != nil {
+		return nil, fmt.Errorf("JVS workspace locator %s has pending lifecycle operation %s, but target repository is not valid: %w", locatorPath, pending.OperationID, err)
+	}
+	if targetRepo.RepoID != locator.RepoID {
+		return nil, fmt.Errorf("JVS workspace locator %s has pending lifecycle operation %s, but target repository repo_id does not match", locatorPath, pending.OperationID)
+	}
+	return targetRepo, nil
+}
+
 // ValidateWorkspaceLocatorEvidence walks from start toward boundary and returns
 // malformed workspace locator errors found before accepting a physical ancestor.
 // Well-formed locator files are ignored so a child workspace locator cannot
@@ -544,6 +691,9 @@ func discoverWorkspaceLocator(path string) (*Repo, workspaceLocatorFile, bool, e
 	}
 	repoRoot, err := cleanExistingWorkspaceLocatorRepoRoot(locator.RepoRoot)
 	if err != nil {
+		if pendingErr := pendingLifecycleWorkspaceLocatorError(path, locator); pendingErr != nil {
+			return nil, workspaceLocatorFile{}, true, pendingErr
+		}
 		return nil, workspaceLocatorFile{}, true, fmt.Errorf("invalid JVS workspace locator %s: %w", path, err)
 	}
 	r, err := loadRepoAtRoot(repoRoot)
@@ -584,6 +734,9 @@ func readWorkspaceLocator(path string) (workspaceLocatorFile, bool, error) {
 	if err := json.Unmarshal(data, &locator); err != nil {
 		return workspaceLocatorFile{}, true, fmt.Errorf("parse JVS workspace locator: %w", err)
 	}
+	if locator.Type == detachedWorkspaceLocatorType {
+		return workspaceLocatorFile{}, true, detachedWorkspaceLocatorError(path)
+	}
 	if locator.Type != workspaceLocatorType {
 		return workspaceLocatorFile{}, true, fmt.Errorf("unsupported JVS workspace locator type %q", locator.Type)
 	}
@@ -601,7 +754,83 @@ func readWorkspaceLocator(path string) (workspaceLocatorFile, bool, error) {
 	if err := pathutil.ValidateName(locator.WorkspaceName); err != nil {
 		return workspaceLocatorFile{}, true, fmt.Errorf("invalid JVS workspace locator workspace_name: %w", err)
 	}
+	if locator.PendingLifecycle != nil {
+		pending, err := normalizeWorkspaceLocatorPendingLifecycle(*locator.PendingLifecycle)
+		if err != nil {
+			return workspaceLocatorFile{}, true, fmt.Errorf("invalid JVS workspace locator pending_lifecycle_operation: %w", err)
+		}
+		locator.PendingLifecycle = &pending
+	}
 	return locator, true, nil
+}
+
+func normalizeWorkspaceLocatorPendingLifecycle(pending WorkspaceLocatorPendingLifecycle) (WorkspaceLocatorPendingLifecycle, error) {
+	if strings.TrimSpace(pending.OperationID) == "" {
+		return WorkspaceLocatorPendingLifecycle{}, fmt.Errorf("operation_id is required")
+	}
+	if err := pathutil.ValidateName(pending.OperationID); err != nil {
+		return WorkspaceLocatorPendingLifecycle{}, fmt.Errorf("invalid operation_id: %w", err)
+	}
+	if strings.TrimSpace(pending.OperationType) == "" {
+		return WorkspaceLocatorPendingLifecycle{}, fmt.Errorf("operation_type is required")
+	}
+	if strings.TrimSpace(pending.RepoID) == "" {
+		return WorkspaceLocatorPendingLifecycle{}, fmt.Errorf("repo_id is required")
+	}
+	if strings.TrimSpace(pending.Phase) == "" {
+		return WorkspaceLocatorPendingLifecycle{}, fmt.Errorf("phase is required")
+	}
+	sourceRoot, err := cleanWorkspaceLocatorRepoRoot(pending.SourceRepoRoot)
+	if err != nil {
+		return WorkspaceLocatorPendingLifecycle{}, fmt.Errorf("invalid source_repo_root: %w", err)
+	}
+	targetRoot, err := cleanWorkspaceLocatorRepoRoot(pending.TargetRepoRoot)
+	if err != nil {
+		return WorkspaceLocatorPendingLifecycle{}, fmt.Errorf("invalid target_repo_root: %w", err)
+	}
+	if strings.TrimSpace(pending.RecommendedNextCommand) == "" {
+		return WorkspaceLocatorPendingLifecycle{}, fmt.Errorf("recommended_next_command is required")
+	}
+	pending.SourceRepoRoot = sourceRoot
+	pending.TargetRepoRoot = targetRoot
+	return pending, nil
+}
+
+func pendingLifecycleWorkspaceLocatorError(path string, locator workspaceLocatorFile) error {
+	if locator.PendingLifecycle == nil {
+		return nil
+	}
+	pending := *locator.PendingLifecycle
+	locatorRoot, err := cleanWorkspaceLocatorRepoRoot(locator.RepoRoot)
+	if err != nil {
+		return fmt.Errorf("invalid JVS workspace locator %s pending lifecycle source: %w", path, err)
+	}
+	if pending.SourceRepoRoot != locatorRoot {
+		return fmt.Errorf("invalid JVS workspace locator %s pending lifecycle source mismatch", path)
+	}
+	if pending.RepoID != locator.RepoID {
+		return fmt.Errorf("invalid JVS workspace locator %s pending lifecycle repo_id mismatch", path)
+	}
+	targetRoot, err := cleanExistingWorkspaceLocatorRepoRoot(pending.TargetRepoRoot)
+	if err != nil {
+		return fmt.Errorf("JVS workspace locator %s has pending lifecycle operation %s, but target repository is not reachable: %w", path, pending.OperationID, err)
+	}
+	targetRepo, err := loadRepoAtRoot(targetRoot)
+	if err != nil {
+		return fmt.Errorf("JVS workspace locator %s has pending lifecycle operation %s, but target repository is not valid: %w", path, pending.OperationID, err)
+	}
+	if targetRepo.RepoID != locator.RepoID {
+		return fmt.Errorf("JVS workspace locator %s has pending lifecycle operation %s, but target repository repo_id does not match", path, pending.OperationID)
+	}
+	return errclass.ErrLifecyclePending.WithMessagef(
+		"pending lifecycle operation %s (%s) is in phase %s after repository root moved from %s to %s; rerun: %s",
+		pending.OperationID,
+		pending.OperationType,
+		pending.Phase,
+		pending.SourceRepoRoot,
+		targetRoot,
+		pending.RecommendedNextCommand,
+	)
 }
 
 func cleanWorkspaceLocatorRepoRoot(raw string) (string, error) {
@@ -896,6 +1125,364 @@ func WriteWorkspaceLocator(workspaceRoot, repoRoot, workspaceName string) error 
 	return fsutil.FsyncDir(workspaceRoot)
 }
 
+// WriteDetachedWorkspaceLocator rewrites an external workspace locator to a
+// detached/orphaned marker after verifying the previous active identity.
+func WriteDetachedWorkspaceLocator(req DetachWorkspaceLocatorRequest) error {
+	if strings.TrimSpace(req.ExpectedRepoID) == "" {
+		return fmt.Errorf("expected repo_id is required")
+	}
+	if err := pathutil.ValidateName(req.ExpectedWorkspaceName); err != nil {
+		return fmt.Errorf("invalid expected workspace_name: %w", err)
+	}
+	if strings.TrimSpace(req.OperationID) == "" {
+		return fmt.Errorf("operation_id is required")
+	}
+	if req.DetachedAt.IsZero() {
+		req.DetachedAt = time.Now().UTC()
+	}
+	workspaceRoot, err := existingPhysicalPath(req.WorkspaceRoot)
+	if err != nil {
+		return fmt.Errorf("resolve workspace folder: %w", err)
+	}
+	locatorPath := filepath.Join(workspaceRoot, JVSDirName)
+	locator, detached, err := readWorkspaceLocatorForDetach(locatorPath)
+	if err != nil {
+		return err
+	}
+	if detached != nil {
+		if detached.PreviousRepoRoot == cleanPathOrRaw(req.ExpectedRepoRoot) &&
+			detached.RepoID == req.ExpectedRepoID &&
+			detached.WorkspaceName == req.ExpectedWorkspaceName &&
+			detached.OperationID == req.OperationID {
+			return nil
+		}
+		return lifecycleIdentityMismatch("workspace locator already detached by a different operation")
+	}
+
+	expectedRoot, err := cleanWorkspaceLocatorRepoRoot(req.ExpectedRepoRoot)
+	if err != nil {
+		return fmt.Errorf("invalid expected repo_root: %w", err)
+	}
+	locatorRoot, err := cleanWorkspaceLocatorRepoRoot(locator.RepoRoot)
+	if err != nil {
+		return fmt.Errorf("invalid locator repo_root: %w", err)
+	}
+	if locatorRoot != expectedRoot {
+		return lifecycleIdentityMismatch("repo_root mismatch: locator has %s, expected %s", locatorRoot, expectedRoot)
+	}
+	if locator.RepoID != req.ExpectedRepoID {
+		return lifecycleIdentityMismatch("repo_id mismatch: locator has %s, expected %s", locator.RepoID, req.ExpectedRepoID)
+	}
+	if locator.WorkspaceName != req.ExpectedWorkspaceName {
+		return lifecycleIdentityMismatch("workspace_name mismatch: locator has %s, expected %s", locator.WorkspaceName, req.ExpectedWorkspaceName)
+	}
+
+	data, err := json.MarshalIndent(detachedWorkspaceLocatorFile{
+		Type:                   detachedWorkspaceLocatorType,
+		FormatVersion:          FormatVersion,
+		Status:                 "detached_orphaned",
+		PreviousRepoRoot:       expectedRoot,
+		RepoID:                 req.ExpectedRepoID,
+		WorkspaceName:          req.ExpectedWorkspaceName,
+		OperationID:            req.OperationID,
+		DetachedAt:             req.DetachedAt.UTC(),
+		RecommendedNextCommand: req.RecommendedNextCommand,
+	}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal detached JVS workspace locator: %w", err)
+	}
+	if err := fsutil.AtomicWrite(locatorPath, data, 0644); err != nil {
+		return fmt.Errorf("write detached JVS workspace locator: %w", err)
+	}
+	return fsutil.FsyncDir(workspaceRoot)
+}
+
+func readWorkspaceLocatorForDetach(path string) (workspaceLocatorFile, *detachedWorkspaceLocatorFile, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return workspaceLocatorFile{}, nil, lifecycleIdentityMismatch("workspace locator missing")
+		}
+		return workspaceLocatorFile{}, nil, fmt.Errorf("stat JVS locator: %w", err)
+	}
+	if info.IsDir() {
+		return workspaceLocatorFile{}, nil, fmt.Errorf("JVS workspace locator path is a control directory: %s", path)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return workspaceLocatorFile{}, nil, fmt.Errorf("JVS workspace locator must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return workspaceLocatorFile{}, nil, fmt.Errorf("JVS workspace locator is not a regular file: %s", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return workspaceLocatorFile{}, nil, fmt.Errorf("read JVS workspace locator: %w", err)
+	}
+	var header struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
+		return workspaceLocatorFile{}, nil, fmt.Errorf("parse JVS workspace locator: %w", err)
+	}
+	switch header.Type {
+	case workspaceLocatorType:
+		locator, ok, err := readWorkspaceLocator(path)
+		if err != nil {
+			return workspaceLocatorFile{}, nil, err
+		}
+		if !ok {
+			return workspaceLocatorFile{}, nil, lifecycleIdentityMismatch("workspace locator missing")
+		}
+		return locator, nil, nil
+	case detachedWorkspaceLocatorType:
+		var detached detachedWorkspaceLocatorFile
+		if err := json.Unmarshal(data, &detached); err != nil {
+			return workspaceLocatorFile{}, nil, fmt.Errorf("parse detached JVS workspace locator: %w", err)
+		}
+		detached, err := normalizeDetachedWorkspaceLocator(detached)
+		if err != nil {
+			return workspaceLocatorFile{}, nil, err
+		}
+		return workspaceLocatorFile{}, &detached, nil
+	default:
+		return workspaceLocatorFile{}, nil, fmt.Errorf("unsupported JVS workspace locator type %q", header.Type)
+	}
+}
+
+func normalizeDetachedWorkspaceLocator(locator detachedWorkspaceLocatorFile) (detachedWorkspaceLocatorFile, error) {
+	if locator.Type != detachedWorkspaceLocatorType {
+		return detachedWorkspaceLocatorFile{}, fmt.Errorf("unsupported detached JVS workspace locator type %q", locator.Type)
+	}
+	if locator.FormatVersion != FormatVersion {
+		return detachedWorkspaceLocatorFile{}, fmt.Errorf("unsupported detached JVS workspace locator format version %d", locator.FormatVersion)
+	}
+	if locator.Status != "detached_orphaned" {
+		return detachedWorkspaceLocatorFile{}, fmt.Errorf("invalid detached JVS workspace locator status %q", locator.Status)
+	}
+	root, err := cleanWorkspaceLocatorRepoRoot(locator.PreviousRepoRoot)
+	if err != nil {
+		return detachedWorkspaceLocatorFile{}, fmt.Errorf("invalid detached JVS workspace locator previous_repo_root: %w", err)
+	}
+	locator.PreviousRepoRoot = root
+	if strings.TrimSpace(locator.RepoID) == "" {
+		return detachedWorkspaceLocatorFile{}, fmt.Errorf("invalid detached JVS workspace locator repo_id: repo_id is required")
+	}
+	if err := pathutil.ValidateName(locator.WorkspaceName); err != nil {
+		return detachedWorkspaceLocatorFile{}, fmt.Errorf("invalid detached JVS workspace locator workspace_name: %w", err)
+	}
+	if strings.TrimSpace(locator.OperationID) == "" {
+		return detachedWorkspaceLocatorFile{}, fmt.Errorf("invalid detached JVS workspace locator operation_id: operation_id is required")
+	}
+	return locator, nil
+}
+
+func detachedWorkspaceLocatorError(path string) error {
+	return errclass.ErrNotRepo.WithMessagef("JVS workspace locator %s is detached/orphaned; this folder is no longer connected to an active JVS repo", path)
+}
+
+func cleanPathOrRaw(path string) string {
+	clean, err := cleanWorkspaceLocatorRepoRoot(path)
+	if err != nil {
+		return path
+	}
+	return clean
+}
+
+// ReadWorkspaceLocator reads a workspace locator from workspaceRoot when one is
+// present. A missing locator returns ok=false and nil error.
+func ReadWorkspaceLocator(workspaceRoot string) (WorkspaceLocator, bool, error) {
+	workspaceRoot, err := existingPhysicalPath(workspaceRoot)
+	if err != nil {
+		return WorkspaceLocator{}, false, fmt.Errorf("resolve workspace folder: %w", err)
+	}
+	locator, ok, err := readWorkspaceLocator(filepath.Join(workspaceRoot, JVSDirName))
+	return WorkspaceLocator(locator), ok, err
+}
+
+// InspectWorkspaceLocator compares a workspace locator with expected repo and
+// workspace identity without guessing or repairing mismatches.
+func InspectWorkspaceLocator(check WorkspaceLocatorCheck) (WorkspaceLocatorDiagnostic, error) {
+	workspaceRoot, err := existingPhysicalPath(check.WorkspaceRoot)
+	if err != nil {
+		return WorkspaceLocatorDiagnostic{}, fmt.Errorf("resolve workspace folder: %w", err)
+	}
+	locator, ok, err := readWorkspaceLocator(filepath.Join(workspaceRoot, JVSDirName))
+	if !ok || err != nil {
+		return WorkspaceLocatorDiagnostic{Present: ok, Reason: "workspace locator missing"}, err
+	}
+	diagnostic := WorkspaceLocatorDiagnostic{
+		Present: true,
+		Locator: WorkspaceLocator(locator),
+	}
+
+	expectedRoot, err := cleanWorkspaceLocatorRepoRoot(check.ExpectedRepoRoot)
+	if err != nil {
+		return diagnostic, fmt.Errorf("invalid expected repo_root: %w", err)
+	}
+	locatorRoot, err := cleanWorkspaceLocatorRepoRoot(locator.RepoRoot)
+	if err != nil {
+		return diagnostic, fmt.Errorf("invalid locator repo_root: %w", err)
+	}
+	if locatorRoot != expectedRoot {
+		diagnostic.Reason = fmt.Sprintf("repo_root mismatch: locator has %s, expected %s", locatorRoot, expectedRoot)
+		return diagnostic, nil
+	}
+	if strings.TrimSpace(check.ExpectedRepoID) == "" {
+		return diagnostic, fmt.Errorf("expected repo_id is required")
+	}
+	if locator.RepoID != check.ExpectedRepoID {
+		diagnostic.Reason = fmt.Sprintf("repo_id mismatch: locator has %s, expected %s", locator.RepoID, check.ExpectedRepoID)
+		return diagnostic, nil
+	}
+	if err := pathutil.ValidateName(check.ExpectedWorkspaceName); err != nil {
+		return diagnostic, fmt.Errorf("invalid expected workspace_name: %w", err)
+	}
+	if locator.WorkspaceName != check.ExpectedWorkspaceName {
+		diagnostic.Reason = fmt.Sprintf("workspace_name mismatch: locator has %s, expected %s", locator.WorkspaceName, check.ExpectedWorkspaceName)
+		return diagnostic, nil
+	}
+	diagnostic.Matches = true
+	return diagnostic, nil
+}
+
+// RewriteWorkspaceLocator rewrites an external workspace locator only after the
+// existing locator matches all expected identity fields.
+func RewriteWorkspaceLocator(req RewriteWorkspaceLocatorRequest) error {
+	if strings.TrimSpace(req.ExpectedRepoID) == "" {
+		return fmt.Errorf("expected repo_id is required")
+	}
+	if err := pathutil.ValidateName(req.ExpectedWorkspaceName); err != nil {
+		return fmt.Errorf("invalid expected workspace_name: %w", err)
+	}
+	if err := pathutil.ValidateName(req.NewWorkspaceName); err != nil {
+		return fmt.Errorf("invalid new workspace_name: %w", err)
+	}
+	workspaceRoot, err := existingPhysicalPath(req.WorkspaceRoot)
+	if err != nil {
+		return fmt.Errorf("resolve workspace folder: %w", err)
+	}
+	locatorPath := filepath.Join(workspaceRoot, JVSDirName)
+	locator, ok, err := readWorkspaceLocator(locatorPath)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return lifecycleIdentityMismatch("workspace locator missing")
+	}
+
+	expectedRoot, err := cleanWorkspaceLocatorRepoRoot(req.ExpectedRepoRoot)
+	if err != nil {
+		return fmt.Errorf("invalid expected repo_root: %w", err)
+	}
+	locatorRoot, err := cleanWorkspaceLocatorRepoRoot(locator.RepoRoot)
+	if err != nil {
+		return fmt.Errorf("invalid locator repo_root: %w", err)
+	}
+	if locatorRoot != expectedRoot {
+		return lifecycleIdentityMismatch("repo_root mismatch: locator has %s, expected %s", locatorRoot, expectedRoot)
+	}
+	if locator.RepoID != req.ExpectedRepoID {
+		return lifecycleIdentityMismatch("repo_id mismatch: locator has %s, expected %s", locator.RepoID, req.ExpectedRepoID)
+	}
+	if locator.WorkspaceName != req.ExpectedWorkspaceName {
+		return lifecycleIdentityMismatch("workspace_name mismatch: locator has %s, expected %s", locator.WorkspaceName, req.ExpectedWorkspaceName)
+	}
+
+	newRepoRoot, err := cleanExistingWorkspaceLocatorRepoRoot(req.NewRepoRoot)
+	if err != nil {
+		return fmt.Errorf("resolve new repository root: %w", err)
+	}
+	newRepo, err := loadRepoAtRoot(newRepoRoot)
+	if err != nil {
+		return fmt.Errorf("load new repository root: %w", err)
+	}
+	if newRepo.RepoID != req.ExpectedRepoID {
+		return lifecycleIdentityMismatch("new repo_id mismatch: repository has %s, expected %s", newRepo.RepoID, req.ExpectedRepoID)
+	}
+
+	data, err := json.MarshalIndent(workspaceLocatorFile{
+		Type:          workspaceLocatorType,
+		FormatVersion: FormatVersion,
+		RepoRoot:      newRepoRoot,
+		RepoID:        req.ExpectedRepoID,
+		WorkspaceName: req.NewWorkspaceName,
+	}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal JVS workspace locator: %w", err)
+	}
+	if err := fsutil.AtomicWrite(locatorPath, data, 0644); err != nil {
+		return fmt.Errorf("write JVS workspace locator: %w", err)
+	}
+	return fsutil.FsyncDir(workspaceRoot)
+}
+
+// MarkWorkspaceLocatorPendingLifecycle writes recovery evidence into an external
+// workspace locator only when the current locator still matches the expected
+// operation identity.
+func MarkWorkspaceLocatorPendingLifecycle(req MarkWorkspaceLocatorPendingLifecycleRequest) error {
+	if strings.TrimSpace(req.ExpectedRepoID) == "" {
+		return fmt.Errorf("expected repo_id is required")
+	}
+	if err := pathutil.ValidateName(req.ExpectedWorkspaceName); err != nil {
+		return fmt.Errorf("invalid expected workspace_name: %w", err)
+	}
+	workspaceRoot, err := existingPhysicalPath(req.WorkspaceRoot)
+	if err != nil {
+		return fmt.Errorf("resolve workspace folder: %w", err)
+	}
+	locatorPath := filepath.Join(workspaceRoot, JVSDirName)
+	locator, ok, err := readWorkspaceLocator(locatorPath)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return lifecycleIdentityMismatch("workspace locator missing")
+	}
+
+	expectedRoot, err := cleanWorkspaceLocatorRepoRoot(req.ExpectedRepoRoot)
+	if err != nil {
+		return fmt.Errorf("invalid expected repo_root: %w", err)
+	}
+	locatorRoot, err := cleanWorkspaceLocatorRepoRoot(locator.RepoRoot)
+	if err != nil {
+		return fmt.Errorf("invalid locator repo_root: %w", err)
+	}
+	if locatorRoot != expectedRoot {
+		return lifecycleIdentityMismatch("repo_root mismatch: locator has %s, expected %s", locatorRoot, expectedRoot)
+	}
+	if locator.RepoID != req.ExpectedRepoID {
+		return lifecycleIdentityMismatch("repo_id mismatch: locator has %s, expected %s", locator.RepoID, req.ExpectedRepoID)
+	}
+	if locator.WorkspaceName != req.ExpectedWorkspaceName {
+		return lifecycleIdentityMismatch("workspace_name mismatch: locator has %s, expected %s", locator.WorkspaceName, req.ExpectedWorkspaceName)
+	}
+
+	pending, err := normalizeWorkspaceLocatorPendingLifecycle(WorkspaceLocatorPendingLifecycle{
+		OperationID:            req.OperationID,
+		OperationType:          req.OperationType,
+		RepoID:                 req.ExpectedRepoID,
+		Phase:                  req.Phase,
+		SourceRepoRoot:         req.SourceRepoRoot,
+		TargetRepoRoot:         req.TargetRepoRoot,
+		RecommendedNextCommand: req.RecommendedNextCommand,
+	})
+	if err != nil {
+		return err
+	}
+	if pending.SourceRepoRoot != expectedRoot {
+		return lifecycleIdentityMismatch("pending source_repo_root mismatch: marker has %s, expected %s", pending.SourceRepoRoot, expectedRoot)
+	}
+	locator.PendingLifecycle = &pending
+	data, err := json.MarshalIndent(locator, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal JVS workspace locator: %w", err)
+	}
+	if err := fsutil.AtomicWrite(locatorPath, data, 0644); err != nil {
+		return fmt.Errorf("write JVS workspace locator: %w", err)
+	}
+	return fsutil.FsyncDir(workspaceRoot)
+}
+
 // WorkspaceLocatorPresent reports whether workspaceRoot contains a JVS
 // workspace locator file.
 func WorkspaceLocatorPresent(workspaceRoot string) (bool, error) {
@@ -928,6 +1515,36 @@ func WorkspaceLocatorMatchesRepo(workspaceRoot, repoRoot string) (bool, error) {
 		return false, err
 	}
 	return locator.RepoID == r.RepoID, nil
+}
+
+// WorkspaceLocatorMatchesRepoWorkspace reports whether workspaceRoot has a
+// valid locator for the exact repo identity and workspace name.
+func WorkspaceLocatorMatchesRepoWorkspace(workspaceRoot, repoRoot, workspaceName string) (bool, error) {
+	if err := pathutil.ValidateName(workspaceName); err != nil {
+		return false, err
+	}
+	expectedRoot, err := cleanExistingWorkspaceLocatorRepoRoot(repoRoot)
+	if err != nil {
+		return false, err
+	}
+	r, err := loadRepoAtRoot(expectedRoot)
+	if err != nil {
+		return false, err
+	}
+	diagnostic, err := InspectWorkspaceLocator(WorkspaceLocatorCheck{
+		WorkspaceRoot:         workspaceRoot,
+		ExpectedRepoRoot:      expectedRoot,
+		ExpectedRepoID:        r.RepoID,
+		ExpectedWorkspaceName: workspaceName,
+	})
+	if err != nil {
+		return false, err
+	}
+	return diagnostic.Matches, nil
+}
+
+func lifecycleIdentityMismatch(format string, args ...any) error {
+	return errclass.ErrLifecycleIdentityMismatch.WithMessagef(format, args...)
 }
 
 // LoadWorktreeConfig loads a worktree config.
@@ -1019,38 +1636,24 @@ type worktreePathCandidate struct {
 }
 
 func worktreePathCandidateForName(repoRoot, name string) (worktreePathCandidate, error) {
-	cfg, present, err := loadWorktreeConfigIfPresent(repoRoot, name)
+	cfg, err := LoadWorktreeConfig(repoRoot, name)
 	if err != nil {
 		return worktreePathCandidate{}, err
 	}
-	return worktreePathCandidateFromConfig(repoRoot, name, cfg, present)
+	return worktreePathCandidateFromConfig(repoRoot, name, cfg)
 }
 
-func loadWorktreeConfigIfPresent(repoRoot, name string) (*model.WorktreeConfig, bool, error) {
-	cfg, err := LoadWorktreeConfig(repoRoot, name)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, false, nil
-		}
-		return nil, false, err
+func worktreePathCandidateFromConfig(repoRoot, name string, cfg *model.WorktreeConfig) (worktreePathCandidate, error) {
+	if cfg == nil {
+		return worktreePathCandidate{}, fmt.Errorf("worktree %s config missing", name)
 	}
-	return cfg, true, nil
-}
-
-func worktreePathCandidateFromConfig(repoRoot, name string, cfg *model.WorktreeConfig, present bool) (worktreePathCandidate, error) {
-	if present {
-		if cfg == nil {
-			return worktreePathCandidate{}, fmt.Errorf("worktree %s config missing", name)
-		}
-		if cfg.Name != name {
-			return worktreePathCandidate{}, fmt.Errorf("worktree %s config name mismatch %q", name, cfg.Name)
-		}
-		if cfg.RealPath != "" {
-			return configuredWorktreePathCandidate(repoRoot, name, cfg.RealPath)
-		}
+	if cfg.Name != name {
+		return worktreePathCandidate{}, fmt.Errorf("worktree %s config name mismatch %q", name, cfg.Name)
 	}
-
-	return fallbackWorktreePathCandidate(repoRoot, name)
+	if strings.TrimSpace(cfg.RealPath) == "" {
+		return worktreePathCandidate{}, fmt.Errorf("worktree %s real path is required", name)
+	}
+	return configuredWorktreePathCandidate(repoRoot, name, cfg.RealPath)
 }
 
 func configuredWorktreePathCandidate(repoRoot, name, realPath string) (worktreePathCandidate, error) {
@@ -1074,35 +1677,10 @@ func configuredWorktreePathCandidate(repoRoot, name, realPath string) (worktreeP
 	}
 	return worktreePathCandidate{
 		name:         name,
-		path:         physicalPath,
+		path:         lexicalPath,
 		lexicalPath:  lexicalPath,
 		physicalPath: physicalPath,
 	}, nil
-}
-
-func fallbackWorktreePathCandidate(repoRoot, name string) (worktreePathCandidate, error) {
-	path := legacyWorktreePayloadPath(repoRoot, name)
-	lexicalPath, err := cleanAbsPath(path)
-	if err != nil {
-		return worktreePathCandidate{}, err
-	}
-	physicalPath, err := resolvePhysicalInitTarget(lexicalPath)
-	if err != nil {
-		return worktreePathCandidate{}, fmt.Errorf("resolve worktree payload path: %w", err)
-	}
-	return worktreePathCandidate{
-		name:         name,
-		path:         path,
-		lexicalPath:  lexicalPath,
-		physicalPath: physicalPath,
-	}, nil
-}
-
-func legacyWorktreePayloadPath(repoRoot, name string) string {
-	if name == "main" {
-		return filepath.Join(repoRoot, "main")
-	}
-	return filepath.Join(repoRoot, "worktrees", name)
 }
 
 func validateWorktreeRegistryWithCandidate(repoRoot string, candidate worktreePathCandidate) error {
@@ -1172,7 +1750,7 @@ func registeredWorktreePathCandidates(repoRoot string) ([]worktreePathCandidate,
 		if err != nil {
 			return nil, fmt.Errorf("load worktree %s: %w", name, err)
 		}
-		candidate, err := worktreePathCandidateFromConfig(repoRoot, name, cfg, true)
+		candidate, err := worktreePathCandidateFromConfig(repoRoot, name, cfg)
 		if err != nil {
 			return nil, err
 		}
@@ -1216,7 +1794,7 @@ func registeredWorktreePathCandidatesForRepair(repoRoot, replacedName string) ([
 		if err != nil {
 			return nil, fmt.Errorf("load worktree %s: %w", name, err)
 		}
-		candidate, err := worktreePathCandidateFromConfig(repoRoot, name, cfg, true)
+		candidate, err := worktreePathCandidateFromConfig(repoRoot, name, cfg)
 		if err != nil {
 			if cfg.RealPath != "" && errors.Is(err, os.ErrNotExist) {
 				continue

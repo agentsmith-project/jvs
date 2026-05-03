@@ -18,7 +18,7 @@ import (
 func TestVerifySnapshot_CompressedPayloadUsesLogicalHashDespiteRestrictiveUmask(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	publicDir := filepath.Join(mainPath, "public")
 	require.NoError(t, os.MkdirAll(publicDir, 0755))
 	require.NoError(t, os.Chmod(publicDir, 0755))

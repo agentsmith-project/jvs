@@ -24,7 +24,7 @@ func TestWorkspacePathCommand(t *testing.T) {
 	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "../path-feature", "--from", savePointID)
 	require.NoError(t, err, stdout)
 
-	featurePath := filepath.Join(repoPath, "path-feature")
+	featurePath := testExternalWorkspacePath(repoPath, "path-feature")
 	assert.NoError(t, os.Chdir(featurePath))
 
 	t.Run("Workspace path from inside workspace", func(t *testing.T) {
@@ -47,6 +47,8 @@ func TestWorkspaceRenameCommand(t *testing.T) {
 		stdout, err := executeCommand(createTestRootCmd(), "workspace", "rename", "oldname", "newname")
 		assert.NoError(t, err)
 		assert.Contains(t, stdout, "Renamed workspace")
+		assert.DirExists(t, filepath.Join("..", "oldname"))
+		assert.NoDirExists(t, filepath.Join("..", "newname"))
 	})
 
 	t.Run("Rename with JSON output", func(t *testing.T) {
@@ -129,25 +131,26 @@ func TestInitCommandJSON(t *testing.T) {
 	})
 }
 
-// TestWorkspaceRemoveForce tests that force creates a reviewed remove plan.
-func TestWorkspaceRemoveForce(t *testing.T) {
-	repoPath, _ := setupCoverageRepo(t, "wsforceremove")
+// TestWorkspaceDeletePreviewRun tests that delete is preview-first.
+func TestWorkspaceDeletePreviewRun(t *testing.T) {
+	repoPath, _ := setupCoverageRepo(t, "wsdeletepreview")
 	assert.NoError(t, os.WriteFile("remove-base.txt", []byte("remove"), 0644))
 	savePointID := createRootTestSavePoint(t, "remove base")
 
 	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "../toberemoved", "--from", savePointID)
 	require.NoError(t, err, stdout)
 
-	t.Run("Force previews before removing workspace", func(t *testing.T) {
-		stdout, err := executeCommand(createTestRootCmd(), "--json", "workspace", "remove", "--force", "toberemoved")
+	t.Run("Preview before deleting workspace", func(t *testing.T) {
+		stdout, err := executeCommand(createTestRootCmd(), "--json", "workspace", "delete", "toberemoved")
 		assert.NoError(t, err)
-		preview := decodeWorkspaceRemovePreview(t, stdout)
+		preview := decodeWorkspaceDeletePreview(t, stdout)
 		assert.Equal(t, "preview", preview.Mode)
-		assert.DirExists(t, filepath.Join(repoPath, "toberemoved"))
+		workspacePath := testExternalWorkspacePath(repoPath, "toberemoved")
+		assert.DirExists(t, workspacePath)
 
-		stdout, err = executeCommand(createTestRootCmd(), "workspace", "remove", "--run", preview.PlanID)
+		stdout, err = executeCommand(createTestRootCmd(), "workspace", "delete", "--run", preview.PlanID)
 		assert.NoError(t, err)
-		assert.Contains(t, stdout, "Removed workspace")
-		assert.NoDirExists(t, filepath.Join(repoPath, "toberemoved"))
+		assert.Contains(t, stdout, "Deleted workspace")
+		assert.NoDirExists(t, workspacePath)
 	})
 }

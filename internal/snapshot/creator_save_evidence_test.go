@@ -56,7 +56,7 @@ func TestCreatorCreateSavePointRejectsManagedWorkspaceChangeBeforePublish(t *tes
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repoPath := setupCreatorFailureRepo(t)
-			workspaceRoot := filepath.Join(repoPath, "main")
+			workspaceRoot := mainPayloadPath(t, repoPath)
 			var stagedSnapshotID model.SnapshotID
 			restoreHook := SetAfterSnapshotPayloadStagedHookForTest(func(snapshotID model.SnapshotID, _ string) error {
 				stagedSnapshotID = snapshotID
@@ -123,13 +123,13 @@ func TestCreatorCreateSavePointRejectsStagedPayloadDifferentFromPreSaveEvidence(
 	assert.Contains(t, err.Error(), "workspace files changed while saving")
 	require.NotEmpty(t, stagedSnapshotID)
 	assertUnpublishedSaveAttempt(t, repoPath, stagedSnapshotID)
-	assertFileContentInSnapshotTest(t, filepath.Join(repoPath, "main", "file.txt"), "content")
+	assertFileContentInSnapshotTest(t, filepath.Join(mainPayloadPath(t, repoPath), "file.txt"), "content")
 	assertPublishedSavePointCount(t, repoPath, 0)
 }
 
 func TestCreatorPartialSnapshotDoesNotUseFullWorkspaceEvidence(t *testing.T) {
 	repoPath := setupCreatorFailureRepo(t)
-	workspaceRoot := filepath.Join(repoPath, "main")
+	workspaceRoot := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(workspaceRoot, "other.txt"), []byte("before"), 0644))
 	restoreHook := SetAfterSnapshotPayloadStagedHookForTest(func(model.SnapshotID, string) error {
 		return os.WriteFile(filepath.Join(workspaceRoot, "other.txt"), []byte("changed during partial"), 0644)

@@ -25,9 +25,17 @@ func setupFailureTestRepo(t *testing.T) string {
 	return dir
 }
 
+func mainPayloadPath(t *testing.T, repoPath string) string {
+	t.Helper()
+
+	payloadPath, err := repo.WorktreePayloadPath(repoPath, "main")
+	require.NoError(t, err)
+	return payloadPath
+}
+
 func TestRestorePartialRejectsDestinationSymlinkParentBeforeMutation(t *testing.T) {
 	repoPath := setupFailureTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.MkdirAll(filepath.Join(mainPath, "target"), 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "safe.txt"), []byte("snapshot safe"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "target", "secret.txt"), []byte("snapshot secret"), 0644))
@@ -67,7 +75,7 @@ func TestRestorePartialRejectsDestinationSymlinkParentBeforeMutation(t *testing.
 
 func TestRestorePartialRenameFsyncFailureRollsBackPayloadAndHead(t *testing.T) {
 	repoPath := setupFailureTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("snapshot"), 0644))
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -104,7 +112,7 @@ func TestRestorePartialRenameFsyncFailureRollsBackPayloadAndHead(t *testing.T) {
 
 func TestRestoreFullBackupStageFailureAfterFirstMoveRollsBackPayloadAndHead(t *testing.T) {
 	repoPath := setupFailureTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "a.txt"), []byte("snapshot a"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "b.txt"), []byte("snapshot b"), 0644))
 
@@ -147,7 +155,7 @@ func TestRestoreFullBackupStageFailureAfterFirstMoveRollsBackPayloadAndHead(t *t
 
 func TestRestoreFullBackupFailureRetainsBackupWhenRollbackFails(t *testing.T) {
 	repoPath := setupFailureTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("snapshot"), 0644))
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -191,7 +199,7 @@ func TestRestoreFullBackupFailureRetainsBackupWhenRollbackFails(t *testing.T) {
 
 func TestRestoreFinalPayloadFsyncFailureRetainsBackupAndHead(t *testing.T) {
 	repoPath := setupFailureTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("snapshot"), 0644))
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -229,7 +237,7 @@ func TestRestoreFinalPayloadFsyncFailureRetainsBackupAndHead(t *testing.T) {
 
 func TestRestoreFullUpdateHeadFailureRollsBackPayloadAndRetainsBackupPath(t *testing.T) {
 	repoPath := setupFailureTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("snapshot"), 0644))
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -262,7 +270,7 @@ func TestRestoreFullUpdateHeadFailureRollsBackPayloadAndRetainsBackupPath(t *tes
 
 func TestRestoreAuditAppendFailureAfterPayloadSuccessReturnsSuccess(t *testing.T) {
 	repoPath := setupFailureTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("source"), 0644))
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -297,7 +305,7 @@ func TestRestoreAuditAppendFailureAfterPayloadSuccessReturnsSuccess(t *testing.T
 
 func TestRestorePartialUpdateHeadFailureRollsBackTouchedPathsOnly(t *testing.T) {
 	repoPath := setupFailureTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.MkdirAll(filepath.Join(mainPath, "dir"), 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "a.txt"), []byte("snapshot a"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "dir", "b.txt"), []byte("snapshot b"), 0644))

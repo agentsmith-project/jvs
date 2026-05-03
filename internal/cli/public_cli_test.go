@@ -41,7 +41,7 @@ func setupPublicCLIRepo(t *testing.T, name string) (repoPath string, mainPath st
 
 	require.NoError(t, os.Chdir(dir))
 	repoPath = initLegacyRepoForCLITest(t, name)
-	mainPath = filepath.Join(repoPath, "main")
+	mainPath = repoPath
 	require.NoError(t, os.Chdir(mainPath))
 	return repoPath, mainPath
 }
@@ -348,8 +348,8 @@ func TestPublicCLICleanupRunJSONMissingPlanUsesStableError(t *testing.T) {
 	assert.JSONEq(t, `null`, string(env.Data))
 }
 
-func TestPublicCLIWorkspaceRemoveRejectsUnsavedChangesByDefault(t *testing.T) {
-	repoPath, _ := setupPublicCLIRepo(t, "dirtyremove")
+func TestPublicCLIWorkspaceDeleteRejectsUnsavedChangesByDefault(t *testing.T) {
+	repoPath, _ := setupPublicCLIRepo(t, "dirtydelete")
 
 	require.NoError(t, os.WriteFile("file.txt", []byte("clean"), 0644))
 	base := createCheckpointForPublicCLI(t, "base")
@@ -357,34 +357,41 @@ func TestPublicCLIWorkspaceRemoveRejectsUnsavedChangesByDefault(t *testing.T) {
 	stdout, err := runPublicCLI(t, "--json", "workspace", "new", "../feature", "--from", base)
 	require.NoError(t, err, stdout)
 
-	featureFile := filepath.Join(repoPath, "feature", "file.txt")
+	featurePath := testExternalWorkspacePath(repoPath, "feature")
+	featureFile := filepath.Join(featurePath, "file.txt")
 	require.NoError(t, os.WriteFile(featureFile, []byte("unsaved"), 0644))
 
-	stdout, err = runPublicCLI(t, "workspace", "remove", "feature")
+	stdout, err = runPublicCLI(t, "workspace", "delete", "feature")
 	require.Error(t, err)
 	assert.Empty(t, stdout)
 	assert.Contains(t, err.Error(), "unsaved changes")
+	assert.NotContains(t, err.Error(), "--force")
 	assert.NotContains(t, err.Error(), "checkpoint")
 	assert.FileExists(t, featureFile)
 
-	stdout, err = runPublicCLI(t, "--json", "workspace", "remove", "feature", "--force")
+	stdout, err = runPublicCLI(t, "workspace", "delete", "--force", "feature")
+	require.Error(t, err)
+	assert.Empty(t, stdout)
+	assert.Contains(t, err.Error(), "unknown flag: --force")
+	assert.DirExists(t, featurePath)
+
+	require.NoError(t, os.WriteFile(featureFile, []byte("clean"), 0644))
+	stdout, err = runPublicCLI(t, "--json", "workspace", "delete", "feature")
 	require.NoError(t, err, stdout)
 	var preview map[string]any
 	decodePublicData(t, stdout, &preview)
 	planID, ok := preview["plan_id"].(string)
-	require.True(t, ok, "workspace remove preview should expose plan_id: %#v", preview)
-	assert.DirExists(t, filepath.Join(repoPath, "feature"))
-
-	stdout, err = runPublicCLI(t, "--json", "workspace", "remove", "--run", planID)
+	require.True(t, ok, "workspace delete preview should expose plan_id: %#v", preview)
+	stdout, err = runPublicCLI(t, "--json", "workspace", "delete", "--run", planID)
 	require.NoError(t, err, stdout)
-	assert.NoDirExists(t, filepath.Join(repoPath, "feature"))
+	assert.NoDirExists(t, featurePath)
 }
 
 func TestPublicCLIStableJSONErrorsUsePublicVocabulary(t *testing.T) {
 	repoPath, _ := setupPublicCLIRepo(t, "publicerrors")
 	require.NoError(t, os.Chdir(repoPath))
 
-	stdout, stderr, exitCode := runContractSubprocess(t, repoPath, "--json", "status")
+	stdout, stderr, exitCode := runContractSubprocess(t, filepath.Join(repoPath, ".jvs"), "--json", "status")
 	require.Equal(t, 1, exitCode, "status unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
 	assert.Empty(t, strings.TrimSpace(stderr))
 
@@ -407,7 +414,7 @@ func TestPublicCLIErrorsPreserveUserRepoPathsWithSpacesAndLegacyWords(t *testing
 	currentRepo := initLegacyRepoForCLITest(t, "current worktree snapshot history")
 	stdout, stderr, exitCode := runContractSubprocess(
 		t,
-		filepath.Join(currentRepo, "main"),
+		currentRepo,
 		"--json", "--repo", targetRepo, "--workspace", "main", "status",
 	)
 	require.Equal(t, 1, exitCode, "mismatched repo unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
@@ -503,7 +510,7 @@ func TestPublicCLIRepoFlagPathPrefersPhysicalAncestorOverForgedLocator(t *testin
 
 	var status statusCommandOutput
 	require.NoError(t, json.Unmarshal(env.Data, &status), stdout)
-	assert.Equal(t, filepath.Join(targetRepo, "main"), status.Folder)
+	assert.Equal(t, targetRepo, status.Folder)
 	assert.Equal(t, "main", status.Workspace)
 }
 
@@ -515,7 +522,7 @@ func TestPublicCLIRepoFlagRejectsExternalWorkspaceLocatorMismatchWithExplicitWor
 	require.NoError(t, os.Chdir(dir))
 	repoA := initLegacyRepoForCLITest(t, "repo-a")
 	repoB := initLegacyRepoForCLITest(t, "repo-b")
-	repoAMain := filepath.Join(repoA, "main")
+	repoAMain := repoA
 	require.NoError(t, os.Chdir(repoAMain))
 	require.NoError(t, os.WriteFile("file.txt", []byte("repo a base"), 0644))
 	base := createCheckpointForPublicCLI(t, "repo a base")
@@ -597,7 +604,7 @@ func TestPublicCLIJSONErrorsPreserveUserRepoPathWhenTargetIsMissing(t *testing.T
 	repoPath, _ := setupPublicCLIRepo(t, "missingtarget")
 
 	missingTarget := "missing worktree snapshot history"
-	stdout, stderr, exitCode := runContractSubprocess(t, filepath.Join(repoPath, "main"), "--json", "--repo", missingTarget, "status")
+	stdout, stderr, exitCode := runContractSubprocess(t, repoPath, "--json", "--repo", missingTarget, "status")
 	require.Equal(t, 1, exitCode, "missing --repo unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
 	assert.Empty(t, strings.TrimSpace(stderr))
 
@@ -682,18 +689,18 @@ func TestPublicCLIDoctorAndCleanupJSONHideInternalContractFields(t *testing.T) {
 	mainID := createCheckpointForPublicCLI(t, "main")
 	stdout, err := runPublicCLI(t, "--json", "workspace", "new", "../old-feature", "--from", mainID)
 	require.NoError(t, err, stdout)
-	featurePath := filepath.Join(repoPath, "old-feature")
+	featurePath := testExternalWorkspacePath(repoPath, "old-feature")
 	require.NoError(t, os.WriteFile(filepath.Join(featurePath, "feature.txt"), []byte("feature"), 0644))
 	require.NoError(t, os.Chdir(featurePath))
 	createCheckpointForPublicCLI(t, "feature")
 	require.NoError(t, os.Chdir(mainPath))
-	stdout, err = runPublicCLI(t, "--json", "workspace", "remove", "old-feature", "--force")
+	stdout, err = runPublicCLI(t, "--json", "workspace", "delete", "old-feature")
 	require.NoError(t, err, stdout)
-	var removePreview map[string]any
-	decodePublicData(t, stdout, &removePreview)
-	removePlanID, ok := removePreview["plan_id"].(string)
-	require.True(t, ok, "workspace remove preview should expose plan_id: %#v", removePreview)
-	stdout, err = runPublicCLI(t, "--json", "workspace", "remove", "--run", removePlanID)
+	var deletePreview map[string]any
+	decodePublicData(t, stdout, &deletePreview)
+	deletePlanID, ok := deletePreview["plan_id"].(string)
+	require.True(t, ok, "workspace delete preview should expose plan_id: %#v", deletePreview)
+	stdout, err = runPublicCLI(t, "--json", "workspace", "delete", "--run", deletePlanID)
 	require.NoError(t, err, stdout)
 	makeAllDescriptorsOldForPublicCLI(t, repoPath)
 
@@ -704,7 +711,10 @@ func TestPublicCLIDoctorAndCleanupJSONHideInternalContractFields(t *testing.T) {
 	decodePublicData(t, nonEmptyPlanOut, &plan)
 	assert.NotZero(t, plan["candidate_count"])
 
-	require.NoError(t, os.RemoveAll(mainPath))
+	cfg, err := jvsrepo.LoadWorktreeConfig(repoPath, "main")
+	require.NoError(t, err)
+	cfg.RealPath = filepath.Join(repoPath, "missing-main-workspace")
+	require.NoError(t, jvsrepo.WriteWorktreeConfig(repoPath, "main", cfg))
 	doctorOut, stderr, exitCode := runContractSubprocess(t, repoPath, "--json", "doctor")
 	require.Equal(t, 1, exitCode, "doctor unexpectedly succeeded: stdout=%s stderr=%s", doctorOut, stderr)
 	assert.Empty(t, strings.TrimSpace(stderr))

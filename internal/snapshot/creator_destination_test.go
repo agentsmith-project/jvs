@@ -15,7 +15,8 @@ import (
 
 func TestCreatorFullSnapshotClonesIntoOwnedNewTmpDestination(t *testing.T) {
 	repoPath := setupCreatorFailureRepo(t)
-	require.NoError(t, os.WriteFile(filepath.Join(repoPath, "main", "full.txt"), []byte("full"), 0644))
+	require.NoError(t, os.Remove(filepath.Join(mainPayloadPath(t, repoPath), "file.txt")))
+	require.NoError(t, os.WriteFile(filepath.Join(mainPayloadPath(t, repoPath), "full.txt"), []byte("full"), 0644))
 
 	strict := &strictNewDestinationEngine{requireParent: true}
 	creator := NewCreator(repoPath, model.EngineCopy)
@@ -25,14 +26,14 @@ func TestCreatorFullSnapshotClonesIntoOwnedNewTmpDestination(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, desc)
 	require.Len(t, strict.destinations, 1)
-	assert.True(t, strings.HasSuffix(strict.destinations[0], ".tmp"), "clone destination should be unpublished snapshot tmp: %s", strict.destinations[0])
+	assert.Contains(t, filepath.ToSlash(strict.destinations[0]), ".tmp/", "clone destination should be inside unpublished snapshot tmp: %s", strict.destinations[0])
 	assert.FileExists(t, filepath.Join(repoPath, ".jvs", "snapshots", string(desc.SnapshotID), "full.txt"))
 }
 
 func TestCreatorPartialSnapshotCreatesOnlyCloneParentForNestedDirectoryPath(t *testing.T) {
 	repoPath := setupCreatorFailureRepo(t)
-	require.NoError(t, os.MkdirAll(filepath.Join(repoPath, "main", "nested", "dir"), 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(repoPath, "main", "nested", "dir", "file.txt"), []byte("partial"), 0644))
+	require.NoError(t, os.MkdirAll(filepath.Join(mainPayloadPath(t, repoPath), "nested", "dir"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(mainPayloadPath(t, repoPath), "nested", "dir", "file.txt"), []byte("partial"), 0644))
 
 	strict := &strictNewDestinationEngine{requireParent: true}
 	creator := NewCreator(repoPath, model.EngineCopy)

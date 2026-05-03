@@ -91,12 +91,15 @@ func TestLifecycleCleanupPreviewUsesCurrentContract(t *testing.T) {
 func TestRemovedLifecycleCommandsAreUnknown(t *testing.T) {
 	isolateContractCLIState(t)
 	for _, tc := range []struct {
-		name string
-		args []string
+		name        string
+		args        []string
+		wantCommand string
+		wantUnknown string
 	}{
 		{name: "import", args: []string{"import", "src", "dst"}},
 		{name: "clone", args: []string{"clone", "src", "dst"}},
 		{name: "capability", args: []string{"capability", "."}},
+		{name: "workspace remove", args: []string{"workspace", "remove", "old"}, wantCommand: "workspace", wantUnknown: "remove"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			args := append([]string{"--json"}, tc.args...)
@@ -106,10 +109,18 @@ func TestRemovedLifecycleCommandsAreUnknown(t *testing.T) {
 
 			env := decodeContractEnvelope(t, stdout)
 			assert.False(t, env.OK)
-			assert.Equal(t, tc.name, env.Command)
+			wantCommand := tc.wantCommand
+			if wantCommand == "" {
+				wantCommand = tc.name
+			}
+			assert.Equal(t, wantCommand, env.Command)
 			require.NotNil(t, env.Error)
 			assert.Equal(t, "E_USAGE", env.Error.Code)
-			assert.Contains(t, env.Error.Message, `unknown command "`+tc.name+`"`)
+			wantUnknown := tc.wantUnknown
+			if wantUnknown == "" {
+				wantUnknown = tc.name
+			}
+			assert.Contains(t, env.Error.Message, `unknown command "`+wantUnknown+`"`)
 			assert.JSONEq(t, `null`, string(env.Data))
 		})
 	}

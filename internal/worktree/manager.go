@@ -11,6 +11,7 @@ import (
 
 	"github.com/agentsmith-project/jvs/internal/audit"
 	"github.com/agentsmith-project/jvs/internal/engine"
+	"github.com/agentsmith-project/jvs/internal/lifecycle"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshot/publishstate"
 	"github.com/agentsmith-project/jvs/internal/snapshotpayload"
@@ -43,6 +44,7 @@ type StartedFromSnapshotRequest struct {
 var (
 	writeWorktreeConfig = repo.WriteWorktreeConfig
 	renamePath          = fsutil.RenameNoReplaceAndSync
+	movePath            = lifecycle.MoveSameFilesystemNoOverwrite
 )
 
 // NewManager creates a new worktree manager.
@@ -108,9 +110,23 @@ func (m *Manager) create(name string, baseSnapshotID *model.SnapshotID) (*model.
 	}
 	cleanupStaging = false
 	published := true
+	realPath, err := existingPhysicalPath(payloadPath)
+	if err != nil {
+		if cleanupErr := removeOwnedPath(payloadPath); cleanupErr != nil {
+			return nil, fmt.Errorf("resolve payload directory: %w; additionally failed to cleanup payload: %v", err, cleanupErr)
+		}
+		return nil, fmt.Errorf("resolve payload directory: %w", err)
+	}
+	if err := repo.WriteWorkspaceLocator(payloadPath, m.repoRoot, name); err != nil {
+		if cleanupErr := removeOwnedPath(payloadPath); cleanupErr != nil {
+			return nil, fmt.Errorf("write workspace locator: %w; additionally failed to cleanup payload: %v", err, cleanupErr)
+		}
+		return nil, fmt.Errorf("write workspace locator: %w", err)
+	}
 
 	cfg := &model.WorktreeConfig{
 		Name:      name,
+		RealPath:  realPath,
 		CreatedAt: time.Now().UTC(),
 	}
 	if baseSnapshotID != nil {
@@ -237,9 +253,23 @@ func (m *Manager) createMaterializedSnapshotWorktreeLocked(name string, snapshot
 	}
 	cleanupStaging = false
 	published := true
+	realPath, err := existingPhysicalPath(payloadPath)
+	if err != nil {
+		if cleanupErr := removeOwnedPath(payloadPath); cleanupErr != nil {
+			return nil, fmt.Errorf("resolve payload directory: %w; additionally failed to cleanup payload: %v", err, cleanupErr)
+		}
+		return nil, fmt.Errorf("resolve payload directory: %w", err)
+	}
+	if err := repo.WriteWorkspaceLocator(payloadPath, m.repoRoot, name); err != nil {
+		if cleanupErr := removeOwnedPath(payloadPath); cleanupErr != nil {
+			return nil, fmt.Errorf("write workspace locator: %w; additionally failed to cleanup payload: %v", err, cleanupErr)
+		}
+		return nil, fmt.Errorf("write workspace locator: %w", err)
+	}
 
 	cfg := &model.WorktreeConfig{
 		Name:             name,
+		RealPath:         realPath,
 		CreatedAt:        time.Now().UTC(),
 		BaseSnapshotID:   snapshotID,
 		HeadSnapshotID:   snapshotID,
@@ -516,6 +546,12 @@ func (m *Manager) Rename(oldName, newName string) error {
 	})
 }
 
+// RenameLocked performs Rename while the caller already holds the repository
+// mutation lock.
+func (m *Manager) RenameLocked(oldName, newName string) error {
+	return m.rename(oldName, newName)
+}
+
 func (m *Manager) rename(oldName, newName string) error {
 	if err := pathutil.ValidateName(oldName); err != nil {
 		return err
@@ -524,7 +560,7 @@ func (m *Manager) rename(oldName, newName string) error {
 		return err
 	}
 	if oldName == "main" {
-		return errors.New("cannot rename main worktree")
+		return errors.New("cannot rename main workspace")
 	}
 
 	oldConfigDir, err := m.existingConfigDirForMutation(oldName)
@@ -542,30 +578,12 @@ func (m *Manager) rename(oldName, newName string) error {
 	if oldCfg.Name != oldName {
 		return fmt.Errorf("config name mismatch for %s: %q", oldName, oldCfg.Name)
 	}
-
-	var oldPayload, newPayload string
-	newRealPath := ""
-	rollback := renameRollbackLedger{}
-	if oldName != "main" {
-		oldPayload, err = m.existingPayloadPathForMoveOrRemove(oldName)
-		if err != nil {
-			return err
-		}
-		newPayload, newRealPath, err = m.newPayloadPathForRename(newName, oldCfg)
-		if err != nil {
-			return err
-		}
-		if err := renamePath(oldPayload, newPayload); err != nil && !os.IsNotExist(err) {
-			if fsutil.IsCommitUncertain(err) {
-				return fmt.Errorf("rename payload commit uncertain; not rolling back: %w", err)
-			}
-			return fmt.Errorf("rename payload: %w", err)
-		} else if err == nil {
-			rollback.add("payload rename", func() error {
-				return renamePath(newPayload, oldPayload)
-			})
-		}
+	oldPayload, err := m.existingPayloadPathForMoveOrRemove(oldName)
+	if err != nil {
+		return err
 	}
+
+	rollback := renameRollbackLedger{}
 
 	// Rename config directory
 	if err := renamePath(oldConfigDir, newConfigDir); err != nil {
@@ -582,7 +600,9 @@ func (m *Manager) rename(oldName, newName string) error {
 	// Update config with new name
 	newCfg := *oldCfg
 	newCfg.Name = newName
-	newCfg.RealPath = newRealPath
+	if newCfg.RealPath == "" {
+		newCfg.RealPath = oldPayload
+	}
 	if err := writeWorktreeConfig(m.repoRoot, newName, &newCfg); err != nil {
 		err = fmt.Errorf("write config after rename: %w", err)
 		if fsutil.IsCommitUncertain(err) {
@@ -592,6 +612,88 @@ func (m *Manager) rename(oldName, newName string) error {
 	}
 
 	return nil
+}
+
+// PlanMove validates a path-only workspace move and returns the current and
+// target folders without mutating either metadata or files.
+func (m *Manager) PlanMove(name, newFolder string) (string, string, error) {
+	source, target, _, err := m.movePaths(name, newFolder)
+	return source, target, err
+}
+
+// Move moves a workspace folder without changing the workspace name.
+func (m *Manager) Move(name, newFolder string) error {
+	return repo.WithMutationLock(m.repoRoot, "workspace move", func() error {
+		return m.move(name, newFolder)
+	})
+}
+
+// MoveLocked performs Move while the caller already holds the repository
+// mutation lock.
+func (m *Manager) MoveLocked(name, newFolder string) error {
+	return m.move(name, newFolder)
+}
+
+func (m *Manager) move(name, newFolder string) error {
+	source, target, cfg, err := m.movePaths(name, newFolder)
+	if err != nil {
+		return err
+	}
+	if err := movePath(source, target); err != nil {
+		return fmt.Errorf("move workspace folder: %w", err)
+	}
+	realPath, err := existingPhysicalPath(target)
+	if err != nil {
+		return fmt.Errorf("resolve moved workspace folder: %w", err)
+	}
+	newCfg := *cfg
+	newCfg.RealPath = realPath
+	if err := writeWorktreeConfig(m.repoRoot, name, &newCfg); err != nil {
+		if fsutil.IsCommitUncertain(err) {
+			return fmt.Errorf("write config after move commit uncertain after moving workspace folder: %w", err)
+		}
+		return fmt.Errorf("write config after move: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) movePaths(name, newFolder string) (source, target string, cfg *model.WorktreeConfig, err error) {
+	if err := pathutil.ValidateName(name); err != nil {
+		return "", "", nil, err
+	}
+	if name == "main" {
+		return "", "", nil, errors.New("cannot move main workspace")
+	}
+	cfg, err = repo.LoadWorktreeConfig(m.repoRoot, name)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("load config before move: %w", err)
+	}
+	if cfg.Name != name {
+		return "", "", nil, fmt.Errorf("config name mismatch for %s: %q", name, cfg.Name)
+	}
+	source, err = m.existingPayloadPathForMoveOrRemove(name)
+	if err != nil {
+		return "", "", nil, err
+	}
+	target, err = normalizeExplicitWorkspaceFolder(newFolder)
+	if err != nil {
+		return "", "", nil, err
+	}
+	if err := m.validateExternalPayloadTarget(target); err != nil {
+		return "", "", nil, err
+	}
+	return source, target, cfg, nil
+}
+
+func normalizeExplicitWorkspaceFolder(folder string) (string, error) {
+	if strings.TrimSpace(folder) == "" {
+		return "", errclass.ErrUsage.WithMessage("workspace folder is required")
+	}
+	target, err := filepath.Abs(folder)
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace folder: %w", err)
+	}
+	return filepath.Clean(target), nil
 }
 
 func (m *Manager) existingPayloadPathForMoveOrRemove(name string) (string, error) {
@@ -666,7 +768,7 @@ func (l *renameRollbackLedger) rollback(cause error) error {
 
 // Remove deletes a workspace. Fails if the workspace is main.
 func (m *Manager) Remove(name string) error {
-	return repo.WithMutationLock(m.repoRoot, "workspace remove", func() error {
+	return repo.WithMutationLock(m.repoRoot, "workspace delete", func() error {
 		return m.remove(name)
 	})
 }
@@ -732,10 +834,7 @@ func (m *Manager) remove(name string) error {
 }
 
 func (m *Manager) removeTargetAbsent(name string) (bool, error) {
-	payloadPath, err := m.payloadPathForMutation(name)
-	if err != nil {
-		return false, err
-	}
+	payloadPath := filepath.Join(filepath.Dir(m.repoRoot), name)
 	configDir, err := m.configDirForMutation(name)
 	if err != nil {
 		return false, err
@@ -1053,29 +1152,13 @@ func pathContains(parent, child string) (bool, error) {
 }
 
 func (m *Manager) prepareNewPayloadTarget(name string) (string, string, error) {
-	payloadPath, err := repo.WorktreePayloadPath(m.repoRoot, name)
-	if err != nil {
+	if err := pathutil.ValidateName(name); err != nil {
 		return "", "", err
 	}
-	rel, err := repoRelativePath(m.repoRoot, payloadPath)
-	if err != nil {
-		return "", "", err
-	}
-	if err := pathutil.ValidateNoSymlinkParents(m.repoRoot, rel); err != nil {
-		return "", "", fmt.Errorf("validate payload path: %w", err)
-	}
-
+	payloadPath := filepath.Join(filepath.Dir(m.repoRoot), name)
 	parent := filepath.Dir(payloadPath)
-	if err := os.MkdirAll(parent, 0755); err != nil {
-		return "", "", fmt.Errorf("create payload parent: %w", err)
-	}
-	if err := validateExistingRealDir(parent); err != nil {
-		return "", "", fmt.Errorf("validate payload parent: %w", err)
-	}
-	if _, err := os.Lstat(payloadPath); err == nil {
-		return "", "", fmt.Errorf("payload path already exists: %s", payloadPath)
-	} else if !os.IsNotExist(err) {
-		return "", "", fmt.Errorf("stat payload path: %w", err)
+	if err := m.validateExternalPayloadTarget(payloadPath); err != nil {
+		return "", "", err
 	}
 
 	return payloadPath, parent, nil

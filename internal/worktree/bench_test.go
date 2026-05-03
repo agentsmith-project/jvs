@@ -29,7 +29,7 @@ func setupForkBenchRepo(b *testing.B, contentSize int) string {
 		b.Fatal(err)
 	}
 
-	mainPath := filepath.Join(dir, "main")
+	mainPath := dir
 
 	// Create content of specified size
 	if contentSize > 0 {
@@ -59,7 +59,7 @@ func setupForkBenchRepoWithFiles(b *testing.B, fileCount int) string {
 		b.Fatal(err)
 	}
 
-	mainPath := filepath.Join(dir, "main")
+	mainPath := dir
 
 	// Create multiple files
 	for i := 0; i < fileCount; i++ {

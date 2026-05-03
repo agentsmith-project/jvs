@@ -37,7 +37,7 @@ func setupBenchmarkRepo(b *testing.B, snapshotCount int) string {
 		b.Fatalf("init repo: %v", err)
 	}
 
-	mainPath := filepath.Join(dir, "main")
+	mainPath := requireMainWorktreePath(b, dir)
 	creator := snapshot.NewCreator(dir, model.EngineCopy)
 
 	// Create chain of snapshots
@@ -67,7 +67,7 @@ func setupBenchmarkRepoWithDeletable(b *testing.B, totalSnapshots, deletableCoun
 	wtMgr := worktree.NewManager(dir)
 
 	// Create snapshots in main worktree (protected)
-	mainPath := filepath.Join(dir, "main")
+	mainPath := requireMainWorktreePath(b, dir)
 	for i := 0; i < totalSnapshots-deletableCount; i++ {
 		filename := filepath.Join(mainPath, "file.txt")
 		if err := os.WriteFile(filename, []byte(string(rune(i))), 0644); err != nil {

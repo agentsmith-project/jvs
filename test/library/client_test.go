@@ -17,6 +17,7 @@ import (
 	"github.com/agentsmith-project/jvs/internal/integrity"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
+	"github.com/agentsmith-project/jvs/internal/worktree"
 	"github.com/agentsmith-project/jvs/pkg/jvs"
 	"github.com/agentsmith-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
@@ -38,20 +39,12 @@ func testRepoDir(t *testing.T) string {
 func createLibraryWorkspace(t *testing.T, client *jvs.Client, name string) string {
 	t.Helper()
 
-	payloadPath := filepath.Join(client.RepoRoot(), "worktrees", name)
-	require.NoError(t, os.MkdirAll(payloadPath, 0755))
-
-	configDir := filepath.Join(client.RepoRoot(), ".jvs", "worktrees", name)
-	require.NoError(t, os.MkdirAll(configDir, 0755))
-
-	cfg := &model.WorktreeConfig{
-		Name:      name,
-		CreatedAt: time.Now().UTC(),
-	}
-	data, err := json.MarshalIndent(cfg, "", "  ")
+	wtMgr := worktree.NewManager(client.RepoRoot())
+	_, err := wtMgr.Create(name, nil)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.json"), data, 0644))
 
+	payloadPath, err := wtMgr.Path(name)
+	require.NoError(t, err)
 	return payloadPath
 }
 
@@ -235,7 +228,8 @@ func TestInit_CreatesNewRepo(t *testing.T) {
 	require.NotNil(t, client)
 
 	assert.DirExists(t, filepath.Join(dir, ".jvs"))
-	assert.DirExists(t, filepath.Join(dir, "main"))
+	assert.NoDirExists(t, filepath.Join(dir, "main"))
+	assert.Equal(t, dir, client.WorkspacePath("main"))
 	assert.NotEmpty(t, client.RepoID())
 	assert.Equal(t, dir, client.RepoRoot())
 }
@@ -278,12 +272,12 @@ func TestOpenOrInit_OpensParentRepoFromMainWorktree(t *testing.T) {
 	first, err := jvs.Init(dir, jvs.InitOptions{Name: "test-repo"})
 	require.NoError(t, err)
 
-	second, err := jvs.OpenOrInit(filepath.Join(dir, "main"), jvs.InitOptions{Name: "nested-repo"})
+	second, err := jvs.OpenOrInit(first.WorkspacePath("main"), jvs.InitOptions{Name: "nested-repo"})
 	require.NoError(t, err)
 
 	assert.Equal(t, first.RepoRoot(), second.RepoRoot())
 	assert.Equal(t, first.RepoID(), second.RepoID())
-	assert.NoDirExists(t, filepath.Join(dir, "main", ".jvs"))
+	assert.NoDirExists(t, filepath.Join(dir, "main"))
 }
 
 func TestHasSavePoints_FalseOnEmptyRepo(t *testing.T) {
@@ -662,7 +656,7 @@ func TestWorkspacePath(t *testing.T) {
 	require.NoError(t, err)
 
 	mainPath := client.WorkspacePath("main")
-	assert.Equal(t, filepath.Join(dir, "main"), mainPath)
+	assert.Equal(t, dir, mainPath)
 
 	// Empty defaults to main
 	defaultPath := client.WorkspacePath("")

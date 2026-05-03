@@ -40,9 +40,17 @@ func requireWorktreePath(t *testing.T, wtMgr *worktree.Manager, name string) str
 	return path
 }
 
+func requireMainWorktreePath(t testing.TB, repoPath string) string {
+	t.Helper()
+
+	path, err := repo.WorktreePayloadPath(repoPath, "main")
+	require.NoError(t, err)
+	return path
+}
+
 func createTestSnapshot(t *testing.T, repoPath string) model.SnapshotID {
 	// Add some content
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := requireMainWorktreePath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644))
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -809,7 +817,7 @@ func TestCollector_Plan_WithLineage(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
 	// Create first snapshot
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := requireMainWorktreePath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file1.txt"), []byte("content1"), 0644)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	desc1, err := creator.Create("main", "first", nil)
@@ -915,7 +923,7 @@ func TestCollector_Plan_ProtectsActiveRecoveryPlanWithoutSourcePinAndIgnoresReso
 		Operation:              recovery.OperationRestore,
 		RestorePlanID:          "restore-preview",
 		Workspace:              "main",
-		Folder:                 filepath.Join(repoPath, "main"),
+		Folder:                 requireMainWorktreePath(t, repoPath),
 		SourceSavePoint:        sourceID,
 		CreatedAt:              now,
 		UpdatedAt:              now,
@@ -984,7 +992,7 @@ func TestCollector_Plan_ProtectsWorkspaceStartedFromSourceBeforeAndAfterFirstSav
 func TestCollector_Plan_SortsPlanSets(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := requireMainWorktreePath(t, repoPath)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	for i := 0; i < 6; i++ {
 		require.NoError(t, os.WriteFile(filepath.Join(mainPath, "main.txt"), []byte{byte('0' + i)}, 0644))
@@ -1030,7 +1038,7 @@ func TestCollector_Plan_ProtectedCounts(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
 	// Create multiple snapshots with lineage
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := requireMainWorktreePath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file1.txt"), []byte("1"), 0644)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	_, err := creator.Create("main", "first", nil)
@@ -1222,7 +1230,7 @@ func TestCollector_Plan_WithOnlyLineage(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
 	// Create a chain of snapshots
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := requireMainWorktreePath(t, repoPath)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 
 	os.WriteFile(filepath.Join(mainPath, "file1.txt"), []byte("1"), 0644)
@@ -1249,7 +1257,7 @@ func TestCollector_Plan_WithOnlyLineage(t *testing.T) {
 
 func TestCollector_PlanWithPolicy_ProtectsDetachedLatestAndLineage(t *testing.T) {
 	repoPath := setupTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := requireMainWorktreePath(t, repoPath)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("s1"), 0644))
@@ -1288,7 +1296,7 @@ func TestCollector_PlanWithPolicy_ProtectsDetachedLatestAndLineage(t *testing.T)
 
 func TestCollector_Run_PreservesDetachedLatestForRestoreToLatest(t *testing.T) {
 	repoPath := setupTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := requireMainWorktreePath(t, repoPath)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("s1"), 0644))
@@ -1353,7 +1361,7 @@ func TestCollector_PlanWithPolicy_ProtectsDetachedLatestInNonMainWorktree(t *tes
 func TestCollector_Plan_WithManySnapshots(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := requireMainWorktreePath(t, repoPath)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 
 	// Create multiple snapshots
@@ -1378,7 +1386,7 @@ func TestCollector_Plan_IgnoresLegacyPinFiles(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
 	// Create snapshot in main
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := requireMainWorktreePath(t, repoPath)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	os.WriteFile(filepath.Join(mainPath, "file1.txt"), []byte("1"), 0644)
 	_, err := creator.Create("main", "first", nil)
@@ -1782,7 +1790,7 @@ func TestCollector_Plan_PinFileDoesNotAffectAlreadyProtectedSnapshotInV0(t *test
 	repoPath := setupTestRepo(t)
 
 	// Create a snapshot
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := requireMainWorktreePath(t, repoPath)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
 	desc, err := creator.Create("main", "test", nil)
@@ -1871,7 +1879,7 @@ func indexOf(s, substr string) int {
 func TestCollector_PlanWithPolicy_AgeRetention(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := requireMainWorktreePath(t, repoPath)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 
 	os.WriteFile(filepath.Join(mainPath, "file1.txt"), []byte("a"), 0644)
@@ -1896,7 +1904,7 @@ func TestCollector_PlanWithPolicy_AgeRetention(t *testing.T) {
 func TestCollector_PlanWithPolicy_CountRetention(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := requireMainWorktreePath(t, repoPath)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 
 	// Create 3 snapshots in main
@@ -2002,7 +2010,7 @@ func TestCollector_SetProgressCallback(t *testing.T) {
 func TestCollector_PlanWithPolicy_CombinedRetention(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := requireMainWorktreePath(t, repoPath)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 
 	// Create 3 snapshots in main

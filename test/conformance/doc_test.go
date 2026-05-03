@@ -70,7 +70,7 @@ func TestDocs_SetupAndTargetingContract(t *testing.T) {
 
 	for _, forbidden := range []string{
 		"Repo-scoped commands: `init`, `import`, `clone`, `capability`",
-		"Workspace-scoped commands: `status`, `checkpoint`, `restore`, `fork`,\n`workspace path`, `workspace remove`, and `workspace rename`",
+		"Workspace-scoped commands: `status`, `checkpoint`, `restore`, `fork`,\n`workspace path`, `workspace delete`, `workspace move`, and `workspace rename`",
 	} {
 		if strings.Contains(productPlan, forbidden) {
 			t.Fatalf("PRODUCT_PLAN.md still contains stale command scoping: %q", forbidden)

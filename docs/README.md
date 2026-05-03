@@ -55,6 +55,7 @@ maintaining a published version:
 | Future product research | [Product Gaps For Next Plan](PRODUCT_GAPS_FOR_NEXT_PLAN.md) | Non-committal product gaps to consider later |
 | Future milestone handoffs | [Smart Copy Boundaries](23_FILESYSTEM_AWARE_TRANSFER_PLANNING.md) | Filesystem-aware transfer planning handoff |
 | Future milestone handoffs | [Repo Clone Product Plan](24_REPO_CLONE_PRODUCT_PLAN.md) | Local JVS project clone handoff |
+| Future milestone handoffs | [Repo/Workspace Lifecycle Product Plan](25_REPO_WORKSPACE_LIFECYCLE_PRODUCT_PLAN.md) | Repo and workspace lifecycle operations handoff |
 
 ## Boundary Rules
 

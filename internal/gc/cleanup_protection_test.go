@@ -134,7 +134,7 @@ func writeActiveRecoveryPlan(t *testing.T, repoPath string, sourceID model.Snaps
 		Operation:              recovery.OperationRestore,
 		RestorePlanID:          "restore-preview",
 		Workspace:              "main",
-		Folder:                 filepath.Join(repoPath, "main"),
+		Folder:                 requireMainWorktreePath(t, repoPath),
 		SourceSavePoint:        sourceID,
 		CreatedAt:              now,
 		UpdatedAt:              now,

@@ -15,7 +15,7 @@ import (
 
 func TestRestorerRestorePathReplacesOnlyRequestedPathAndDoesNotMoveHead(t *testing.T) {
 	repoPath := setupTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.MkdirAll(filepath.Join(mainPath, "src"), 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "src", "app.txt"), []byte("v1"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "outside.txt"), []byte("outside v1"), 0644))
@@ -51,7 +51,7 @@ func TestRestorerRestorePathReplacesOnlyRequestedPathAndDoesNotMoveHead(t *testi
 
 func TestRestorerRestorePathMissingSourceDoesNotMutate(t *testing.T) {
 	repoPath := setupTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "present.txt"), []byte("v1"), 0644))
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	first, err := creator.CreateSavePoint("main", "first", nil)
@@ -75,7 +75,7 @@ func TestRestorerRestorePathMissingSourceDoesNotMutate(t *testing.T) {
 
 func TestRestorerRestorePathRejectsSymlinkParentWithoutMutation(t *testing.T) {
 	repoPath := setupTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	outside := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(mainPath, "safe"), 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "safe", "file.txt"), []byte("safe v1"), 0644))

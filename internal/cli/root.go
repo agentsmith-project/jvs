@@ -20,7 +20,9 @@ var (
 	debugOutput                bool
 	noProgress                 bool
 	noColor                    bool
+	activeCommand              *cobra.Command
 	activeCommandName          string
+	activeCommandArgs          []string
 	resolvedRepoRoot           string
 	resolvedWorkspace          string
 	jsonErrorEmitted           bool
@@ -74,9 +76,10 @@ type cliJSONEnvelope struct {
 }
 
 type cliJSONError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-	Hint    string `json:"hint"`
+	Code                   string `json:"code"`
+	Message                string `json:"message"`
+	Hint                   string `json:"hint"`
+	RecommendedNextCommand string `json:"recommended_next_command,omitempty"`
 }
 
 func init() {
@@ -192,9 +195,10 @@ func jsonErrorFromError(err error) *cliJSONError {
 	}
 
 	return &cliJSONError{
-		Code:    code,
-		Message: publicCLIErrorMessageVocabulary(message),
-		Hint:    publicCLIErrorMessageVocabulary(hint),
+		Code:                   code,
+		Message:                publicCLIErrorMessageVocabulary(message),
+		Hint:                   publicCLIErrorMessageVocabulary(hint),
+		RecommendedNextCommand: recommendedNextCommandFromError(err),
 	}
 }
 
@@ -601,7 +605,7 @@ func unknownCommandName(err error) string {
 }
 
 func cliPersistentPreRun(cmd *cobra.Command, args []string) {
-	beginCLICommand(cmd)
+	beginCLICommandWithArgs(cmd, args)
 
 	// Configure color output first (before any output)
 	initializeOutputPolicy()
@@ -617,10 +621,28 @@ func initializeOutputPolicy() {
 }
 
 func beginCLICommand(cmd *cobra.Command) {
+	beginCLICommandWithArgs(cmd, nil)
+}
+
+func beginCLICommandWithArgs(cmd *cobra.Command, args []string) {
+	activeCommand = cmd
 	activeCommandName = commandName(cmd)
+	activeCommandArgs = append([]string(nil), args...)
 	resolvedRepoRoot = ""
 	resolvedWorkspace = ""
 	jsonErrorEmitted = false
+}
+
+type recommendedNextCommandCarrier interface {
+	RecommendedNextCommand() string
+}
+
+func recommendedNextCommandFromError(err error) string {
+	var carrier recommendedNextCommandCarrier
+	if errors.As(err, &carrier) {
+		return carrier.RecommendedNextCommand()
+	}
+	return ""
 }
 
 func commandName(cmd *cobra.Command) string {

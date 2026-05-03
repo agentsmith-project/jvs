@@ -41,8 +41,11 @@ func TestJVSError_AllErrorsDefined(t *testing.T) {
 		errclass.ErrGCPlanMismatch,
 		errclass.ErrFormatUnsupported,
 		errclass.ErrAuditChainBroken,
+		errclass.ErrLifecyclePending,
+		errclass.ErrLifecycleUnsafeCWD,
+		errclass.ErrLifecycleIdentityMismatch,
 	}
-	assert.Len(t, all, 13)
+	assert.Len(t, all, 16)
 }
 
 func TestJVSError_CLIContractCodes(t *testing.T) {
@@ -50,4 +53,7 @@ func TestJVSError_CLIContractCodes(t *testing.T) {
 	assert.Equal(t, "E_NOT_WORKSPACE", errclass.ErrNotWorkspace.Code)
 	assert.Equal(t, "E_USAGE", errclass.ErrUsage.Code)
 	assert.Equal(t, "E_REPO_BUSY", errclass.ErrRepoBusy.Code)
+	assert.Equal(t, "E_LIFECYCLE_PENDING", errclass.ErrLifecyclePending.Code)
+	assert.Equal(t, "E_LIFECYCLE_UNSAFE_CWD", errclass.ErrLifecycleUnsafeCWD.Code)
+	assert.Equal(t, "E_LIFECYCLE_IDENTITY_MISMATCH", errclass.ErrLifecycleIdentityMismatch.Code)
 }

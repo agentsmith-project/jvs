@@ -25,8 +25,16 @@ func setupTestRepo(t *testing.T) string {
 	return dir
 }
 
+func mainPayloadPath(t testing.TB, repoPath string) string {
+	t.Helper()
+
+	payloadPath, err := repo.WorktreePayloadPath(repoPath, "main")
+	require.NoError(t, err)
+	return payloadPath
+}
+
 func createSnapshot(t *testing.T, repoPath string) *model.Descriptor {
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("snapshot-content"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -123,7 +131,7 @@ func TestRestorer_Restore(t *testing.T) {
 	desc := createSnapshot(t, repoPath)
 
 	// Modify main after snapshot
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("modified"), 0644)
 
 	// Restore (now always inplace)
@@ -258,7 +266,7 @@ func TestRestorerRestoreRejectsReservedWorkspaceRootPayloadNames(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			repoPath := setupTestRepo(t)
 			desc := createSnapshot(t, repoPath)
-			mainPath := filepath.Join(repoPath, "main")
+			mainPath := mainPayloadPath(t, repoPath)
 			reservedPath := filepath.Join(mainPath, name)
 			require.NoError(t, os.WriteFile(reservedPath, []byte("user data"), 0644))
 
@@ -298,7 +306,7 @@ func TestRestorerRestoreRejectsPathLikeAndNonCanonicalIDsWithoutMaterializing(t 
 	for _, id := range ids {
 		t.Run(string(id), func(t *testing.T) {
 			repoPath := setupTestRepo(t)
-			mainPath := filepath.Join(repoPath, "main")
+			mainPath := mainPayloadPath(t, repoPath)
 			require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("current payload"), 0644))
 			writeUnsafeSnapshotTrap(t, repoPath, id)
 
@@ -318,7 +326,7 @@ func TestRestorerRestoreRejectsFinalSnapshotSymlinkWithoutMaterializing(t *testi
 	snapshotID := model.SnapshotID("1708300800000-deadbeef")
 	writeUnsafeSnapshotTrap(t, repoPath, snapshotID)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("current payload"), 0644))
 
 	outside := t.TempDir()
@@ -352,8 +360,9 @@ func TestRestorerRestoreRejectsSymlinkedWorktreesParentBeforeOutsideMutation(t *
 	outsidePayload := filepath.Join(outsideRoot, worktreeName)
 	require.NoError(t, os.MkdirAll(outsidePayload, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(outsidePayload, "file.txt"), []byte("outside original"), 0644))
-	require.NoError(t, os.RemoveAll(filepath.Join(repoPath, "worktrees")))
-	if err := os.Symlink(outsideRoot, filepath.Join(repoPath, "worktrees")); err != nil {
+	worktreesDir := filepath.Join(repoPath, ".jvs", "worktrees")
+	require.NoError(t, os.RemoveAll(worktreesDir))
+	if err := os.Symlink(outsideRoot, worktreesDir); err != nil {
 		t.Skipf("symlinks not supported: %v", err)
 	}
 
@@ -377,7 +386,8 @@ func TestRestorerRestoreRejectsFinalPayloadSymlinkViaManagerPath(t *testing.T) {
 
 	outsidePayload := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(outsidePayload, "file.txt"), []byte("outside original"), 0644))
-	payloadPath := filepath.Join(repoPath, "worktrees", worktreeName)
+	payloadPath, err := repo.WorktreePayloadPath(repoPath, worktreeName)
+	require.NoError(t, err)
 	require.NoError(t, os.RemoveAll(payloadPath))
 	if err := os.Symlink(outsidePayload, payloadPath); err != nil {
 		t.Skipf("symlinks not supported: %v", err)
@@ -397,7 +407,7 @@ func TestRestorer_RestoreToLatest(t *testing.T) {
 	desc := createSnapshot(t, repoPath)
 
 	// Modify and create second snapshot
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("second"), 0644)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	desc2, err := creator.Create("main", "second snapshot", nil)
@@ -433,7 +443,7 @@ func TestRestorer_Restore_SetsDetachedState(t *testing.T) {
 	desc1 := createSnapshot(t, repoPath)
 
 	// Create second snapshot
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("second"), 0644)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	desc2, err := creator.Create("main", "second snapshot", nil)
@@ -472,7 +482,8 @@ func TestWorktree_Fork(t *testing.T) {
 	assert.False(t, cfg.IsDetached())
 
 	// Verify forked content
-	forkPath := filepath.Join(repoPath, "worktrees", "feature")
+	forkPath, err := repo.WorktreePayloadPath(repoPath, "feature")
+	require.NoError(t, err)
 	content, err := os.ReadFile(filepath.Join(forkPath, "file.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, "snapshot-content", string(content))
@@ -539,7 +550,7 @@ func TestRestorer_Restore_MultipleTimes(t *testing.T) {
 	desc1 := createSnapshot(t, repoPath)
 
 	// Create second snapshot
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("second"), 0644)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	desc2, err := creator.Create("main", "second snapshot", nil)
@@ -585,7 +596,7 @@ func TestRestorer_RestoreToLatest_FromDetached(t *testing.T) {
 	desc1 := createSnapshot(t, repoPath)
 
 	// Create second snapshot
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("second"), 0644)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	desc2, err := creator.Create("main", "second snapshot", nil)
@@ -636,7 +647,7 @@ func TestRestorer_Restore_RefusesTamperedPayload(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	desc := createSnapshot(t, repoPath)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("working copy"), 0644))
 
 	snapshotFile := filepath.Join(repoPath, ".jvs", "snapshots", string(desc.SnapshotID), "file.txt")
@@ -654,7 +665,7 @@ func TestRestorer_Restore_RefusesTamperedPayload(t *testing.T) {
 
 func TestRestorer_Restore_CompressedSnapshotPreservesUserGzipAndGzipSymlink(t *testing.T) {
 	repoPath := setupTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte("snapshot data"), 0644))
 	userGzipContent := []byte("user-owned gzip path")
@@ -693,7 +704,7 @@ func TestRestorer_Restore_CompressedSnapshotPreservesUserGzipAndGzipSymlink(t *t
 
 func TestRestorer_Restore_KeepsCurrentWorkingDirectoryUsable(t *testing.T) {
 	repoPath := setupTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte("snapshot data"), 0644))
 	beforeRoot, err := os.Stat(mainPath)
 	require.NoError(t, err)
@@ -728,7 +739,7 @@ func TestRestorer_Restore_KeepsCurrentWorkingDirectoryUsable(t *testing.T) {
 
 func TestRestorer_Restore_CompressedSnapshotKeepsCurrentWorkingDirectoryUsable(t *testing.T) {
 	repoPath := setupTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "data.txt"), []byte("compressed snapshot data"), 0644))
 	beforeRoot, err := os.Stat(mainPath)
 	require.NoError(t, err)
@@ -767,7 +778,7 @@ func TestRestorer_Restore_CompressedSnapshotKeepsCurrentWorkingDirectoryUsable(t
 
 func TestRestorer_Restore_PartialSnapshotOverlaysOnlyIncludedPaths(t *testing.T) {
 	repoPath := setupTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "included.txt"), []byte("snapshot included"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "unrelated.txt"), []byte("original unrelated"), 0644))
 
@@ -792,7 +803,7 @@ func TestRestorer_Restore_PartialSnapshotOverlaysOnlyIncludedPaths(t *testing.T)
 
 func TestRestorer_Restore_PartialSnapshotReplacesOnlyDescriptorPaths(t *testing.T) {
 	repoPath := setupTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.MkdirAll(filepath.Join(mainPath, "tracked"), 0755))
 	require.NoError(t, os.MkdirAll(filepath.Join(mainPath, "untouched"), 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "tracked", "model.bin"), []byte("snapshot model"), 0644))
@@ -830,7 +841,7 @@ func TestRestorer_RestoreWithReflinkEngine(t *testing.T) {
 	desc := createSnapshot(t, repoPath)
 
 	// Modify main after snapshot
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("modified"), 0644)
 
 	// Restore with reflink engine
@@ -850,7 +861,7 @@ func TestRestorer_RestoreWithJuiceFSEngine(t *testing.T) {
 	desc := createSnapshot(t, repoPath)
 
 	// Modify main after snapshot
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("modified"), 0644)
 
 	// Restore with juicefs-clone engine
@@ -887,7 +898,7 @@ func TestRestorer_Restore_PreservesFilePermissions(t *testing.T) {
 	// Test that restore preserves file permissions
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	// Create a file with specific permissions
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "script.sh"), []byte("#!/bin/bash\necho test"), 0755))
 
@@ -914,7 +925,7 @@ func TestRestorer_Restore_MultipleFiles(t *testing.T) {
 	// Test restore with multiple files and directories
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	// Create multiple files
 	os.MkdirAll(filepath.Join(mainPath, "subdir"), 0755)
 	os.WriteFile(filepath.Join(mainPath, "file1.txt"), []byte("content1"), 0644)
@@ -952,7 +963,7 @@ func TestRestorer_Restore_DetachedStateNotLatest(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
 	// Create first snapshot
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("first"), 0644)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	desc1, err := creator.Create("main", "first", nil)
@@ -1033,7 +1044,7 @@ func TestRestorer_Restore_SymlinkPreservation(t *testing.T) {
 	// Test that symlinks are preserved during restore
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	// Create a file and a symlink
 	os.WriteFile(filepath.Join(mainPath, "target.txt"), []byte("target content"), 0644)
 
@@ -1065,7 +1076,7 @@ func TestRestorer_Restore_SymlinkPreservation(t *testing.T) {
 func TestRestorer_RestoreWithDifferentEngineTypes(t *testing.T) {
 	// Test that restore works with all engine types
 	repoPath := setupTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("original"), 0644)
 
 	// Create snapshot with one engine
@@ -1090,7 +1101,7 @@ func TestRestorer_Restore_WithSubdirectories(t *testing.T) {
 	// Test restore with nested directory structure
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	// Create nested directories
 	os.MkdirAll(filepath.Join(mainPath, "a", "b", "c"), 0755)
 	os.WriteFile(filepath.Join(mainPath, "a", "b", "c", "file.txt"), []byte("deep content"), 0644)
@@ -1137,7 +1148,7 @@ func TestRestorer_Restore_UpdatesHeadCorrectly(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
 	// Create two snapshots
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("v1"), 0644)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	desc1, err := creator.Create("main", "v1", nil)
@@ -1194,7 +1205,7 @@ func TestRestorer_Restore_WithJuiceFSCloneEngine(t *testing.T) {
 	desc := createSnapshot(t, repoPath)
 
 	// Modify content
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("modified"), 0644)
 
 	// Restore with juicefs-clone engine
@@ -1213,7 +1224,7 @@ func TestRestorer_Restore_CreatesAuditLogEntry(t *testing.T) {
 	desc := createSnapshot(t, repoPath)
 
 	// Modify content
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("modified"), 0644)
 
 	// Restore
@@ -1230,7 +1241,7 @@ func TestRestorer_Restore_CreatesAuditLogEntry(t *testing.T) {
 
 func TestRestorer_RestoreFailsClosedWhenAuditLogMalformed(t *testing.T) {
 	repoPath := setupTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("v1"), 0644))
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -1264,7 +1275,7 @@ func TestRestorer_Restore_DetachedStateInAuditLog(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
 	// Create two snapshots
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("v1"), 0644)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	desc1, err := creator.Create("main", "v1", nil)
@@ -1291,7 +1302,7 @@ func TestRestorer_Restore_WithCompression(t *testing.T) {
 	// Test restore with compressed snapshot
 	repoPath := setupTestRepo(t)
 
-	mp := filepath.Join(repoPath, "main")
+	mp := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mp, "file.txt"), []byte("original content"), 0644)
 
 	// Create compressed snapshot
@@ -1326,7 +1337,7 @@ func TestRestorer_Restore_CorruptedSnapshotData(t *testing.T) {
 	// Test restore when snapshot data is corrupted
 	repoPath := setupTestRepo(t)
 
-	mp := filepath.Join(repoPath, "main")
+	mp := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mp, "file.txt"), []byte("original"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -1341,7 +1352,7 @@ func TestRestorer_Restore_CorruptedDescriptor(t *testing.T) {
 	// Test restore when descriptor file is corrupted
 	repoPath := setupTestRepo(t)
 
-	mp := filepath.Join(repoPath, "main")
+	mp := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mp, "file.txt"), []byte("original"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -1362,7 +1373,7 @@ func TestRestorer_Restore_CorruptedPayloadHash(t *testing.T) {
 	// Test restore when payload hash doesn't match
 	repoPath := setupTestRepo(t)
 
-	mp := filepath.Join(repoPath, "main")
+	mp := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mp, "file.txt"), []byte("original"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)

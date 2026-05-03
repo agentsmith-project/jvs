@@ -358,7 +358,7 @@ func TestRestoreRunCommitUncertainVisibleRecoveryPlanStopsBeforeMutationAndProte
 	assert.Equal(t, model.SnapshotID(sourceID), plans[0].SourceSavePoint)
 	assert.Equal(t, beforePins, documentedPinCount(t, repoRoot))
 
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := repoRoot
 	content, err := os.ReadFile(filepath.Join(mainPath, "original.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, "original", string(content))
@@ -398,7 +398,7 @@ func TestRecoveryResumeResolvesStalePlanAfterSuccessfulRestorePlanWriteFailure(t
 	recoveryPlanID := plans[0].PlanID
 	assert.Equal(t, recovery.StatusActive, plans[0].Status)
 
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := repoRoot
 	content, err := os.ReadFile(filepath.Join(mainPath, "source.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, "source", string(content))
@@ -445,7 +445,7 @@ func TestWholeRecoveryRollbackRestoresFilesMetadataAndResolvesPlan(t *testing.T)
 	assert.Contains(t, rollbackOut, "History was restored to the pre-restore state.")
 	assertRecoveryOutputOmitsInternalVocabulary(t, rollbackOut)
 
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := repoRoot
 	content, err := os.ReadFile(filepath.Join(mainPath, "original.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, "original", string(content))
@@ -502,7 +502,7 @@ func TestRecoveryRollbackBackupRestoreSurfacesTransferInHumanAndJSON(t *testing.
 		assert.Contains(t, primary["source_path"], ".restore-backup-")
 		assert.Equal(t, "recovery_restore_staging", primary["destination_role"])
 		assert.Contains(t, primary["materialization_destination"], ".recovery-restore-tmp-")
-		assert.Equal(t, filepath.Join(repoRoot, "main"), primary["published_destination"])
+		assert.Equal(t, repoRoot, primary["published_destination"])
 		assert.Equal(t, true, primary["checked_for_this_operation"])
 		assert.Contains(t, []any{"fast_copy", "normal_copy"}, primary["performance_class"])
 	})
@@ -563,7 +563,7 @@ func TestRecoveryRollbackResolvesAfterBackupRestoreAppliedButPlanWriteFailed(t *
 	require.Error(t, err)
 	require.Empty(t, stdout)
 
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := repoRoot
 	content, err := os.ReadFile(filepath.Join(mainPath, "original.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, "original", string(content))
@@ -605,7 +605,7 @@ func TestWholeRecoveryResumeCompletesRestoreAndResolvesPlan(t *testing.T) {
 	assert.Contains(t, resumeOut, "Restored save point: "+sourceID)
 	assertRecoveryOutputOmitsInternalVocabulary(t, resumeOut)
 
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := repoRoot
 	content, err := os.ReadFile(filepath.Join(mainPath, "source.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, "source", string(content))
@@ -747,7 +747,7 @@ func TestRecoveryRollbackCompletesAfterBackupPayloadRestoredButMetadataWriteFail
 	require.Error(t, err)
 	require.Empty(t, stdout)
 
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := repoRoot
 	content, err := os.ReadFile(filepath.Join(mainPath, "original.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, "original", string(content))
@@ -782,7 +782,7 @@ func TestRecoveryRollbackWithEvidenceAndMissingBackupResolvesWithoutMutation(t *
 	assert.NotContains(t, rollbackOut, "Copy method:")
 	assertRecoveryOutputOmitsInternalVocabulary(t, rollbackOut)
 
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := repoRoot
 	content, err := os.ReadFile(filepath.Join(mainPath, "original.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, "original", string(content))
@@ -889,7 +889,7 @@ func TestRecoveryResumeWithBackupRestoreSurfacesBothTransfersInJSON(t *testing.T
 	assert.Contains(t, backupTransfer["source_path"], ".restore-backup-")
 	assert.Equal(t, "recovery_restore_staging", backupTransfer["destination_role"])
 	assert.Contains(t, backupTransfer["materialization_destination"], ".recovery-restore-tmp-")
-	assert.Equal(t, filepath.Join(repoRoot, "main"), backupTransfer["published_destination"])
+	assert.Equal(t, repoRoot, backupTransfer["published_destination"])
 	assert.Equal(t, true, backupTransfer["checked_for_this_operation"])
 	assert.Equal(t, "auto", backupTransfer["requested_engine"])
 	assert.Contains(t, []any{"fast_copy", "normal_copy"}, backupTransfer["performance_class"])
@@ -1025,7 +1025,7 @@ func TestRecoveryResumeWithEvidenceAndMissingBackupRetriesRestore(t *testing.T) 
 	assert.Contains(t, resumeOut, "Recovery resume completed.")
 	assert.Contains(t, resumeOut, "Restored save point: "+sourceID)
 
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := repoRoot
 	content, err := os.ReadFile(filepath.Join(mainPath, "source.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, "source", string(content))
@@ -1067,7 +1067,7 @@ func TestRecoveryMissingBackupWithChangedWorkspaceMetadataFailsClosed(t *testing
 	assert.Equal(t, recovery.StatusActive, plan.Status)
 	assert.Equal(t, beforePins, documentedPinCount(t, repoRoot))
 
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := repoRoot
 	content, err := os.ReadFile(filepath.Join(mainPath, "original.txt"))
 	require.NoError(t, err)
 	assert.Equal(t, "original", string(content))
@@ -1093,7 +1093,7 @@ func TestRecoveryMissingRequiredBackupFailsClosedAndPlanStaysActive(t *testing.T
 	assert.Equal(t, recovery.StatusActive, plan.Status)
 	assert.Equal(t, beforePins, documentedPinCount(t, repoRoot))
 
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := repoRoot
 	content, readErr := os.ReadFile(filepath.Join(mainPath, "source.txt"))
 	require.NoError(t, readErr)
 	assert.Equal(t, "source", string(content))
@@ -1145,7 +1145,7 @@ func setupWholeRecoveryRepo(t *testing.T) (repoRoot, sourceID, originalID string
 	t.Cleanup(func() { require.NoError(t, os.Chdir(originalWd)) })
 	_, err = repo.Init(repoRoot, "test")
 	require.NoError(t, err)
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := repoRoot
 	require.NoError(t, os.Chdir(mainPath))
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "original.txt"), []byte("original"), 0644))
 	originalID = savePointIDFromCLI(t, "original")
@@ -1364,7 +1364,7 @@ func createWholeResumePlanRequiringBackupRestore(t *testing.T, repoRoot, sourceI
 	require.NoError(t, err)
 	cfg, err := worktree.NewManager(repoRoot).Get("main")
 	require.NoError(t, err)
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := repoRoot
 	preEvidence, err := restoreplan.WorkspaceEvidence(repoRoot, "main")
 	require.NoError(t, err)
 	backupPath := mainPath + ".restore-backup-transfer"
@@ -1417,7 +1417,7 @@ func requireTransferMap(t *testing.T, transfer any) map[string]any {
 
 func assertRecoveryResumeRestoreTransfer(t *testing.T, record map[string]any, repoRoot, sourceID string) {
 	t.Helper()
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := repoRoot
 	assert.Equal(t, "restore-run-primary", record["transfer_id"])
 	assert.Equal(t, "restore", record["operation"])
 	assert.Equal(t, "materialization", record["phase"])
@@ -1429,7 +1429,7 @@ func assertRecoveryResumeRestoreTransfer(t *testing.T, record map[string]any, re
 	assert.Equal(t, "restore_staging", record["destination_role"])
 	assert.Contains(t, record["materialization_destination"], ".restore-tmp-")
 	assert.NotEqual(t, mainPath, record["materialization_destination"])
-	assert.Equal(t, repoRoot, record["capability_probe_path"])
+	assert.Equal(t, filepath.Dir(repoRoot), record["capability_probe_path"])
 	assert.Equal(t, mainPath, record["published_destination"])
 	assert.Equal(t, true, record["checked_for_this_operation"])
 	assert.Equal(t, "auto", record["requested_engine"])
@@ -1439,7 +1439,7 @@ func assertRecoveryResumeRestoreTransfer(t *testing.T, record map[string]any, re
 }
 
 func testRecoveryStatusTransfer(repoRoot, sourceID string) transfer.Record {
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := repoRoot
 	return transfer.Record{
 		TransferID:                 "persisted-restore-transfer",
 		Operation:                  "restore",

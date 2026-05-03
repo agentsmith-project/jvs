@@ -8,7 +8,7 @@ commands with the tools you actually use.
 Use `<save>` for the full save point ID printed by `jvs save`, or for an ID
 copied from `jvs history` when JVS accepts it.
 Use `<restore-plan-id>` for the plan ID printed by a restore preview.
-Use `<remove-plan-id>` for the plan ID printed by a workspace remove preview.
+Use `<workspace-delete-plan-id>` for the plan ID printed by a workspace delete preview.
 Use `<cleanup-plan-id>` for the plan ID printed by a cleanup preview.
 Anything shown in angle brackets is a placeholder, not text to type exactly.
 Replace it with the value JVS printed or with the folder path on your machine:
@@ -18,7 +18,7 @@ Replace it with the value JVS printed or with the folder path on your machine:
 | `<save>` | A save point ID from `jvs save`, or an ID from `jvs history` that JVS accepts |
 | `<baseline-save>` | The save point ID for the baseline you saved earlier |
 | `<restore-plan-id>` | The plan ID printed by the restore preview you just reviewed |
-| `<remove-plan-id>` | The plan ID printed by the workspace remove preview you just reviewed |
+| `<workspace-delete-plan-id>` | The plan ID printed by the workspace delete preview you just reviewed |
 | `<cleanup-plan-id>` | The plan ID printed by the cleanup preview you just reviewed |
 | `<view-path>` | The read-only file or folder path printed by `jvs view` |
 | `<view-id>` | The view ID printed by `jvs view` |
@@ -50,7 +50,7 @@ want.
 | [Course Or Research Materials Pack](#course-or-research-materials-pack) | Lessons, readings, slides, handouts, or research packets | Find a file with `history --path`, restore a file or folder |
 | [Data Experiment](#data-experiment) | Model runs, parameters, input data, or generated results | Save baselines, inspect old config, restore with `--save-first` |
 | [Data Cleaning And Analysis Recovery](#data-cleaning-and-analysis-recovery) | Cleaned tables, analysis files, or accidental deletes | Find a missing file, view it, restore one path |
-| [Agent Sandbox](#agent-sandbox) | Risky agent, script, or teammate experiments | Create another workspace, remove it, keep cleanup separate |
+| [Agent Sandbox](#agent-sandbox) | Risky agent, script, or teammate experiments | Create another workspace, delete it, keep cleanup separate |
 | [Game Or Design Asset Pack](#game-or-design-asset-pack) | Binary assets, art exports, audio, config, and notes | Save asset milestones, view old assets, restore one asset folder |
 | [Everyday Document Project](#everyday-document-project) | Reports, proposals, campaign copy, or ordinary writing | Save writing milestones, view old drafts, restore a file or folder |
 
@@ -550,7 +550,7 @@ the two safety options when you are ready.
 ### Next Step
 
 Write save messages that include the question you were testing, such as
-`run 003 smaller sample and no outlier removal`. That makes
+`run 003 smaller sample and no outlier deletion`. That makes
 `jvs history --grep` useful later.
 
 ## Data Cleaning And Analysis Recovery
@@ -702,16 +702,16 @@ jvs status
 jvs workspace list
 ```
 
-When you are done with the experiment folder, preview its removal:
+When you are done with the experiment folder, preview its deletion:
 
 ```bash
-jvs workspace remove agent-run-42
+jvs workspace delete agent-run-42
 ```
 
 Review the folder path and printed `Run:` command, then run it:
 
 ```bash
-jvs workspace remove --run <remove-plan-id>
+jvs workspace delete --run <workspace-delete-plan-id>
 ```
 
 Check that it is gone:
@@ -733,7 +733,7 @@ jvs cleanup run --plan-id <cleanup-plan-id>
 - `jvs workspace list` shows both `main` and `agent-run-42` after creation.
 - The agent writes files under the printed experiment folder, not under
   `main`.
-- After the remove plan runs, `jvs workspace list` no longer shows
+- After the delete plan runs, `jvs workspace list` no longer shows
   `agent-run-42`, and the printed experiment folder path is gone.
 - Cleanup, if you choose to run it, reports completion after its own preview
   and its own plan ID. A fresh cleanup preview should show less storage to
@@ -742,11 +742,11 @@ jvs cleanup run --plan-id <cleanup-plan-id>
 ### Common Pitfalls
 
 - Do not paste the agent's commands into `main` if the goal is isolation.
-- `workspace remove` is preview-first; the preview alone does not delete the
+- `workspace delete` is preview-first; the preview alone does not delete the
   folder.
-- If the experiment workspace has unsaved changes, decide whether those files
-  are still needed before using `--force` on the remove preview.
-- Do not treat cleanup as part of workspace removal. It is a separate storage
+- If the experiment workspace has unsaved changes, save or restore those files
+  before deleting the workspace.
+- Do not treat cleanup as part of workspace deletion. It is a separate storage
   task with a separate review step.
 
 ### Next Step

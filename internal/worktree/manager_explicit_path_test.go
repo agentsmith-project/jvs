@@ -110,7 +110,7 @@ func TestManagerCreateStartedFromSnapshotAtRejectsExistingTargetFolder(t *testin
 func TestManagerCreateStartedFromSnapshotAtRejectsTargetInsideExistingWorkspace(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	snapshotID := createManagerSnapshot(t, repoPath)
-	target := filepath.Join(repoPath, "main", "nested-workspace")
+	target := filepath.Join(repoPath, "nested-workspace")
 
 	_, err := worktree.NewManager(repoPath).CreateStartedFromSnapshotAt(worktree.StartedFromSnapshotRequest{
 		Folder:     target,

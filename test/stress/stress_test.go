@@ -38,7 +38,7 @@ func TestStress_10kFiles(t *testing.T) {
 	}
 	_ = r
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 
 	// Create 10,000 files in nested directories
 	t.Log("Creating 10,000 files...")
@@ -94,7 +94,7 @@ func TestStress_LargePayload(t *testing.T) {
 	}
 	_ = r
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 
 	// Create files totaling ~1GB
 	// Use 100 files of ~10MB each
@@ -149,7 +149,7 @@ func TestStress_ManySnapshots(t *testing.T) {
 	}
 	_ = r
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 
 	// Create some initial files
 	createManyFiles(t, mainPath, 100, 1024) // 100 files, 1KB each
@@ -226,7 +226,7 @@ func TestStress_DeepNesting(t *testing.T) {
 	}
 	_ = r
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 
 	// Create deeply nested structure (100 levels deep)
 	t.Log("Creating deeply nested structure...")
@@ -264,7 +264,7 @@ func TestStress_ManySymlinks(t *testing.T) {
 	}
 	_ = r
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 
 	// Create many symlinks
 	t.Log("Creating many symlinks...")
@@ -302,7 +302,7 @@ func TestStress_LongFilenames(t *testing.T) {
 	}
 	_ = r
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 
 	// Create files with long names (200+ characters)
 	t.Log("Creating files with long names...")
@@ -339,7 +339,7 @@ func TestStress_MemoryUsage(t *testing.T) {
 	}
 	_ = r
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 
 	// Create files
 	createManyFiles(t, mainPath, 1000, 10*1024) // 10KB each
@@ -368,6 +368,16 @@ func TestStress_MemoryUsage(t *testing.T) {
 }
 
 // Helper functions
+
+func mainPayloadPath(t testing.TB, repoPath string) string {
+	t.Helper()
+
+	payloadPath, err := repo.WorktreePayloadPath(repoPath, "main")
+	if err != nil {
+		t.Fatalf("main payload path: %v", err)
+	}
+	return payloadPath
+}
 
 // createManyFiles creates many files with random content.
 func createManyFiles(t *testing.T, dir string, count, fileSize int) {
@@ -514,7 +524,7 @@ func BenchmarkSnapshot_100Files(b *testing.B) {
 	r, _ := repo.Init(repoPath, "bench")
 	_ = r
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(b, repoPath)
 	createManyFiles(&testing.T{}, mainPath, 100, 1024)
 
 	creator := snapshot.NewCreator(repoPath, "copy")

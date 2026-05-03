@@ -123,7 +123,7 @@ func setupCloneHistoryRepo(t *testing.T) (string, string, model.SnapshotID) {
 	repoPath := t.TempDir()
 	r, err := repo.Init(repoPath, "test")
 	require.NoError(t, err)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := requireMainWorktreePath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644))
 	desc, err := snapshot.NewCreator(repoPath, model.EngineCopy).Create("main", "test", nil)
 	require.NoError(t, err)
@@ -133,10 +133,19 @@ func setupCloneHistoryRepo(t *testing.T) (string, string, model.SnapshotID) {
 func createCloneHistorySavePoint(t *testing.T, repoPath, fileName, content string) model.SnapshotID {
 	t.Helper()
 
-	require.NoError(t, os.WriteFile(filepath.Join(repoPath, "main", fileName), []byte(content), 0644))
+	mainPath := requireMainWorktreePath(t, repoPath)
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, fileName), []byte(content), 0644))
 	desc, err := snapshot.NewCreator(repoPath, model.EngineCopy).Create("main", content, nil)
 	require.NoError(t, err)
 	return desc.SnapshotID
+}
+
+func requireMainWorktreePath(t testing.TB, repoPath string) string {
+	t.Helper()
+
+	path, err := repo.WorktreePayloadPath(repoPath, "main")
+	require.NoError(t, err)
+	return path
 }
 
 func validCloneHistoryManifest(repoID string, ids []model.SnapshotID) Manifest {

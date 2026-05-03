@@ -214,7 +214,7 @@ func TestCloneRejectsTargetInsideSourceMainWorkspaceBeforeStaging(t *testing.T) 
 	})
 }
 
-func TestCloneRejectsTargetInsideSourceProjectRootBeforeStaging(t *testing.T) {
+func TestCloneRejectsTargetInsideInitializedSourceMainWorkspaceBeforeStaging(t *testing.T) {
 	repoRoot, mainWorkspace := setupSplitCloneSourceRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(mainWorkspace, "app.txt"), []byte("main v1"), 0644))
 	_ = createCloneSavePoint(t, repoRoot, "main", "main baseline")
@@ -227,7 +227,7 @@ func TestCloneRejectsTargetInsideSourceProjectRootBeforeStaging(t *testing.T) {
 		RequestedEngine: model.EngineCopy,
 	})
 
-	assertTargetInsideSourceProjectError(t, err)
+	assertTargetInsideSourceWorkspaceError(t, err)
 	assert.NoDirExists(t, target)
 	assertNoCloneStaging(t, repoRoot)
 }
@@ -513,7 +513,9 @@ func setupSplitCloneSourceRepo(t *testing.T) (string, string) {
 	repoRoot := filepath.Join(t.TempDir(), "source")
 	_, err := repo.Init(repoRoot, "source")
 	require.NoError(t, err)
-	return repoRoot, filepath.Join(repoRoot, "main")
+	mainWorkspace, err := repo.WorktreePayloadPath(repoRoot, "main")
+	require.NoError(t, err)
+	return repoRoot, mainWorkspace
 }
 
 func withWorkingDir(t *testing.T, dir string) {

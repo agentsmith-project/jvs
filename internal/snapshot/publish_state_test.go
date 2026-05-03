@@ -199,7 +199,7 @@ func createPublishStateSnapshot(t *testing.T) (string, model.SnapshotID) {
 	repoPath := t.TempDir()
 	_, err := repo.Init(repoPath, "test")
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(repoPath, "main", "file.txt"), []byte("content"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(mainPayloadPath(t, repoPath), "file.txt"), []byte("content"), 0644))
 
 	desc, err := snapshot.NewCreator(repoPath, model.EngineCopy).Create("main", "publish-state", nil)
 	require.NoError(t, err)

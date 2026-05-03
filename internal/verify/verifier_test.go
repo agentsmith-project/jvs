@@ -27,8 +27,16 @@ func setupTestRepo(t *testing.T) string {
 	return dir
 }
 
+func mainPayloadPath(t *testing.T, repoPath string) string {
+	t.Helper()
+
+	payloadPath, err := repo.WorktreePayloadPath(repoPath, "main")
+	require.NoError(t, err)
+	return payloadPath
+}
+
 func createTestSnapshot(t *testing.T, repoPath string) model.SnapshotID {
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -39,7 +47,7 @@ func createTestSnapshot(t *testing.T, repoPath string) model.SnapshotID {
 
 func createCompressedTestSnapshot(t *testing.T, repoPath string) model.SnapshotID {
 	t.Helper()
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("compressed content"), 0644))
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -434,7 +442,7 @@ func TestVerifier_VerifyAll_WithMixedResults(t *testing.T) {
 	snapID1 := createTestSnapshot(t, repoPath)
 
 	// Add more content for second snapshot
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file2.txt"), []byte("more content"), 0644)
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
 	_, err := creator.Create("main", "second", nil)

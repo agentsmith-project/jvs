@@ -178,61 +178,55 @@ jvs workspace new ../experiment-2 --from <save>
 
 or move/remove the existing folder yourself and retry.
 
-## Workspace Remove Only Printed A Plan
+## Workspace Delete Only Printed A Plan
 
-That is expected. Workspace remove is two-step:
+That is expected. Workspace delete is two-step:
 
 ```bash
-jvs workspace remove experiment
-jvs workspace remove --run <remove-plan-id>
+jvs workspace delete experiment
+jvs workspace delete --run <workspace-delete-plan-id>
 ```
 
 What is okay:
 
-- The preview says no workspace folder was removed.
+- The preview says no workspace folder was deleted.
 - It shows the `Folder` and `Workspace`.
 - It prints a `Run:` command.
 
 Review the folder path before running the plan.
 
-## Workspace Remove Refuses Because Of Local Changes
+## Workspace Delete Refuses Because Of Local Changes
 
 JVS is protecting local changes in that workspace. If those changes matter,
 go to that folder and save them first:
 
 ```bash
 cd <workspace-folder>
-jvs save -m "before removing workspace"
+jvs save -m "before deleting workspace"
 ```
 
-If the local changes are intentionally disposable, preview removal with:
+If the local changes are intentionally disposable, restore the workspace to the
+save point you want before deleting it.
+
+## Cannot Delete `main`
+
+The `main` workspace cannot be deleted:
 
 ```bash
-jvs workspace remove experiment --force
+jvs workspace delete main
 ```
 
-Be careful: `--force` means the remove run may throw away current local changes
-in that workspace folder. It still previews first.
-
-## Cannot Remove `main`
-
-The `main` workspace cannot be removed:
-
-```bash
-jvs workspace remove main
-```
-
-This protects the originally adopted folder. If you want to remove a separate
+This protects the originally adopted folder. If you want to delete a separate
 workspace, first list workspaces and choose the one you created:
 
 ```bash
 jvs workspace list
-jvs workspace remove experiment
+jvs workspace delete experiment
 ```
 
 ## Cleanup Did Not Delete A Workspace Folder
 
-That is expected. Cleanup is not workspace removal.
+That is expected. Cleanup is not workspace deletion.
 
 Cleanup only reviews save point storage:
 
@@ -241,19 +235,19 @@ jvs cleanup preview
 jvs cleanup run --plan-id <cleanup-plan-id>
 ```
 
-To remove a workspace folder, use:
+To delete a workspace folder, use:
 
 ```bash
-jvs workspace remove experiment
-jvs workspace remove --run <remove-plan-id>
+jvs workspace delete experiment
+jvs workspace delete --run <workspace-delete-plan-id>
 ```
 
-## Workspace Remove Did Not Free Save Point Storage
+## Workspace Delete Did Not Free Save Point Storage
 
-That is expected. Workspace remove deletes the selected workspace folder and
+That is expected. Workspace delete deletes the selected workspace folder and
 workspace entry. It does not delete save point storage.
 
-After removing a workspace, run cleanup separately if you want to review
+After deleting a workspace, run cleanup separately if you want to review
 storage that may no longer be protected:
 
 ```bash

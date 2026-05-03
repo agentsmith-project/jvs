@@ -17,7 +17,7 @@ Placeholders in the examples mean:
 | --- | --- |
 | `<save>` | A save point ID from `jvs save` or `jvs history` |
 | `<restore-plan-id>` | The plan ID from the restore preview you just reviewed |
-| `<remove-plan-id>` | The plan ID from the workspace remove preview you just reviewed |
+| `<workspace-delete-plan-id>` | The plan ID from the workspace delete preview you just reviewed |
 | `<cleanup-plan-id>` | The plan ID from the cleanup preview you just reviewed |
 | `<view-path>` | The read-only path printed by `jvs view` |
 | `<view-id>` | The view ID printed by `jvs view` |
@@ -229,7 +229,7 @@ Choose `--save-first` when you might want today's work later. Choose
 
 ## Keep Preview And Run Together
 
-Restore, workspace removal, and cleanup are preview-first. The first command
+Restore, workspace deletion, and cleanup are preview-first. The first command
 shows a plan. The second command runs that same plan.
 
 Do not mix plan IDs between operations:
@@ -237,7 +237,7 @@ Do not mix plan IDs between operations:
 | Preview | Matching run |
 | --- | --- |
 | `jvs restore <save>` | `jvs restore --run <restore-plan-id>` |
-| `jvs workspace remove experiment` | `jvs workspace remove --run <remove-plan-id>` |
+| `jvs workspace delete experiment` | `jvs workspace delete --run <workspace-delete-plan-id>` |
 | `jvs cleanup preview` | `jvs cleanup run --plan-id <cleanup-plan-id>` |
 
 Use the `Run:` line printed by the preview you just reviewed. If you preview
@@ -282,28 +282,28 @@ Save useful progress inside the experiment workspace:
 jvs save -m "experiment result before review"
 ```
 
-When you are done, go back to your original folder before removing the
+When you are done, go back to your original folder before deleting the
 experiment workspace:
 
 ```bash
 cd /path/to/main-folder
-jvs workspace remove experiment
-jvs workspace remove --run <remove-plan-id>
+jvs workspace delete experiment
+jvs workspace delete --run <workspace-delete-plan-id>
 ```
 
-Do not run removal from inside the folder you are about to remove. After the
+Do not run deletion from inside the folder you are about to delete. After the
 run, check from the original folder:
 
 ```bash
 jvs workspace list
 ```
 
-The removed workspace should no longer appear.
+The deleted workspace should no longer appear.
 
 ## Clean Up Only After Reviewing
 
 Cleanup is for save point storage JVS no longer needs. It is not an undo
-command, and it does not remove workspace folders.
+command, and it does not delete workspace folders.
 
 Start with a preview:
 
@@ -327,7 +327,7 @@ jvs cleanup run --plan-id <cleanup-plan-id>
 
 Good times to consider cleanup:
 
-- after removing an experiment workspace you no longer need
+- after deleting an experiment workspace you no longer need
 - after confirming the remaining workspaces still have the save points you
   care about
 - when storage use matters and the preview clearly lists what JVS can remove
@@ -335,7 +335,7 @@ Good times to consider cleanup:
 Common cleanup mistakes:
 
 - using cleanup when you meant restore
-- using cleanup when you meant `jvs workspace remove <name>`
+- using cleanup when you meant `jvs workspace delete <name>`
 - running an old cleanup plan after making more changes; preview again instead
 
 ## Back Up And Move Folders Carefully

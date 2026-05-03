@@ -15,21 +15,24 @@ import (
 	"github.com/agentsmith-project/jvs/internal/clonehistory"
 	"github.com/agentsmith-project/jvs/internal/gc"
 	"github.com/agentsmith-project/jvs/internal/integrity"
+	"github.com/agentsmith-project/jvs/internal/lifecycle"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/internal/verify"
 	"github.com/agentsmith-project/jvs/internal/worktree"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/agentsmith-project/jvs/pkg/model"
 	"github.com/agentsmith-project/jvs/pkg/pathutil"
 )
 
 // Finding represents a detected issue.
 type Finding struct {
-	Category    string `json:"category"`
-	Description string `json:"description"`
-	Severity    string `json:"severity"`
-	ErrorCode   string `json:"error_code,omitempty"`
-	Path        string `json:"path,omitempty"`
+	Category               string `json:"category"`
+	Description            string `json:"description"`
+	Severity               string `json:"severity"`
+	ErrorCode              string `json:"error_code,omitempty"`
+	Path                   string `json:"path,omitempty"`
+	RecommendedNextCommand string `json:"recommended_next_command,omitempty"`
 }
 
 // Result contains doctor check results.
@@ -122,6 +125,7 @@ const (
 	ErrorCodeTmpOrphan                   = "E_TMP_ORPHAN"
 	ErrorCodeAuditScanFailed             = "E_AUDIT_SCAN_FAILED"
 	ErrorCodeCloneHistoryInvalid         = "E_CLONE_HISTORY_INVALID"
+	ErrorCodeLifecyclePending            = "E_LIFECYCLE_PENDING"
 )
 
 var repairRegistry = []repairActionDef{
@@ -233,6 +237,12 @@ func RuntimeRepairActionIDs() []string {
 
 // Repair executes the specified repair actions.
 func (d *Doctor) Repair(actions []string) ([]RepairResult, error) {
+	if pending, err := lifecycle.ListPendingOperations(d.repoRoot); err != nil {
+		return nil, fmt.Errorf("inspect lifecycle operations: %w", err)
+	} else if len(pending) > 0 {
+		return lifecyclePendingRepairResults(actions, pending[0]), nil
+	}
+
 	var results []RepairResult
 	var lockedActions []string
 	for _, action := range actions {
@@ -259,6 +269,20 @@ func (d *Doctor) Repair(actions []string) ([]RepairResult, error) {
 		return err
 	})
 	return results, err
+}
+
+func lifecyclePendingRepairResults(actions []string, pending lifecycle.OperationRecord) []RepairResult {
+	results := make([]RepairResult, 0, len(actions))
+	message := fmt.Sprintf("skipped because lifecycle operation %s is pending; rerun: %s",
+		pending.OperationID, pending.RecommendedNextCommand)
+	for _, action := range actions {
+		results = append(results, RepairResult{
+			Action:  action,
+			Success: false,
+			Message: message,
+		})
+	}
+	return results
 }
 
 func (d *Doctor) repair(actions []string) ([]RepairResult, error) {
@@ -397,83 +421,104 @@ func (d *Doctor) externalWorkspaceRebindPlan(cfg *model.WorktreeConfig) (string,
 	if strings.TrimSpace(cfg.RealPath) == "" || !filepath.IsAbs(cfg.RealPath) {
 		return "", false, false, ""
 	}
-	candidate := filepath.Join(filepath.Dir(d.repoRoot), cfg.Name)
-	if d.externalWorkspaceBindingIsDestinationLocal(cfg, candidate) {
-		current, reason := d.externalWorkspaceLocatorIsCurrent(candidate)
-		if reason != "" {
-			return "", true, false, reason
-		}
-		if !current {
-			candidate, ok, reason := d.externalWorkspaceRebindCandidate(cfg, candidate)
-			return candidate, true, ok, reason
-		}
+	current, reason := d.externalWorkspaceBindingIsCurrent(cfg)
+	if current {
 		return "", false, true, ""
 	}
-	candidate, ok, reason := d.externalWorkspaceRebindCandidate(cfg, candidate)
-	return candidate, true, ok, reason
+	candidate, ok, candidateReason := d.currentWorkspaceRebindCandidate(cfg)
+	if ok {
+		return candidate, true, true, ""
+	}
+	if candidateReason != "" {
+		return "", true, false, candidateReason
+	}
+	if reason == "" {
+		reason = "no current workspace locator evidence"
+	}
+	return "", true, false, reason
 }
 
-func (d *Doctor) externalWorkspaceBindingIsDestinationLocal(cfg *model.WorktreeConfig, candidate string) bool {
+func (d *Doctor) externalWorkspaceBindingIsCurrent(cfg *model.WorktreeConfig) (bool, string) {
 	if cfg == nil || strings.TrimSpace(cfg.RealPath) == "" || !filepath.IsAbs(cfg.RealPath) {
-		return false
+		return false, "configured real path is missing or relative"
 	}
-	configured, ok := cleanAbsPathForCompare(cfg.RealPath)
-	if !ok {
-		return false
-	}
-	local, ok := cleanAbsPathForCompare(candidate)
-	if !ok {
-		return false
-	}
-
-	info, err := os.Lstat(local)
+	info, err := os.Lstat(cfg.RealPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return configured == local
+			return false, "registered workspace folder is missing"
 		}
-		return false
+		return false, fmt.Sprintf("inspect registered workspace folder: %v", err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return false
-	}
-	if configured == local {
-		return true
+		return false, "registered workspace folder is a symlink"
 	}
 	if !info.IsDir() {
-		return false
+		return false, "registered workspace path is not a directory"
 	}
-	return pathsReferToSameLocation(configured, local)
+	if d.workspacePathInsideRepoRoot(cfg.RealPath) {
+		return true, ""
+	}
+	matches, err := repo.WorkspaceLocatorMatchesRepoWorkspace(cfg.RealPath, d.repoRoot, cfg.Name)
+	if err != nil {
+		return false, fmt.Sprintf("inspect registered workspace locator: %v", err)
+	}
+	if !matches {
+		return false, "registered workspace locator is not bound to this repository and workspace"
+	}
+	return true, ""
 }
 
-func (d *Doctor) externalWorkspaceRebindCandidate(cfg *model.WorktreeConfig, candidate string) (string, bool, string) {
-	if filepath.Base(filepath.Clean(cfg.RealPath)) != cfg.Name {
-		return "", false, "configured folder name does not match workspace name"
-	}
-	info, err := os.Lstat(candidate)
+func (d *Doctor) currentWorkspaceRebindCandidate(cfg *model.WorktreeConfig) (string, bool, string) {
+	cwd, err := os.Getwd()
 	if err != nil {
-		if os.IsNotExist(err) {
-			return "", false, "destination sibling folder is missing"
+		return "", false, fmt.Sprintf("inspect current directory: %v", err)
+	}
+	for current := filepath.Clean(cwd); ; current = filepath.Dir(current) {
+		locator, ok, err := repo.ReadWorkspaceLocator(current)
+		if err != nil {
+			return "", false, fmt.Sprintf("inspect current workspace locator: %v", err)
 		}
-		return "", false, fmt.Sprintf("inspect destination sibling folder: %v", err)
+		if ok {
+			matches, reason, err := d.currentWorkspaceLocatorMatchesRepairIdentity(locator, cfg)
+			if err != nil {
+				return "", false, fmt.Sprintf("inspect current workspace locator: %v", err)
+			}
+			if !matches {
+				return "", false, reason
+			}
+			canonical, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return "", false, fmt.Sprintf("resolve current workspace folder: %v", err)
+			}
+			candidate := filepath.Clean(canonical)
+			if pathsReferToSameLocation(cfg.RealPath, candidate) {
+				return "", false, "current workspace locator is at the registered workspace folder, not moved workspace evidence"
+			}
+			return candidate, true, ""
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return "", false, "destination sibling folder is a symlink"
-	}
-	if !info.IsDir() {
-		return "", false, "destination sibling path is not a directory"
-	}
-	if ok, reason := d.externalWorkspaceCandidateMatchesRecordedSource(cfg, candidate); !ok {
-		return "", false, reason
-	}
-	return candidate, true, ""
+	return "", false, ""
 }
 
-func (d *Doctor) externalWorkspaceLocatorIsCurrent(candidate string) (bool, string) {
-	matches, err := repo.WorkspaceLocatorMatchesRepo(candidate, d.repoRoot)
-	if err != nil {
-		return false, fmt.Sprintf("inspect destination workspace locator: %v", err)
+func (d *Doctor) currentWorkspaceLocatorMatchesRepairIdentity(locator repo.WorkspaceLocator, cfg *model.WorktreeConfig) (bool, string, error) {
+	if locator.WorkspaceName != cfg.Name {
+		return false, fmt.Sprintf("current workspace locator points to workspace %q", locator.WorkspaceName), nil
 	}
-	return matches, ""
+	r, err := repo.DiscoverControlRepo(d.repoRoot)
+	if err != nil {
+		return false, "", fmt.Errorf("inspect target repository identity: %w", err)
+	}
+	if strings.TrimSpace(r.RepoID) == "" {
+		return false, "target repository has no repo_id", nil
+	}
+	if locator.RepoID != r.RepoID {
+		return false, "current workspace locator repo_id does not match target repository", nil
+	}
+	return true, "", nil
 }
 
 func (d *Doctor) externalWorkspaceCandidateMatchesRecordedSource(cfg *model.WorktreeConfig, candidate string) (bool, string) {
@@ -545,31 +590,33 @@ func cleanAbsPathForCompare(path string) (string, bool) {
 	return filepath.Clean(abs), true
 }
 
+func (d *Doctor) workspacePathInsideRepoRoot(path string) bool {
+	repoRoot, rootOK := cleanAbsPathForCompare(d.repoRoot)
+	workspacePath, pathOK := cleanAbsPathForCompare(path)
+	if !rootOK || !pathOK {
+		return false
+	}
+	if cleanPathContains(repoRoot, workspacePath) {
+		return true
+	}
+	repoPhysical, repoErr := filepath.EvalSymlinks(repoRoot)
+	pathPhysical, pathErr := filepath.EvalSymlinks(workspacePath)
+	if repoErr != nil || pathErr != nil {
+		return false
+	}
+	return cleanPathContains(filepath.Clean(repoPhysical), filepath.Clean(pathPhysical))
+}
+
+func cleanPathContains(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && !filepath.IsAbs(rel))
+}
+
 func (d *Doctor) repairCleanTmp() RepairResult {
 	cleaned := 0
-
-	// Clean root-level JVS temp files without recursing into worktree payloads.
-	if entries, err := os.ReadDir(d.repoRoot); err == nil {
-		for _, entry := range entries {
-			if !strings.HasPrefix(entry.Name(), ".jvs-tmp-") {
-				continue
-			}
-			path := filepath.Join(d.repoRoot, entry.Name())
-			info, err := os.Lstat(path)
-			if err != nil {
-				continue
-			}
-			if info.IsDir() {
-				if err := os.RemoveAll(path); err == nil {
-					cleaned++
-				}
-				continue
-			}
-			if err := os.Remove(path); err == nil {
-				cleaned++
-			}
-		}
-	}
 
 	// Clean orphan snapshot .tmp directories
 	snapshotsDir, err := repo.SnapshotsDirPath(d.repoRoot)
@@ -1001,38 +1048,64 @@ func pluralSuffix(count int) string {
 func (d *Doctor) Check(strict bool) (*Result, error) {
 	result := &Result{Healthy: true}
 
-	// 1. Check format version
+	// 1. Check pending lifecycle operations before ordinary drift repair hints.
+	d.checkLifecyclePending(result)
+
+	// 2. Check format version
 	d.checkFormatVersion(result)
 
-	// 2. Check repository mutation lock state
+	// 3. Check repository mutation lock state
 	d.checkMutationLock(result)
 
-	// 3. Check worktrees
+	// 4. Check workspaces
 	d.checkWorktrees(result)
 
-	// 4. Check snapshot completion markers
+	// 5. Check save point completion markers
 	d.checkReadyMarkers(result, strict)
 
-	// 5. Check descriptor parent links and worktree head/latest reachability
+	// 6. Check descriptor parent links and workspace source reachability
 	d.checkLineage(result)
 
-	// 6. Check for orphan intents
+	// 7. Check for orphan operations
 	d.checkOrphanIntents(result)
 
-	// 7. Check snapshot integrity (if strict)
+	// 8. Check save point integrity (if strict)
 	if strict {
 		d.checkImportedCloneHistory(result)
 		d.checkSnapshotIntegrity(result)
-		// 8. Check audit chain (if strict)
+		// 9. Check audit chain (if strict)
 		d.checkAuditChain(result)
 	}
 
-	// 9. Check for orphan tmp files
+	// 10. Check for orphan tmp files
 	d.checkOrphanTmp(result)
 
 	result.updateHealthFromFindings()
 
 	return result, nil
+}
+
+func (d *Doctor) checkLifecyclePending(result *Result) {
+	pending, err := lifecycle.ListPendingOperations(d.repoRoot)
+	if err != nil {
+		result.Findings = append(result.Findings, Finding{
+			Category:    "lifecycle",
+			Description: fmt.Sprintf("cannot inspect lifecycle operations: %v", err),
+			Severity:    "error",
+			ErrorCode:   ErrorCodeLifecyclePending,
+		})
+		return
+	}
+	for _, op := range pending {
+		result.Findings = append(result.Findings, Finding{
+			Category: "lifecycle",
+			Description: fmt.Sprintf("pending lifecycle operation %s (%s) is in phase %s; rerun: %s",
+				op.OperationID, op.OperationType, op.Phase, op.RecommendedNextCommand),
+			Severity:               "error",
+			ErrorCode:              errclass.ErrLifecyclePending.Code,
+			RecommendedNextCommand: op.RecommendedNextCommand,
+		})
+	}
 }
 
 func (d *Doctor) checkMutationLock(result *Result) {
@@ -1197,37 +1270,20 @@ func (d *Doctor) checkExternalWorkspaceLocalBinding(result *Result, cfg *model.W
 	if !filepath.IsAbs(cfg.RealPath) {
 		return
 	}
-	candidate := filepath.Join(filepath.Dir(d.repoRoot), cfg.Name)
-	if !d.externalWorkspaceBindingIsDestinationLocal(cfg, candidate) {
-		result.Findings = append(result.Findings, Finding{
-			Category:    "worktree",
-			Description: fmt.Sprintf("worktree '%s' path binding is not destination-local; run doctor --repair-runtime", cfg.Name),
-			Severity:    "error",
-			ErrorCode:   ErrorCodeWorktreePathBindingInvalid,
-			Path:        cfg.RealPath,
-		})
+	current, reason := d.externalWorkspaceBindingIsCurrent(cfg)
+	if current {
 		return
 	}
-	locatorCurrent, reason := d.externalWorkspaceLocatorIsCurrent(candidate)
-	if reason != "" {
-		result.Findings = append(result.Findings, Finding{
-			Category:    "worktree",
-			Description: fmt.Sprintf("worktree '%s' workspace locator invalid: %s; run doctor --repair-runtime", cfg.Name, reason),
-			Severity:    "error",
-			ErrorCode:   ErrorCodeWorktreePathBindingInvalid,
-			Path:        filepath.Join(candidate, repo.JVSDirName),
-		})
-		return
+	if reason == "" {
+		reason = "workspace path binding is not current"
 	}
-	if !locatorCurrent {
-		result.Findings = append(result.Findings, Finding{
-			Category:    "worktree",
-			Description: fmt.Sprintf("worktree '%s' workspace locator is not bound to this repository; run doctor --repair-runtime", cfg.Name),
-			Severity:    "error",
-			ErrorCode:   ErrorCodeWorktreePathBindingInvalid,
-			Path:        filepath.Join(candidate, repo.JVSDirName),
-		})
-	}
+	result.Findings = append(result.Findings, Finding{
+		Category:    "worktree",
+		Description: fmt.Sprintf("worktree '%s' path binding invalid: %s; run doctor --repair-runtime", cfg.Name, reason),
+		Severity:    "error",
+		ErrorCode:   ErrorCodeWorktreePathBindingInvalid,
+		Path:        cfg.RealPath,
+	})
 }
 
 func (d *Doctor) checkWorktreeSnapshotRef(result *Result, worktreeName, field string, id model.SnapshotID) bool {
@@ -1643,23 +1699,6 @@ func (d *Doctor) checkSnapshotIntegrity(result *Result) {
 }
 
 func (d *Doctor) checkOrphanTmp(result *Result) {
-	// Check root-level JVS temp files without recursing into worktree payloads.
-	if entries, err := os.ReadDir(d.repoRoot); err == nil {
-		for _, entry := range entries {
-			name := entry.Name()
-			if !strings.HasPrefix(name, ".jvs-tmp-") {
-				continue
-			}
-			result.Findings = append(result.Findings, Finding{
-				Category:    "tmp",
-				Description: fmt.Sprintf("orphan temp file: %s", name),
-				Severity:    "info",
-				ErrorCode:   ErrorCodeTmpOrphan,
-				Path:        filepath.Join(d.repoRoot, name),
-			})
-		}
-	}
-
 	// Check for orphan snapshot .tmp directories
 	snapshotsDir, err := repo.SnapshotsDirPath(d.repoRoot)
 	if errors.Is(err, os.ErrNotExist) {

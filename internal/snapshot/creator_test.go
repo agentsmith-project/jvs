@@ -26,6 +26,14 @@ func setupTestRepo(t *testing.T) string {
 	return dir
 }
 
+func mainPayloadPath(t testing.TB, repoPath string) string {
+	t.Helper()
+
+	payloadPath, err := repo.WorktreePayloadPath(repoPath, "main")
+	require.NoError(t, err)
+	return payloadPath
+}
+
 func readDirNames(t *testing.T, path string) []string {
 	t.Helper()
 
@@ -42,7 +50,7 @@ func TestCreator_Create(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
 	// Add some content to main/
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("hello"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -71,9 +79,10 @@ func TestCreator_Create(t *testing.T) {
 
 func TestCreator_CreateRecordsCloneResultMetadata(t *testing.T) {
 	repoPath := setupTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
-	first := filepath.Join(mainPath, "first.bin")
-	second := filepath.Join(mainPath, "second.bin")
+	mainPath := mainPayloadPath(t, repoPath)
+	require.NoError(t, os.MkdirAll(filepath.Join(mainPath, "data"), 0755))
+	first := filepath.Join(mainPath, "data", "first.bin")
+	second := filepath.Join(mainPath, "data", "second.bin")
 	require.NoError(t, os.WriteFile(first, []byte("shared"), 0644))
 	if err := os.Link(first, second); err != nil {
 		t.Skipf("hardlink unavailable: %v", err)
@@ -108,7 +117,7 @@ func TestCreatorCreateReturnsRepoBusyWhenMutationLockHeld(t *testing.T) {
 func TestCreator_ReadyProtocol(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -129,7 +138,7 @@ func TestCreator_CreateRejectsReservedWorkspaceRootPayloadNames(t *testing.T) {
 	for _, name := range []string{".READY", ".READY.gz"} {
 		t.Run(name, func(t *testing.T) {
 			repoPath := setupTestRepo(t)
-			mainPath := filepath.Join(repoPath, "main")
+			mainPath := mainPayloadPath(t, repoPath)
 			reservedPath := filepath.Join(mainPath, name)
 			require.NoError(t, os.WriteFile(reservedPath, []byte("user data"), 0644))
 
@@ -187,7 +196,7 @@ func TestCreator_CreatePartialAdoptedWorkspaceRejectsControlDir(t *testing.T) {
 func TestCreator_UpdatesHead(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("v1"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -214,7 +223,7 @@ func TestCreator_UpdatesHead(t *testing.T) {
 
 func TestCreator_CreateWithParentRejectsStaleLatestParent(t *testing.T) {
 	repoPath := setupTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("v1"), 0644))
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -242,7 +251,7 @@ func TestCreator_CreateWithParentRejectsStaleLatestParent(t *testing.T) {
 
 func TestCreator_CreateSavePointUsesLatestParentWhenHeadIsRestored(t *testing.T) {
 	repoPath := setupTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("v1"), 0644))
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -274,7 +283,7 @@ func TestCreator_CreateSavePointUsesLatestParentWhenHeadIsRestored(t *testing.T)
 
 func TestCreator_CreateSavePointConsecutiveSavesDoNotSetRestoredFrom(t *testing.T) {
 	repoPath := setupTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("v1"), 0644))
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -293,7 +302,7 @@ func TestCreator_CreateSavePointConsecutiveSavesDoNotSetRestoredFrom(t *testing.
 
 func TestCreator_CreateSavePointAtNewestDoesNotSetRestoredFrom(t *testing.T) {
 	repoPath := setupTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("v1"), 0644))
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -316,7 +325,7 @@ func TestCreator_CreateSavePointAtNewestDoesNotSetRestoredFrom(t *testing.T) {
 
 func TestCreator_CreateSavePointWithHeadButNoLatestDoesNotInventRestoredFrom(t *testing.T) {
 	repoPath := setupTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("base"), 0644))
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -348,7 +357,7 @@ func TestCreator_CreateSavePointWithHeadButNoLatestDoesNotInventRestoredFrom(t *
 func TestCreator_PayloadContentPreserved(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("original"), 0644)
 	os.MkdirAll(filepath.Join(mainPath, "subdir"), 0755)
 	os.WriteFile(filepath.Join(mainPath, "subdir", "nested.txt"), []byte("nested"), 0644)
@@ -382,14 +391,15 @@ func TestCreator_CreateRejectsUnsafeWorktreePayloadPath(t *testing.T) {
 		setup func(t *testing.T, repoPath, worktreeName string) string
 	}{
 		{
-			name: "worktrees parent symlink",
+			name: "worktrees control dir symlink",
 			setup: func(t *testing.T, repoPath, worktreeName string) string {
 				outsideRoot := t.TempDir()
 				outsidePayload := filepath.Join(outsideRoot, worktreeName)
 				require.NoError(t, os.MkdirAll(outsidePayload, 0755))
 				require.NoError(t, os.WriteFile(filepath.Join(outsidePayload, "secret.txt"), []byte("outside"), 0644))
-				require.NoError(t, os.RemoveAll(filepath.Join(repoPath, "worktrees")))
-				if err := os.Symlink(outsideRoot, filepath.Join(repoPath, "worktrees")); err != nil {
+				worktreesDir := filepath.Join(repoPath, ".jvs", "worktrees")
+				require.NoError(t, os.RemoveAll(worktreesDir))
+				if err := os.Symlink(outsideRoot, worktreesDir); err != nil {
 					t.Skipf("symlinks not supported: %v", err)
 				}
 				return outsidePayload
@@ -400,7 +410,8 @@ func TestCreator_CreateRejectsUnsafeWorktreePayloadPath(t *testing.T) {
 			setup: func(t *testing.T, repoPath, worktreeName string) string {
 				outsidePayload := t.TempDir()
 				require.NoError(t, os.WriteFile(filepath.Join(outsidePayload, "secret.txt"), []byte("outside"), 0644))
-				payloadPath := filepath.Join(repoPath, "worktrees", worktreeName)
+				payloadPath, err := repo.WorktreePayloadPath(repoPath, worktreeName)
+				require.NoError(t, err)
 				require.NoError(t, os.RemoveAll(payloadPath))
 				if err := os.Symlink(outsidePayload, payloadPath); err != nil {
 					t.Skipf("symlinks not supported: %v", err)
@@ -434,7 +445,7 @@ func TestCreator_CreateRejectsUnsafeWorktreePayloadPath(t *testing.T) {
 func TestCreator_WithTags(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -447,7 +458,7 @@ func TestCreator_WithTags(t *testing.T) {
 func TestLoadDescriptor(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -526,7 +537,7 @@ func TestLoadDescriptor_NotFound(t *testing.T) {
 func TestVerifySnapshot(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -544,7 +555,7 @@ func TestVerifySnapshot(t *testing.T) {
 
 func TestVerifySnapshotRejectsFinalSnapshotSymlink(t *testing.T) {
 	repoPath := setupTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644))
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -575,7 +586,7 @@ func TestVerifySnapshot_InvalidID(t *testing.T) {
 func TestCreator_DifferentEngines(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
 
 	// Test with Copy engine
@@ -614,7 +625,7 @@ func TestLoadDescriptor_OtherReadError(t *testing.T) {
 func TestVerifySnapshot_ChecksumMismatch(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -641,7 +652,7 @@ func TestVerifySnapshot_ChecksumMismatch(t *testing.T) {
 func TestVerifySnapshot_PayloadHashMismatch(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -662,7 +673,7 @@ func TestVerifySnapshot_PayloadHashMismatch(t *testing.T) {
 func TestCreator_CreateWithParent(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("v1"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -682,7 +693,7 @@ func TestCreator_CreateWithParent(t *testing.T) {
 func TestCreator_CreateFailsClosedWhenAuditLogMalformed(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
 
 	auditPath := filepath.Join(repoPath, ".jvs", "audit", "audit.jsonl")
@@ -705,7 +716,7 @@ func TestCreator_CreateFailsClosedWhenAuditLogMalformed(t *testing.T) {
 func TestCreator_CreateFailsClosedWhenAuditRecordHashMismatches(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("v1"), 0644))
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -740,7 +751,7 @@ func TestWriteReadyMarker_MarshalFailure(t *testing.T) {
 	// We can't easily trigger this without using an invalid type,
 	// but the test structure is here for completeness
 	repoPath := setupTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -778,7 +789,7 @@ func TestVerifySnapshot_ComputeChecksumError(t *testing.T) {
 	// which is hard to fail without invalid input
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -813,7 +824,7 @@ func TestNewCreator(t *testing.T) {
 	assert.NotNil(t, creator)
 
 	// Test that creator can create snapshots successfully
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
 
 	desc, err := creator.Create("main", "test", nil)
@@ -861,7 +872,7 @@ func TestLoadDescriptor_ReadPermissionError(t *testing.T) {
 	// This tests the non-IsNotExist error path in LoadDescriptor
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -881,7 +892,7 @@ func TestVerifySnapshot_MissingSnapshotDirectory(t *testing.T) {
 	// Test VerifySnapshot when snapshot directory doesn't exist
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -901,7 +912,7 @@ func TestCreator_SnapshotWithEmptyNote(t *testing.T) {
 	// Test creating a snapshot with an empty note
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -914,7 +925,7 @@ func TestCreator_SnapshotWithEmptyTags(t *testing.T) {
 	// Test creating a snapshot with empty tags slice
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -941,7 +952,7 @@ func TestMatchesFilter_NonMatchingNote(t *testing.T) {
 func TestCreatePartial_SinglePath(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	// Create multiple files and directories
 	os.MkdirAll(filepath.Join(mainPath, "models"), 0755)
 	os.WriteFile(filepath.Join(mainPath, "models", "model1.pt"), []byte("model data"), 0644)
@@ -968,7 +979,7 @@ func TestCreatePartial_SinglePath(t *testing.T) {
 func TestCreatePartial_MultiplePaths(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	// Create multiple files and directories
 	os.MkdirAll(filepath.Join(mainPath, "models"), 0755)
 	os.WriteFile(filepath.Join(mainPath, "models", "model1.pt"), []byte("model data"), 0644)
@@ -994,7 +1005,7 @@ func TestCreatePartial_MultiplePaths(t *testing.T) {
 func TestCreatePartial_SingleFile(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "config.yaml"), []byte("config"), 0644)
 	os.WriteFile(filepath.Join(mainPath, "README.md"), []byte("readme"), 0644)
 
@@ -1016,7 +1027,7 @@ func TestCreatePartial_SingleFile(t *testing.T) {
 func TestCreatePartial_SingleFileWithReflinkEngine(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "config.yaml"), []byte("config"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "README.md"), []byte("readme"), 0644))
 
@@ -1036,7 +1047,7 @@ func TestCreatePartial_SingleFileWithReflinkEngine(t *testing.T) {
 func TestCreatePartial_EmptyPathsEquivalentToFull(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -1080,7 +1091,7 @@ func TestCreatePartial_PathTraversalRejected(t *testing.T) {
 
 func TestCreatePartial_RejectsSymlinkIntermediateEscape(t *testing.T) {
 	repoPath := setupTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	outsidePath := filepath.Join(repoPath, "outside")
 	require.NoError(t, os.MkdirAll(outsidePath, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(outsidePath, "secret.txt"), []byte("outside secret"), 0644))
@@ -1104,7 +1115,7 @@ func TestCreatePartial_RejectsSymlinkIntermediateEscape(t *testing.T) {
 
 func TestCreatePartial_AllowsFinalSymlinkLeaf(t *testing.T) {
 	repoPath := setupTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	outsidePath := filepath.Join(repoPath, "outside")
 	require.NoError(t, os.MkdirAll(outsidePath, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(outsidePath, "secret.txt"), []byte("outside secret"), 0644))
@@ -1140,7 +1151,7 @@ func TestCreatePartial_NonExistentPathRejected(t *testing.T) {
 func TestCreatePartial_DuplicatePathsDeduplicated(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.MkdirAll(filepath.Join(mainPath, "models"), 0755)
 	os.WriteFile(filepath.Join(mainPath, "models", "model1.pt"), []byte("model"), 0644)
 
@@ -1170,7 +1181,7 @@ func TestCreatePartial_AncestorCoveredPathsAreFolded(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			repoPath := setupTestRepo(t)
 
-			mainPath := filepath.Join(repoPath, "main")
+			mainPath := mainPayloadPath(t, repoPath)
 			require.NoError(t, os.MkdirAll(filepath.Join(mainPath, "models", "checkpoints"), 0755))
 			require.NoError(t, os.WriteFile(filepath.Join(mainPath, "models", "model1.pt"), []byte("model"), 0644))
 			require.NoError(t, os.WriteFile(filepath.Join(mainPath, "models", "checkpoints", "checkpoint.pt"), []byte("checkpoint"), 0644))
@@ -1212,7 +1223,7 @@ func TestCreatePartial_AncestorCoveredPathsAreFolded(t *testing.T) {
 func TestCreatePartial_AncestorCoveredInvalidDescendantStillRejected(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.MkdirAll(filepath.Join(mainPath, "models"), 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "models", "model1.pt"), []byte("model"), 0644))
 
@@ -1228,7 +1239,7 @@ func TestCreatePartial_AncestorCoveredInvalidDescendantStillRejected(t *testing.
 func TestCreatePartial_NestedDirectories(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.MkdirAll(filepath.Join(mainPath, "models", "checkpoints"), 0755)
 	os.WriteFile(filepath.Join(mainPath, "models", "model1.pt"), []byte("model"), 0644)
 	os.WriteFile(filepath.Join(mainPath, "models", "checkpoints", "checkpoint.pt"), []byte("checkpoint"), 0644)
@@ -1247,7 +1258,7 @@ func TestCreatePartial_NestedDirectories(t *testing.T) {
 func TestCreatePartial_WithTags(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.MkdirAll(filepath.Join(mainPath, "models"), 0755)
 	os.WriteFile(filepath.Join(mainPath, "models", "model1.pt"), []byte("model"), 0644)
 
@@ -1263,7 +1274,7 @@ func TestCreatePartial_WithTags(t *testing.T) {
 func TestCreatePartial_CallCreateViaCreatePartial(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -1290,7 +1301,7 @@ func TestCreatePartial_CallCreateViaCreatePartial(t *testing.T) {
 func TestCreator_SetCompression(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("hello world"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -1306,7 +1317,7 @@ func TestCreator_SetCompression(t *testing.T) {
 
 func TestCreator_CompressionFailureFailsClosed(t *testing.T) {
 	repoPath := setupTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	writeNameWhoseGzipSiblingCannotBeCreated(t, mainPath)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)
@@ -1338,7 +1349,7 @@ func TestCreator_CompressionFailureFailsClosed(t *testing.T) {
 
 func TestCreator_CompressedSnapshotIsPublishableAndMaterializesSafely(t *testing.T) {
 	repoPath := setupTestRepo(t)
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("logical payload"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "archive.gz"), []byte("user gzip-named data"), 0644))
 	require.NoError(t, os.Symlink("archive.gz", filepath.Join(mainPath, "leaf-link")))
@@ -1385,7 +1396,7 @@ func TestCreator_CompressedSnapshotIsPublishableAndMaterializesSafely(t *testing
 func TestCreator_CreatePartial_EmptyPaths(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
-	mainPath := filepath.Join(repoPath, "main")
+	mainPath := mainPayloadPath(t, repoPath)
 	os.WriteFile(filepath.Join(mainPath, "file.txt"), []byte("content"), 0644)
 
 	creator := snapshot.NewCreator(repoPath, model.EngineCopy)

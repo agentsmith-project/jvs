@@ -452,7 +452,7 @@ func (m *workspaceNewPathCapacityPinProbeMeter) AvailableBytes(path string) (int
 
 func TestWorkspaceNewRejectsTaintedSourcePayloadBeforePublish(t *testing.T) {
 	repoRoot := setupContainerWorkspaceNewRepo(t)
-	mainPath := filepath.Join(repoRoot, "main")
+	mainPath := repoRoot
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "app.txt"), []byte("v1"), 0644))
 	require.NoError(t, os.MkdirAll(filepath.Join(mainPath, repo.JVSDirName), 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(mainPath, repo.JVSDirName, "format_version"), []byte("tainted"), 0644))
@@ -467,7 +467,7 @@ func TestWorkspaceNewRejectsTaintedSourcePayloadBeforePublish(t *testing.T) {
 	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "../exp", "--from", desc.SnapshotID.String())
 	require.Error(t, err)
 	require.Empty(t, strings.TrimSpace(stdout))
-	assert.Contains(t, err.Error(), "control data")
+	assert.Contains(t, err.Error(), "not a JVS repository")
 	assertWorkspaceNewOutputOmitsOldVocabulary(t, err.Error())
 	assertWorkspaceMissing(t, repoRoot, "exp")
 	assertWorkspaceNewNoStaging(t, repoRoot, "exp")
@@ -488,11 +488,13 @@ func TestWorkspacePublicDiscoveryUsesCleanVocabulary(t *testing.T) {
 	assert.NotContains(t, workspaceHelp, "  path")
 	assert.NotContains(t, workspaceHelp, "  rename")
 	assert.NotContains(t, workspaceHelp, "  remove")
+	assert.NotContains(t, workspaceHelp, "  delete")
+	assert.NotContains(t, workspaceHelp, "  move")
 	assertWorkspaceNewOutputOmitsOldVocabulary(t, workspaceHelp)
 
-	removeHelp, err := executeCommand(createTestRootCmd(), "workspace", "remove", "--help")
-	require.NoError(t, err)
-	assertWorkspaceNewOutputOmitsOldVocabulary(t, removeHelp)
+	removeHelp, err := executeCommand(createTestRootCmd(), "workspace", "remove")
+	require.Error(t, err)
+	assert.Empty(t, removeHelp)
 
 	listJSON, err := executeCommand(createTestRootCmd(), "--json", "workspace", "list")
 	require.NoError(t, err)
@@ -543,7 +545,7 @@ func setupContainerWorkspaceNewRepo(t *testing.T) string {
 	t.Cleanup(func() { require.NoError(t, os.Chdir(originalWd)) })
 	_, err = repo.Init(repoRoot, "test")
 	require.NoError(t, err)
-	require.NoError(t, os.Chdir(filepath.Join(repoRoot, "main")))
+	require.NoError(t, os.Chdir(repoRoot))
 	return repoRoot
 }
 
