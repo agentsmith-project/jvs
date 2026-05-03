@@ -2,6 +2,7 @@ package doctor_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -222,6 +223,158 @@ func assertSeparatedStrictCheckFailed(t *testing.T, result *doctor.SeparatedStri
 		return
 	}
 	t.Fatalf("missing separated strict check %q in %#v", name, result.Checks)
+}
+
+func assertSeparatedStrictCheckGolden(t *testing.T, result *doctor.SeparatedStrictResult, name, code, message string) {
+	t.Helper()
+
+	data, err := json.Marshal(result)
+	require.NoError(t, err)
+	var payload struct {
+		Checks []doctor.StrictCheck `json:"checks"`
+	}
+	require.NoError(t, json.Unmarshal(data, &payload), string(data))
+	for _, check := range payload.Checks {
+		if check.Name != name {
+			continue
+		}
+		require.Equal(t, "failed", check.Status, "check %q should fail in %s", name, data)
+		require.NotNil(t, check.ErrorCode, "check %q should include error_code in %s", name, data)
+		assert.Equal(t, code, *check.ErrorCode)
+		assert.Equal(t, message, check.Message)
+		return
+	}
+	t.Fatalf("missing separated strict check %q in %s", name, data)
+}
+
+func TestSeparatedStrictDoctorFailureCheckGoldens(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		check       string
+		code        string
+		seed        func(t *testing.T, base, controlRoot, payloadRoot string) string
+		wantMessage func(controlRoot, payloadRoot, seeded string) string
+	}{
+		{
+			name:  "root overlap",
+			check: "root_overlap",
+			code:  errclass.ErrPayloadInsideControl.Code,
+			seed: func(t *testing.T, base, controlRoot, payloadRoot string) string {
+				t.Helper()
+				inside := filepath.Join(controlRoot, "payload-inside-control")
+				require.NoError(t, os.MkdirAll(inside, 0755))
+				cfg, err := repo.LoadWorktreeConfig(controlRoot, "main")
+				require.NoError(t, err)
+				cfg.RealPath = inside
+				require.NoError(t, repo.WriteWorktreeConfig(controlRoot, "main", cfg))
+				return inside
+			},
+			wantMessage: func(controlRoot, payloadRoot, seeded string) string {
+				return "Payload root must not be inside control root."
+			},
+		},
+		{
+			name:  "payload locator",
+			check: "payload_locator",
+			code:  errclass.ErrPayloadLocatorPresent.Code,
+			seed: func(t *testing.T, base, controlRoot, payloadRoot string) string {
+				t.Helper()
+				locator := filepath.Join(payloadRoot, repo.JVSDirName)
+				require.NoError(t, os.WriteFile(locator, []byte("untrusted\n"), 0644))
+				return locator
+			},
+			wantMessage: func(controlRoot, payloadRoot, seeded string) string {
+				return fmt.Sprintf("Payload root contains root-level %s path: %s", repo.JVSDirName, seeded)
+			},
+		},
+		{
+			name:  "permissions",
+			check: "permissions",
+			code:  errclass.ErrPermissionDenied.Code,
+			seed: func(t *testing.T, base, controlRoot, payloadRoot string) string {
+				t.Helper()
+				restore := doctor.SetSeparatedStrictPermissionCheckerForTest(func(path string) error {
+					if path == payloadRoot {
+						return fmt.Errorf("synthetic permission denial")
+					}
+					return nil
+				})
+				t.Cleanup(restore)
+				return payloadRoot
+			},
+			wantMessage: func(controlRoot, payloadRoot, seeded string) string {
+				return "Cannot verify payload root permissions at " + payloadRoot + ": synthetic permission denial"
+			},
+		},
+		{
+			name:  "active operation",
+			check: "active_operation",
+			code:  errclass.ErrActiveOperationBlocking.Code,
+			seed: func(t *testing.T, base, controlRoot, payloadRoot string) string {
+				t.Helper()
+				return writeSnapshotIntent(t, controlRoot, model.SnapshotID("1708300800000-deadbeef"), "main")
+			},
+			wantMessage: func(controlRoot, payloadRoot, seeded string) string {
+				return "Operation intent 1708300800000-deadbeef.json is present."
+			},
+		},
+		{
+			name:  "recovery state",
+			check: "recovery_state",
+			code:  errclass.ErrRecoveryBlocking.Code,
+			seed: func(t *testing.T, base, controlRoot, payloadRoot string) string {
+				t.Helper()
+				restorePlan := filepath.Join(controlRoot, ".jvs", "restore-plans", "restore-pending.json")
+				require.NoError(t, os.WriteFile(restorePlan, []byte("{}\n"), 0644))
+				return restorePlan
+			},
+			wantMessage: func(controlRoot, payloadRoot, seeded string) string {
+				return "Restore plan restore-pending is pending."
+			},
+		},
+		{
+			name:  "path boundary",
+			check: "path_boundary",
+			code:  errclass.ErrPathBoundaryEscape.Code,
+			seed: func(t *testing.T, base, controlRoot, payloadRoot string) string {
+				t.Helper()
+				target := filepath.Join(base, "payload-symlink-target")
+				require.NoError(t, os.MkdirAll(target, 0755))
+				require.NoError(t, os.RemoveAll(payloadRoot))
+				if err := os.Symlink(target, payloadRoot); err != nil {
+					t.Skipf("symlinks not supported: %v", err)
+				}
+				return payloadRoot
+			},
+			wantMessage: func(controlRoot, payloadRoot, seeded string) string {
+				return "Payload root must not be a symlink: " + payloadRoot
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base, controlRoot, payloadRoot := setupSeparatedDoctorTestRepo(t)
+			seeded := tc.seed(t, base, controlRoot, payloadRoot)
+
+			result, err := doctor.CheckSeparatedStrict(repo.SeparatedContextRequest{ControlRoot: controlRoot, Workspace: "main"})
+			require.NoError(t, err)
+			assert.False(t, result.Healthy)
+			assert.Equal(t, "failed", result.DoctorStrict)
+			assertSeparatedStrictCheckGolden(t, result, tc.check, tc.code, tc.wantMessage(controlRoot, payloadRoot, seeded))
+		})
+	}
+}
+
+func TestSeparatedStrictDoctorPathBoundaryFailsOnPayloadSymlinkEscape(t *testing.T) {
+	_, controlRoot, payloadRoot := setupSeparatedDoctorTestRepo(t)
+	if err := os.Symlink(filepath.Join(controlRoot, ".jvs", "repo_id"), filepath.Join(payloadRoot, "control-link")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	result, err := doctor.CheckSeparatedStrict(repo.SeparatedContextRequest{ControlRoot: controlRoot, Workspace: "main"})
+	require.NoError(t, err)
+	assert.False(t, result.Healthy)
+	assert.Equal(t, "failed", result.DoctorStrict)
+	assertSeparatedStrictCheckFailed(t, result, "path_boundary", errclass.ErrPathBoundaryEscape.Code)
 }
 
 func TestSeparatedStrictDoctorActiveOperationFixturesFail(t *testing.T) {

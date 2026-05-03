@@ -98,6 +98,9 @@ func runSeparatedInit(args []string) error {
 	if workspaceName == "" {
 		workspaceName = "main"
 	}
+	if workspaceName != "main" {
+		return separatedInitMainWorkspaceRequiredError(targetControlRoot, initPayloadRoot)
+	}
 	r, err := repo.InitSeparatedControl(targetControlRoot, initPayloadRoot, workspaceName)
 	if err != nil {
 		return err

@@ -2,12 +2,14 @@ package clonehistory
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/agentsmith-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -60,6 +62,10 @@ func TestManifestValidationFailsClosed(t *testing.T) {
 		_, ok, err := LoadValidatedManifest(repoPath)
 		require.Error(t, err)
 		assert.False(t, ok)
+		require.ErrorIs(t, err, errclass.ErrRepoIDMismatch)
+		var jvsErr *errclass.JVSError
+		require.True(t, errors.As(err, &jvsErr), "expected JVS error, got %T: %v", err, err)
+		assert.Equal(t, errclass.ErrRepoIDMismatch.Code, jvsErr.Code)
 		assert.Contains(t, err.Error(), "target repo")
 	})
 

@@ -201,6 +201,14 @@ func TestWorkspaceCommand_HelpListsPublicManagementSubcommands(t *testing.T) {
 	assert.NotContains(t, stdout, "checkpoint")
 }
 
+func TestRepoCloneHelpDocumentsSeparatedSavePointMode(t *testing.T) {
+	stdout, err := executeCommand(createTestRootCmd(), "repo", "clone", "--help")
+	require.NoError(t, err)
+
+	assert.Contains(t, stdout, "separated-control split targets support main only")
+	assert.Contains(t, stdout, "--save-points all fails closed")
+}
+
 func TestWorkspaceCommand_RenameIsNameOnlyAndUpdatesExternalLocator(t *testing.T) {
 	dir := setupTestDir(t)
 	repoPath := filepath.Join(dir, "testrepo")
@@ -610,7 +618,9 @@ func TestJSONErrorNotInRepoHintIsPlainWhenStdoutAndStderrAreInteractive(t *testi
 	assertNoANSI(t, stdout)
 	env := decodeContractEnvelope(t, stdout)
 	require.NotNil(t, env.Error)
-	assert.Equal(t, "Run jvs init <name> to create a new repository.", env.Error.Hint)
+	assert.Contains(t, env.Error.Hint, "--control-root <control-root>")
+	assert.Contains(t, env.Error.Hint, "--workspace main")
+	assert.NotContains(t, env.Error.Hint, "jvs init")
 	assertNoANSI(t, env.Error.Hint)
 }
 

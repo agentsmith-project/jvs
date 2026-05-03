@@ -37,12 +37,15 @@ whether the folder has unsaved changes.`,
 		if err != nil {
 			return err
 		}
+		if err := validateAndRefreshSeparatedPayloadBoundary(ctx); err != nil {
+			return err
+		}
 		status, err := buildWorkspaceStatus(ctx.Repo.Root, ctx.Workspace)
 		if err != nil {
 			return err
 		}
 		if ctx.Separated != nil {
-			status.separatedControlJSONFields = separatedControlFields(ctx.Separated, "passed")
+			status.separatedControlJSONFields = separatedControlFields(ctx.Separated, separatedDoctorStrictNotRun)
 		}
 		if jsonOutput {
 			return outputJSON(status)

@@ -58,15 +58,16 @@ Examples:
 		}
 
 		if restoreRunFlagChanged(cmd) {
-			if err := validateSeparatedPayloadSymlinkBoundary(ctx.Separated); err != nil {
+			if err := validateAndRefreshSeparatedPayloadBoundary(ctx); err != nil {
 				return restorePointError(err)
 			}
 			return runRestorePlan(ctx.Repo.Root, ctx.Workspace, restoreRunPlanID, ctx.Separated)
 		}
 
-		if err := validateSeparatedPayloadSymlinkBoundary(ctx.Separated); err != nil {
+		if err := validateAndRefreshSeparatedPayloadBoundary(ctx); err != nil {
 			return restorePointError(err)
 		}
+		expectedSeparated := restoreExpectedSeparatedContext(ctx.Separated)
 
 		targetID, err := resolvePublicSavePointID(ctx.Repo.Root, args[0])
 		if err != nil {
@@ -91,15 +92,15 @@ Examples:
 				if unsavedChanges {
 					decisionReason = "folder has unsaved changes"
 					var err error
-					plan, err = restoreplan.CreateDecisionPreview(ctx.Repo.Root, ctx.Workspace, targetID, engineType)
+					plan, err = restoreplan.CreateDecisionPreviewWithExpectedSeparatedContext(ctx.Repo.Root, ctx.Workspace, targetID, engineType, expectedSeparated)
 					return err
 				}
 			}
 			var err error
-			plan, err = restoreplan.Create(ctx.Repo.Root, ctx.Workspace, targetID, engineType, restoreplan.Options{
+			plan, err = restoreplan.CreateWithExpectedSeparatedContext(ctx.Repo.Root, ctx.Workspace, targetID, engineType, restoreplan.Options{
 				DiscardUnsaved: restoreDiscardDirty,
 				SaveFirst:      restoreIncludeWorking,
-			})
+			}, expectedSeparated)
 			return err
 		})
 		if err != nil {
@@ -275,7 +276,7 @@ type restoreApplyOutcome struct {
 }
 
 func runRestorePlan(repoRoot, workspaceName, planID string, separated *repo.SeparatedContext) error {
-	result, err := executeRestorePlanRun(repoRoot, workspaceName, planID)
+	result, err := executeRestorePlanRun(repoRoot, workspaceName, planID, separated)
 	if err != nil {
 		err = restoreRunErrorWithMutationState(err, result)
 		if result.ProtectedPath != "" {
@@ -286,11 +287,14 @@ func runRestorePlan(repoRoot, workspaceName, planID string, separated *repo.Sepa
 	return outputRestoreRunResult(result, separated)
 }
 
-func executeRestorePlanRun(repoRoot, workspaceName, planID string) (restoreRunResult, error) {
+func executeRestorePlanRun(repoRoot, workspaceName, planID string, separated *repo.SeparatedContext) (restoreRunResult, error) {
 	result := restoreRunResult{Scope: restoreplan.ScopeWhole}
 	err := repo.WithMutationLock(repoRoot, "restore run", func() error {
 		plan, err := restoreplan.Load(repoRoot, planID)
 		if err != nil {
+			return err
+		}
+		if err := validateSeparatedPayloadSymlinkBoundaryForRestorePlan(separated, plan); err != nil {
 			return err
 		}
 		if !plan.IsRunnable() {
@@ -312,6 +316,24 @@ func executeRestorePlanRun(repoRoot, workspaceName, planID string) (restoreRunRe
 		})
 	})
 	return result, err
+}
+
+func validateSeparatedPayloadSymlinkBoundaryForRestorePlan(separated *repo.SeparatedContext, plan *restoreplan.Plan) error {
+	if separated == nil || plan == nil {
+		return nil
+	}
+	_, err := validateSeparatedPayloadSymlinkBoundaryForExpectedRoot(separated, plan.Folder)
+	return err
+}
+
+func restoreExpectedSeparatedContext(separated *repo.SeparatedContext) restoreplan.ExpectedSeparatedContext {
+	if separated == nil || separated.Repo == nil {
+		return restoreplan.ExpectedSeparatedContext{}
+	}
+	return restoreplan.ExpectedSeparatedContext{
+		RepoID:      separated.Repo.RepoID,
+		PayloadRoot: separated.PayloadRoot,
+	}
 }
 
 func runLoadedRestorePlan(repoRoot, workspaceName string, plan *restoreplan.Plan, result *restoreRunResult) error {
@@ -515,9 +537,11 @@ func runRestorePath(cmd *cobra.Command, args []string, ctx *cliDiscoveryContext)
 	repoRoot := ctx.Repo.Root
 	workspaceName := ctx.Workspace
 	if len(args) == 0 {
-		if err := validateSeparatedPayloadSymlinkBoundary(ctx.Separated); err != nil {
+		if err := validateAndRefreshSeparatedPayloadBoundary(ctx); err != nil {
 			return restorePathError(err, restorePath)
 		}
+		repoRoot = ctx.Repo.Root
+		workspaceName = ctx.Workspace
 		path, err := normalizeRestorePathFlag(repoRoot, workspaceName, restorePath)
 		if err != nil {
 			return restorePathError(err, restorePath)
@@ -541,12 +565,16 @@ func runRestorePath(cmd *cobra.Command, args []string, ctx *cliDiscoveryContext)
 		return restorePathError(fmt.Errorf("--discard-unsaved and --save-first cannot be used together"), restorePath)
 	}
 
+	if err := validateAndRefreshSeparatedPayloadBoundary(ctx); err != nil {
+		return restorePathError(err, restorePath)
+	}
+	repoRoot = ctx.Repo.Root
+	workspaceName = ctx.Workspace
+	expectedSeparated := restoreExpectedSeparatedContext(ctx.Separated)
+
 	path, err := normalizeRestorePathFlag(repoRoot, workspaceName, restorePath)
 	if err != nil {
 		return restorePathError(err, restorePath)
-	}
-	if err := validateSeparatedPayloadSymlinkBoundary(ctx.Separated); err != nil {
-		return restorePathError(err, restorePath, path)
 	}
 
 	var plan *restoreplan.Plan
@@ -567,15 +595,15 @@ func runRestorePath(cmd *cobra.Command, args []string, ctx *cliDiscoveryContext)
 			if pathDirty {
 				decisionReason = fmt.Sprintf("path has unsaved changes in %s", path)
 				var err error
-				plan, err = restoreplan.CreatePathDecisionPreview(repoRoot, workspaceName, targetID, path, engineType)
+				plan, err = restoreplan.CreatePathDecisionPreviewWithExpectedSeparatedContext(repoRoot, workspaceName, targetID, path, engineType, expectedSeparated)
 				return err
 			}
 		}
 		var err error
-		plan, err = restoreplan.CreatePath(repoRoot, workspaceName, targetID, path, engineType, restoreplan.Options{
+		plan, err = restoreplan.CreatePathWithExpectedSeparatedContext(repoRoot, workspaceName, targetID, path, engineType, restoreplan.Options{
 			DiscardUnsaved: restoreDiscardDirty,
 			SaveFirst:      restoreIncludeWorking,
-		})
+		}, expectedSeparated)
 		return err
 	})
 	if err != nil {

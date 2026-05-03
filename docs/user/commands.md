@@ -14,12 +14,62 @@ preview or inspect, see the [User Guide](README.md#what-changes-files).
 | `--json` | Emit one JSON object for scripts |
 | `--workspace <name>` | Target a named workspace |
 | `--repo <path>` | Advanced target assertion for the JVS project path |
+| `--control-root <path>` | Explicit separated-control root for Phase 1 separated-control commands |
 | `--no-progress` | Hide progress bars |
 | `--no-color` | Disable colored output |
 | `--debug` | Enable debug logging |
 
 Most users can stay inside the folder they want to operate on and omit
 `--repo` and `--workspace`.
+
+## Separated-Control Phase 1
+
+Separated-control repositories keep control metadata and workspace files in
+different roots. Use this only when an operator or integration explicitly gives
+you those roots.
+
+Create one with both roots and the Phase 1 workspace:
+
+```bash
+jvs init --control-root C --payload-root P --workspace main
+```
+
+After that, target the separated-control repository with the control root and
+workspace together:
+
+```bash
+jvs --control-root C --workspace main status
+jvs --control-root C --workspace main save -m "baseline"
+```
+
+Do not run `jvs init` inside the payload root. That creates a different JVS
+project instead of selecting the separated-control repository.
+
+`--repo` is not a separated-control selector. If JVS reports that a separated
+repository needs an explicit selector, use `jvs --control-root C --workspace
+main <command>`.
+
+For separated-control doctor, the supported form is:
+
+```bash
+jvs --json --control-root C --workspace main doctor --strict
+```
+
+In shorthand, separated-control supports `doctor --strict --json` only.
+
+Separated-control clone uses a main-only split target:
+
+```bash
+jvs --control-root C --workspace main repo clone --target-control-root TC --target-payload-root TP --save-points main
+```
+
+Separated-control sources default to the main history closure for split-target
+clone. `--save-points all` fails closed until imported-history protection is
+available for this mode.
+
+The following lifecycle commands are intentionally disabled for separated
+control in Phase 1: repo move, repo rename, repo detach, workspace move,
+workspace rename, workspace delete, and workspace new are unsupported.
 
 ## `jvs init [folder]`
 

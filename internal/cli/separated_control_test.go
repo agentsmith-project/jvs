@@ -10,6 +10,7 @@ import (
 
 	"github.com/agentsmith-project/jvs/internal/recovery"
 	jvsrepo "github.com/agentsmith-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/agentsmith-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -66,11 +67,144 @@ func TestSeparatedControlStatusJSONUsesControlRootFromCleanAndOtherRepoCWD(t *te
 			require.NotNil(t, env.Workspace)
 			assert.Equal(t, "main", *env.Workspace)
 			assertSeparatedControlAuthoritativeData(t, data, controlRoot, payloadRoot, "main")
+			assert.Equal(t, "not_run", data["doctor_strict"])
 			assert.Equal(t, controlRoot, data["repo"])
 			assert.Equal(t, payloadRoot, data["folder"])
 			assert.Equal(t, "main", data["workspace"])
 		})
 	}
+}
+
+func TestSeparatedControlRepoFlagRequiresControlRootWorkspaceSelector(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+
+	cloneTarget := filepath.Join(base, "clone-target")
+	for _, tc := range []struct {
+		name        string
+		commandHint string
+		args        []string
+	}{
+		{
+			name:        "status",
+			commandHint: "status",
+			args:        []string{"--json", "--repo", controlRoot, "status"},
+		},
+		{
+			name:        "status with workspace",
+			commandHint: "status",
+			args:        []string{"--json", "--repo", controlRoot, "--workspace", "main", "status"},
+		},
+		{
+			name:        "save",
+			commandHint: "save",
+			args:        []string{"--json", "--repo", controlRoot, "save", "-m", "blocked"},
+		},
+		{
+			name:        "doctor",
+			commandHint: "doctor",
+			args:        []string{"--json", "--repo", controlRoot, "doctor", "--strict"},
+		},
+		{
+			name:        "repo clone",
+			commandHint: "repo clone",
+			args:        []string{"--json", "--repo", controlRoot, "repo", "clone", cloneTarget, "--save-points", "main"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, exitCode := runContractSubprocess(t, base, tc.args...)
+			env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrExplicitTargetRequired.Code)
+			assertSeparatedSelectorHint(t, env, controlRoot, tc.commandHint)
+		})
+	}
+	assert.NoDirExists(t, cloneTarget)
+}
+
+func TestSeparatedControlAmbientControlRootRequiresExplicitSelector(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+
+	nestedCWD := filepath.Join(controlRoot, "nested")
+	require.NoError(t, os.MkdirAll(nestedCWD, 0755))
+	stdout, stderr, exitCode := runContractSubprocess(t, nestedCWD, "--json", "status")
+
+	env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrExplicitTargetRequired.Code)
+	assertSeparatedSelectorHint(t, env, controlRoot, "status")
+}
+
+func TestSeparatedControlPayloadRootNakedStatusJSONHintDoesNotSuggestInit(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+
+	stdout, stderr, exitCode := runContractSubprocess(t, payloadRoot, "--json", "status")
+
+	env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrNotRepo.Code)
+	require.NotNil(t, env.Error)
+	assert.NotContains(t, env.Error.Hint, "jvs init")
+	assert.NotContains(t, env.Error.Message, "jvs init")
+}
+
+func TestSeparatedControlMissingWorkspaceHintIncludesFullSelectorShape(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+
+	stdout, stderr, exitCode := runContractSubprocess(t, base,
+		"--json",
+		"--control-root", controlRoot,
+		"status",
+	)
+
+	env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrExplicitTargetRequired.Code)
+	assertSeparatedSelectorHint(t, env, controlRoot, "status")
+}
+
+func TestSeparatedControlRuntimeSelectorRejectsNonMainWorkspace(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("v1\n"), 0644))
+
+	for _, tc := range []struct {
+		name    string
+		command string
+		args    []string
+	}{
+		{
+			name:    "status",
+			command: "status",
+			args:    []string{"--json", "--control-root", controlRoot, "--workspace", "feature", "status"},
+		},
+		{
+			name:    "save",
+			command: "save",
+			args:    []string{"--json", "--control-root", controlRoot, "--workspace", "feature", "save", "-m", "blocked"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, exitCode := runContractSubprocess(t, base, tc.args...)
+			env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrWorkspaceMismatch.Code)
+			assertSeparatedSelectorHint(t, env, controlRoot, tc.command)
+		})
+	}
+
+	historyOut, err := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"history",
+	)
+	require.NoError(t, err, historyOut)
+	_, history := decodeSeparatedControlDataMap(t, historyOut)
+	assert.Empty(t, historySavePointIDsForSeparatedOpsTest(t, history, "save_points"))
 }
 
 func TestSeparatedControlStatusJSONPayloadLocatorErrorHasNullData(t *testing.T) {
@@ -96,6 +230,96 @@ func TestSeparatedControlStatusJSONPayloadLocatorErrorHasNullData(t *testing.T) 
 	require.NotNil(t, env.Error)
 	assert.Equal(t, "E_PAYLOAD_LOCATOR_PRESENT", env.Error.Code)
 	assert.JSONEq(t, `null`, string(env.Data))
+}
+
+func TestSeparatedControlStatusRejectsPayloadSymlinkEscapeBeforeBoundaryValidatedJSON(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+	seedSeparatedControlMetadataSentinels(t, controlRoot)
+	if err := os.Symlink(filepath.Join(controlRoot, ".jvs", "audit", "platform.log"), filepath.Join(payloadRoot, "control-link")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	stdout, stderr, exitCode := runContractSubprocess(t, base,
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"status",
+	)
+
+	requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrPathBoundaryEscape.Code)
+}
+
+func TestSeparatedControlRecoveryStatusRejectsPayloadSymlinkEscape(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args func(planID string) []string
+	}{
+		{
+			name: "list",
+			args: func(string) []string {
+				return []string{"recovery", "status"}
+			},
+		},
+		{
+			name: "detail",
+			args: func(planID string) []string {
+				return []string{"recovery", "status", planID}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := setupSeparatedControlCLICWD(t)
+			controlRoot := filepath.Join(base, "control")
+			payloadRoot := filepath.Join(base, "payload")
+			initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+			seedSeparatedControlMetadataSentinels(t, controlRoot)
+			seedSeparatedControlRecoveryPlanFixture(t, base, controlRoot, payloadRoot)
+			if err := os.Symlink(filepath.Join(controlRoot, ".jvs", "audit", "platform.log"), filepath.Join(payloadRoot, "control-link")); err != nil {
+				t.Skipf("symlinks not supported: %v", err)
+			}
+
+			args := []string{"--json", "--control-root", controlRoot, "--workspace", "main"}
+			args = append(args, tc.args("RP-separated-active")...)
+			stdout, stderr, exitCode := runContractSubprocess(t, base, args...)
+
+			requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrPathBoundaryEscape.Code)
+		})
+	}
+}
+
+func TestSeparatedControlRecoveryStatusRejectsPlanPayloadBindingDrift(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "list", args: []string{"recovery", "status"}},
+		{name: "detail", args: []string{"recovery", "status", "RP-separated-active"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := setupSeparatedControlCLICWD(t)
+			controlRoot := filepath.Join(base, "control")
+			payloadRoot := filepath.Join(base, "payload")
+			initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+			seedSeparatedControlRecoveryPlanFixture(t, base, controlRoot, payloadRoot)
+
+			driftPayloadRoot := filepath.Join(base, "payload-drift")
+			require.NoError(t, os.MkdirAll(driftPayloadRoot, 0755))
+			cfg, err := jvsrepo.LoadWorktreeConfig(controlRoot, "main")
+			require.NoError(t, err)
+			cfg.RealPath = driftPayloadRoot
+			require.NoError(t, jvsrepo.WriteWorktreeConfig(controlRoot, "main", cfg))
+
+			args := []string{"--json", "--control-root", controlRoot, "--workspace", "main"}
+			args = append(args, tc.args...)
+			stdout, stderr, exitCode := runContractSubprocess(t, base, args...)
+
+			env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrPathBoundaryEscape.Code)
+			assert.Contains(t, env.Error.Message, "payload root")
+		})
+	}
 }
 
 func TestSeparatedControlInitJSONRejectsMixedAndUnpairedRoots(t *testing.T) {
@@ -131,6 +355,25 @@ func TestSeparatedControlInitJSONRejectsMixedAndUnpairedRoots(t *testing.T) {
 	}
 }
 
+func TestSeparatedControlInitRejectsNonMainWorkspaceWithoutMutation(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+
+	stdout, stderr, exitCode := runContractSubprocess(t, base,
+		"--json",
+		"init",
+		"--control-root", controlRoot,
+		"--payload-root", payloadRoot,
+		"--workspace", "feature",
+	)
+
+	env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrWorkspaceMismatch.Code)
+	assert.Contains(t, env.Error.Hint, "--workspace main")
+	assert.NoDirExists(t, controlRoot)
+	assert.NoDirExists(t, payloadRoot)
+}
+
 func TestSeparatedControlDoctorStrictJSONIncludesChecks(t *testing.T) {
 	base := setupSeparatedControlCLICWD(t)
 	controlRoot := filepath.Join(base, "control")
@@ -151,6 +394,49 @@ func TestSeparatedControlDoctorStrictJSONIncludesChecks(t *testing.T) {
 	assert.Equal(t, "passed", data["doctor_strict"])
 	assert.Equal(t, true, data["healthy"])
 	assertSeparatedDoctorChecks(t, data, map[string]string{})
+}
+
+func TestSeparatedControlDoctorUnsupportedVariantsFailClosed(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "non strict json",
+			args: []string{"--json", "--control-root", controlRoot, "--workspace", "main", "doctor"},
+		},
+		{
+			name: "repair runtime",
+			args: []string{"--json", "--control-root", controlRoot, "--workspace", "main", "doctor", "--strict", "--repair-runtime"},
+		},
+		{
+			name: "repair list",
+			args: []string{"--json", "--control-root", controlRoot, "--workspace", "main", "doctor", "--strict", "--repair-list"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, exitCode := runContractSubprocess(t, base, tc.args...)
+			env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrExplicitTargetRequired.Code)
+			assertSeparatedSelectorHint(t, env, controlRoot, "doctor --strict --json")
+		})
+	}
+
+	stdout, stderr, exitCode := runContractSubprocess(t, base,
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"doctor",
+		"--strict",
+	)
+	require.Equal(t, 1, exitCode, "doctor unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stdout))
+	assert.Contains(t, stderr, "doctor --strict --json")
+	assert.Contains(t, stderr, "--control-root "+controlRoot)
+	assert.Contains(t, stderr, "--workspace main")
 }
 
 func TestSeparatedControlDoctorStrictJSONPayloadLocatorReportsDiagnosticChecks(t *testing.T) {
@@ -436,4 +722,25 @@ func assertSeparatedDoctorChecks(t *testing.T, data map[string]any, failed map[s
 		assert.Equal(t, "passed", check["status"])
 		assert.Nil(t, check["error_code"])
 	}
+}
+
+func requireSeparatedControlCLIJSONError(t *testing.T, stdout, stderr string, exitCode int, wantCode string) contractEnvelope {
+	t.Helper()
+	require.Equal(t, 1, exitCode, "command unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+
+	env := decodeContractEnvelope(t, stdout)
+	assert.False(t, env.OK, stdout)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, wantCode, env.Error.Code)
+	assert.JSONEq(t, `null`, string(env.Data))
+	return env
+}
+
+func assertSeparatedSelectorHint(t *testing.T, env contractEnvelope, controlRoot, command string) {
+	t.Helper()
+	require.NotNil(t, env.Error)
+	assert.Contains(t, env.Error.Hint, "--control-root "+controlRoot)
+	assert.Contains(t, env.Error.Hint, "--workspace main")
+	assert.Contains(t, env.Error.Hint, command)
 }

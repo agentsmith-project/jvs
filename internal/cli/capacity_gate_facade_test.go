@@ -589,6 +589,71 @@ func TestRestoreWholeRunCapacityChecksRestorePayloadSiblingFilesystem(t *testing
 	before.assertUnchanged(t, repoRoot)
 }
 
+func TestSeparatedRestoreWholeRunCapacityProbesPayloadSiblingFilesystem(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("source"), 0644))
+
+	sourceOut, err := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"save", "-m", "source",
+	)
+	require.NoError(t, err, sourceOut)
+	sourceID, _ := decodeContractDataMap(t, sourceOut)["save_point_id"].(string)
+	require.NotEmpty(t, sourceID)
+	require.NoError(t, os.Remove(filepath.Join(payloadRoot, "app.txt")))
+	_, err = executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"save", "-m", "empty",
+	)
+	require.NoError(t, err)
+	previewOut, err := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"restore", sourceID,
+	)
+	require.NoError(t, err, previewOut)
+	planID, _ := decodeContractDataMap(t, previewOut)["plan_id"].(string)
+	require.NotEmpty(t, planID)
+
+	tempRoot := filepath.Join(t.TempDir(), "temp")
+	require.NoError(t, os.MkdirAll(tempRoot, 0755))
+	t.Setenv("TMPDIR", tempRoot)
+	meter := &cliPathCapacityMeter{
+		repoRoot:      controlRoot,
+		tempRoot:      tempRoot,
+		siblingParent: filepath.Dir(payloadRoot),
+		availableByDevice: map[string]int64{
+			"repo-fs":    100 << 20,
+			"temp-fs":    100 << 20,
+			"sibling-fs": 0,
+		},
+	}
+	restore := installCapacityGateHooks(capacitygate.Gate{Meter: meter, SafetyMarginBytes: 0})
+	t.Cleanup(restore)
+	before := captureSeparatedLifecycleRoots(t, controlRoot, payloadRoot)
+
+	stdout, err := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"restore", "--run", planID,
+	)
+	require.Error(t, err)
+	require.Empty(t, strings.TrimSpace(stdout))
+	assert.Contains(t, err.Error(), "Not enough free space")
+	assert.Contains(t, slashPaths(meter.probes), filepath.ToSlash(filepath.Dir(payloadRoot)))
+	require.NoFileExists(t, filepath.Join(payloadRoot, "app.txt"))
+	assertSeparatedLifecycleRootsUnchanged(t, before, controlRoot, payloadRoot)
+}
+
 func TestRestoreWholeRunCapacityDoesNotBudgetRenameBackupAsCopy(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("source"), 0644))

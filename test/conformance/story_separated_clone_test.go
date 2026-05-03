@@ -45,6 +45,7 @@ func TestStorySeparatedCloneMainOnlySplitTarget(t *testing.T) {
 	if clone["doctor_strict"] != "passed" {
 		t.Fatalf("clone doctor_strict = %#v, want passed in %#v", clone["doctor_strict"], clone)
 	}
+	requireSeparatedCloneTransfers(t, clone, sourceControl, sourcePayload, targetControl, targetPayload)
 
 	requireAbsolutePathPresent(t, filepath.Join(targetControl, ".jvs", "repo_id"))
 	requireAbsolutePathAbsent(t, filepath.Join(targetPayload, ".jvs"))
@@ -125,6 +126,27 @@ func TestStorySeparatedCloneRejectsPositionalTarget(t *testing.T) {
 	if !strings.Contains(env.Error.Message, "--target-control-root") || !strings.Contains(env.Error.Message, "--target-payload-root") {
 		t.Fatalf("positional target error should require split target roots: %#v", env.Error)
 	}
+	requireAbsolutePathAbsent(t, target)
+}
+
+func TestStorySeparatedCloneRepoFlagRequiresControlRootSelector(t *testing.T) {
+	base := t.TempDir()
+	sourceControl := filepath.Join(base, "source-control")
+	sourcePayload := filepath.Join(base, "source-payload")
+	initSeparatedControlRepo(t, base, sourceControl, sourcePayload, "main")
+	createFiles(t, sourcePayload, map[string]string{"app.txt": "source v1\n"})
+	separatedJSON(t, base, sourceControl, "main", "save", "-m", "source baseline")
+
+	target := filepath.Join(base, "repo-flag-target")
+	stdout, stderr, code := runJVS(t, base,
+		"--json",
+		"--repo", sourceControl,
+		"repo", "clone",
+		target,
+		"--save-points", "main",
+	)
+	env := requireSeparatedControlJSONError(t, stdout, stderr, code, "E_EXPLICIT_TARGET_REQUIRED")
+	requireSeparatedSelectorHint(t, env, sourceControl, "repo clone")
 	requireAbsolutePathAbsent(t, target)
 }
 
@@ -241,5 +263,68 @@ func seedSeparatedCloneExtraRuntimeFiles(t *testing.T, controlRoot string) {
 	}
 	if err := os.WriteFile(filepath.Join(controlRoot, ".jvs", "tmp", "source.tmp"), []byte("tmp\n"), 0644); err != nil {
 		t.Fatalf("write source tmp sentinel: %v", err)
+	}
+}
+
+func requireSeparatedCloneTransfers(t *testing.T, data map[string]any, sourceControl, sourcePayload, targetControl, targetPayload string) {
+	t.Helper()
+
+	save := requireSeparatedCloneTransferByID(t, data, "repo-clone-save-points")
+	if save["source_path"] != filepath.Join(sourceControl, ".jvs") {
+		t.Fatalf("clone save-point transfer source_path = %#v, want source control .jvs in %#v", save["source_path"], save)
+	}
+	if save["published_destination"] != filepath.Join(targetControl, ".jvs") {
+		t.Fatalf("clone save-point transfer published_destination = %#v, want target control .jvs in %#v", save["published_destination"], save)
+	}
+	if path, _ := save["materialization_destination"].(string); strings.Contains(filepath.ToSlash(path), filepath.ToSlash(targetPayload)) {
+		t.Fatalf("clone save-point transfer materialized in target payload: %#v", save)
+	}
+	requireSeparatedCloneCopyEvidence(t, save)
+
+	main := requireSeparatedCloneTransferByID(t, data, "repo-clone-main-workspace")
+	if main["source_path"] != sourcePayload {
+		t.Fatalf("clone main transfer source_path = %#v, want source payload %q in %#v", main["source_path"], sourcePayload, main)
+	}
+	if main["published_destination"] != targetPayload {
+		t.Fatalf("clone main transfer published_destination = %#v, want target payload %q in %#v", main["published_destination"], targetPayload, main)
+	}
+	if main["capability_probe_path"] != filepath.Dir(targetPayload) {
+		t.Fatalf("clone main transfer capability_probe_path = %#v, want payload parent in %#v", main["capability_probe_path"], main)
+	}
+	if path, _ := main["materialization_destination"].(string); strings.Contains(filepath.ToSlash(path), filepath.ToSlash(targetControl)) {
+		t.Fatalf("clone main transfer materialized in target control: %#v", main)
+	}
+	requireSeparatedCloneCopyEvidence(t, main)
+}
+
+func requireSeparatedCloneTransferByID(t *testing.T, data map[string]any, id string) map[string]any {
+	t.Helper()
+	transfers, ok := data["transfers"].([]any)
+	if !ok {
+		t.Fatalf("clone transfers should be array: %#v", data["transfers"])
+	}
+	for _, item := range transfers {
+		transfer, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("clone transfer should be object: %#v", item)
+		}
+		if transfer["transfer_id"] == id {
+			return transfer
+		}
+	}
+	t.Fatalf("missing clone transfer %q in %#v", id, transfers)
+	return nil
+}
+
+func requireSeparatedCloneCopyEvidence(t *testing.T, transfer map[string]any) {
+	t.Helper()
+	if transfer["checked_for_this_operation"] != true {
+		t.Fatalf("clone transfer was not checked for this operation: %#v", transfer)
+	}
+	if transfer["capability_probe_path"] == "" {
+		t.Fatalf("clone transfer missing capability_probe_path: %#v", transfer)
+	}
+	if transfer["performance_class"] != "fast_copy" && transfer["performance_class"] != "normal_copy" {
+		t.Fatalf("clone transfer performance_class = %#v, want fast_copy or normal_copy in %#v", transfer["performance_class"], transfer)
 	}
 }

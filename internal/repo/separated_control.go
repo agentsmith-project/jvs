@@ -25,8 +25,13 @@ type SeparatedContextRequest struct {
 // SeparatedContextRevalidationRequest re-checks a previously resolved
 // separated-control workspace binding before a mutation or re-read.
 type SeparatedContextRevalidationRequest struct {
-	ControlRoot         string
-	Workspace           string
+	ControlRoot string
+	Workspace   string
+	// ExpectedRepoID is the repo_id captured from the previously resolved
+	// separated context.
+	ExpectedRepoID string
+	// ExpectedPayloadRoot is the payload root captured from the previously
+	// resolved separated context.
 	ExpectedPayloadRoot string
 }
 
@@ -53,6 +58,9 @@ type separatedInitRoots struct {
 func InitSeparatedControl(controlRoot, payloadRoot, workspaceName string) (*Repo, error) {
 	if err := pathutil.ValidateName(workspaceName); err != nil {
 		return nil, err
+	}
+	if workspaceName != "main" {
+		return nil, errclass.ErrWorkspaceMismatch.WithMessage("phase 1 separated init only supports workspace \"main\"")
 	}
 	roots, err := validateSeparatedInitRoots(controlRoot, payloadRoot)
 	if err != nil {
@@ -215,26 +223,80 @@ func ResolveSeparatedContext(req SeparatedContextRequest) (*SeparatedContext, er
 }
 
 // RevalidateSeparatedContext resolves the separated-control binding again and
-// verifies the registry still points at the same payload root.
+// verifies the control repo identity and registry payload root still match the
+// previously resolved separated context.
 func RevalidateSeparatedContext(req SeparatedContextRevalidationRequest) (*SeparatedContext, error) {
-	ctx, err := ResolveSeparatedContext(SeparatedContextRequest{
-		ControlRoot: req.ControlRoot,
-		Workspace:   req.Workspace,
-	})
-	if err != nil {
-		return nil, err
+	if err := pathutil.ValidateName(req.Workspace); err != nil {
+		return nil, errclass.ErrWorkspaceMismatch.WithMessagef("invalid workspace selector: %v", err)
+	}
+	expectedRepoID := strings.TrimSpace(req.ExpectedRepoID)
+	if expectedRepoID == "" {
+		return nil, errclass.ErrRepoIDMismatch.WithMessage("expected repo_id is required")
 	}
 	expectedPayloadRoot, err := cleanSeparatedRoot(req.ExpectedPayloadRoot, "expected payload root")
 	if err != nil {
-		return nil, errclass.ErrWorkspaceMismatch.WithMessagef("invalid expected payload root: %v", err)
+		return nil, errclass.ErrPathBoundaryEscape.WithMessagef("invalid expected payload root: %v", err)
 	}
-	if ctx.PayloadRoot != expectedPayloadRoot {
-		return nil, errclass.ErrWorkspaceMismatch.WithMessagef(
+
+	r, err := OpenControlRoot(req.ControlRoot)
+	if err != nil {
+		return nil, err
+	}
+	if r.Mode != RepoModeSeparatedControl {
+		return nil, errclass.ErrControlMalformed.WithMessagef("repo_mode is %q, want %q", r.Mode, RepoModeSeparatedControl)
+	}
+	if r.RepoID != expectedRepoID {
+		return nil, errclass.ErrRepoIDMismatch.WithMessagef("repo_id mismatch: control has %s, expected %s", r.RepoID, expectedRepoID)
+	}
+
+	cfg, err := loadSeparatedWorkspaceConfig(r.Root, req.Workspace)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Name != req.Workspace {
+		return nil, errclass.ErrWorkspaceMismatch.WithMessagef("workspace selector %q does not match registry entry %q", req.Workspace, cfg.Name)
+	}
+	payloadRoot, err := cleanSeparatedRoot(cfg.RealPath, "payload root")
+	if err != nil {
+		return nil, errclass.ErrControlMalformed.WithMessagef("invalid payload root in workspace registry: %v", err)
+	}
+	if payloadRoot != expectedPayloadRoot {
+		return nil, errclass.ErrPathBoundaryEscape.WithMessagef(
 			"workspace %q payload root changed: registry has %s, expected %s",
-			req.Workspace, ctx.PayloadRoot, expectedPayloadRoot,
+			req.Workspace, payloadRoot, expectedPayloadRoot,
 		)
 	}
-	return ctx, nil
+	if err := validateSeparatedRegisteredPayloadRoot(r.Root, payloadRoot); err != nil {
+		return nil, err
+	}
+	if err := rejectPayloadLocatorPresent(payloadRoot); err != nil {
+		return nil, err
+	}
+	return &SeparatedContext{
+		Repo:                 r,
+		ControlRoot:          r.Root,
+		PayloadRoot:          payloadRoot,
+		Workspace:            req.Workspace,
+		BoundaryValidated:    true,
+		LocatorAuthoritative: false,
+	}, nil
+}
+
+// ValidateSeparatedPayloadSymlinkBoundary walks a separated payload and rejects
+// symlinks that resolve outside the payload or into the control root.
+func ValidateSeparatedPayloadSymlinkBoundary(ctx *SeparatedContext) error {
+	if ctx == nil {
+		return nil
+	}
+	controlRoot, err := cleanSeparatedRoot(ctx.ControlRoot, "control root")
+	if err != nil {
+		return errclass.ErrPathBoundaryEscape.WithMessagef("invalid control root: %v", err)
+	}
+	payloadRoot, err := cleanSeparatedRoot(ctx.PayloadRoot, "payload root")
+	if err != nil {
+		return errclass.ErrPathBoundaryEscape.WithMessagef("invalid payload root: %v", err)
+	}
+	return validateSeparatedPayloadSymlinkBoundary(controlRoot, payloadRoot)
 }
 
 func validateSeparatedInitRoots(controlRoot, payloadRoot string) (separatedInitRoots, error) {
@@ -378,6 +440,78 @@ func rejectPayloadLocatorPresent(payloadRoot string) error {
 	} else {
 		return fmt.Errorf("stat payload locator: %w", err)
 	}
+}
+
+func validateSeparatedPayloadSymlinkBoundary(controlRoot, payloadRoot string) error {
+	controlInfo, err := os.Lstat(controlRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return errclass.ErrControlMissing.WithMessagef("control root does not exist: %s", controlRoot)
+		}
+		return permissionOrWrappedErr("stat control root boundary", err)
+	}
+	if controlInfo.Mode()&os.ModeSymlink != 0 || !controlInfo.IsDir() {
+		return errclass.ErrPathBoundaryEscape.WithMessagef("control root is not a real directory: %s", controlRoot)
+	}
+	payloadInfo, err := os.Lstat(payloadRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return errclass.ErrPayloadMissing.WithMessagef("payload root does not exist: %s", payloadRoot)
+		}
+		return permissionOrWrappedErr("stat payload root boundary", err)
+	}
+	if payloadInfo.Mode()&os.ModeSymlink != 0 || !payloadInfo.IsDir() {
+		return errclass.ErrPathBoundaryEscape.WithMessagef("payload root is not a real directory: %s", payloadRoot)
+	}
+
+	controlReal, err := existingPhysicalPath(controlRoot)
+	if err != nil {
+		return errclass.ErrPathBoundaryEscape.WithMessagef("resolve control root boundary: %v", err)
+	}
+	payloadReal, err := existingPhysicalPath(payloadRoot)
+	if err != nil {
+		return errclass.ErrPathBoundaryEscape.WithMessagef("resolve payload root boundary: %v", err)
+	}
+	return filepath.WalkDir(payloadRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return errclass.ErrPathBoundaryEscape.WithMessagef("walk payload boundary: %v", walkErr)
+		}
+		if path == payloadRoot || entry.Type()&os.ModeSymlink == 0 {
+			return nil
+		}
+		rel := separatedPayloadRelativePath(payloadRoot, path)
+		targetReal, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return errclass.ErrPathBoundaryEscape.WithMessagef("payload symlink cannot be resolved safely: %s: %v", rel, err)
+		}
+		targetReal = filepath.Clean(targetReal)
+		if pathWithinCleanRoot(controlReal, targetReal) {
+			return errclass.ErrPathBoundaryEscape.WithMessagef("payload symlink points into control root: %s", rel)
+		}
+		if !pathWithinCleanRoot(payloadReal, targetReal) {
+			return errclass.ErrPathBoundaryEscape.WithMessagef("payload symlink escapes payload boundary: %s", rel)
+		}
+		return nil
+	})
+}
+
+func separatedPayloadRelativePath(payloadRoot, path string) string {
+	rel, err := filepath.Rel(payloadRoot, path)
+	if err != nil {
+		rel = path
+	}
+	return filepath.ToSlash(rel)
+}
+
+func pathWithinCleanRoot(root, path string) bool {
+	if root == "" || path == "" {
+		return false
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return relPathContained(rel)
 }
 
 func cleanSeparatedRoot(path, role string) (string, error) {

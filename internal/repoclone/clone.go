@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -182,6 +183,9 @@ func prepare(options Options) (*preparedClone, error) {
 		return nil, fmt.Errorf("cannot clone: source main workspace is not readable: %w", err)
 	}
 	if source.Mode == repo.RepoModeSeparatedControl {
+		if err := validateSeparatedCloneSourcePayloadBoundary(source, mainCfg); err != nil {
+			return nil, err
+		}
 		if err := rejectSeparatedSourceActiveOperation(source.Root); err != nil {
 			return nil, err
 		}
@@ -866,6 +870,9 @@ func (p *preparedClone) executeSeparated() (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := p.validateSeparatedSourceBeforeTargetPublish(); err != nil {
+		return nil, err
+	}
 
 	if err := p.copySavePointStorage(stagingControl, plans.savePlan, intents.saveIntent, &records[0]); err != nil {
 		return nil, err
@@ -875,6 +882,9 @@ func (p *preparedClone) executeSeparated() (*Result, error) {
 		return nil, err
 	}
 	defer cleanupMainSource()
+	if err := validateSeparatedCloneMaterializedPayloadBoundary(p.source, mainSourceBoundary.Root); err != nil {
+		return nil, err
+	}
 	if err := p.copyMainWorkspace(mainSourceBoundary, stagingPayload, plans.mainPlan, intents.mainIntent, &records[1]); err != nil {
 		return nil, err
 	}
@@ -894,6 +904,9 @@ func (p *preparedClone) executeSeparated() (*Result, error) {
 		if err := p.options.Hooks.BeforePublish(stagingControl, p.targetControlRoot); err != nil {
 			return nil, fmt.Errorf("before publish hook: %w", err)
 		}
+	}
+	if err := p.validateSeparatedSourceBeforeTargetPublish(); err != nil {
+		return nil, err
 	}
 	if _, err := validateSeparatedCloneTargetRoots(p.targetControlRoot, p.targetPayloadRoot); err != nil {
 		return nil, atomicPublishBlockedError(err)
@@ -937,6 +950,90 @@ func (p *preparedClone) materializeMainWorkspaceForSeparatedClone(liveBoundary r
 		Root:              expectedRoot,
 		ExcludedRootNames: append([]string(nil), liveBoundary.ExcludedRootNames...),
 	}, cleanup, nil
+}
+
+func (p *preparedClone) validateSeparatedSourceBeforeTargetPublish() error {
+	if p == nil || p.source == nil || p.source.Mode != repo.RepoModeSeparatedControl {
+		return nil
+	}
+	if err := validateSeparatedCloneSourcePayloadBoundary(p.source, p.sourceMain); err != nil {
+		return err
+	}
+	currentMain, err := repo.LoadWorktreeConfig(p.source.Root, "main")
+	if err != nil {
+		return errclass.ErrSourceDirty.
+			WithMessagef("Cannot clone: source main workspace cannot be revalidated before publish: %v", err).
+			WithHint("Run doctor --strict for the source control root, then retry.")
+	}
+	if err := validateSeparatedCloneSourceMainSavePointStable(p.sourceMain, currentMain); err != nil {
+		return err
+	}
+	return rejectDirtySourceWorkspaces(p.source.Root, p.sourceWorkspaces, true)
+}
+
+func validateSeparatedCloneSourceMainSavePointStable(prepared, current *model.WorktreeConfig) error {
+	if prepared == nil || current == nil {
+		return separatedCloneSourceSavePointDriftError("main workspace save point identity", "", "")
+	}
+	if prepared.LatestSnapshotID != current.LatestSnapshotID {
+		return separatedCloneSourceSavePointDriftError("main newest save point", prepared.LatestSnapshotID, current.LatestSnapshotID)
+	}
+	if prepared.HeadSnapshotID != current.HeadSnapshotID {
+		return separatedCloneSourceSavePointDriftError("main content source save point", prepared.HeadSnapshotID, current.HeadSnapshotID)
+	}
+	if prepared.BaseSnapshotID != current.BaseSnapshotID {
+		return separatedCloneSourceSavePointDriftError("main base save point", prepared.BaseSnapshotID, current.BaseSnapshotID)
+	}
+	if prepared.StartedFromSnapshotID != current.StartedFromSnapshotID {
+		return separatedCloneSourceSavePointDriftError("main started-from save point", prepared.StartedFromSnapshotID, current.StartedFromSnapshotID)
+	}
+	if !reflect.DeepEqual(prepared.PathSources, current.PathSources) {
+		return separatedCloneSourceSavePointDriftError("main path restore save point provenance", "", "")
+	}
+	return nil
+}
+
+func separatedCloneSourceSavePointDriftError(field string, prepared, current model.SnapshotID) error {
+	message := fmt.Sprintf("Cannot clone: source %s changed during clone.", field)
+	if prepared != "" || current != "" {
+		message = fmt.Sprintf("Cannot clone: source %s changed during clone (prepared %s, current %s).", field, prepared, current)
+	}
+	return errclass.ErrSourceDirty.
+		WithMessage(message).
+		WithHint("Retry repo clone after source saves are finished.")
+}
+
+func validateSeparatedCloneSourcePayloadBoundary(source *repo.Repo, mainCfg *model.WorktreeConfig) error {
+	if source == nil || source.Mode != repo.RepoModeSeparatedControl {
+		return nil
+	}
+	if mainCfg == nil {
+		return errclass.ErrWorkspaceMismatch.WithMessage("source main workspace is not registered")
+	}
+	ctx, err := repo.RevalidateSeparatedContext(repo.SeparatedContextRevalidationRequest{
+		ControlRoot:         source.Root,
+		Workspace:           "main",
+		ExpectedRepoID:      source.RepoID,
+		ExpectedPayloadRoot: mainCfg.RealPath,
+	})
+	if err != nil {
+		return err
+	}
+	return repo.ValidateSeparatedPayloadSymlinkBoundary(ctx)
+}
+
+func validateSeparatedCloneMaterializedPayloadBoundary(source *repo.Repo, payloadRoot string) error {
+	if source == nil || source.Mode != repo.RepoModeSeparatedControl {
+		return nil
+	}
+	return repo.ValidateSeparatedPayloadSymlinkBoundary(&repo.SeparatedContext{
+		Repo:                 source,
+		ControlRoot:          source.Root,
+		PayloadRoot:          payloadRoot,
+		Workspace:            "main",
+		BoundaryValidated:    true,
+		LocatorAuthoritative: false,
+	})
 }
 
 func publishSeparatedCloneRoot(stagingRoot, targetRoot string, targetExisted bool, role string) error {
@@ -1284,7 +1381,7 @@ func checkSeparatedDoctorStrict(controlRoot string) error {
 				code = *check.ErrorCode
 			}
 			if code != "" {
-				return fmt.Errorf("%s: %s", code, check.Message)
+				return &errclass.JVSError{Code: code, Message: check.Message}
 			}
 			return fmt.Errorf("%s: %s", check.Name, check.Message)
 		}

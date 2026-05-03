@@ -45,6 +45,11 @@ type Options struct {
 	SaveFirst      bool `json:"save_first,omitempty"`
 }
 
+type ExpectedSeparatedContext struct {
+	RepoID      string
+	PayloadRoot string
+}
+
 type ChangeSummary struct {
 	Count   int      `json:"count"`
 	Samples []string `json:"samples,omitempty"`
@@ -106,11 +111,21 @@ func SetTransferPlannerForTest(planner transfer.EnginePlanner) func() {
 }
 
 func Create(repoRoot, workspaceName string, sourceID model.SnapshotID, engineType model.EngineType, options Options) (*Plan, error) {
+	return CreateWithExpectedSeparatedContext(repoRoot, workspaceName, sourceID, engineType, options, ExpectedSeparatedContext{})
+}
+
+func CreateWithExpectedSeparatedContext(repoRoot, workspaceName string, sourceID model.SnapshotID, engineType model.EngineType, options Options, expected ExpectedSeparatedContext) (*Plan, error) {
+	if err := validateExpectedSeparatedContext(repoRoot, workspaceName, expected); err != nil {
+		return nil, err
+	}
 	plan, err := buildWholePreviewPlan(repoRoot, workspaceName, sourceID, engineType, options)
 	if err != nil {
 		return nil, err
 	}
 	makePlanRunnable(plan)
+	if err := validateExpectedSeparatedContext(repoRoot, workspaceName, expected); err != nil {
+		return nil, err
+	}
 	if err := Write(repoRoot, plan); err != nil {
 		return nil, err
 	}
@@ -118,8 +133,18 @@ func Create(repoRoot, workspaceName string, sourceID model.SnapshotID, engineTyp
 }
 
 func CreateDecisionPreview(repoRoot, workspaceName string, sourceID model.SnapshotID, engineType model.EngineType) (*Plan, error) {
+	return CreateDecisionPreviewWithExpectedSeparatedContext(repoRoot, workspaceName, sourceID, engineType, ExpectedSeparatedContext{})
+}
+
+func CreateDecisionPreviewWithExpectedSeparatedContext(repoRoot, workspaceName string, sourceID model.SnapshotID, engineType model.EngineType, expected ExpectedSeparatedContext) (*Plan, error) {
+	if err := validateExpectedSeparatedContext(repoRoot, workspaceName, expected); err != nil {
+		return nil, err
+	}
 	plan, err := buildWholePreviewPlan(repoRoot, workspaceName, sourceID, engineType, Options{})
 	if err != nil {
+		return nil, err
+	}
+	if err := validateExpectedSeparatedContext(repoRoot, workspaceName, expected); err != nil {
 		return nil, err
 	}
 	plan.DecisionOnly = true
@@ -192,11 +217,21 @@ func buildWholePreviewPlan(repoRoot, workspaceName string, sourceID model.Snapsh
 }
 
 func CreatePath(repoRoot, workspaceName string, sourceID model.SnapshotID, path string, engineType model.EngineType, options Options) (*Plan, error) {
+	return CreatePathWithExpectedSeparatedContext(repoRoot, workspaceName, sourceID, path, engineType, options, ExpectedSeparatedContext{})
+}
+
+func CreatePathWithExpectedSeparatedContext(repoRoot, workspaceName string, sourceID model.SnapshotID, path string, engineType model.EngineType, options Options, expected ExpectedSeparatedContext) (*Plan, error) {
+	if err := validateExpectedSeparatedContext(repoRoot, workspaceName, expected); err != nil {
+		return nil, err
+	}
 	plan, err := buildPathPreviewPlan(repoRoot, workspaceName, sourceID, path, engineType, options)
 	if err != nil {
 		return nil, err
 	}
 	makePlanRunnable(plan)
+	if err := validateExpectedSeparatedContext(repoRoot, workspaceName, expected); err != nil {
+		return nil, err
+	}
 	if err := Write(repoRoot, plan); err != nil {
 		return nil, err
 	}
@@ -204,8 +239,18 @@ func CreatePath(repoRoot, workspaceName string, sourceID model.SnapshotID, path 
 }
 
 func CreatePathDecisionPreview(repoRoot, workspaceName string, sourceID model.SnapshotID, path string, engineType model.EngineType) (*Plan, error) {
+	return CreatePathDecisionPreviewWithExpectedSeparatedContext(repoRoot, workspaceName, sourceID, path, engineType, ExpectedSeparatedContext{})
+}
+
+func CreatePathDecisionPreviewWithExpectedSeparatedContext(repoRoot, workspaceName string, sourceID model.SnapshotID, path string, engineType model.EngineType, expected ExpectedSeparatedContext) (*Plan, error) {
+	if err := validateExpectedSeparatedContext(repoRoot, workspaceName, expected); err != nil {
+		return nil, err
+	}
 	plan, err := buildPathPreviewPlan(repoRoot, workspaceName, sourceID, path, engineType, Options{})
 	if err != nil {
+		return nil, err
+	}
+	if err := validateExpectedSeparatedContext(repoRoot, workspaceName, expected); err != nil {
 		return nil, err
 	}
 	plan.DecisionOnly = true
@@ -1095,6 +1140,19 @@ func currentRepoID(repoRoot string) (string, error) {
 		return "", fmt.Errorf("read repository identity: %w", err)
 	}
 	return string(bytesTrimSpace(data)), nil
+}
+
+func validateExpectedSeparatedContext(repoRoot, workspaceName string, expected ExpectedSeparatedContext) error {
+	if strings.TrimSpace(expected.RepoID) == "" && strings.TrimSpace(expected.PayloadRoot) == "" {
+		return nil
+	}
+	_, err := repo.RevalidateSeparatedContext(repo.SeparatedContextRevalidationRequest{
+		ControlRoot:         repoRoot,
+		Workspace:           workspaceName,
+		ExpectedRepoID:      expected.RepoID,
+		ExpectedPayloadRoot: expected.PayloadRoot,
+	})
+	return err
 }
 
 func snapshotIDPtrOrNil(id model.SnapshotID) *model.SnapshotID {

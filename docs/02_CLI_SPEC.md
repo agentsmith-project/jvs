@@ -66,8 +66,9 @@ They must not appear in public help, examples, or release-facing workflows.
 
 ## Conventions
 
-- Global flags: `--repo <path>`, `--workspace <name>`, `--json`, `--debug`,
-  `--no-progress`, and `--no-color`.
+- Global flags: `--repo <path>`, `--workspace <name>`,
+  `--control-root <path>`, `--json`, `--debug`, `--no-progress`, and
+  `--no-color`.
 - Non-zero exit means failure.
 - `--json` emits exactly one JSON object to stdout.
 - JVS does not mutate the caller's shell CWD.
@@ -75,6 +76,26 @@ They must not appear in public help, examples, or release-facing workflows.
   concrete save point ID before acting.
 - Commands that overwrite managed files must refuse unsaved changes by default
   unless the user chooses an explicit safety option.
+
+## Separated-Control Phase 1
+
+Separated-control repositories keep control metadata and workspace files in
+different roots. This Phase 1 surface is explicit-selector only and main-only.
+
+- Create one with
+  `jvs init --control-root C --payload-root P --workspace main`.
+- After init, target it with
+  `jvs --control-root C --workspace main <command>`.
+- `--repo` is not a separated-control selector; it remains an advanced target
+  assertion for ordinary project paths.
+- Separated-control doctor supports `doctor --strict --json` only, for example
+  `jvs --json --control-root C --workspace main doctor --strict`.
+- Separated-control repo clone uses a main-only split target:
+  `jvs --control-root C --workspace main repo clone --target-control-root TC --target-payload-root TP --save-points main`.
+  `--save-points all` fails closed in this mode.
+- Repo and workspace lifecycle commands are unsupported in Phase 1: repo move,
+  repo rename, repo detach, workspace move, workspace rename, workspace delete,
+  and workspace new.
 
 ## JSON Envelope
 

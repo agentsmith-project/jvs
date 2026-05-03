@@ -32,6 +32,12 @@ var cleanupPreviewCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if err := validateSeparatedPayloadSymlinkBoundary(ctx.Separated); err != nil {
+			return err
+		}
+		if err := enforceSeparatedRecoveryMutationGuard(ctx.Repo.Root, ctx.Workspace, ctx.Separated, "cleanup preview"); err != nil {
+			return err
+		}
 
 		collector := gc.NewCollector(ctx.Repo.Root)
 		plan, err := collector.Plan()
@@ -70,6 +76,12 @@ var cleanupRunCmd = &cobra.Command{
 
 		if cleanupPlanID == "" {
 			return fmt.Errorf("--plan-id is required")
+		}
+		if err := validateSeparatedPayloadSymlinkBoundary(ctx.Separated); err != nil {
+			return err
+		}
+		if err := enforceSeparatedRecoveryMutationGuard(ctx.Repo.Root, ctx.Workspace, ctx.Separated, "cleanup run"); err != nil {
+			return err
 		}
 
 		collector := gc.NewCollector(ctx.Repo.Root)

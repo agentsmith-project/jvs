@@ -312,6 +312,27 @@ func TestDocs_UserCommandsDocumentsRepoLifecycleManagement(t *testing.T) {
 	}
 }
 
+func TestDocs_UserCommandsDocumentsSeparatedControlPhase1(t *testing.T) {
+	doc := "docs/user/commands.md"
+	body := readRepoFile(t, doc)
+	section := markdownSectionByHeading(t, doc, body, "## Separated-Control Phase 1")
+	normalizedSection := strings.Join(strings.Fields(section), " ")
+	for _, required := range []string{
+		"jvs init --control-root C --payload-root P --workspace main",
+		"jvs --control-root C --workspace main",
+		"Do not run `jvs init` inside the payload root.",
+		"`--repo` is not a separated-control selector.",
+		"jvs --json --control-root C --workspace main doctor --strict",
+		"doctor --strict --json",
+		"jvs --control-root C --workspace main repo clone --target-control-root TC --target-payload-root TP --save-points main",
+		"main-only split target",
+		"`--save-points all` fails closed",
+		"repo move, repo rename, repo detach, workspace move, workspace rename, workspace delete, and workspace new are unsupported",
+	} {
+		requireReleaseReadinessText(t, "separated-control Phase 1 documentation", normalizedSection, required)
+	}
+}
+
 func TestDocs_PublicDocsUseExplicitWorkspaceNewFolderSyntax(t *testing.T) {
 	for _, doc := range activePublicContractDocs() {
 		if doc == "CONTRIBUTING.md" {
@@ -4405,7 +4426,7 @@ func publicDocCommandFlagConsumesValue(flag string) bool {
 		return false
 	}
 	switch flag {
-	case "-m", "--message", "--workspace", "--repo", "--from", "--path":
+	case "-m", "--message", "--workspace", "--repo", "--control-root", "--payload-root", "--target-control-root", "--target-payload-root", "--from", "--path":
 		return true
 	default:
 		return false

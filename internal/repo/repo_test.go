@@ -516,6 +516,10 @@ func TestDiscoverWorktreeLocatorRepoIDMismatchFailsClearly(t *testing.T) {
 
 	_, _, err = repo.DiscoverWorktree(workspace)
 	require.Error(t, err)
+	require.ErrorIs(t, err, errclass.ErrRepoIDMismatch)
+	var jvsErr *errclass.JVSError
+	require.True(t, errors.As(err, &jvsErr), "expected JVS error, got %T: %v", err, err)
+	assert.Equal(t, errclass.ErrRepoIDMismatch.Code, jvsErr.Code)
 	assert.Contains(t, err.Error(), "locator")
 	assert.Contains(t, err.Error(), "repo_id")
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -52,7 +53,108 @@ func TestStorySeparatedControlExplicitStatusIgnoresCleanCWD(t *testing.T) {
 		t.Fatalf("separated status from clean cwd failed: stdout=%s stderr=%s", stdout, stderr)
 	}
 
-	requireSeparatedControlAuthoritativeJSON(t, stdout, stderr, controlRoot, payloadRoot, "main")
+	data := requireSeparatedControlAuthoritativeJSON(t, stdout, stderr, controlRoot, payloadRoot, "main")
+	if data["doctor_strict"] != "not_run" {
+		t.Fatalf("status doctor_strict = %#v, want not_run in %#v", data["doctor_strict"], data)
+	}
+}
+
+func TestStorySeparatedControlRejectsRepoFlagAndAmbientSelectors(t *testing.T) {
+	base := t.TempDir()
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlRepo(t, base, controlRoot, payloadRoot, "main")
+
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		command string
+	}{
+		{
+			name:    "repo flag status",
+			args:    []string{"--json", "--repo", controlRoot, "status"},
+			command: "status",
+		},
+		{
+			name:    "repo flag status with workspace",
+			args:    []string{"--json", "--repo", controlRoot, "--workspace", "main", "status"},
+			command: "status",
+		},
+		{
+			name:    "repo flag save",
+			args:    []string{"--json", "--repo", controlRoot, "save", "-m", "blocked"},
+			command: "save",
+		},
+		{
+			name:    "repo flag doctor",
+			args:    []string{"--json", "--repo", controlRoot, "doctor", "--strict"},
+			command: "doctor",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, code := runJVS(t, base, tc.args...)
+			env := requireSeparatedControlJSONError(t, stdout, stderr, code, "E_EXPLICIT_TARGET_REQUIRED")
+			requireSeparatedSelectorHint(t, env, controlRoot, tc.command)
+		})
+	}
+
+	nestedCWD := filepath.Join(controlRoot, "nested")
+	if err := os.MkdirAll(nestedCWD, 0755); err != nil {
+		t.Fatalf("create nested control cwd: %v", err)
+	}
+	stdout, stderr, code := runJVS(t, nestedCWD, "--json", "status")
+	env := requireSeparatedControlJSONError(t, stdout, stderr, code, "E_EXPLICIT_TARGET_REQUIRED")
+	requireSeparatedSelectorHint(t, env, controlRoot, "status")
+}
+
+func TestStorySeparatedControlPayloadRootNakedStatusHintDoesNotSuggestInit(t *testing.T) {
+	base := t.TempDir()
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlRepo(t, base, controlRoot, payloadRoot, "main")
+
+	stdout, stderr, code := runJVS(t, payloadRoot, "--json", "status")
+
+	env := requireSeparatedControlJSONError(t, stdout, stderr, code, "E_NOT_REPO")
+	if strings.Contains(env.Error.Hint, "jvs init") || strings.Contains(env.Error.Message, "jvs init") {
+		t.Fatalf("payload-root naked status must not suggest init: %#v", env.Error)
+	}
+}
+
+func TestStorySeparatedControlMissingWorkspaceHintIsCopyable(t *testing.T) {
+	base := t.TempDir()
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlRepo(t, base, controlRoot, payloadRoot, "main")
+
+	stdout, stderr, code := runJVS(t, base,
+		"--json",
+		"--control-root", controlRoot,
+		"status",
+	)
+
+	env := requireSeparatedControlJSONError(t, stdout, stderr, code, "E_EXPLICIT_TARGET_REQUIRED")
+	requireSeparatedSelectorHint(t, env, controlRoot, "status")
+}
+
+func TestStorySeparatedControlInitRejectsNonMainWorkspaceWithoutMutation(t *testing.T) {
+	base := t.TempDir()
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+
+	stdout, stderr, code := runJVS(t, base, "init",
+		"--control-root", controlRoot,
+		"--payload-root", payloadRoot,
+		"--workspace", "feature",
+		"--json",
+	)
+
+	env := requireSeparatedControlJSONError(t, stdout, stderr, code, "E_WORKSPACE_MISMATCH")
+	if !strings.Contains(env.Error.Hint, "--workspace main") {
+		t.Fatalf("non-main init hint should point at --workspace main: %#v", env.Error)
+	}
+	requireAbsolutePathAbsent(t, controlRoot)
+	requireAbsolutePathAbsent(t, payloadRoot)
 }
 
 func TestStorySeparatedControlPayloadLocatorPresentFailsClosed(t *testing.T) {
@@ -298,6 +400,18 @@ func requireSeparatedControlJSONError(t *testing.T, stdout, stderr string, exitC
 		t.Fatalf("JSON error code = %q, want %q\n%s", env.Error.Code, wantCode, stdout)
 	}
 	return env
+}
+
+func requireSeparatedSelectorHint(t *testing.T, env contractSmokeEnvelope, controlRoot, command string) {
+	t.Helper()
+	if env.Error == nil {
+		t.Fatalf("JSON error envelope missing error")
+	}
+	for _, want := range []string{"--control-root " + controlRoot, "--workspace main", command} {
+		if !strings.Contains(env.Error.Hint, want) {
+			t.Fatalf("selector hint %q missing %q in %#v", env.Error.Hint, want, env.Error)
+		}
+	}
 }
 
 func requireDirectoryEntries(t *testing.T, root string, want []string) {

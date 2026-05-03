@@ -61,6 +61,16 @@ func TestSeparatedCloneMainCreatesSplitTargetWithNewRepoIDAndPayloadOnly(t *test
 	assert.Equal(t, []model.SnapshotID{mainID}, result.SavePointsCopied)
 	assert.Equal(t, []string{"main"}, result.WorkspacesCreated)
 	assert.False(t, result.RuntimeStateCopied)
+	require.Len(t, result.Transfers, 2)
+	assertRepoCloneTransfer(t, result.Transfers[0], "repo-clone-save-points", "save_point_storage_copy", "save_point_storage", "target_save_point_storage", transferFinalExecution)
+	assert.Equal(t, filepath.Join(sourceControl, ".jvs"), result.Transfers[0].SourcePath)
+	assert.Equal(t, filepath.Join(targetControl, ".jvs"), result.Transfers[0].PublishedDestination)
+	assert.NotContains(t, filepath.ToSlash(result.Transfers[0].MaterializationDestination), filepath.ToSlash(targetPayload))
+	assertRepoCloneTransfer(t, result.Transfers[1], "repo-clone-main-workspace", "main_workspace_materialization", "source_main_current_state", "target_main_workspace", transferFinalExecution)
+	assert.Equal(t, sourcePayload, result.Transfers[1].SourcePath)
+	assert.Equal(t, targetPayload, result.Transfers[1].PublishedDestination)
+	assert.Equal(t, filepath.Dir(targetPayload), result.Transfers[1].CapabilityProbePath)
+	assert.NotContains(t, filepath.ToSlash(result.Transfers[1].MaterializationDestination), filepath.ToSlash(targetControl))
 
 	sourceRepo, err := repo.OpenControlRoot(sourceControl)
 	require.NoError(t, err)
@@ -80,6 +90,7 @@ func TestSeparatedCloneMainCreatesSplitTargetWithNewRepoIDAndPayloadOnly(t *test
 	assert.NoFileExists(t, filepath.Join(targetControl, ".jvs", "runtime", "platform.tmp"))
 	assert.NoFileExists(t, filepath.Join(targetControl, ".jvs", "restore-plans", "platform-plan.json"))
 	assert.NoFileExists(t, filepath.Join(targetControl, ".jvs", "views", "source-view-state"))
+	assertSeparatedCloneRuntimeSentinelsIntact(t, sourceControl)
 
 	cfg, err := repo.LoadWorktreeConfig(targetControl, "main")
 	require.NoError(t, err)
@@ -339,6 +350,31 @@ func TestSeparatedCloneRejectsActiveSourceStateBeforeTargetWrites(t *testing.T) 
 	}
 }
 
+func TestSeparatedCloneRejectsSourcePayloadSymlinkEscapeBeforeTargetWrites(t *testing.T) {
+	sourceControl, sourcePayload := setupSeparatedCloneSourceRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("main v1"), 0644))
+	if err := os.Symlink(filepath.Join(sourceControl, ".jvs", "repo_id"), filepath.Join(sourcePayload, "control-link")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	_ = createCloneSavePoint(t, sourceControl, "main", "main baseline")
+
+	targetBase := t.TempDir()
+	targetControl := filepath.Join(targetBase, "target-control")
+	targetPayload := filepath.Join(targetBase, "target-payload")
+	_, err := repoclone.Clone(repoclone.Options{
+		SourceRepoRoot:    sourceControl,
+		TargetControlRoot: targetControl,
+		TargetPayloadRoot: targetPayload,
+		SavePointsMode:    repoclone.SavePointsModeMain,
+		RequestedEngine:   model.EngineCopy,
+	})
+
+	assertJVSErrorCode(t, err, errclass.ErrPathBoundaryEscape.Code)
+	assert.NoDirExists(t, targetControl)
+	assert.NoDirExists(t, targetPayload)
+	assertFileContent(t, filepath.Join(sourcePayload, "app.txt"), "main v1")
+}
+
 func TestSeparatedCloneAtomicControlPublishFailureRollsBackPayloadAndRetrySucceeds(t *testing.T) {
 	sourceControl, sourcePayload := setupSeparatedCloneSourceRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("main v1"), 0644))
@@ -401,14 +437,68 @@ func TestSeparatedCloneMaterializesMainFromSavedStateWhenSourceMutatesAfterPrepa
 		RequestedEngine:   model.EngineCopy,
 		TransferPlanner:   planner,
 	})
-	if err != nil {
-		assertJVSErrorCode(t, err, errclass.ErrSourceDirty.Code)
-		assert.NoFileExists(t, filepath.Join(targetPayload, "app.txt"))
-		return
-	}
-
+	assertJVSErrorCode(t, err, errclass.ErrSourceDirty.Code)
 	assertFileContent(t, filepath.Join(sourcePayload, "app.txt"), "unsaved race")
-	assertFileContent(t, filepath.Join(targetPayload, "app.txt"), "saved state")
+	assert.NoFileExists(t, filepath.Join(targetPayload, "app.txt"))
+	assert.NoDirExists(t, filepath.Join(targetControl, ".jvs"))
+}
+
+func TestSeparatedCloneSourceRepoIDMismatchBeforePublishFailsStableContract(t *testing.T) {
+	sourceControl, sourcePayload := setupSeparatedCloneSourceRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("main v1"), 0644))
+	_ = createCloneSavePoint(t, sourceControl, "main", "main baseline")
+
+	targetBase := t.TempDir()
+	targetControl := filepath.Join(targetBase, "target-control")
+	targetPayload := filepath.Join(targetBase, "target-payload")
+	_, err := repoclone.Clone(repoclone.Options{
+		SourceRepoRoot:    sourceControl,
+		TargetControlRoot: targetControl,
+		TargetPayloadRoot: targetPayload,
+		SavePointsMode:    repoclone.SavePointsModeMain,
+		RequestedEngine:   model.EngineCopy,
+		Hooks: repoclone.Hooks{
+			BeforePublish: func(stagingRoot, targetRoot string) error {
+				return os.WriteFile(filepath.Join(sourceControl, ".jvs", "repo_id"), []byte("different-source-repo-id\n"), 0600)
+			},
+		},
+	})
+
+	assertJVSErrorCode(t, err, errclass.ErrRepoIDMismatch.Code)
+	assert.NoFileExists(t, filepath.Join(targetPayload, "app.txt"))
+	assert.NoDirExists(t, filepath.Join(targetControl, ".jvs"))
+}
+
+func TestSeparatedCloneSourceCleanSavePointDriftBeforePublishFailsSourceDirty(t *testing.T) {
+	sourceControl, sourcePayload := setupSeparatedCloneSourceRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("main v1"), 0644))
+	baseline := createCloneSavePoint(t, sourceControl, "main", "main baseline")
+
+	targetBase := t.TempDir()
+	targetControl := filepath.Join(targetBase, "target-control")
+	targetPayload := filepath.Join(targetBase, "target-payload")
+	_, err := repoclone.Clone(repoclone.Options{
+		SourceRepoRoot:    sourceControl,
+		TargetControlRoot: targetControl,
+		TargetPayloadRoot: targetPayload,
+		SavePointsMode:    repoclone.SavePointsModeMain,
+		RequestedEngine:   model.EngineCopy,
+		Hooks: repoclone.Hooks{
+			BeforePublish: func(stagingRoot, targetRoot string) error {
+				require.DirExists(t, stagingRoot)
+				require.Equal(t, targetControl, targetRoot)
+				require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("main v2"), 0644))
+				next := createCloneSavePoint(t, sourceControl, "main", "main concurrent save")
+				require.NotEqual(t, baseline, next)
+				return nil
+			},
+		},
+	})
+
+	assertJVSErrorCode(t, err, errclass.ErrSourceDirty.Code)
+	assertFileContent(t, filepath.Join(sourcePayload, "app.txt"), "main v2")
+	assert.NoFileExists(t, filepath.Join(targetPayload, "app.txt"))
+	assert.NoDirExists(t, filepath.Join(targetControl, ".jvs"))
 }
 
 func TestCloneMainCreatesNewRepoWithOnlyMainWorkspaceAndMaterializedRoot(t *testing.T) {
@@ -927,6 +1017,14 @@ func seedSeparatedCloneRuntimeSentinels(t *testing.T, controlRoot string) {
 	require.NoError(t, os.WriteFile(filepath.Join(controlRoot, ".jvs", "locks", "platform.lock"), []byte("lock sentinel\n"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(controlRoot, ".jvs", "runtime", "platform.tmp"), []byte("runtime sentinel\n"), 0644))
 	require.NoError(t, os.WriteFile(filepath.Join(controlRoot, ".jvs", "views", "source-view-state"), []byte("{}\n"), 0644))
+}
+
+func assertSeparatedCloneRuntimeSentinelsIntact(t *testing.T, controlRoot string) {
+	t.Helper()
+
+	assertFileContent(t, filepath.Join(controlRoot, ".jvs", "locks", "platform.lock"), "lock sentinel\n")
+	assertFileContent(t, filepath.Join(controlRoot, ".jvs", "runtime", "platform.tmp"), "runtime sentinel\n")
+	assertFileContent(t, filepath.Join(controlRoot, ".jvs", "views", "source-view-state"), "{}\n")
 }
 
 func withWorkingDir(t *testing.T, dir string) {

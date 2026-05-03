@@ -741,7 +741,7 @@ func discoverWorkspaceLocator(path string) (*Repo, workspaceLocatorFile, bool, e
 		return nil, workspaceLocatorFile{}, true, fmt.Errorf("JVS workspace locator %s points to repository without repo_id", path)
 	}
 	if locator.RepoID != r.RepoID {
-		return nil, workspaceLocatorFile{}, true, fmt.Errorf("JVS workspace locator %s repo_id mismatch: locator has %s, repository has %s", path, locator.RepoID, r.RepoID)
+		return nil, workspaceLocatorFile{}, true, errclass.ErrRepoIDMismatch.WithMessagef("JVS workspace locator %s repo_id mismatch: locator has %s, repository has %s", path, locator.RepoID, r.RepoID)
 	}
 	return r, locator, true, nil
 }
@@ -1656,24 +1656,23 @@ func WorktreePayloadPath(repoRoot, name string) (string, error) {
 // WorktreeManagedPayloadBoundary returns the managed payload root and any
 // root-level control paths that must be excluded from captures.
 func WorktreeManagedPayloadBoundary(repoRoot, name string) (WorktreePayloadBoundary, error) {
-	root, err := WorktreePayloadPath(repoRoot, name)
-	if err != nil {
-		return WorktreePayloadBoundary{}, err
-	}
 	mode, err := LoadRepoMode(repoRoot)
 	if err != nil {
 		return WorktreePayloadBoundary{}, err
 	}
 	if mode == RepoModeSeparatedControl {
-		ctx, err := RevalidateSeparatedContext(SeparatedContextRevalidationRequest{
-			ControlRoot:         repoRoot,
-			Workspace:           name,
-			ExpectedPayloadRoot: root,
+		ctx, err := ResolveSeparatedContext(SeparatedContextRequest{
+			ControlRoot: repoRoot,
+			Workspace:   name,
 		})
 		if err != nil {
 			return WorktreePayloadBoundary{}, err
 		}
 		return WorktreePayloadBoundary{Root: ctx.PayloadRoot}, nil
+	}
+	root, err := WorktreePayloadPath(repoRoot, name)
+	if err != nil {
+		return WorktreePayloadBoundary{}, err
 	}
 	if err := validatePayloadBoundaryRoot(repoRoot, root); err != nil {
 		return WorktreePayloadBoundary{}, err

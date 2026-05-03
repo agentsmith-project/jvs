@@ -334,11 +334,7 @@ func preflightSeparatedViewOpen(ctx *repo.SeparatedContext) error {
 	if ctx == nil {
 		return nil
 	}
-	revalidated, err := repo.RevalidateSeparatedContext(repo.SeparatedContextRevalidationRequest{
-		ControlRoot:         ctx.ControlRoot,
-		Workspace:           ctx.Workspace,
-		ExpectedPayloadRoot: ctx.PayloadRoot,
-	})
+	revalidated, err := revalidateSeparatedContext(ctx, ctx.PayloadRoot)
 	if err != nil {
 		return err
 	}
@@ -348,7 +344,7 @@ func preflightSeparatedViewOpen(ctx *repo.SeparatedContext) error {
 	if _, err := repo.WorktreeManagedPayloadBoundary(revalidated.ControlRoot, revalidated.Workspace); err != nil {
 		return err
 	}
-	return validateSeparatedPayloadSymlinkBoundary(revalidated)
+	return repo.ValidateSeparatedPayloadSymlinkBoundary(revalidated)
 }
 
 func validateSeparatedViewRuntimeBoundary(controlRoot string) error {

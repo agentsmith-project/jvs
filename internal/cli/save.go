@@ -42,7 +42,7 @@ Examples:
 			return savePointError(err)
 		}
 
-		desc, transferRecord, err := createSavePointDescriptor(ctx.Repo.Root, ctx.Workspace, message)
+		desc, transferRecord, err := createSavePointDescriptor(ctx.Repo.Root, ctx.Workspace, message, ctx.Separated)
 		if err != nil {
 			return savePointError(err)
 		}
@@ -88,11 +88,20 @@ Examples:
 	},
 }
 
-func createSavePointDescriptor(repoRoot, workspaceName, message string) (*model.Descriptor, *transfer.Record, error) {
+func createSavePointDescriptor(repoRoot, workspaceName, message string, separated *repo.SeparatedContext) (*model.Descriptor, *transfer.Record, error) {
 	var desc *model.Descriptor
 	var transferRecord *transfer.Record
 	err := repo.WithMutationLock(repoRoot, "save", func() error {
+		if err := validateSeparatedPayloadSymlinkBoundary(separated); err != nil {
+			return err
+		}
+		if err := enforceSeparatedRecoveryMutationGuard(repoRoot, workspaceName, separated, "save"); err != nil {
+			return err
+		}
 		if err := checkSaveCapacity(repoRoot, workspaceName); err != nil {
+			return err
+		}
+		if err := validateSeparatedPayloadSymlinkBoundary(separated); err != nil {
 			return err
 		}
 		var err error

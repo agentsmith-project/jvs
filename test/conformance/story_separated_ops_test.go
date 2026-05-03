@@ -5,6 +5,7 @@ package conformance
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -19,7 +20,7 @@ func TestStorySeparatedOpsPayloadBoundaryAndAuthoritativeJSON(t *testing.T) {
 	firstOut := separatedJSON(t, base, controlRoot, "main", "save", "-m", "payload only")
 	first := firstOut["save_point_id"].(string)
 	requireSeparatedControlAuthoritativeData(t, firstOut, controlRoot, payloadRoot, "main")
-	requireSeparatedStoryTransferSource(t, firstOut, payloadRoot)
+	requireSeparatedStoryTransferSource(t, firstOut, controlRoot, payloadRoot)
 
 	history := separatedJSON(t, base, controlRoot, "main", "history")
 	requireSeparatedControlAuthoritativeData(t, history, controlRoot, payloadRoot, "main")
@@ -55,6 +56,7 @@ func TestStorySeparatedOpsPayloadBoundaryAndAuthoritativeJSON(t *testing.T) {
 	if viewPath == "" {
 		t.Fatalf("view missing view_path: %#v", view)
 	}
+	requireSeparatedStoryViewTransfer(t, view, controlRoot, viewPath)
 	requireAbsolutePathExists(t, filepath.Join(viewPath, "app.txt"))
 	requireAbsolutePathMissing(t, filepath.Join(viewPath, "audit"))
 	requireAbsolutePathMissing(t, filepath.Join(viewPath, "locks"))
@@ -71,8 +73,10 @@ func TestStorySeparatedOpsPayloadBoundaryAndAuthoritativeJSON(t *testing.T) {
 	if planID == "" {
 		t.Fatalf("restore preview missing plan_id: %#v", preview)
 	}
+	requireSeparatedStoryRestorePreviewTransfer(t, preview, controlRoot, payloadRoot)
 	run := separatedJSON(t, base, controlRoot, "main", "restore", "--run", planID)
 	requireSeparatedControlAuthoritativeData(t, run, controlRoot, payloadRoot, "main")
+	requireSeparatedStoryRestoreRunTransfers(t, run, controlRoot, payloadRoot)
 	if got := readAbsoluteFile(t, filepath.Join(payloadRoot, "app.txt")); got != "v1\n" {
 		t.Fatalf("restore should update payload only, app.txt=%q", got)
 	}
@@ -109,6 +113,25 @@ func TestStorySeparatedOpsSymlinkEscapeFailsClosed(t *testing.T) {
 		"--control-root", controlRoot,
 		"--workspace", "main",
 		"save", "-m", "blocked symlink",
+	)
+	requireSeparatedControlJSONError(t, stdout, stderr, code, "E_PATH_BOUNDARY_ESCAPE")
+}
+
+func TestStorySeparatedOpsStatusSymlinkEscapeFailsClosed(t *testing.T) {
+	base := t.TempDir()
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlRepo(t, base, controlRoot, payloadRoot, "main")
+	seedSeparatedStoryControlFiles(t, controlRoot)
+	if err := os.Symlink(filepath.Join(controlRoot, ".jvs", "audit", "platform.log"), filepath.Join(payloadRoot, "control-link")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	stdout, stderr, code := runJVS(t, base,
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"status",
 	)
 	requireSeparatedControlJSONError(t, stdout, stderr, code, "E_PATH_BOUNDARY_ESCAPE")
 }
@@ -173,7 +196,7 @@ func seedSeparatedStoryControlFiles(t *testing.T, controlRoot string) {
 	if err := os.WriteFile(filepath.Join(controlRoot, ".jvs", "locks", "platform.lock"), []byte("lock sentinel\n"), 0644); err != nil {
 		t.Fatalf("write lock sentinel: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(controlRoot, ".jvs", "restore-plans", "platform-plan.json"), []byte("{}\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(controlRoot, ".jvs", "restore-plans", "platform-state.tmp"), []byte("{}\n"), 0644); err != nil {
 		t.Fatalf("write restore plan sentinel: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(controlRoot, ".jvs", "runtime", "platform.tmp"), []byte("runtime sentinel\n"), 0644); err != nil {
@@ -189,7 +212,7 @@ func requireSeparatedStoryControlFiles(t *testing.T, controlRoot string) {
 	if got := readAbsoluteFile(t, filepath.Join(controlRoot, ".jvs", "locks", "platform.lock")); got != "lock sentinel\n" {
 		t.Fatalf("lock sentinel mutated: %q", got)
 	}
-	if got := readAbsoluteFile(t, filepath.Join(controlRoot, ".jvs", "restore-plans", "platform-plan.json")); got != "{}\n" {
+	if got := readAbsoluteFile(t, filepath.Join(controlRoot, ".jvs", "restore-plans", "platform-state.tmp")); got != "{}\n" {
 		t.Fatalf("restore plan sentinel mutated: %q", got)
 	}
 	if got := readAbsoluteFile(t, filepath.Join(controlRoot, ".jvs", "runtime", "platform.tmp")); got != "runtime sentinel\n" {
@@ -197,7 +220,7 @@ func requireSeparatedStoryControlFiles(t *testing.T, controlRoot string) {
 	}
 }
 
-func requireSeparatedStoryTransferSource(t *testing.T, data map[string]any, payloadRoot string) {
+func requireSeparatedStoryTransferSource(t *testing.T, data map[string]any, controlRoot, payloadRoot string) {
 	t.Helper()
 	transfers, ok := data["transfers"].([]any)
 	if !ok || len(transfers) == 0 {
@@ -209,5 +232,104 @@ func requireSeparatedStoryTransferSource(t *testing.T, data map[string]any, payl
 	}
 	if transfer["source_path"] != payloadRoot {
 		t.Fatalf("transfer source_path = %#v, want payload root %q in %#v", transfer["source_path"], payloadRoot, transfer)
+	}
+	requireSeparatedStoryPathUnder(t, transfer["published_destination"], filepath.Join(controlRoot, ".jvs", "snapshots"))
+}
+
+func requireSeparatedStoryViewTransfer(t *testing.T, data map[string]any, controlRoot, viewPath string) {
+	t.Helper()
+	transfer := requireSeparatedStoryTransferByID(t, data, "view-primary")
+	if transfer["operation"] != "view" || transfer["phase"] != "view_materialization" {
+		t.Fatalf("view transfer has wrong operation/phase: %#v", transfer)
+	}
+	requireSeparatedStoryPathUnder(t, transfer["source_path"], filepath.Join(controlRoot, ".jvs", "snapshots"))
+	requireSeparatedStoryPathUnder(t, transfer["materialization_destination"], filepath.Join(controlRoot, ".jvs", "views"))
+	requireSeparatedStoryPathUnder(t, transfer["capability_probe_path"], filepath.Join(controlRoot, ".jvs", "views"))
+	if transfer["published_destination"] != viewPath {
+		t.Fatalf("view published_destination = %#v, want %q in %#v", transfer["published_destination"], viewPath, transfer)
+	}
+	requireSeparatedStoryTransferCopyEvidence(t, transfer)
+}
+
+func requireSeparatedStoryRestorePreviewTransfer(t *testing.T, data map[string]any, controlRoot, payloadRoot string) {
+	t.Helper()
+	transfer := requireSeparatedStoryTransferByID(t, data, "restore-preview-validation-primary")
+	if transfer["result_kind"] != "expected" || transfer["permission_scope"] != "preview_only" {
+		t.Fatalf("restore preview transfer must be preview-only expected: %#v", transfer)
+	}
+	requireSeparatedStoryPathUnder(t, transfer["source_path"], filepath.Join(controlRoot, ".jvs", "snapshots"))
+	requireSeparatedStoryPathUnder(t, transfer["materialization_destination"], filepath.Join(controlRoot, ".jvs"))
+	if transfer["published_destination"] != payloadRoot {
+		t.Fatalf("restore preview published_destination = %#v, want %q in %#v", transfer["published_destination"], payloadRoot, transfer)
+	}
+	requireSeparatedStoryTransferCopyEvidence(t, transfer)
+}
+
+func requireSeparatedStoryRestoreRunTransfers(t *testing.T, data map[string]any, controlRoot, payloadRoot string) {
+	t.Helper()
+	validation := requireSeparatedStoryTransferByID(t, data, "restore-run-source-validation")
+	if validation["result_kind"] != "final" || validation["permission_scope"] != "execution" {
+		t.Fatalf("restore validation transfer must be final execution: %#v", validation)
+	}
+	requireSeparatedStoryPathUnder(t, validation["source_path"], filepath.Join(controlRoot, ".jvs", "snapshots"))
+	requireSeparatedStoryPathUnder(t, validation["materialization_destination"], filepath.Join(controlRoot, ".jvs"))
+	if validation["published_destination"] != payloadRoot {
+		t.Fatalf("restore validation published_destination = %#v, want %q in %#v", validation["published_destination"], payloadRoot, validation)
+	}
+	requireSeparatedStoryTransferCopyEvidence(t, validation)
+
+	primary := requireSeparatedStoryTransferByID(t, data, "restore-run-primary")
+	requireSeparatedStoryPathUnder(t, primary["source_path"], filepath.Join(controlRoot, ".jvs", "snapshots"))
+	requireSeparatedStoryPathUnder(t, primary["materialization_destination"], filepath.Dir(payloadRoot))
+	if path, _ := primary["materialization_destination"].(string); strings.Contains(filepath.ToSlash(path), filepath.ToSlash(controlRoot)) {
+		t.Fatalf("restore primary materialized inside control root: %#v", primary)
+	}
+	if primary["published_destination"] != payloadRoot {
+		t.Fatalf("restore primary published_destination = %#v, want %q in %#v", primary["published_destination"], payloadRoot, primary)
+	}
+	requireSeparatedStoryTransferCopyEvidence(t, primary)
+}
+
+func requireSeparatedStoryTransferByID(t *testing.T, data map[string]any, id string) map[string]any {
+	t.Helper()
+	transfers, ok := data["transfers"].([]any)
+	if !ok {
+		t.Fatalf("transfers should be array: %#v", data["transfers"])
+	}
+	for _, item := range transfers {
+		transfer, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("transfer should be object: %#v", item)
+		}
+		if transfer["transfer_id"] == id {
+			return transfer
+		}
+	}
+	t.Fatalf("missing transfer %q in %#v", id, transfers)
+	return nil
+}
+
+func requireSeparatedStoryTransferCopyEvidence(t *testing.T, transfer map[string]any) {
+	t.Helper()
+	if transfer["checked_for_this_operation"] != true {
+		t.Fatalf("transfer was not checked for this operation: %#v", transfer)
+	}
+	if transfer["capability_probe_path"] == "" {
+		t.Fatalf("transfer missing capability_probe_path: %#v", transfer)
+	}
+	if transfer["performance_class"] != "fast_copy" && transfer["performance_class"] != "normal_copy" {
+		t.Fatalf("transfer performance_class = %#v, want fast_copy or normal_copy in %#v", transfer["performance_class"], transfer)
+	}
+}
+
+func requireSeparatedStoryPathUnder(t *testing.T, got any, root string) {
+	t.Helper()
+	path, ok := got.(string)
+	if !ok || path == "" {
+		t.Fatalf("path should be non-empty string under %s: %#v", root, got)
+	}
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		t.Fatalf("path %q should be under %q (rel=%q err=%v)", path, root, rel, err)
 	}
 }

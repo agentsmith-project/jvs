@@ -3,6 +3,8 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -32,8 +34,11 @@ var recoveryStatusCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if err := validateAndRefreshSeparatedPayloadBoundary(ctx); err != nil {
+			return recoveryError(err)
+		}
 		if len(args) == 0 {
-			result, err := recoveryStatusList(ctx.Repo.Root)
+			result, err := recoveryStatusList(ctx.Repo.Root, ctx.Separated)
 			if err != nil {
 				return recoveryError(err)
 			}
@@ -43,7 +48,7 @@ var recoveryStatusCmd = &cobra.Command{
 			printRecoveryStatusList(result)
 			return nil
 		}
-		result, err := recoveryStatusDetail(ctx.Repo.Root, args[0])
+		result, err := recoveryStatusDetail(ctx.Repo.Root, args[0], ctx.Separated)
 		if err != nil {
 			return recoveryError(err)
 		}
@@ -67,7 +72,7 @@ var recoveryResumeCmd = &cobra.Command{
 		if err := validateSeparatedPayloadSymlinkBoundary(ctx.Separated); err != nil {
 			return recoveryError(err)
 		}
-		result, err := runRecoveryResume(ctx.Repo.Root, args[0])
+		result, err := runRecoveryResume(ctx.Repo.Root, args[0], ctx.Separated)
 		if err != nil {
 			return recoveryError(err)
 		}
@@ -91,7 +96,7 @@ var recoveryRollbackCmd = &cobra.Command{
 		if err := validateSeparatedPayloadSymlinkBoundary(ctx.Separated); err != nil {
 			return recoveryError(err)
 		}
-		result, err := runRecoveryRollback(ctx.Repo.Root, args[0])
+		result, err := runRecoveryRollback(ctx.Repo.Root, args[0], ctx.Separated)
 		if err != nil {
 			return recoveryError(err)
 		}
@@ -144,7 +149,7 @@ type publicRecoveryActionResult struct {
 	Transfers              []transfer.Record `json:"transfers,omitempty"`
 }
 
-func recoveryStatusList(repoRoot string) (publicRecoveryStatusList, error) {
+func recoveryStatusList(repoRoot string, separated *repo.SeparatedContext) (publicRecoveryStatusList, error) {
 	plans, err := recovery.NewManager(repoRoot).List()
 	if err != nil {
 		return publicRecoveryStatusList{}, err
@@ -154,17 +159,46 @@ func recoveryStatusList(repoRoot string) (publicRecoveryStatusList, error) {
 		if plan.Status != recovery.StatusActive {
 			continue
 		}
+		if err := validateSeparatedRecoveryStatusPlan(repoRoot, &plan, separated); err != nil {
+			return publicRecoveryStatusList{}, err
+		}
 		result.Plans = append(result.Plans, publicRecoveryPlanFromPlan(repoRoot, &plan))
 	}
 	return result, nil
 }
 
-func recoveryStatusDetail(repoRoot, planID string) (publicRecoveryPlan, error) {
+func recoveryStatusDetail(repoRoot, planID string, separated *repo.SeparatedContext) (publicRecoveryPlan, error) {
 	plan, err := recovery.NewManager(repoRoot).Load(planID)
 	if err != nil {
 		return publicRecoveryPlan{}, err
 	}
+	if err := validateSeparatedRecoveryStatusPlan(repoRoot, plan, separated); err != nil {
+		return publicRecoveryPlan{}, err
+	}
 	return publicRecoveryPlanFromPlan(repoRoot, plan), nil
+}
+
+func validateSeparatedRecoveryStatusPlan(repoRoot string, plan *recovery.Plan, separated *repo.SeparatedContext) error {
+	if separated == nil || plan == nil || plan.Status != recovery.StatusActive {
+		return nil
+	}
+	if err := validateSeparatedPayloadSymlinkBoundaryForRecoveryPlan(separated, plan); err != nil {
+		return err
+	}
+	if err := recovery.NewManager(repoRoot).ValidateLiveBackup(plan); err != nil && !errors.Is(err, recovery.ErrBackupMissing) {
+		return errclass.ErrRecoveryBlocking.
+			WithMessagef("recovery plan %s cannot be inspected safely: %v", plan.PlanID, recoveryVocabulary(err.Error())).
+			WithHint(separatedSelectorHint(separated.ControlRoot, separated.Workspace, "doctor --strict --json"))
+	}
+	if strings.TrimSpace(plan.RecoveryEvidence) == "" {
+		return nil
+	}
+	if _, err := recovery.RecognizeCurrentState(repoRoot, plan); err != nil {
+		return errclass.ErrRecoveryBlocking.
+			WithMessagef("recovery plan %s current folder evidence does not match the active separated binding: %v", plan.PlanID, recoveryVocabulary(err.Error())).
+			WithHint(separatedSelectorHint(separated.ControlRoot, separated.Workspace, "recovery status "+plan.PlanID))
+	}
+	return nil
 }
 
 func publicRecoveryPlanFromPlan(repoRoot string, plan *recovery.Plan) publicRecoveryPlan {
@@ -211,12 +245,15 @@ func publicRecoveryRecommendedNextCommand(repoRoot string, plan *recovery.Plan, 
 	return ""
 }
 
-func runRecoveryRollback(repoRoot, planID string) (publicRecoveryActionResult, error) {
+func runRecoveryRollback(repoRoot, planID string, separated *repo.SeparatedContext) (publicRecoveryActionResult, error) {
 	var result publicRecoveryActionResult
 	err := repo.WithMutationLock(repoRoot, "recovery rollback", func() error {
 		mgr := recovery.NewManager(repoRoot)
 		plan, err := mgr.Load(planID)
 		if err != nil {
+			return err
+		}
+		if err := validateSeparatedPayloadSymlinkBoundaryForRecoveryPlan(separated, plan); err != nil {
 			return err
 		}
 		if plan.Status != recovery.StatusActive {
@@ -303,12 +340,15 @@ func runRecoveryRollback(repoRoot, planID string) (publicRecoveryActionResult, e
 	return result, err
 }
 
-func runRecoveryResume(repoRoot, planID string) (publicRecoveryActionResult, error) {
+func runRecoveryResume(repoRoot, planID string, separated *repo.SeparatedContext) (publicRecoveryActionResult, error) {
 	var result publicRecoveryActionResult
 	err := repo.WithMutationLock(repoRoot, "recovery resume", func() error {
 		mgr := recovery.NewManager(repoRoot)
 		plan, err := mgr.Load(planID)
 		if err != nil {
+			return err
+		}
+		if err := validateSeparatedPayloadSymlinkBoundaryForRecoveryPlan(separated, plan); err != nil {
 			return err
 		}
 		if plan.Status != recovery.StatusActive {
@@ -402,6 +442,14 @@ func runRecoveryResume(repoRoot, planID string) (publicRecoveryActionResult, err
 		return nil
 	})
 	return result, err
+}
+
+func validateSeparatedPayloadSymlinkBoundaryForRecoveryPlan(separated *repo.SeparatedContext, plan *recovery.Plan) error {
+	if separated == nil || plan == nil {
+		return nil
+	}
+	_, err := validateSeparatedPayloadSymlinkBoundaryForExpectedRoot(separated, plan.Folder)
+	return err
 }
 
 func publicRecoveryResultAfterResume(repoRoot string, plan *recovery.Plan) (publicRecoveryActionResult, error) {
@@ -630,7 +678,155 @@ func restoreDidNotFinishError(plan *recovery.Plan) error {
 }
 
 func activeRecoveryBlocksRestoreError(plan recovery.Plan) error {
-	return fmt.Errorf("workspace has active recovery plan %s; run jvs recovery status %s, jvs recovery resume %s, or jvs recovery rollback %s before another restore", plan.PlanID, plan.PlanID, plan.PlanID, plan.PlanID)
+	return errclass.ErrRecoveryBlocking.
+		WithMessagef("workspace has active recovery plan %s; run jvs recovery status %s, jvs recovery resume %s, or jvs recovery rollback %s before another restore", plan.PlanID, plan.PlanID, plan.PlanID, plan.PlanID).
+		WithHint("Run jvs recovery status " + plan.PlanID + ".")
+}
+
+func enforceSeparatedRecoveryMutationGuard(repoRoot, workspaceName string, separated *repo.SeparatedContext, operation string) error {
+	if separated == nil {
+		return nil
+	}
+	restorePlanID, err := firstPendingSeparatedRestorePlan(repoRoot, workspaceName, separated)
+	if err != nil {
+		return separatedRecoveryMutationInspectError(separated, operation, "restore plans", err)
+	}
+	if restorePlanID != "" {
+		return separatedRecoveryMutationBlockingError(separated, operation, "restore plan", restorePlanID, "restore --run "+restorePlanID)
+	}
+
+	recoveryPlanID, err := firstActiveRecoveryPlan(repoRoot, workspaceName)
+	if err != nil {
+		return separatedRecoveryMutationInspectError(separated, operation, "recovery plans", err)
+	}
+	if recoveryPlanID != "" {
+		return separatedRecoveryMutationBlockingError(separated, operation, "recovery plan", recoveryPlanID, "recovery status "+recoveryPlanID)
+	}
+	return nil
+}
+
+func firstPendingSeparatedRestorePlan(repoRoot, workspaceName string, separated *repo.SeparatedContext) (string, error) {
+	restorePlansDir := filepath.Join(repoRoot, repo.JVSDirName, "restore-plans")
+	entries, err := os.ReadDir(restorePlansDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.Type()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("restore plan entry %s is a symlink", name)
+		}
+		if entry.IsDir() {
+			return "", fmt.Errorf("restore plan entry %s is a directory", name)
+		}
+		if !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		planID := strings.TrimSuffix(name, ".json")
+		plan, err := restoreplan.Load(repoRoot, planID)
+		if err != nil {
+			return "", fmt.Errorf("restore plan %s cannot be loaded: %w", planID, err)
+		}
+		if !plan.IsRunnable() {
+			continue
+		}
+		if err := validateSeparatedPayloadSymlinkBoundaryForRestorePlan(separated, plan); err != nil {
+			return "", err
+		}
+		pending, err := restorePlanTargetStillPending(repoRoot, workspaceName, plan)
+		if err != nil {
+			return "", err
+		}
+		if pending {
+			return plan.PlanID, nil
+		}
+	}
+	return "", nil
+}
+
+func restorePlanTargetStillPending(repoRoot, workspaceName string, plan *restoreplan.Plan) (bool, error) {
+	var err error
+	switch plan.EffectiveScope() {
+	case restoreplan.ScopeWhole:
+		err = restoreplan.ValidateTarget(repoRoot, workspaceName, plan)
+	case restoreplan.ScopePath:
+		err = restoreplan.ValidatePathTarget(repoRoot, workspaceName, plan)
+	default:
+		return false, fmt.Errorf("restore plan scope is not supported")
+	}
+	if err == nil {
+		return true, nil
+	}
+	if strings.Contains(err.Error(), "folder changed since preview") {
+		completed, completionErr := restorePlanCompletedByResolvedRecoveryPlan(repoRoot, plan)
+		if completionErr != nil {
+			return false, completionErr
+		}
+		if completed {
+			return false, nil
+		}
+		return true, nil
+	}
+	return false, err
+}
+
+func restorePlanCompletedByResolvedRecoveryPlan(repoRoot string, restorePlan *restoreplan.Plan) (bool, error) {
+	if restorePlan == nil || strings.TrimSpace(restorePlan.PlanID) == "" {
+		return false, nil
+	}
+	plans, err := recovery.NewManager(repoRoot).List()
+	if err != nil {
+		return false, err
+	}
+	for _, plan := range plans {
+		if resolvedRecoveryMatchesRestorePlan(plan, restorePlan) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func resolvedRecoveryMatchesRestorePlan(plan recovery.Plan, restorePlan *restoreplan.Plan) bool {
+	if restorePlan == nil || plan.Status != recovery.StatusResolved || plan.RestorePlanID != restorePlan.PlanID {
+		return false
+	}
+	if plan.Workspace != restorePlan.Workspace || plan.Folder != restorePlan.Folder || plan.SourceSavePoint != restorePlan.SourceSavePoint || plan.Path != restorePlan.Path {
+		return false
+	}
+	switch restorePlan.EffectiveScope() {
+	case restoreplan.ScopeWhole:
+		return plan.Operation == recovery.OperationRestore
+	case restoreplan.ScopePath:
+		return plan.Operation == recovery.OperationRestorePath
+	default:
+		return false
+	}
+}
+
+func firstActiveRecoveryPlan(repoRoot, workspaceName string) (string, error) {
+	plans, err := recovery.NewManager(repoRoot).ActiveForWorkspace(workspaceName)
+	if err != nil {
+		return "", err
+	}
+	if len(plans) == 0 {
+		return "", nil
+	}
+	return plans[0].PlanID, nil
+}
+
+func separatedRecoveryMutationInspectError(separated *repo.SeparatedContext, operation, state string, err error) error {
+	return errclass.ErrRecoveryBlocking.
+		WithMessagef("cannot %s while separated recovery state cannot be inspected: %s: %v", operation, state, recoveryVocabulary(err.Error())).
+		WithHint(separatedSelectorHint(separated.ControlRoot, separated.Workspace, "doctor --strict --json"))
+}
+
+func separatedRecoveryMutationBlockingError(separated *repo.SeparatedContext, operation, kind, planID, nextCommand string) error {
+	return errclass.ErrRecoveryBlocking.
+		WithMessagef("cannot %s while %s %s is pending", operation, kind, planID).
+		WithHint(separatedSelectorHint(separated.ControlRoot, separated.Workspace, nextCommand))
 }
 
 func restoreRecoveryBackupPath(folder string) string {

@@ -3,9 +3,6 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
@@ -111,47 +108,52 @@ func validateSeparatedPayloadSymlinkBoundary(ctx *repo.SeparatedContext) error {
 	if ctx == nil {
 		return nil
 	}
-	rootReal, err := filepath.EvalSymlinks(ctx.PayloadRoot)
-	if err != nil {
-		return errclass.ErrPathBoundaryEscape.WithMessagef("resolve payload root boundary: %v", err)
-	}
-	rootReal = filepath.Clean(rootReal)
-	return filepath.WalkDir(ctx.PayloadRoot, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return errclass.ErrPathBoundaryEscape.WithMessagef("walk payload boundary: %v", walkErr)
-		}
-		if path == ctx.PayloadRoot {
-			return nil
-		}
-		if entry.Type()&os.ModeSymlink == 0 {
-			return nil
-		}
-		targetReal, err := filepath.EvalSymlinks(path)
-		rel, relErr := filepath.Rel(ctx.PayloadRoot, path)
-		if relErr != nil {
-			rel = path
-		}
-		rel = filepath.ToSlash(rel)
-		if err != nil {
-			return errclass.ErrPathBoundaryEscape.WithMessagef("payload symlink cannot be resolved safely: %s: %v", rel, err)
-		}
-		targetReal = filepath.Clean(targetReal)
-		if !pathWithinRoot(rootReal, targetReal) {
-			return errclass.ErrPathBoundaryEscape.WithMessagef("payload symlink escapes workspace boundary: %s", rel)
-		}
-		return nil
-	})
+	_, err := validateSeparatedPayloadSymlinkBoundaryForExpectedRoot(ctx, ctx.PayloadRoot)
+	return err
 }
 
-func pathWithinRoot(root, path string) bool {
-	if root == "" || path == "" {
-		return false
+func validateAndRefreshSeparatedPayloadBoundary(ctx *cliDiscoveryContext) error {
+	if ctx == nil || ctx.Separated == nil {
+		return nil
 	}
-	rel, err := filepath.Rel(root, path)
+	revalidated, err := validateSeparatedPayloadSymlinkBoundaryForExpectedRoot(ctx.Separated, ctx.Separated.PayloadRoot)
 	if err != nil {
-		return false
+		return err
 	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+	ctx.Separated = revalidated
+	ctx.Repo = revalidated.Repo
+	ctx.Workspace = revalidated.Workspace
+	recordResolvedTarget(revalidated.ControlRoot, revalidated.Workspace)
+	return nil
+}
+
+func validateSeparatedPayloadSymlinkBoundaryForExpectedRoot(ctx *repo.SeparatedContext, expectedPayloadRoot string) (*repo.SeparatedContext, error) {
+	if ctx == nil {
+		return nil, nil
+	}
+	revalidated, err := revalidateSeparatedContext(ctx, expectedPayloadRoot)
+	if err != nil {
+		return nil, err
+	}
+	if err := repo.ValidateSeparatedPayloadSymlinkBoundary(revalidated); err != nil {
+		return nil, err
+	}
+	return revalidated, nil
+}
+
+func revalidateSeparatedContext(ctx *repo.SeparatedContext, expectedPayloadRoot string) (*repo.SeparatedContext, error) {
+	if ctx == nil {
+		return nil, nil
+	}
+	if ctx.Repo == nil {
+		return nil, errclass.ErrRepoIDMismatch.WithMessage("expected repo_id is required")
+	}
+	return repo.RevalidateSeparatedContext(repo.SeparatedContextRevalidationRequest{
+		ControlRoot:         ctx.ControlRoot,
+		Workspace:           ctx.Workspace,
+		ExpectedRepoID:      ctx.Repo.RepoID,
+		ExpectedPayloadRoot: expectedPayloadRoot,
+	})
 }
 
 func boolPtr(value bool) *bool {

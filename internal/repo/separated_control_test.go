@@ -129,6 +129,17 @@ func TestSeparatedInitCreatesControlOnlyAndStoresPayloadRealPath(t *testing.T) {
 	require.Equal(t, payloadRoot, cfg.RealPath)
 }
 
+func TestSeparatedInitRejectsNonMainWithoutMutation(t *testing.T) {
+	base := t.TempDir()
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+
+	_, err := repo.InitSeparatedControl(controlRoot, payloadRoot, "feature")
+	require.ErrorIs(t, err, errclass.ErrWorkspaceMismatch)
+	require.NoDirExists(t, controlRoot)
+	require.NoDirExists(t, payloadRoot)
+}
+
 func TestRepoModeDefaultsEmbeddedWhenMetadataMissing(t *testing.T) {
 	repoRoot := filepath.Join(t.TempDir(), "repo")
 	r, err := repo.Init(repoRoot, "repo")
@@ -274,12 +285,13 @@ func TestRevalidateSeparatedContext(t *testing.T) {
 		base := t.TempDir()
 		controlRoot := filepath.Join(base, "control")
 		payloadRoot := filepath.Join(base, "payload")
-		_, err := repo.InitSeparatedControl(controlRoot, payloadRoot, "main")
+		r, err := repo.InitSeparatedControl(controlRoot, payloadRoot, "main")
 		require.NoError(t, err)
 
 		ctx, err := repo.RevalidateSeparatedContext(repo.SeparatedContextRevalidationRequest{
 			ControlRoot:         controlRoot,
 			Workspace:           "main",
+			ExpectedRepoID:      r.RepoID,
 			ExpectedPayloadRoot: payloadRoot,
 		})
 		require.NoError(t, err)
@@ -290,16 +302,34 @@ func TestRevalidateSeparatedContext(t *testing.T) {
 		base := t.TempDir()
 		controlRoot := filepath.Join(base, "control")
 		payloadRoot := filepath.Join(base, "payload")
-		_, err := repo.InitSeparatedControl(controlRoot, payloadRoot, "main")
+		r, err := repo.InitSeparatedControl(controlRoot, payloadRoot, "main")
 		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(filepath.Join(controlRoot, ".jvs", repo.RepoModeFile), []byte(repo.RepoModeEmbeddedControl+"\n"), 0600))
 
 		_, err = repo.RevalidateSeparatedContext(repo.SeparatedContextRevalidationRequest{
 			ControlRoot:         controlRoot,
 			Workspace:           "main",
+			ExpectedRepoID:      r.RepoID,
 			ExpectedPayloadRoot: payloadRoot,
 		})
 		require.ErrorIs(t, err, errclass.ErrControlMalformed)
+	})
+
+	t.Run("repo id changed", func(t *testing.T) {
+		base := t.TempDir()
+		controlRoot := filepath.Join(base, "control")
+		payloadRoot := filepath.Join(base, "payload")
+		r, err := repo.InitSeparatedControl(controlRoot, payloadRoot, "main")
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(controlRoot, ".jvs", repo.RepoIDFile), []byte("different-repo-id\n"), 0600))
+
+		_, err = repo.RevalidateSeparatedContext(repo.SeparatedContextRevalidationRequest{
+			ControlRoot:         controlRoot,
+			Workspace:           "main",
+			ExpectedRepoID:      r.RepoID,
+			ExpectedPayloadRoot: payloadRoot,
+		})
+		require.ErrorIs(t, err, errclass.ErrRepoIDMismatch)
 	})
 
 	t.Run("registry payload root changed", func(t *testing.T) {
@@ -307,7 +337,7 @@ func TestRevalidateSeparatedContext(t *testing.T) {
 		controlRoot := filepath.Join(base, "control")
 		payloadRoot := filepath.Join(base, "payload")
 		otherPayloadRoot := filepath.Join(base, "other-payload")
-		_, err := repo.InitSeparatedControl(controlRoot, payloadRoot, "main")
+		r, err := repo.InitSeparatedControl(controlRoot, payloadRoot, "main")
 		require.NoError(t, err)
 		require.NoError(t, os.Mkdir(otherPayloadRoot, 0755))
 		cfg, err := repo.LoadWorktreeConfig(controlRoot, "main")
@@ -318,22 +348,24 @@ func TestRevalidateSeparatedContext(t *testing.T) {
 		_, err = repo.RevalidateSeparatedContext(repo.SeparatedContextRevalidationRequest{
 			ControlRoot:         controlRoot,
 			Workspace:           "main",
+			ExpectedRepoID:      r.RepoID,
 			ExpectedPayloadRoot: payloadRoot,
 		})
-		require.ErrorIs(t, err, errclass.ErrWorkspaceMismatch)
+		require.ErrorIs(t, err, errclass.ErrPathBoundaryEscape)
 	})
 
 	t.Run("payload root missing", func(t *testing.T) {
 		base := t.TempDir()
 		controlRoot := filepath.Join(base, "control")
 		payloadRoot := filepath.Join(base, "payload")
-		_, err := repo.InitSeparatedControl(controlRoot, payloadRoot, "main")
+		r, err := repo.InitSeparatedControl(controlRoot, payloadRoot, "main")
 		require.NoError(t, err)
 		require.NoError(t, os.RemoveAll(payloadRoot))
 
 		_, err = repo.RevalidateSeparatedContext(repo.SeparatedContextRevalidationRequest{
 			ControlRoot:         controlRoot,
 			Workspace:           "main",
+			ExpectedRepoID:      r.RepoID,
 			ExpectedPayloadRoot: payloadRoot,
 		})
 		require.ErrorIs(t, err, errclass.ErrPayloadMissing)
@@ -343,17 +375,65 @@ func TestRevalidateSeparatedContext(t *testing.T) {
 		base := t.TempDir()
 		controlRoot := filepath.Join(base, "control")
 		payloadRoot := filepath.Join(base, "payload")
-		_, err := repo.InitSeparatedControl(controlRoot, payloadRoot, "main")
+		r, err := repo.InitSeparatedControl(controlRoot, payloadRoot, "main")
 		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, ".jvs"), []byte("untrusted\n"), 0644))
 
 		_, err = repo.RevalidateSeparatedContext(repo.SeparatedContextRevalidationRequest{
 			ControlRoot:         controlRoot,
 			Workspace:           "main",
+			ExpectedRepoID:      r.RepoID,
 			ExpectedPayloadRoot: payloadRoot,
 		})
 		require.ErrorIs(t, err, errclass.ErrPayloadLocatorPresent)
 	})
+}
+
+func TestValidateSeparatedPayloadSymlinkBoundary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior differs on Windows")
+	}
+
+	for _, tc := range []struct {
+		name   string
+		target func(*testing.T, string, string, string) string
+	}{
+		{
+			name: "control root",
+			target: func(t *testing.T, base, controlRoot, payloadRoot string) string {
+				t.Helper()
+				return controlRoot
+			},
+		},
+		{
+			name: "outside payload",
+			target: func(t *testing.T, base, controlRoot, payloadRoot string) string {
+				t.Helper()
+				outside := filepath.Join(base, "outside")
+				require.NoError(t, os.Mkdir(outside, 0755))
+				return outside
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			controlRoot := filepath.Join(base, "control")
+			payloadRoot := filepath.Join(base, "payload")
+			r, err := repo.InitSeparatedControl(controlRoot, payloadRoot, "main")
+			require.NoError(t, err)
+			ctx := &repo.SeparatedContext{
+				Repo:        r,
+				ControlRoot: controlRoot,
+				PayloadRoot: payloadRoot,
+				Workspace:   "main",
+			}
+
+			require.NoError(t, os.Symlink(tc.target(t, base, controlRoot, payloadRoot), filepath.Join(payloadRoot, "link")))
+
+			err = repo.ValidateSeparatedPayloadSymlinkBoundary(ctx)
+			require.ErrorIs(t, err, errclass.ErrPathBoundaryEscape)
+		})
+	}
 }
 
 func TestResolveSeparatedContextStableErrorCodes(t *testing.T) {

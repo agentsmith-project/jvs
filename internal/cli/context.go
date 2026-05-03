@@ -141,7 +141,10 @@ func resolveSeparatedScoped() (*cliDiscoveryContext, error) {
 		return nil, errclass.ErrUsage.WithMessage("--control-root cannot be combined with --repo")
 	}
 	if strings.TrimSpace(targetWorkspaceName) == "" {
-		return nil, errclass.ErrExplicitTargetRequired.WithMessage("--control-root requires --workspace <name>")
+		return nil, separatedControlRootRequiresWorkspaceError(targetControlRoot)
+	}
+	if targetWorkspaceName != "main" {
+		return nil, separatedRuntimeMainWorkspaceRequiredError(targetControlRoot)
 	}
 	ctx, err := repo.ResolveSeparatedContext(repo.SeparatedContextRequest{
 		ControlRoot: targetControlRoot,
@@ -207,6 +210,9 @@ func discoveryStarts() (repoStart string, workspaceStart string, err error) {
 	if err := canonicalizeRepoRoot(currentRepo); err != nil {
 		return "", "", err
 	}
+	if currentRepo.Mode == repo.RepoModeSeparatedControl {
+		return "", "", separatedAmbientExplicitTargetRequiredError(currentRepo.Root)
+	}
 
 	repoStart = currentRepo.Root
 
@@ -241,10 +247,13 @@ func resolveRepoFlagTarget(path string) (*repo.Repo, error) {
 	}
 	r, err := repo.DiscoverControlRepo(discoveryStart)
 	if err == nil {
-		if err := repo.ValidateWorkspaceLocatorEvidence(discoveryStart, r.Root); err != nil {
+		if err := canonicalizeRepoRoot(r); err != nil {
 			return nil, err
 		}
-		if err := canonicalizeRepoRoot(r); err != nil {
+		if r.Mode == repo.RepoModeSeparatedControl {
+			return nil, separatedRepoFlagExplicitTargetRequiredError(r.Root)
+		}
+		if err := repo.ValidateWorkspaceLocatorEvidence(discoveryStart, r.Root); err != nil {
 			return nil, err
 		}
 		return r, nil
@@ -264,7 +273,73 @@ func resolveRepoFlagTarget(path string) (*repo.Repo, error) {
 	if err := canonicalizeRepoRoot(r); err != nil {
 		return nil, err
 	}
+	if r.Mode == repo.RepoModeSeparatedControl {
+		return nil, separatedRepoFlagExplicitTargetRequiredError(r.Root)
+	}
 	return r, nil
+}
+
+func separatedRepoFlagExplicitTargetRequiredError(controlRoot string) *errclass.JVSError {
+	return errclass.ErrExplicitTargetRequired.
+		WithMessage("--repo cannot select a separated-control repository in Phase 1").
+		WithHint(separatedSelectorHint(controlRoot, "main", activeCommandName))
+}
+
+func separatedAmbientExplicitTargetRequiredError(controlRoot string) *errclass.JVSError {
+	return errclass.ErrExplicitTargetRequired.
+		WithMessage("separated-control repositories require an explicit control root and workspace selector").
+		WithHint(separatedSelectorHint(controlRoot, "main", activeCommandName))
+}
+
+func separatedControlRootRequiresWorkspaceError(controlRoot string) *errclass.JVSError {
+	return errclass.ErrExplicitTargetRequired.
+		WithMessage("--control-root requires --workspace <name>").
+		WithHint(separatedSelectorHint(controlRoot, "main", activeCommandName))
+}
+
+func separatedDoctorStrictJSONRequiredError(controlRoot string) *errclass.JVSError {
+	return errclass.ErrExplicitTargetRequired.
+		WithMessage("separated-control doctor supports only doctor --strict --json in Phase 1").
+		WithHint(separatedSelectorHint(controlRoot, "main", "doctor --strict --json"))
+}
+
+func separatedInitMainWorkspaceRequiredError(controlRoot, payloadRoot string) *errclass.JVSError {
+	return errclass.ErrWorkspaceMismatch.
+		WithMessage("separated-control init supports only --workspace main in Phase 1").
+		WithHint("Run jvs init --control-root " + cleanHintPath(controlRoot) + " --payload-root " + cleanHintPath(payloadRoot) + " --workspace main.")
+}
+
+func separatedRuntimeMainWorkspaceRequiredError(controlRoot string) *errclass.JVSError {
+	return errclass.ErrWorkspaceMismatch.
+		WithMessage("separated-control runtime supports only --workspace main in Phase 1").
+		WithHint(separatedSelectorHint(controlRoot, "main", activeCommandName))
+}
+
+func separatedSelectorHint(controlRoot, workspace, command string) string {
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		workspace = "main"
+	}
+	command = strings.TrimSpace(command)
+	if command == "" {
+		command = strings.TrimSpace(activeCommandName)
+	}
+	if command == "" {
+		command = "<command>"
+	}
+	return "Run jvs --control-root " + cleanHintPath(controlRoot) + " --workspace " + workspace + " " + command + "."
+}
+
+func cleanHintPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "<control-root>"
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	return filepath.Clean(abs)
 }
 
 func canonicalizeRepoRoot(r *repo.Repo) error {

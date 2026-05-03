@@ -14,6 +14,7 @@ import (
 
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/agentsmith-project/jvs/pkg/fsutil"
 	"github.com/agentsmith-project/jvs/pkg/model"
 )
@@ -130,7 +131,7 @@ func ValidateManifest(repoRoot string, manifest *Manifest) error {
 		return fmt.Errorf("target repo id is missing for imported clone history manifest")
 	}
 	if strings.TrimSpace(manifest.TargetRepoID) != r.RepoID {
-		return fmt.Errorf("imported clone history manifest target repo mismatch")
+		return errclass.ErrRepoIDMismatch.WithMessagef("imported clone history manifest target repo mismatch: manifest has %s, target repo has %s", strings.TrimSpace(manifest.TargetRepoID), r.RepoID)
 	}
 	if manifest.SavePointsMode != SavePointsModeAll {
 		return fmt.Errorf("imported clone history manifest save_points_mode %q is unsupported", manifest.SavePointsMode)

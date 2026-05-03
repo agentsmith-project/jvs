@@ -431,7 +431,7 @@ func printRepoDetachRunResult(result publicRepoDetachRunResult) {
 }
 
 func init() {
-	repoCloneCmd.Flags().StringVar(&repoCloneSavePoints, "save-points", string(repoclone.SavePointsModeAll), "save points to copy: all or main")
+	repoCloneCmd.Flags().StringVar(&repoCloneSavePoints, "save-points", string(repoclone.SavePointsModeAll), "save points to copy: all or main; separated-control split targets support main only; --save-points all fails closed")
 	repoCloneCmd.Flags().BoolVar(&repoCloneDryRun, "dry-run", false, "plan the clone without creating the target")
 	repoCloneCmd.Flags().StringVar(&repoCloneTargetControlRoot, "target-control-root", "", "target separated-control root")
 	repoCloneCmd.Flags().StringVar(&repoCloneTargetPayloadRoot, "target-payload-root", "", "target separated payload root")

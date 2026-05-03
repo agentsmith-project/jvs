@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -32,9 +33,15 @@ Use --repair-runtime to execute safe automatic repairs.`,
 		return errclass.ErrUsage.WithMessage("doctor does not accept positional arguments")
 	},
 	Run: func(cmd *cobra.Command, args []string) {
-		if targetControlRoot != "" && doctorStrict && jsonOutput && !doctorRepair && !doctorRepairList {
-			runSeparatedStrictDoctorJSON()
-			return
+		if targetControlRoot != "" {
+			if strings.TrimSpace(targetWorkspaceName) == "" {
+				exitWithCLIError(separatedControlRootRequiresWorkspaceError(targetControlRoot))
+			}
+			if doctorStrict && jsonOutput && !doctorRepair && !doctorRepairList {
+				runSeparatedStrictDoctorJSON()
+				return
+			}
+			exitWithCLIError(separatedDoctorStrictJSONRequiredError(targetControlRoot))
 		}
 
 		r, err := discoverRequiredRepoForDoctor()
@@ -117,7 +124,7 @@ func runSeparatedStrictDoctorJSON() {
 		exitWithCLIError(errclass.ErrUsage.WithMessage("--control-root cannot be combined with --repo"))
 	}
 	if targetWorkspaceName == "" {
-		exitWithCLIError(errclass.ErrExplicitTargetRequired.WithMessage("--control-root requires --workspace <name>"))
+		exitWithCLIError(separatedControlRootRequiresWorkspaceError(targetControlRoot))
 	}
 	result, err := doctor.CheckSeparatedStrict(repo.SeparatedContextRequest{
 		ControlRoot: targetControlRoot,
