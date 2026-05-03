@@ -39,8 +39,92 @@ func TestSeparatedControlInitJSONReportsFolderAndControlData(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(payloadRoot, jvsrepo.JVSDirName))
 }
 
+func TestSeparatedControlInitAdoptsExistingNonEmptyFolderAndCanSave(t *testing.T) {
+	t.Setenv("JVS_SNAPSHOT_ENGINE", string(model.EngineCopy))
+	base := setupSeparatedControlCLICWD(t)
+	emptyBin := filepath.Join(base, "empty-bin")
+	require.NoError(t, os.Mkdir(emptyBin, 0755))
+	t.Setenv("PATH", emptyBin)
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	require.NoError(t, os.MkdirAll(payloadRoot, 0755))
+	userFile := filepath.Join(payloadRoot, "README.md")
+	require.NoError(t, os.WriteFile(userFile, []byte("existing user file\n"), 0644))
+	require.NoError(t, os.Chmod(userFile, 0640))
+	originalMTime := time.Date(2024, 2, 3, 4, 5, 6, 0, time.UTC)
+	require.NoError(t, os.Chtimes(userFile, originalMTime, originalMTime))
+	before, err := os.Stat(userFile)
+	require.NoError(t, err)
+
+	stdout, err := executeCommand(createTestRootCmd(),
+		"init",
+		payloadRoot,
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"--json",
+	)
+	require.NoError(t, err, stdout)
+
+	env, data := decodeSeparatedControlDataMap(t, stdout)
+	require.NotNil(t, env.RepoRoot)
+	assert.Equal(t, controlRoot, *env.RepoRoot)
+	assertExternalControlDataShape(t, data, controlRoot, payloadRoot, "main")
+	assert.Equal(t, controlRoot, data["repo_root"])
+	assert.NoFileExists(t, filepath.Join(payloadRoot, jvsrepo.JVSDirName))
+	assert.FileExists(t, userFile)
+	after, err := os.Stat(userFile)
+	require.NoError(t, err)
+	assert.Equal(t, before.Mode(), after.Mode())
+	assert.Equal(t, before.ModTime(), after.ModTime())
+	assertSeparatedInitSetupFields(t, data, payloadRoot)
+	assertSeparatedWarningsInclude(t, data["warnings"], "juicefs command not found")
+
+	statusOut, err := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"status",
+	)
+	require.NoError(t, err, statusOut)
+	_, statusData := decodeSeparatedControlDataMap(t, statusOut)
+	assert.Equal(t, true, statusData["unsaved_changes"])
+	assert.Equal(t, "not_saved", statusData["files_state"])
+
+	saveOut, err := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"save",
+		"-m", "baseline",
+	)
+	require.NoError(t, err, saveOut)
+	_, saveData := decodeSeparatedControlDataMap(t, saveOut)
+	savePointID, ok := saveData["save_point_id"].(string)
+	require.True(t, ok, "save should expose save_point_id: %#v", saveData)
+	require.NotEmpty(t, savePointID)
+	savedFile := filepath.Join(controlRoot, ".jvs", "snapshots", savePointID, "README.md")
+	savedContent, err := os.ReadFile(savedFile)
+	require.NoError(t, err)
+	assert.Equal(t, "existing user file\n", string(savedContent))
+
+	statusOut, err = executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"status",
+	)
+	require.NoError(t, err, statusOut)
+	_, statusData = decodeSeparatedControlDataMap(t, statusOut)
+	assert.Equal(t, false, statusData["unsaved_changes"])
+	assert.Equal(t, "matches_save_point", statusData["files_state"])
+	assert.Equal(t, savePointID, statusData["newest_save_point"])
+}
+
 func TestSeparatedControlInitHumanUsesFolderAndControlDataLanguage(t *testing.T) {
 	base := setupSeparatedControlCLICWD(t)
+	emptyBin := filepath.Join(base, "empty-bin")
+	require.NoError(t, os.Mkdir(emptyBin, 0755))
+	t.Setenv("PATH", emptyBin)
 	controlRoot := filepath.Join(base, "control")
 	payloadRoot := filepath.Join(base, "payload")
 
@@ -56,6 +140,9 @@ func TestSeparatedControlInitHumanUsesFolderAndControlDataLanguage(t *testing.T)
 	assert.Contains(t, stdout, "Folder: "+payloadRoot)
 	assert.Contains(t, stdout, "Control data: "+controlRoot)
 	assert.Contains(t, stdout, "Workspace: main")
+	assert.Contains(t, stdout, "Capabilities: write=")
+	assert.Contains(t, stdout, "recommended=")
+	assert.Contains(t, stdout, "Warning: juicefs command not found")
 	assert.NotContains(t, stdout, "separated control")
 	assert.NotContains(t, stdout, "Payload root")
 	assert.NotContains(t, stdout, "Control root")
@@ -105,11 +192,30 @@ func TestSeparatedControlStatusJSONUsesControlRootFromCleanAndOtherRepoCWD(t *te
 			require.NotNil(t, env.Workspace)
 			assert.Equal(t, "main", *env.Workspace)
 			assertExternalControlDataShape(t, data, controlRoot, payloadRoot, "main")
-			assert.Equal(t, controlRoot, data["repo"])
+			assert.NotContains(t, data, "repo")
 			assert.Equal(t, payloadRoot, data["folder"])
 			assert.Equal(t, "main", data["workspace"])
 		})
 	}
+}
+
+func TestSeparatedControlStatusHumanUsesControlDataInsteadOfRepo(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+
+	stdout, err := executeCommand(createTestRootCmd(),
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"status",
+	)
+	require.NoError(t, err, stdout)
+
+	assert.Contains(t, stdout, "Control data: "+controlRoot)
+	assert.Contains(t, stdout, "Folder: "+payloadRoot)
+	assert.Contains(t, stdout, "Workspace: main")
+	assert.NotContains(t, stdout, "Repo: "+controlRoot)
 }
 
 func TestSeparatedControlRepoFlagRequiresControlRootWorkspaceSelector(t *testing.T) {
@@ -679,6 +785,33 @@ func assertExternalControlDataShape(t *testing.T, data map[string]any, controlRo
 	assert.Equal(t, folder, data["folder"])
 	assert.Equal(t, workspace, data["workspace"])
 	assertNoExternalControlImplementationFields(t, data)
+}
+
+func assertSeparatedInitSetupFields(t *testing.T, data map[string]any, folder string) {
+	t.Helper()
+
+	capabilities, ok := data["capabilities"].(map[string]any)
+	require.True(t, ok, "init should expose capabilities: %#v", data["capabilities"])
+	assert.Equal(t, folder, capabilities["target_path"])
+	assert.Equal(t, true, capabilities["write_probe"])
+	assert.Equal(t, capabilities["recommended_engine"], data["effective_engine"])
+	assert.NotEmpty(t, data["effective_engine"])
+	assert.NotEmpty(t, data["metadata_preservation"])
+	assert.NotEmpty(t, data["performance_class"])
+	require.IsType(t, []any{}, data["warnings"])
+}
+
+func assertSeparatedWarningsInclude(t *testing.T, raw any, want string) {
+	t.Helper()
+
+	warnings, ok := raw.([]any)
+	require.True(t, ok, "warnings should be an array: %#v", raw)
+	for _, item := range warnings {
+		if item == want {
+			return
+		}
+	}
+	require.Contains(t, warnings, want)
 }
 
 func assertNoExternalControlImplementationFields(t *testing.T, data map[string]any) {

@@ -15,7 +15,7 @@ import (
 type workspaceStatus struct {
 	separatedControlJSONFields
 
-	Repo                 string                     `json:"repo"`
+	Repo                 string                     `json:"repo,omitempty"`
 	Folder               string                     `json:"folder"`
 	Workspace            string                     `json:"workspace"`
 	NewestSavePoint      *string                    `json:"newest_save_point"`
@@ -46,6 +46,7 @@ whether the folder has unsaved changes.`,
 		}
 		if ctx.Separated != nil {
 			status.separatedControlJSONFields = separatedControlFields(ctx.Separated, separatedDoctorStrictNotRun)
+			status.Repo = ""
 		}
 		if jsonOutput {
 			return outputJSON(status)
@@ -57,7 +58,11 @@ whether the folder has unsaved changes.`,
 }
 
 func printWorkspaceStatus(status workspaceStatus) {
-	fmt.Printf("Repo: %s\n", status.Repo)
+	if status.ControlRoot != "" {
+		fmt.Printf("Control data: %s\n", status.ControlRoot)
+	} else {
+		fmt.Printf("Repo: %s\n", status.Repo)
+	}
 	fmt.Printf("Folder: %s\n", status.Folder)
 	fmt.Printf("Workspace: %s\n", status.Workspace)
 	fmt.Printf("Content source: %s\n", formatStatusSavePoint(status.ContentSource))

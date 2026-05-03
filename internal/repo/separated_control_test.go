@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
@@ -77,32 +78,111 @@ func TestSeparatedInitRejectsPhysicalAlias(t *testing.T) {
 	require.NoDirExists(t, filepath.Join(physical, ".jvs"))
 }
 
-func TestSeparatedInitRejectsOccupiedTargetsWithoutMutatingOtherRoot(t *testing.T) {
+func TestSeparatedInitRejectsOccupiedControlRootWithoutMutatingPayload(t *testing.T) {
+	base := t.TempDir()
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	require.NoError(t, os.MkdirAll(controlRoot, 0755))
+	sentinel := filepath.Join(controlRoot, "sentinel.txt")
+	require.NoError(t, os.WriteFile(sentinel, []byte("keep\n"), 0644))
+
+	_, err := repo.InitSeparatedControl(controlRoot, payloadRoot, "main")
+	require.ErrorIs(t, err, errclass.ErrTargetRootOccupied)
+	require.FileExists(t, sentinel)
+	require.NoFileExists(t, payloadRoot)
+}
+
+func TestSeparatedInitAdoptsExistingNonEmptyPayloadWithoutControlMarker(t *testing.T) {
+	base := t.TempDir()
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	require.NoError(t, os.MkdirAll(filepath.Join(payloadRoot, "src"), 0755))
+	userFile := filepath.Join(payloadRoot, "src", "app.txt")
+	require.NoError(t, os.WriteFile(userFile, []byte("user data\n"), 0644))
+	require.NoError(t, os.Chmod(userFile, 0640))
+	originalMTime := time.Date(2024, 2, 3, 4, 5, 6, 0, time.UTC)
+	require.NoError(t, os.Chtimes(userFile, originalMTime, originalMTime))
+	before, err := os.Stat(userFile)
+	require.NoError(t, err)
+
+	r, err := repo.InitSeparatedControl(controlRoot, payloadRoot, "main")
+	require.NoError(t, err)
+	require.Equal(t, controlRoot, r.Root)
+	require.DirExists(t, filepath.Join(controlRoot, ".jvs"))
+	require.NoFileExists(t, filepath.Join(payloadRoot, ".jvs"))
+	require.FileExists(t, userFile)
+	after, err := os.Stat(userFile)
+	require.NoError(t, err)
+	require.Equal(t, before.Mode(), after.Mode())
+	require.Equal(t, before.ModTime(), after.ModTime())
+
+	cfg, err := repo.LoadWorktreeConfig(controlRoot, "main")
+	require.NoError(t, err)
+	require.Equal(t, "main", cfg.Name)
+	require.Equal(t, payloadRoot, cfg.RealPath)
+}
+
+func TestSeparatedInitRejectsPayloadRootSymlinkWithoutMutation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior differs on Windows")
+	}
+
+	base := t.TempDir()
+	controlRoot := filepath.Join(base, "control")
+	realPayload := filepath.Join(base, "real-payload")
+	payloadRoot := filepath.Join(base, "payload-link")
+	require.NoError(t, os.MkdirAll(realPayload, 0755))
+	userFile := filepath.Join(realPayload, "app.txt")
+	require.NoError(t, os.WriteFile(userFile, []byte("user data\n"), 0644))
+	if err := os.Symlink(realPayload, payloadRoot); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	_, err := repo.InitSeparatedControl(controlRoot, payloadRoot, "main")
+	require.ErrorIs(t, err, errclass.ErrTargetRootOccupied)
+	require.FileExists(t, userFile)
+	require.NoFileExists(t, controlRoot)
+}
+
+func TestSeparatedInitRejectsPayloadRootControlMarkerWithoutMutation(t *testing.T) {
 	for _, tc := range []struct {
-		name           string
-		occupiedTarget string
+		name   string
+		marker func(*testing.T, string)
 	}{
-		{name: "control", occupiedTarget: "control"},
-		{name: "payload", occupiedTarget: "payload"},
+		{
+			name: "file",
+			marker: func(t *testing.T, payloadRoot string) {
+				t.Helper()
+				require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, ".jvs"), []byte("untrusted\n"), 0644))
+			},
+		},
+		{
+			name: "directory",
+			marker: func(t *testing.T, payloadRoot string) {
+				t.Helper()
+				require.NoError(t, os.Mkdir(filepath.Join(payloadRoot, ".jvs"), 0755))
+			},
+		},
+		{
+			name: "symlink",
+			marker: func(t *testing.T, payloadRoot string) {
+				t.Helper()
+				if err := os.Symlink("elsewhere", filepath.Join(payloadRoot, ".jvs")); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			base := t.TempDir()
 			controlRoot := filepath.Join(base, "control")
 			payloadRoot := filepath.Join(base, "payload")
-			occupiedRoot := controlRoot
-			otherRoot := payloadRoot
-			if tc.occupiedTarget == "payload" {
-				occupiedRoot = payloadRoot
-				otherRoot = controlRoot
-			}
-			require.NoError(t, os.MkdirAll(occupiedRoot, 0755))
-			sentinel := filepath.Join(occupiedRoot, "sentinel.txt")
-			require.NoError(t, os.WriteFile(sentinel, []byte("keep\n"), 0644))
+			require.NoError(t, os.MkdirAll(payloadRoot, 0755))
+			tc.marker(t, payloadRoot)
 
 			_, err := repo.InitSeparatedControl(controlRoot, payloadRoot, "main")
-			require.ErrorIs(t, err, errclass.ErrTargetRootOccupied)
-			require.FileExists(t, sentinel)
-			require.NoFileExists(t, otherRoot)
+			require.ErrorIs(t, err, errclass.ErrPayloadLocatorPresent)
+			require.NoFileExists(t, controlRoot)
 		})
 	}
 }

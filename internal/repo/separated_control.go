@@ -73,7 +73,7 @@ func InitSeparatedControl(controlRoot, payloadRoot, workspaceName string) (*Repo
 	if err != nil {
 		return nil, err
 	}
-	payloadExisted, err := validateSeparatedInitTarget(roots.payloadPath, "payload root")
+	payloadExisted, err := validateSeparatedPayloadInitTarget(roots.payloadPath, roots.payloadPhysical)
 	if err != nil {
 		return nil, err
 	}
@@ -367,6 +367,41 @@ func validateSeparatedInitTarget(path, role string) (bool, error) {
 		return true, errclass.ErrTargetRootOccupied.WithMessagef("%s must be empty or missing: %s", role, path)
 	}
 	return true, nil
+}
+
+func validateSeparatedPayloadInitTarget(path, physicalPath string) (bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if err := rejectSeparatedNestedPayload(path, physicalPath); err != nil {
+				return false, err
+			}
+			return false, nil
+		}
+		return false, permissionOrWrappedErr("stat payload root", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return true, errclass.ErrTargetRootOccupied.WithMessagef("payload root must not be a symlink: %s", path)
+	}
+	if !info.IsDir() {
+		return true, errclass.ErrTargetRootOccupied.WithMessagef("payload root exists and is not a directory: %s", path)
+	}
+	if err := rejectSeparatedNestedPayload(path, physicalPath); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+func rejectSeparatedNestedPayload(path, physicalPath string) error {
+	if err := rejectNestedInitTarget(path); err != nil {
+		return errclass.ErrTargetRootOccupied.WithMessagef("payload root is inside existing JVS repository: %s", path)
+	}
+	if physicalPath != "" && physicalPath != path {
+		if err := rejectNestedInitTarget(physicalPath); err != nil {
+			return errclass.ErrTargetRootOccupied.WithMessagef("payload root is inside existing JVS repository: %s (physical target: %s)", path, physicalPath)
+		}
+	}
+	return nil
 }
 
 func loadSeparatedWorkspaceConfig(repoRoot, workspace string) (*model.WorktreeConfig, error) {

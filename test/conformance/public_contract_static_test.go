@@ -320,6 +320,8 @@ func TestDocs_UserCommandsDocumentsExternalControlRoot(t *testing.T) {
 	for _, required := range []string{
 		"jvs init [folder] --control-root C --workspace main",
 		"jvs --control-root C --workspace main",
+		"human `status` labels the external control root as `Control data: C`",
+		"JSON `status` uses `data.control_root` and does not emit `data.repo`",
 		"workspace folder's `.jvs/`",
 		"Do not run a plain `jvs init` inside the workspace folder",
 		"`--repo` is not an external control root selector.",
@@ -327,6 +329,8 @@ func TestDocs_UserCommandsDocumentsExternalControlRoot(t *testing.T) {
 		"doctor --strict --json",
 		"jvs --control-root C --workspace main repo clone <target-folder> --target-control-root TC --save-points main",
 		"main-only target folder",
+		"Ordinary `repo clone` still defaults to `--save-points all`",
+		"external control root clone defaults to `--save-points main`",
 		"`--save-points all` fails closed",
 		"repo move, repo rename, repo detach, workspace move, workspace rename, workspace delete, and workspace new are unsupported",
 	} {
@@ -351,9 +355,13 @@ func TestDocs_UserCommandsDocumentsExternalControlRoot(t *testing.T) {
 		"control data location choice",
 		"jvs init [folder] --control-root C --workspace main",
 		"jvs --control-root C --workspace main <command>",
+		"human `status` labels the external control root as `Control data: C`",
+		"JSON `status` uses `data.control_root` and omits `data.repo`",
 		"`--repo` is not an external control root selector",
 		"jvs --json --control-root C --workspace main doctor --strict",
 		"jvs --control-root C --workspace main repo clone <target-folder> --target-control-root TC --save-points main",
+		"ordinary clone omitted `--save-points` means `all`",
+		"external control root omitted `--save-points` means `main`",
 		"`--save-points all` fails closed",
 	} {
 		requireReleaseReadinessText(t, "external control root CLI spec", normalizedCLISection, required)
@@ -454,6 +462,7 @@ func TestDocs_ExternalControlRootProductHandoffUsesControlDataLocationModel(t *t
 		"`data.folder`",
 		"`data.workspace`",
 		"`data.control_root`",
+		"`status --json` must not emit `data.repo` for external control roots",
 		"`data.checks[]`",
 		"`workspace_control_marker`",
 		"implementation detail",
@@ -484,6 +493,7 @@ func TestDocs_ExternalControlRootProductHandoffUsesControlDataLocationModel(t *t
 		"source selector 不作为 target `data.folder` 输出",
 		"`data.target_folder`",
 		"`data.target_control_root`",
+		"status human output prints `Control data: <control-root>`",
 	} {
 		requireReleaseReadinessText(t, "external control root JSON output contract", normalizedJSONSection, required)
 	}

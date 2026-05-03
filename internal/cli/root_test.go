@@ -206,10 +206,12 @@ func TestRepoCloneHelpDocumentsExternalControlTargetWithoutPayloadAlias(t *testi
 	require.NoError(t, err)
 
 	assert.Contains(t, stdout, "control data is outside the target folder")
-	assert.Contains(t, stdout, "default all for ordinary clone")
-	assert.Contains(t, stdout, "external-control clone defaults to main")
+	assert.Contains(t, stdout, "ordinary clones use all when omitted")
+	assert.Contains(t, stdout, "external-control clones use main when omitted")
+	assert.Contains(t, stdout, "--save-points main")
 	assert.Contains(t, stdout, "--save-points all fails closed")
 	assert.Contains(t, stdout, "--target-control-root")
+	assert.NotContains(t, stdout, `(default "all")`)
 	assert.NotContains(t, stdout, "--target-payload-root")
 	assert.NotContains(t, stdout, "separated-control")
 }

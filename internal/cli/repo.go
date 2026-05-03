@@ -450,9 +450,10 @@ func printRepoDetachRunResult(result publicRepoDetachRunResult) {
 }
 
 func init() {
-	repoCloneCmd.Flags().StringVar(&repoCloneSavePoints, "save-points", string(repoclone.SavePointsModeAll), "save points to copy: all or main; default all for ordinary clone; when control data is outside the target folder, external-control clone defaults to main; --save-points all fails closed for external control roots")
+	repoCloneCmd.Flags().StringVar(&repoCloneSavePoints, "save-points", string(repoclone.SavePointsModeAll), "save points to copy: all or main; ordinary clones use all when omitted; external-control clones use main when omitted; use --save-points main to be explicit; --save-points all fails closed for external control roots until imported-history protection is available")
+	repoCloneCmd.Flags().Lookup("save-points").DefValue = ""
 	repoCloneCmd.Flags().BoolVar(&repoCloneDryRun, "dry-run", false, "plan the clone without creating the target")
-	repoCloneCmd.Flags().StringVar(&repoCloneTargetControlRoot, "target-control-root", "", "target external control data root")
+	repoCloneCmd.Flags().StringVar(&repoCloneTargetControlRoot, "target-control-root", "", "target external control data root when control data is outside the target folder")
 	repoCloneCmd.Flags().StringVar(&repoCloneTargetPayloadRoot, "target-payload-root", "", "target folder for external-control clone")
 	repoCloneCmd.Flags().Lookup("target-payload-root").Hidden = true
 	repoMoveCmd.Flags().StringVar(&repoMoveRunID, "run", "", "execute a repo move preview plan")

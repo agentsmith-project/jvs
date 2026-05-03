@@ -124,17 +124,23 @@ func runSeparatedInit(args []string) error {
 		return err
 	}
 	recordResolvedTarget(ctx.ControlRoot, ctx.Workspace)
+	capabilities, err := engine.ProbeCapabilities(ctx.PayloadRoot, true)
+	if err != nil {
+		return fmt.Errorf("probe capabilities: %w", err)
+	}
 
 	if jsonOutput {
 		output := map[string]any{
 			"folder":            ctx.PayloadRoot,
 			"workspace":         ctx.Workspace,
 			"control_root":      ctx.ControlRoot,
+			"repo_root":         ctx.ControlRoot,
 			"format_version":    r.FormatVersion,
 			"repo_id":           r.RepoID,
 			"newest_save_point": nil,
 			"unsaved_changes":   true,
 		}
+		applySetupJSONFields(output, capabilities, capabilities.RecommendedEngine, capabilities.Warnings)
 		return outputJSON(output)
 	}
 
@@ -142,6 +148,19 @@ func runSeparatedInit(args []string) error {
 	fmt.Printf("Control data: %s\n", ctx.ControlRoot)
 	fmt.Printf("Workspace: %s\n", ctx.Workspace)
 	fmt.Println("JVS is ready for this folder.")
+	fmt.Println("Files were not moved or copied.")
+	fmt.Println("Newest save point: none")
+	fmt.Println("Unsaved changes: yes")
+	fmt.Printf("Capabilities: write=%s juicefs=%t reflink=%s copy=%t recommended=%s\n",
+		capabilities.Write.Confidence,
+		capabilities.JuiceFS.Supported,
+		capabilities.Reflink.Confidence,
+		capabilities.Copy.Supported,
+		capabilities.RecommendedEngine,
+	)
+	for _, warning := range capabilities.Warnings {
+		fmt.Printf("Warning: %s\n", warning)
+	}
 	fmt.Println("Next: jvs --control-root " + ctx.ControlRoot + " --workspace " + ctx.Workspace + " save -m \"baseline\"")
 	return nil
 }

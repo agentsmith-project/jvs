@@ -282,6 +282,10 @@ JSON 使用 docs/02 现有 envelope。普通命令成功响应的 public target 
 workspace folder 的 canonical absolute display path，`workspace` 是显式选择并
 经 control registry 校验的 workspace。命令可以继续输出自己的 public result
 字段，例如 `repo_id`、`newest_save_point` 或 `unsaved_changes`。
+`status --json` must not emit `data.repo` for external control roots；
+external status 使用 `data.control_root` 表达 control data location。status
+human output prints `Control data: <control-root>`，不能把 control root 标成
+`Repo: <control-root>`。默认 `.jvs/` status 继续保留普通 repo/folder 心智。
 
 external `repo clone --json` 是结果型 JSON 例外：source selector 不作为 target
 `data.folder` 输出，也不把 source `data.control_root` 重用为 target control root。
@@ -484,7 +488,7 @@ code。
 | `E_PERMISSION_DENIED` | control root 或 workspace folder 的 required read/write/fsync 权限不足 | fail closed，不做部分写入 |
 | `E_EXPLICIT_TARGET_REQUIRED` | CWD/ambient discovery 不能安全证明 external control root target，且调用方未提供 control root + workspace | fail closed；通过 `error.hint` 或 human output 给出显式 selector 示例 |
 | `E_PAYLOAD_LOCATOR_PRESENT` | 当前 strict external profile 下 workspace folder 出现 root-level `.jvs` path；file、directory 或 symlink 都算 present | fail closed；不能读取为 authority |
-| `E_TARGET_ROOT_OCCUPIED` | init/clone target control root 或 workspace folder 已存在且非空，或需要 adopt/merge/overwrite existing control/workspace data 才能继续 | fail closed before mutation；missing target roots 由 JVS 创建，不使用 missing-root 错误码 |
+| `E_TARGET_ROOT_OCCUPIED` | init target control root 或 clone target roots 已存在且非空，或需要 merge/overwrite/adopt existing control data 才能继续；external init workspace folder 中的普通用户文件不属于该错误 | fail closed before mutation；missing target roots 由 JVS 创建，不使用 missing-root 错误码 |
 | `E_SOURCE_DIRTY` | clone source workspace 有 unsaved changes、writer race，或无法证明 source clean | fail closed before target publish |
 | `E_ATOMIC_PUBLISH_BLOCKED` | clone staging 无法 no-overwrite/atomic publish 到 final target，或 final target 会呈现半成品 repo | fail closed；source unchanged |
 | `E_IMPORTED_HISTORY_PROTECTION_MISSING` | 请求 `--save-points all`，但 durable imported-save-point cleanup protection 未实现、未写入或 doctor strict 无法验证 | fail closed，并提示 `--save-points main` 或升级 |
@@ -528,11 +532,14 @@ code。
 
 `init` 创建 external control root 工作流时必须：
 
-- workspace folder 和 target control root 只接受 missing 或 empty directory。
-- JVS 可以创建 missing target roots；已存在 empty directory 可被初始化。
-- non-empty target root、adopt existing workspace/control data、merge existing
-  contents、overwrite existing repo/workspace 都不是当前交付面，必须以
-  `E_TARGET_ROOT_OCCUPIED` fail closed。
+- target control root 只接受 missing 或 empty directory；JVS 可以创建 missing
+  control root，已存在 empty directory 可被初始化。
+- workspace folder 可以 missing、empty，或已有 non-empty 用户文件；external init
+  必须 adopt existing user files，不清空、不重建、不移动，并保留文件 metadata。
+- workspace folder 下 root-level `.jvs` file、directory 或 symlink 仍必须以
+  `E_PAYLOAD_LOCATOR_PRESENT` fail closed，因为它会混淆 control authority。
+- non-empty control root、existing JVS control data、merge/overwrite existing repo
+  control data 都不是当前交付面，必须以 `E_TARGET_ROOT_OCCUPIED` fail closed。
 - 生成新 `repo_id`。
 - 创建 `main` workspace registry entry，指向 workspace folder canonical path。
 - 写入 durable internal mode metadata。
@@ -680,6 +687,10 @@ jvs --control-root <source-control-root> --workspace main repo clone \
 main-only clone；缺少 durable imported protection、cleanup preview/run
 revalidation 或 doctor strict 检查时，`--save-points all` 必须以
 `E_IMPORTED_HISTORY_PROTECTION_MISSING` fail closed。
+ordinary clone omitted `--save-points` means `all`；external control root
+omitted `--save-points` means `main`。面向 operator/script 的推荐心智是 external
+clone 显式传 `--save-points main`，避免把 ordinary clone 的 all-history 默认误读为
+external 默认能力。
 
 ## Lifecycle 合同
 
@@ -739,8 +750,8 @@ main-workspace matrix。
 ### Phase 1A: Init, Explicit Targeting, Status, Doctor
 
 - 实现 external control root init。
-- target control root/workspace folder 只接受 missing 或 empty directory；
-  non-empty/adopt existing data/control 以 `E_TARGET_ROOT_OCCUPIED` fail closed。
+- target control root 只接受 missing 或 empty directory；workspace folder 可
+  adopt existing non-empty 用户文件，但 root-level `.jvs` 仍 fail closed。
 - 实现显式 control root + workspace 定位。
 - 实现固定 conformance selector：`--control-root <path> --workspace <name>`。
 - 实现 clean CWD contract。
@@ -801,8 +812,9 @@ main-workspace matrix。
 
 | 场景 | 命令/fixture | 期望 | 默认 CI/后续 gate |
 | --- | --- | --- | --- |
-| Basic external init | `jvs init W --control-root C --workspace main --json` | C/W missing 时由 JVS 创建，empty dir 可初始化；新 `repo_id`；public JSON 含 `folder`、`workspace`、`control_root`；workspace 无 `.jvs`；doctor strict passed | 默认 CI |
-| Init target occupied | C 或 W non-empty、含既有 JVS control/data，或需要 adopt existing data/control | `E_TARGET_ROOT_OCCUPIED`；无 mutation | 默认 CI |
+| Basic external init | `jvs init W --control-root C --workspace main --json` | C missing 时由 JVS 创建、empty dir 可初始化；W missing/empty 或 non-empty 用户文件可被 adopt；新 `repo_id`；public JSON 含 `folder`、`workspace`、`control_root`；workspace 无 `.jvs`；doctor strict passed | 默认 CI |
+| Init workspace adopt | existing non-empty W with user files and no root-level `.jvs` | init succeeds；user files and metadata preserved；control registry points to W；status/save operate on existing files | 默认 CI |
+| Init target occupied | C non-empty、含既有 JVS control/data，或需要 merge/overwrite existing control data | `E_TARGET_ROOT_OCCUPIED`；无 mutation | 默认 CI |
 | Root same path | `C == W` | `E_CONTROL_PAYLOAD_OVERLAP`；无 mutation | 默认 CI |
 | Workspace inside control | `W=C/workspace` | `E_PAYLOAD_INSIDE_CONTROL`；无 mutation | 默认 CI |
 | Control inside workspace | `C=W/.control` | `E_CONTROL_INSIDE_PAYLOAD`；无 mutation | 默认 CI |
@@ -904,7 +916,7 @@ No files were changed.
 | --- | --- | --- |
 | `--repo` 语义含糊 | 平台可能把 workspace folder 当 control root，或受 CWD 影响 | 当前 conformance selector 固定为 `--control-root <path> --workspace <name>`；`--repo` 只能作为未来/兼容扩展且只能指 control root |
 | workspace `.jvs` 被误信任 | 不可信 workload 可劫持 repo identity 或 workspace | strict external profile 以 `E_PAYLOAD_LOCATOR_PRESENT` fail closed；doctor check `workspace_control_marker` 固定映射该错误码 |
-| target root 被误 adopt | init/clone 把既有数据或另一个 repo 合并进 external control root 工作流 | 当前只接受 missing/empty target roots；occupied 以 `E_TARGET_ROOT_OCCUPIED` fail closed |
+| target root 被误 adopt | init control root 或 clone target roots 把既有 control data、另一个 repo 或非空 target 合并进 external control root 工作流 | external init 只 adopt workspace user files；control root/clone target roots 只接受 missing/empty，occupied 以 `E_TARGET_ROOT_OCCUPIED` fail closed |
 | 只做字符串路径判断 | symlink、bind mount、case drift 可逃逸 | canonical absolute path + physical identity，mutation 前重验 |
 | restore 写穿到 control | control data 被 workspace symlink 覆盖 | restore/recovery no-follow boundary，escape fail closed |
 | cleanup 删除 root | workspace 或 control runtime 被误删 | cleanup 只处理 reviewed unprotected save point objects，不删除 roots |
@@ -935,8 +947,9 @@ No files were changed.
 - [ ] workspace marker tests：workspace folder root-level `.jvs` absent，以及
   `.jvs` file、directory、symlink present；present 时
   `workspace_control_marker` failed 且 error code 为 `E_PAYLOAD_LOCATOR_PRESENT`。
-- [ ] init/clone root occupancy tests：missing roots、empty dirs、non-empty
-  occupied roots、existing control/workspace data adopt blocked。
+- [ ] init/clone root occupancy tests：missing roots、empty dirs、control root
+  occupied blocked、clone target roots occupied blocked、init workspace user files
+  adopted without rewrite、workspace root-level `.jvs` blocked。
 - [ ] command integration tests：init、status、doctor、save、history、view、
   restore preview/run、recovery blocking、cleanup boundary。
 - [ ] transfer inheritance tests：external save/view/restore/clone 的
@@ -953,8 +966,9 @@ No files were changed.
 Phase 1A 完成前：
 
 - [ ] external init 不在 workspace folder 创建 `.jvs`。
-- [ ] external init 只接受 missing 或 empty target roots；
-  non-empty/adopt existing data/control 以 `E_TARGET_ROOT_OCCUPIED` fail closed。
+- [ ] external init control root 只接受 missing 或 empty directory；
+  workspace folder 可 adopt existing non-empty 用户文件并保留 metadata；
+  workspace root-level `.jvs` 以 `E_PAYLOAD_LOCATOR_PRESENT` fail closed。
 - [ ] explicit target resolution 生成包含 repo_id、control_root、workspace name、
   workspace folder 的 validated context。
 - [ ] doctor strict 覆盖 root invariant 和 identity mismatch。

@@ -88,6 +88,10 @@ This is a control data location choice, not a second product model.
   `jvs init [folder] --control-root C --workspace main`.
 - After init, target it with
   `jvs --control-root C --workspace main <command>`.
+- For external control roots, human `status` labels the external control root as
+  `Control data: C`, while `Folder` remains the workspace folder.
+- JSON `status` uses `data.control_root` and omits `data.repo` for external
+  control roots. Ordinary `.jvs/` status keeps `data.repo`.
 - The folder argument is the workspace folder; legacy split-root flags are not
   the primary entry for this workflow.
 - `--repo` is not an external control root selector; it remains an advanced
@@ -97,6 +101,9 @@ This is a control data location choice, not a second product model.
 - External control root repo clone uses a main-only target folder plus target
   control root:
   `jvs --control-root C --workspace main repo clone <target-folder> --target-control-root TC --save-points main`.
+- For ordinary clone omitted `--save-points` means `all`; for external control
+  root omitted `--save-points` means `main`. Operators should pass
+  `--save-points main` explicitly for external clone scripts.
   `--save-points all` fails closed until imported-history protection is
   available for this control data location.
 - Repo and workspace lifecycle commands are currently unsupported for external
@@ -392,6 +399,8 @@ folder has unsaved changes.
 
 Required JSON `data` fields:
 
+- `repo` for ordinary `.jvs/` workspaces only
+- `control_root` for external control root workspaces only
 - `folder`
 - `workspace`
 - `newest_save_point`
@@ -405,7 +414,8 @@ Required JSON `data` fields:
 Human output must prefer public status words such as `Folder`, `Workspace`,
 `Current save point`, `Newest save point`, `Files match save point`, `Files
 changed since save point`, `Files were last restored from`, `Started from save
-point`, and `Unsaved changes`.
+point`, and `Unsaved changes`. Ordinary `.jvs/` status prints `Repo`; external
+control root status prints `Control data` instead.
 
 ## Save And History
 

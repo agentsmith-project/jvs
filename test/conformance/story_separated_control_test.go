@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestStorySeparatedControlInitCreatesMissingRootsAndReportsAuthoritativeJSON(t *testing.T) {
@@ -54,6 +55,21 @@ func TestStorySeparatedControlExplicitStatusIgnoresCleanCWD(t *testing.T) {
 	}
 
 	requireSeparatedControlAuthoritativeJSON(t, stdout, stderr, controlRoot, payloadRoot, "main")
+
+	humanStdout, humanStderr, humanCode := runJVS(t, cleanCWD,
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"status",
+	)
+	if humanCode != 0 {
+		t.Fatalf("separated human status from clean cwd failed: stdout=%s stderr=%s", humanStdout, humanStderr)
+	}
+	if !strings.Contains(humanStdout, "Control data: "+controlRoot) {
+		t.Fatalf("separated human status should label external control root as control data:\n%s", humanStdout)
+	}
+	if strings.Contains(humanStdout, "Repo: "+controlRoot) {
+		t.Fatalf("separated human status should not label control root as repo:\n%s", humanStdout)
+	}
 }
 
 func TestStorySeparatedControlRejectsRepoFlagAndAmbientSelectors(t *testing.T) {
@@ -205,6 +221,7 @@ func TestStorySeparatedControlPayloadLocatorPresentFailsClosed(t *testing.T) {
 
 			requireSeparatedControlJSONError(t, stdout, stderr, code, "E_PAYLOAD_LOCATOR_PRESENT")
 			requireAbsolutePathPresent(t, filepath.Join(payloadRoot, ".jvs"))
+			requireAbsolutePathAbsent(t, controlRoot)
 		})
 	}
 }
@@ -265,47 +282,116 @@ func TestStorySeparatedControlBoundaryRootCasesFailWithoutMutation(t *testing.T)
 	}
 }
 
-func TestStorySeparatedControlTargetOccupancyFailsWithoutMutation(t *testing.T) {
-	for _, tc := range []struct {
-		name           string
-		occupiedTarget string
-	}{
-		{name: "control root non-empty", occupiedTarget: "control"},
-		{name: "payload root non-empty", occupiedTarget: "payload"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			base := t.TempDir()
-			controlRoot := filepath.Join(base, "control")
-			payloadRoot := filepath.Join(base, "payload")
-			occupiedRoot := controlRoot
-			otherRoot := payloadRoot
-			if tc.occupiedTarget == "payload" {
-				occupiedRoot = payloadRoot
-				otherRoot = controlRoot
-			}
-			if err := os.MkdirAll(occupiedRoot, 0755); err != nil {
-				t.Fatalf("create occupied root: %v", err)
-			}
-			sentinel := filepath.Join(occupiedRoot, "sentinel.txt")
-			if err := os.WriteFile(sentinel, []byte("do not touch\n"), 0644); err != nil {
-				t.Fatalf("write occupancy sentinel: %v", err)
-			}
-
-			stdout, stderr, code := runJVS(t, base, "init",
-				payloadRoot,
-				"--control-root", controlRoot,
-				"--workspace", "main",
-				"--json",
-			)
-
-			requireSeparatedControlJSONError(t, stdout, stderr, code, "E_TARGET_ROOT_OCCUPIED")
-			if got := readAbsoluteFile(t, sentinel); got != "do not touch\n" {
-				t.Fatalf("occupancy sentinel mutated: %q", got)
-			}
-			requireAbsolutePathMissing(t, otherRoot)
-			requireDirectoryEntries(t, occupiedRoot, []string{"sentinel.txt"})
-		})
+func TestStorySeparatedControlOccupiedControlRootFailsWithoutMutation(t *testing.T) {
+	base := t.TempDir()
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	if err := os.MkdirAll(controlRoot, 0755); err != nil {
+		t.Fatalf("create occupied control root: %v", err)
 	}
+	sentinel := filepath.Join(controlRoot, "sentinel.txt")
+	if err := os.WriteFile(sentinel, []byte("do not touch\n"), 0644); err != nil {
+		t.Fatalf("write control occupancy sentinel: %v", err)
+	}
+
+	stdout, stderr, code := runJVS(t, base, "init",
+		payloadRoot,
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"--json",
+	)
+
+	requireSeparatedControlJSONError(t, stdout, stderr, code, "E_TARGET_ROOT_OCCUPIED")
+	if got := readAbsoluteFile(t, sentinel); got != "do not touch\n" {
+		t.Fatalf("control occupancy sentinel mutated: %q", got)
+	}
+	requireAbsolutePathMissing(t, payloadRoot)
+	requireDirectoryEntries(t, controlRoot, []string{"sentinel.txt"})
+}
+
+func TestStorySeparatedControlInitAdoptsExistingNonEmptyWorkspaceFolder(t *testing.T) {
+	base := t.TempDir()
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	userFile := filepath.Join(payloadRoot, "src", "app.txt")
+	if err := os.MkdirAll(filepath.Dir(userFile), 0755); err != nil {
+		t.Fatalf("create existing workspace folder: %v", err)
+	}
+	if err := os.WriteFile(userFile, []byte("adopt me\n"), 0644); err != nil {
+		t.Fatalf("write existing workspace file: %v", err)
+	}
+	if err := os.Chmod(userFile, 0640); err != nil {
+		t.Fatalf("set existing workspace file mode: %v", err)
+	}
+	originalMTime := time.Date(2024, 2, 3, 4, 5, 6, 0, time.UTC)
+	if err := os.Chtimes(userFile, originalMTime, originalMTime); err != nil {
+		t.Fatalf("set existing workspace file mtime: %v", err)
+	}
+	before, err := os.Stat(userFile)
+	if err != nil {
+		t.Fatalf("stat existing workspace file before init: %v", err)
+	}
+
+	stdout, stderr, code := runJVS(t, base, "init",
+		payloadRoot,
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"--json",
+	)
+	if code != 0 {
+		t.Fatalf("separated init should adopt existing workspace folder: stdout=%s stderr=%s", stdout, stderr)
+	}
+	initData := requireSeparatedControlAuthoritativeJSON(t, stdout, stderr, controlRoot, payloadRoot, "main")
+	if initData["unsaved_changes"] != true || initData["newest_save_point"] != nil {
+		t.Fatalf("adopted init should report unsaved, not-yet-saved files: %#v", initData)
+	}
+	if got := readAbsoluteFile(t, userFile); got != "adopt me\n" {
+		t.Fatalf("adopted workspace file mutated: %q", got)
+	}
+	after, err := os.Stat(userFile)
+	if err != nil {
+		t.Fatalf("stat adopted workspace file after init: %v", err)
+	}
+	if after.Mode() != before.Mode() || !after.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("adopted workspace file metadata changed: mode %v -> %v, mtime %s -> %s",
+			before.Mode(), after.Mode(), before.ModTime(), after.ModTime())
+	}
+	requireAbsolutePathAbsent(t, filepath.Join(payloadRoot, ".jvs"))
+	requireSeparatedControlRegistryEntry(t, controlRoot, payloadRoot, "main")
+
+	statusOut, statusErr, statusCode := runJVS(t, base,
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"status",
+	)
+	if statusCode != 0 {
+		t.Fatalf("status after adopted separated init failed: stdout=%s stderr=%s", statusOut, statusErr)
+	}
+	statusData := requireSeparatedControlAuthoritativeJSON(t, statusOut, statusErr, controlRoot, payloadRoot, "main")
+	if statusData["unsaved_changes"] != true || statusData["files_state"] != "not_saved" {
+		t.Fatalf("status after adopted separated init should see existing files as unsaved: %#v", statusData)
+	}
+
+	saveOut, saveErr, saveCode := runJVS(t, base,
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"save",
+		"-m", "adopt baseline",
+	)
+	if saveCode != 0 {
+		t.Fatalf("save after adopted separated init failed: stdout=%s stderr=%s", saveOut, saveErr)
+	}
+	saveData := requireSeparatedControlAuthoritativeJSON(t, saveOut, saveErr, controlRoot, payloadRoot, "main")
+	savePointID, _ := saveData["save_point_id"].(string)
+	if savePointID == "" {
+		t.Fatalf("save after adopt missing save point id: %#v", saveData)
+	}
+	if got := readAbsoluteFile(t, filepath.Join(controlRoot, ".jvs", "snapshots", savePointID, "src", "app.txt")); got != "adopt me\n" {
+		t.Fatalf("save point did not capture adopted workspace file: %q", got)
+	}
+	requireAbsolutePathAbsent(t, filepath.Join(payloadRoot, ".jvs"))
 }
 
 func TestStorySeparatedControlStatusMissingControlFailsClosed(t *testing.T) {
@@ -383,9 +469,30 @@ func requireSeparatedControlTargetData(t *testing.T, data map[string]any, contro
 	}
 }
 
+func requireSeparatedControlRegistryEntry(t *testing.T, controlRoot, workspaceFolder, workspace string) {
+	t.Helper()
+
+	configPath := filepath.Join(controlRoot, ".jvs", "worktrees", workspace, "config.json")
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read separated workspace registry %s: %v", configPath, err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(raw, &config); err != nil {
+		t.Fatalf("decode separated workspace registry %s: %v\n%s", configPath, err, raw)
+	}
+	if config["name"] != workspace {
+		t.Fatalf("registry workspace name = %#v, want %q in %#v", config["name"], workspace, config)
+	}
+	if config["real_path"] != workspaceFolder {
+		t.Fatalf("registry real_path = %#v, want %q in %#v", config["real_path"], workspaceFolder, config)
+	}
+}
+
 func requireSeparatedControlPublicModelFieldsAbsent(t *testing.T, data map[string]any) {
 	t.Helper()
 	for _, field := range []string{
+		"repo",
 		"payload_root",
 		"repo_mode",
 		"separated_control",

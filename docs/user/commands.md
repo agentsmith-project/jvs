@@ -42,6 +42,10 @@ jvs --control-root C --workspace main status
 jvs --control-root C --workspace main save -m "baseline"
 ```
 
+For external control root status, human `status` labels the external control
+root as `Control data: C`. JSON `status` uses `data.control_root` and does not
+emit `data.repo`; ordinary `.jvs/` status still uses the usual repo field.
+
 Do not run a plain `jvs init` inside the workspace folder when you mean to use
 an external control root. That creates a different JVS project with control
 data in the folder's `.jvs/`.
@@ -66,8 +70,10 @@ jvs --control-root C --workspace main repo clone <target-folder> --target-contro
 ```
 
 External control root sources default to the main history closure for clone.
-`--save-points all` fails closed until imported-history protection is available
-for this control data location.
+Ordinary `repo clone` still defaults to `--save-points all`; external control
+root clone defaults to `--save-points main`. Pass `--save-points main`
+explicitly in external clone scripts. `--save-points all` fails closed until
+imported-history protection is available for this control data location.
 
 The following lifecycle commands are intentionally disabled for external
 control roots today: repo move, repo rename, repo detach, workspace move,
@@ -101,6 +107,10 @@ jvs status --json
 
 Human output uses phrases such as `Files match save point`, `Files changed
 since save point`, and `Unsaved changes`.
+
+Ordinary status prints `Repo` and JSON includes `data.repo`. External control
+root status prints `Control data` and JSON includes `data.control_root`
+instead.
 
 ## `jvs save -m "message"`
 
@@ -310,6 +320,7 @@ Behavior:
 - `<target-folder>` must be outside the source project and every source
   workspace. Do not choose a folder inside the project you are copying.
 - By default, JVS copies all save points, the same as `--save-points all`.
+  This default applies to ordinary `.jvs/` projects.
 - Even in the default mode, the target creates only one workspace, named
   `main`, at `<target-folder>`.
 - Other workspaces from the source project are not created in the target.
