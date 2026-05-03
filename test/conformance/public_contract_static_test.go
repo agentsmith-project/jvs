@@ -3949,6 +3949,7 @@ func activeNonReleaseFacingDesignDocs() []string {
 		"docs/23_FILESYSTEM_AWARE_TRANSFER_PLANNING.md",
 		"docs/24_REPO_CLONE_PRODUCT_PLAN.md",
 		"docs/25_REPO_WORKSPACE_LIFECYCLE_PRODUCT_PLAN.md",
+		"docs/26_EXTERNAL_CONTROL_METADATA_PRODUCT_PLAN.md",
 	}
 }
 

@@ -56,6 +56,7 @@ maintaining a published version:
 | Future milestone handoffs | [Smart Copy Boundaries](23_FILESYSTEM_AWARE_TRANSFER_PLANNING.md) | Filesystem-aware transfer planning handoff |
 | Future milestone handoffs | [Repo Clone Product Plan](24_REPO_CLONE_PRODUCT_PLAN.md) | Local JVS project clone handoff |
 | Future milestone handoffs | [Repo/Workspace Lifecycle Product Plan](25_REPO_WORKSPACE_LIFECYCLE_PRODUCT_PLAN.md) | Repo and workspace lifecycle operations handoff |
+| Future milestone handoffs | [Separated Control Root Repo Product Plan](26_EXTERNAL_CONTROL_METADATA_PRODUCT_PLAN.md) | Support separated control root repos for platform-managed payload roots |
 
 ## Boundary Rules
 
