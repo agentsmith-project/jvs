@@ -222,6 +222,131 @@ func TestRepoDetachRunResumesAfterArchiveBeforeDetachedMetadata(t *testing.T) {
 	assert.Empty(t, statusOut)
 }
 
+func TestRepoDetachRunResumesDetachingOnlyArchiveBeforeControlMove(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cwd  func(repoDetachFixture) string
+	}{
+		{
+			name: "from repo root",
+			cwd: func(fixture repoDetachFixture) string {
+				return fixture.repoRoot
+			},
+		},
+		{
+			name: "from external workspace",
+			cwd: func(fixture repoDetachFixture) string {
+				return fixture.externalWorkspace
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := setupRepoDetachFixture(t, "repodetachdetachingonly"+strings.ReplaceAll(tc.name, " ", ""))
+			preview := previewRepoDetach(t, fixture.repoRoot)
+			seedRepoDetachDetachingOnlyArchive(t, fixture.repoRoot, preview.PlanID)
+			assert.DirExists(t, filepath.Join(fixture.repoRoot, repo.JVSDirName))
+			assert.DirExists(t, preview.ArchivePath)
+			assert.FileExists(t, filepath.Join(preview.ArchivePath, "DETACHING"))
+			assert.NoDirExists(t, filepath.Join(preview.ArchivePath, repo.JVSDirName))
+			assert.NoFileExists(t, filepath.Join(preview.ArchivePath, "DETACHED"))
+
+			require.NoError(t, os.Chdir(tc.cwd(fixture)))
+			runOut, err := executeCommand(createTestRootCmd(), "--json", "repo", "detach", "--run", preview.PlanID)
+			require.NoError(t, err, runOut)
+			run := decodeRepoDetachRun(t, runOut)
+			assert.Equal(t, "detached", run.Status)
+			assert.Equal(t, preview.PlanID, run.PlanID)
+			assert.Equal(t, preview.OperationID, run.OperationID)
+			assert.NoDirExists(t, filepath.Join(fixture.repoRoot, repo.JVSDirName))
+			assert.DirExists(t, filepath.Join(preview.ArchivePath, repo.JVSDirName))
+			assert.FileExists(t, filepath.Join(preview.ArchivePath, "DETACHED"))
+		})
+	}
+}
+
+func TestRepoDetachCrashAfterArchiveReportsPendingLifecycleFromExternalWorkspace(t *testing.T) {
+	fixture := setupRepoDetachFixture(t, "repodetachexternalpending")
+	preview := previewRepoDetach(t, fixture.repoRoot)
+	oldHooks := repoDetachRunHooks
+	repoDetachRunHooks.afterArchive = func() error {
+		return errors.New("injected crash after .jvs archive")
+	}
+	t.Cleanup(func() { repoDetachRunHooks = oldHooks })
+	require.NoError(t, os.Chdir(fixture.repoRoot))
+
+	stdout, err := executeCommand(createTestRootCmd(), "repo", "detach", "--run", preview.PlanID)
+	require.Error(t, err)
+	assert.Empty(t, stdout)
+	assert.Contains(t, err.Error(), "injected crash")
+	assert.NoDirExists(t, filepath.Join(fixture.repoRoot, repo.JVSDirName))
+	assert.DirExists(t, filepath.Join(preview.ArchivePath, repo.JVSDirName))
+	assert.FileExists(t, filepath.Join(preview.ArchivePath, "DETACHING"))
+	assert.NoFileExists(t, filepath.Join(preview.ArchivePath, "DETACHED"))
+
+	locator, ok, locatorErr := repo.ReadWorkspaceLocator(fixture.externalWorkspace)
+	require.NoError(t, locatorErr)
+	require.True(t, ok)
+	require.NotNil(t, locator.PendingLifecycle)
+	assert.Equal(t, preview.OperationID, locator.PendingLifecycle.OperationID)
+	assert.Equal(t, repoDetachJournalType, locator.PendingLifecycle.OperationType)
+	assert.Equal(t, fixture.repoRoot, locator.PendingLifecycle.SourceRepoRoot)
+	assert.Equal(t, preview.ArchivePath, locator.PendingLifecycle.TargetRepoRoot)
+	assert.Equal(t, "jvs repo detach --run "+preview.PlanID, locator.PendingLifecycle.RecommendedNextCommand)
+
+	repoDetachRunHooks = oldHooks
+	require.NoError(t, os.Chdir(fixture.externalWorkspace))
+	statusOut, statusStderr, statusErr := executeCommandWithErrorReport(createTestRootCmd(), "--json", "status")
+	require.Error(t, statusErr)
+	assertRepoDetachPendingExternalDiscoveryError(t, statusOut, statusStderr, preview.OperationID, "jvs repo detach --run "+preview.PlanID)
+
+	doctorOut, doctorStderr, doctorExitCode := runContractSubprocess(t, fixture.externalWorkspace, "--json", "doctor", "--strict")
+	require.Equal(t, 1, doctorExitCode, "doctor unexpectedly succeeded: stdout=%s stderr=%s", doctorOut, doctorStderr)
+	assertRepoDetachPendingExternalDiscoveryError(t, doctorOut, doctorStderr, preview.OperationID, "jvs repo detach --run "+preview.PlanID)
+
+	runOut, err := executeCommand(createTestRootCmd(), "--json", "repo", "detach", "--run", preview.PlanID)
+	require.NoError(t, err, runOut)
+	run := decodeRepoDetachRun(t, runOut)
+	assert.Equal(t, "detached", run.Status)
+	assert.Equal(t, preview.PlanID, run.PlanID)
+	assert.Equal(t, preview.OperationID, run.OperationID)
+	assert.FileExists(t, filepath.Join(preview.ArchivePath, "DETACHED"))
+	pending, pendingErr := lifecycle.ListPendingOperations(preview.ArchivePath)
+	require.NoError(t, pendingErr)
+	assert.Empty(t, pending)
+
+	_, inspectErr := repo.InspectWorkspaceLocator(repo.WorkspaceLocatorCheck{
+		WorkspaceRoot:         fixture.externalWorkspace,
+		ExpectedRepoRoot:      fixture.repoRoot,
+		ExpectedRepoID:        fixture.repoID,
+		ExpectedWorkspaceName: "feature",
+	})
+	require.Error(t, inspectErr)
+	assert.Contains(t, strings.ToLower(inspectErr.Error()), "detached")
+}
+
+func TestRepoDetachExternalRecommendedCommandRunsAfterJournalBeforeExternalPendingMarker(t *testing.T) {
+	fixture := setupRepoDetachFixture(t, "repodetachjournalonly")
+	preview := previewRepoDetach(t, fixture.repoRoot)
+	plan, err := loadRepoDetachPlan(fixture.repoRoot, preview.PlanID)
+	require.NoError(t, err)
+	require.NoError(t, lifecycle.WriteOperation(fixture.repoRoot, repoDetachOperationRecord(plan, "prepared")))
+	locator, ok, locatorErr := repo.ReadWorkspaceLocator(fixture.externalWorkspace)
+	require.NoError(t, locatorErr)
+	require.True(t, ok)
+	require.Nil(t, locator.PendingLifecycle)
+
+	require.NoError(t, os.Chdir(fixture.externalWorkspace))
+	runOut, err := executeCommand(createTestRootCmd(), "--json", "repo", "detach", "--run", preview.PlanID)
+	require.NoError(t, err, runOut)
+	run := decodeRepoDetachRun(t, runOut)
+	assert.Equal(t, "detached", run.Status)
+	assert.Equal(t, preview.PlanID, run.PlanID)
+	assert.Equal(t, preview.OperationID, run.OperationID)
+	assert.NoDirExists(t, filepath.Join(fixture.repoRoot, repo.JVSDirName))
+	assert.DirExists(t, filepath.Join(preview.ArchivePath, repo.JVSDirName))
+	assert.FileExists(t, filepath.Join(preview.ArchivePath, "DETACHED"))
+}
+
 func TestRepoDetachRunWithDetachedMarkerConsumesPendingLifecycle(t *testing.T) {
 	fixture := setupRepoDetachFixture(t, "repodetachdetachedpending")
 	preview := previewRepoDetach(t, fixture.repoRoot)
@@ -300,6 +425,29 @@ func decodeRepoDetachRun(t *testing.T, stdout string) repoDetachRunData {
 	var run repoDetachRunData
 	decodeRootJSONData(t, stdout, &run)
 	return run
+}
+
+func seedRepoDetachDetachingOnlyArchive(t *testing.T, repoRoot, planID string) {
+	t.Helper()
+	plan, err := loadRepoDetachPlan(repoRoot, planID)
+	require.NoError(t, err)
+	record := repoDetachOperationRecord(plan, "prepared")
+	require.NoError(t, lifecycle.WriteOperation(repoRoot, record))
+	record, err = ensureRepoDetachExternalConnectionsPending(plan, record)
+	require.NoError(t, err)
+	require.NoError(t, createRepoDetachArchiveMarker(plan, record))
+}
+
+func assertRepoDetachPendingExternalDiscoveryError(t *testing.T, stdout, stderr, operationID, expectedRunCommand string) {
+	t.Helper()
+	assert.Empty(t, strings.TrimSpace(stderr))
+	env := decodeContractEnvelope(t, stdout)
+	assert.False(t, env.OK)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, "E_LIFECYCLE_PENDING", env.Error.Code)
+	assert.Contains(t, env.Error.Message, operationID)
+	assert.Contains(t, env.Error.Message, expectedRunCommand)
+	assert.Equal(t, expectedRunCommand, env.Error.RecommendedNextCommand)
 }
 
 func readRepoDetachMarker(t *testing.T, path string) map[string]any {

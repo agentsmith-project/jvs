@@ -347,11 +347,14 @@ func TestRepoMoveOrRenameExternalDiscoveryAfterRootMoveBeforeLocatorRewriteFails
 			assert.DirExists(t, target)
 			assertRepoMoveExternalLocator(t, fixture.externalWorkspace, fixture.repoRoot, fixture.repoID, "feature")
 
-			expectedRunCommand := "jvs --repo " + fixture.repoRoot + " repo " + tc.command + " --run " + preview.PlanID
+			expectedRunCommand := preview.RunCommand
+			assert.Equal(t, "jvs --repo "+fixture.repoRoot+" repo "+tc.command+" --run "+preview.PlanID, expectedRunCommand)
 			pending, pendingErr := lifecycle.ListPendingOperations(target)
 			require.NoError(t, pendingErr)
 			require.Len(t, pending, 1)
 			assert.Equal(t, expectedRunCommand, pending[0].RecommendedNextCommand)
+			pendingMarkerCommand := requireRepoMoveExternalLocatorPendingRecommendedCommand(t, fixture.externalWorkspace, fixture.repoRoot, fixture.repoID, "feature")
+			assert.Equal(t, expectedRunCommand, pendingMarkerCommand)
 
 			require.NoError(t, os.Chdir(fixture.externalWorkspace))
 			statusOut, statusStderr, statusErr := executeCommandWithErrorReport(createTestRootCmd(), "--json", "status")
@@ -416,6 +419,7 @@ func assertRepoMovePendingExternalDiscoveryError(t *testing.T, stdout, stderr, e
 	require.NotNil(t, env.Error)
 	assert.Equal(t, "E_LIFECYCLE_PENDING", env.Error.Code)
 	assert.Contains(t, env.Error.Message, expectedRunCommand)
+	assert.Equal(t, expectedRunCommand, env.Error.RecommendedNextCommand)
 	assert.NotContains(t, strings.ToLower(env.Error.Message), "stale")
 }
 
@@ -516,4 +520,18 @@ func assertRepoMoveExternalLocator(t *testing.T, workspaceRoot, repoRoot, repoID
 	})
 	require.NoError(t, err)
 	assert.True(t, diagnostic.Matches, diagnostic.Reason)
+}
+
+func requireRepoMoveExternalLocatorPendingRecommendedCommand(t *testing.T, workspaceRoot, repoRoot, repoID, workspaceName string) string {
+	t.Helper()
+	diagnostic, err := repo.InspectWorkspaceLocator(repo.WorkspaceLocatorCheck{
+		WorkspaceRoot:         workspaceRoot,
+		ExpectedRepoRoot:      repoRoot,
+		ExpectedRepoID:        repoID,
+		ExpectedWorkspaceName: workspaceName,
+	})
+	require.NoError(t, err)
+	require.True(t, diagnostic.Matches, diagnostic.Reason)
+	require.NotNil(t, diagnostic.Locator.PendingLifecycle)
+	return diagnostic.Locator.PendingLifecycle.RecommendedNextCommand
 }

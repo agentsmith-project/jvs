@@ -18,12 +18,13 @@ import (
 )
 
 const (
-	repoDetachPlanSchemaVersion = 1
-	repoDetachPlansDirName      = "repo-detach-plans"
-	repoDetachArchiveRootName   = ".jvs-detached"
-	repoDetachJournalType       = "repo detach"
-	repoDetachOperation         = "repo_detach"
-	repoDetachTimestampFormat   = "20060102T150405Z"
+	repoDetachPlanSchemaVersion    = 1
+	repoDetachPlansDirName         = "repo-detach-plans"
+	repoDetachArchiveRootName      = ".jvs-detached"
+	repoDetachJournalType          = "repo detach"
+	repoDetachOperation            = "repo_detach"
+	repoDetachTimestampFormat      = "20060102T150405Z"
+	repoDetachExternalPendingPhase = "external_connections_marked_pending"
 )
 
 type repoDetachPlanRunHooks struct {
@@ -229,10 +230,10 @@ func executeArchivedRepoDetachPlan(target repoDetachRunTarget, planID string) (p
 }
 
 func resumeActiveRepoDetachPlan(plan *repoDetachPlan, record lifecycle.OperationRecord) (publicRepoDetachRunResult, error) {
-	if record.Phase != "prepared" {
+	if record.Phase != "prepared" && record.Phase != repoDetachExternalPendingPhase {
 		return publicRepoDetachRunResult{}, fmt.Errorf("repo detach is pending in unsupported active phase %q", record.Phase)
 	}
-	if err := prepareFreshRepoDetachRun(plan); err != nil {
+	if err := prepareResumeActiveRepoDetachRun(plan); err != nil {
 		return publicRepoDetachRunResult{}, err
 	}
 	return archiveRepoDetachFromPrepared(plan, record)
@@ -243,7 +244,7 @@ func resumeArchivedRepoDetachPlan(plan *repoDetachPlan, record lifecycle.Operati
 		return publicRepoDetachRunResult{}, err
 	}
 	switch record.Phase {
-	case "prepared", "archived", "external_locators_detached":
+	case "prepared", repoDetachExternalPendingPhase, "archived", "external_locators_detached":
 		return finishRepoDetachArchive(plan, record)
 	default:
 		return publicRepoDetachRunResult{}, fmt.Errorf("repo detach is pending in unsupported archived phase %q", record.Phase)
@@ -263,9 +264,27 @@ func prepareFreshRepoDetachRun(plan *repoDetachPlan) error {
 	return validateRepoDetachExternalWorkspaces(plan)
 }
 
+func prepareResumeActiveRepoDetachRun(plan *repoDetachPlan) error {
+	if plan == nil {
+		return fmt.Errorf("repo detach plan is required")
+	}
+	if err := validateRepoDetachActiveRepo(plan.RepoRoot, plan.RepoID); err != nil {
+		return err
+	}
+	if err := validateRepoDetachArchiveAvailableForActiveResume(plan); err != nil {
+		return err
+	}
+	return validateRepoDetachExternalWorkspaces(plan)
+}
+
 func archiveRepoDetachFromPrepared(plan *repoDetachPlan, record lifecycle.OperationRecord) (publicRepoDetachRunResult, error) {
 	if record.OperationID != plan.OperationID {
 		return publicRepoDetachRunResult{}, fmt.Errorf("repo detach lifecycle journal operation_id does not match plan")
+	}
+	var err error
+	record, err = ensureRepoDetachExternalConnectionsPending(plan, record)
+	if err != nil {
+		return publicRepoDetachRunResult{}, err
 	}
 	if err := createRepoDetachArchiveMarker(plan, record); err != nil {
 		return publicRepoDetachRunResult{}, err
@@ -281,13 +300,41 @@ func archiveRepoDetachFromPrepared(plan *repoDetachPlan, record lifecycle.Operat
 	return finishRepoDetachArchive(plan, record)
 }
 
+func ensureRepoDetachExternalConnectionsPending(plan *repoDetachPlan, record lifecycle.OperationRecord) (lifecycle.OperationRecord, error) {
+	if record.Phase != "prepared" && record.Phase != repoDetachExternalPendingPhase {
+		return lifecycle.OperationRecord{}, fmt.Errorf("repo detach is pending in unsupported pre-archive phase %q", record.Phase)
+	}
+	for _, external := range plan.ExternalWorkspaces {
+		if err := repo.MarkWorkspaceLocatorPendingLifecycle(repo.MarkWorkspaceLocatorPendingLifecycleRequest{
+			WorkspaceRoot:          external.Folder,
+			ExpectedRepoID:         plan.RepoID,
+			ExpectedRepoRoot:       plan.RepoRoot,
+			ExpectedWorkspaceName:  external.Workspace,
+			OperationID:            record.OperationID,
+			OperationType:          repoDetachJournalType,
+			Phase:                  repoDetachExternalPendingPhase,
+			SourceRepoRoot:         plan.RepoRoot,
+			TargetRepoRoot:         plan.ArchivePath,
+			RecommendedNextCommand: plan.RunCommand,
+		}); err != nil {
+			return lifecycle.OperationRecord{}, fmt.Errorf("mark external workspace %q pending repo detach: %w", external.Workspace, err)
+		}
+	}
+	if record.Phase == "prepared" {
+		if err := workspaceLifecycleWritePhase(plan.RepoRoot, &record, repoDetachExternalPendingPhase); err != nil {
+			return lifecycle.OperationRecord{}, err
+		}
+	}
+	return record, nil
+}
+
 func finishRepoDetachArchive(plan *repoDetachPlan, record lifecycle.OperationRecord) (publicRepoDetachRunResult, error) {
 	if err := validateRepoDetachArchivedIdentity(plan); err != nil {
 		return publicRepoDetachRunResult{}, err
 	}
 	updated := 0
 	if err := repo.WithMutationLock(plan.ArchivePath, "repo detach finish", func() error {
-		if record.Phase == "prepared" {
+		if record.Phase == "prepared" || record.Phase == repoDetachExternalPendingPhase {
 			if err := workspaceLifecycleWritePhase(plan.ArchivePath, &record, "archived"); err != nil {
 				return err
 			}
@@ -341,7 +388,7 @@ func createRepoDetachArchiveMarker(plan *repoDetachPlan, record lifecycle.Operat
 	}
 	if err := os.Mkdir(plan.ArchivePath, 0755); err != nil {
 		if os.IsExist(err) {
-			return fmt.Errorf("repo detach archive path already exists: %s", plan.ArchivePath)
+			return validateRepoDetachExistingPreArchiveMarker(plan, record)
 		}
 		return fmt.Errorf("create repo detach archive directory: %w", err)
 	}
@@ -402,6 +449,51 @@ func validateRepoDetachArchiveAvailable(plan *repoDetachPlan) error {
 		return fmt.Errorf("repo detach archive path already exists: %s", plan.ArchivePath)
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("stat repo detach archive path: %w", err)
+	}
+	return nil
+}
+
+func validateRepoDetachArchiveAvailableForActiveResume(plan *repoDetachPlan) error {
+	availableErr := validateRepoDetachArchiveAvailable(plan)
+	if availableErr == nil {
+		return nil
+	}
+	info, err := os.Lstat(plan.ArchivePath)
+	if err != nil {
+		return availableErr
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("repo detach archive path is symlink: %s", plan.ArchivePath)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("repo detach archive path is not a directory: %s", plan.ArchivePath)
+	}
+	return validateRepoDetachExistingPreArchiveMarker(plan, lifecycle.OperationRecord{OperationID: plan.OperationID})
+}
+
+func validateRepoDetachExistingPreArchiveMarker(plan *repoDetachPlan, record lifecycle.OperationRecord) error {
+	if _, ok, err := readRepoDetachMarkerOptional(filepath.Join(plan.ArchivePath, "DETACHED")); err != nil {
+		return err
+	} else if ok {
+		return fmt.Errorf("repo detach archive path already has DETACHED metadata: %s", plan.ArchivePath)
+	}
+	if archived, err := repoDetachArchivedControlPlanePresent(plan.ArchivePath); err != nil {
+		return err
+	} else if archived {
+		return fmt.Errorf("repo detach archive path already has archived .jvs metadata: %s", plan.ArchivePath)
+	}
+	marker, ok, err := readRepoDetachMarkerOptional(filepath.Join(plan.ArchivePath, "DETACHING"))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("repo detach archive path already exists without DETACHING marker: %s", plan.ArchivePath)
+	}
+	if marker.Status != "detaching" || !repoDetachMarkerMatchesPlan(marker, plan) {
+		return fmt.Errorf("repo detach archive DETACHING marker does not match plan %q", plan.PlanID)
+	}
+	if record.OperationID != "" && marker.OperationID != record.OperationID {
+		return fmt.Errorf("repo detach archive DETACHING marker operation_id does not match lifecycle journal")
 	}
 	return nil
 }
@@ -689,6 +781,13 @@ func resolveRepoDetachRunTarget(planID string) (repoDetachRunTarget, error) {
 				}
 				return repoDetachRunTarget{ProjectRoot: root, ControlRoot: root}, nil
 			}
+			target, ok, err := repoDetachRunTargetFromWorkspaceLocator(path, planID)
+			if err != nil {
+				return repoDetachRunTarget{}, err
+			}
+			if ok {
+				return target, nil
+			}
 		} else if !os.IsNotExist(err) {
 			return repoDetachRunTarget{}, fmt.Errorf("stat active .jvs path: %w", err)
 		}
@@ -709,6 +808,158 @@ func resolveRepoDetachRunTarget(planID string) (repoDetachRunTarget, error) {
 		}
 		path = parent
 	}
+}
+
+func repoDetachRunTargetFromWorkspaceLocator(workspaceRoot, planID string) (repoDetachRunTarget, bool, error) {
+	locator, ok, err := repo.ReadWorkspaceLocator(workspaceRoot)
+	if err != nil {
+		return repoDetachRunTarget{}, false, err
+	}
+	if !ok {
+		return repoDetachRunTarget{}, false, nil
+	}
+	if locator.PendingLifecycle == nil {
+		return repoDetachRunTargetFromActiveWorkspaceLocator(workspaceRoot, locator, planID)
+	}
+	pending := *locator.PendingLifecycle
+	if pending.OperationType != repoDetachJournalType {
+		return repoDetachRunTarget{}, false, nil
+	}
+	expectedCommand := "jvs repo detach --run " + planID
+	if strings.TrimSpace(pending.RecommendedNextCommand) != expectedCommand {
+		return repoDetachRunTarget{}, false, fmt.Errorf("pending repo detach locator recommends %q, not %q", pending.RecommendedNextCommand, expectedCommand)
+	}
+	if pending.RepoID != locator.RepoID {
+		return repoDetachRunTarget{}, false, fmt.Errorf("pending repo detach locator repo_id mismatch")
+	}
+	if pending.SourceRepoRoot != locator.RepoRoot {
+		return repoDetachRunTarget{}, false, fmt.Errorf("pending repo detach locator source_repo_root mismatch")
+	}
+	if target, ok, err := repoDetachRunTargetFromArchivePath(pending.TargetRepoRoot, planID); ok || err != nil {
+		return target, ok, err
+	}
+	if target, ok, err := repoDetachRunTargetFromActiveSource(pending.SourceRepoRoot, pending.RepoID); ok || err != nil {
+		return target, ok, err
+	}
+	return repoDetachRunTarget{}, false, fmt.Errorf("pending repo detach locator cannot resolve active source or archive for plan %q", planID)
+}
+
+func repoDetachRunTargetFromActiveWorkspaceLocator(workspaceRoot string, locator repo.WorkspaceLocator, planID string) (repoDetachRunTarget, bool, error) {
+	target, ok, err := repoDetachRunTargetFromActiveSource(locator.RepoRoot, locator.RepoID)
+	if !ok || err != nil {
+		return target, ok, err
+	}
+	plan, err := loadRepoDetachPlan(target.ControlRoot, planID)
+	if err != nil {
+		return repoDetachRunTarget{}, false, nil
+	}
+	if !repoDetachPlanMatchesWorkspaceLocator(plan, workspaceRoot, locator) {
+		return repoDetachRunTarget{}, false, nil
+	}
+	return target, true, nil
+}
+
+func repoDetachPlanMatchesWorkspaceLocator(plan *repoDetachPlan, workspaceRoot string, locator repo.WorkspaceLocator) bool {
+	if plan == nil || plan.RepoID != locator.RepoID || !workspaceLifecycleSamePath(plan.RepoRoot, locator.RepoRoot) {
+		return false
+	}
+	for _, external := range plan.ExternalWorkspaces {
+		if external.Workspace == locator.WorkspaceName && workspaceLifecycleSamePath(external.Folder, workspaceRoot) {
+			return true
+		}
+	}
+	return false
+}
+
+func repoDetachRunTargetFromArchivePath(archivePath, planID string) (repoDetachRunTarget, bool, error) {
+	info, err := os.Lstat(archivePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return repoDetachRunTarget{}, false, nil
+		}
+		return repoDetachRunTarget{}, false, fmt.Errorf("stat repo detach archive: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return repoDetachRunTarget{}, false, fmt.Errorf("repo detach archive is symlink: %s", archivePath)
+	}
+	if !info.IsDir() {
+		return repoDetachRunTarget{}, false, fmt.Errorf("repo detach archive is not a directory: %s", archivePath)
+	}
+	if marker, ok, err := readRepoDetachMarkerOptional(filepath.Join(archivePath, "DETACHED")); err != nil {
+		return repoDetachRunTarget{}, false, err
+	} else if ok {
+		if marker.PlanID != planID {
+			return repoDetachRunTarget{}, false, fmt.Errorf("repo detach archive marker does not match plan %q", planID)
+		}
+		return repoDetachRunTarget{
+			ProjectRoot: marker.OldRepoRoot,
+			ControlRoot: archivePath,
+			ArchivePath: archivePath,
+			Archived:    true,
+			Complete:    true,
+			Marker:      marker,
+		}, true, nil
+	}
+	marker, ok, err := readRepoDetachMarkerOptional(filepath.Join(archivePath, "DETACHING"))
+	if err != nil {
+		return repoDetachRunTarget{}, false, err
+	}
+	if !ok {
+		return repoDetachRunTarget{}, false, fmt.Errorf("repo detach archive has no DETACHING or DETACHED marker: %s", archivePath)
+	}
+	if marker.PlanID != planID {
+		return repoDetachRunTarget{}, false, fmt.Errorf("repo detach archive marker does not match plan %q", planID)
+	}
+	archived, err := repoDetachArchivedControlPlanePresent(archivePath)
+	if err != nil {
+		return repoDetachRunTarget{}, false, err
+	}
+	if !archived {
+		return repoDetachRunTarget{}, false, nil
+	}
+	return repoDetachRunTarget{
+		ProjectRoot: marker.OldRepoRoot,
+		ControlRoot: archivePath,
+		ArchivePath: archivePath,
+		Archived:    true,
+		Marker:      marker,
+	}, true, nil
+}
+
+func repoDetachRunTargetFromActiveSource(sourceRoot, repoID string) (repoDetachRunTarget, bool, error) {
+	activeRepo, err := repo.DiscoverControlRepo(sourceRoot)
+	if err != nil {
+		if errors.Is(err, repo.ErrControlRepoNotFound) {
+			return repoDetachRunTarget{}, false, nil
+		}
+		return repoDetachRunTarget{}, false, err
+	}
+	if activeRepo.RepoID != repoID {
+		return repoDetachRunTarget{}, false, fmt.Errorf("pending repo detach source repo_id mismatch")
+	}
+	root, err := canonicalPhysicalRepoRoot(activeRepo.Root)
+	if err != nil {
+		return repoDetachRunTarget{}, false, errclass.ErrUsage.WithMessagef("resolve repository root: %v", err)
+	}
+	return repoDetachRunTarget{ProjectRoot: root, ControlRoot: root}, true, nil
+}
+
+func repoDetachArchivedControlPlanePresent(archivePath string) (bool, error) {
+	archiveJVS := filepath.Join(archivePath, repo.JVSDirName)
+	info, err := os.Lstat(archiveJVS)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat archived .jvs path: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false, fmt.Errorf("repo detach archive .jvs path is symlink: %s", archiveJVS)
+	}
+	if !info.IsDir() {
+		return false, fmt.Errorf("repo detach archive .jvs path is not a directory: %s", archiveJVS)
+	}
+	return true, nil
 }
 
 func findRepoDetachArchiveForPlan(projectRoot, planID string) (repoDetachRunTarget, bool, error) {
@@ -763,6 +1014,13 @@ func findRepoDetachArchiveForPlan(projectRoot, planID string) (repoDetachRunTarg
 			return repoDetachRunTarget{}, false, err
 		}
 		if ok && marker.PlanID == planID {
+			archived, err := repoDetachArchivedControlPlanePresent(archivePath)
+			if err != nil {
+				return repoDetachRunTarget{}, false, err
+			}
+			if !archived {
+				continue
+			}
 			matches = append(matches, repoDetachRunTarget{
 				ProjectRoot: projectRoot,
 				ControlRoot: archivePath,

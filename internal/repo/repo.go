@@ -140,6 +140,23 @@ var (
 	errWorktreeRegistryMissing = errors.New("worktree registry missing")
 )
 
+type lifecyclePendingRecommendedError struct {
+	err                    error
+	recommendedNextCommand string
+}
+
+func (e *lifecyclePendingRecommendedError) Error() string {
+	return e.err.Error()
+}
+
+func (e *lifecyclePendingRecommendedError) Unwrap() error {
+	return e.err
+}
+
+func (e *lifecyclePendingRecommendedError) RecommendedNextCommand() string {
+	return e.recommendedNextCommand
+}
+
 // WorktreePayloadBoundary describes the managed portion of a worktree payload.
 type WorktreePayloadBoundary struct {
 	Root              string
@@ -698,6 +715,9 @@ func discoverWorkspaceLocator(path string) (*Repo, workspaceLocatorFile, bool, e
 	}
 	r, err := loadRepoAtRoot(repoRoot)
 	if err != nil {
+		if pendingErr := pendingLifecycleWorkspaceLocatorError(path, locator); pendingErr != nil {
+			return nil, workspaceLocatorFile{}, true, pendingErr
+		}
 		return nil, workspaceLocatorFile{}, true, fmt.Errorf("JVS workspace locator %s points to an invalid repository: %w", path, err)
 	}
 	if strings.TrimSpace(r.RepoID) == "" {
@@ -811,6 +831,9 @@ func pendingLifecycleWorkspaceLocatorError(path string, locator workspaceLocator
 	if pending.RepoID != locator.RepoID {
 		return fmt.Errorf("invalid JVS workspace locator %s pending lifecycle repo_id mismatch", path)
 	}
+	if pending.OperationType == "repo detach" {
+		return pendingRepoDetachWorkspaceLocatorError(path, locator, pending)
+	}
 	targetRoot, err := cleanExistingWorkspaceLocatorRepoRoot(pending.TargetRepoRoot)
 	if err != nil {
 		return fmt.Errorf("JVS workspace locator %s has pending lifecycle operation %s, but target repository is not reachable: %w", path, pending.OperationID, err)
@@ -822,7 +845,7 @@ func pendingLifecycleWorkspaceLocatorError(path string, locator workspaceLocator
 	if targetRepo.RepoID != locator.RepoID {
 		return fmt.Errorf("JVS workspace locator %s has pending lifecycle operation %s, but target repository repo_id does not match", path, pending.OperationID)
 	}
-	return errclass.ErrLifecyclePending.WithMessagef(
+	jvsErr := errclass.ErrLifecyclePending.WithMessagef(
 		"pending lifecycle operation %s (%s) is in phase %s after repository root moved from %s to %s; rerun: %s",
 		pending.OperationID,
 		pending.OperationType,
@@ -831,6 +854,37 @@ func pendingLifecycleWorkspaceLocatorError(path string, locator workspaceLocator
 		targetRoot,
 		pending.RecommendedNextCommand,
 	)
+	return &lifecyclePendingRecommendedError{
+		err:                    jvsErr,
+		recommendedNextCommand: pending.RecommendedNextCommand,
+	}
+}
+
+func pendingRepoDetachWorkspaceLocatorError(path string, locator workspaceLocatorFile, pending WorkspaceLocatorPendingLifecycle) error {
+	archiveRoot, err := cleanExistingWorkspaceLocatorRepoRoot(pending.TargetRepoRoot)
+	if err != nil {
+		return fmt.Errorf("JVS workspace locator %s has pending lifecycle operation %s, but detach archive is not reachable: %w", path, pending.OperationID, err)
+	}
+	archiveRepo, err := loadRepoAtRoot(archiveRoot)
+	if err != nil {
+		return fmt.Errorf("JVS workspace locator %s has pending lifecycle operation %s, but detach archive is not valid: %w", path, pending.OperationID, err)
+	}
+	if archiveRepo.RepoID != locator.RepoID {
+		return fmt.Errorf("JVS workspace locator %s has pending lifecycle operation %s, but detach archive repo_id does not match", path, pending.OperationID)
+	}
+	jvsErr := errclass.ErrLifecyclePending.WithMessagef(
+		"pending lifecycle operation %s (%s) is in phase %s after repository metadata was archived from %s to %s; rerun: %s",
+		pending.OperationID,
+		pending.OperationType,
+		pending.Phase,
+		pending.SourceRepoRoot,
+		archiveRoot,
+		pending.RecommendedNextCommand,
+	)
+	return &lifecyclePendingRecommendedError{
+		err:                    jvsErr,
+		recommendedNextCommand: pending.RecommendedNextCommand,
+	}
 }
 
 func cleanWorkspaceLocatorRepoRoot(raw string) (string, error) {
