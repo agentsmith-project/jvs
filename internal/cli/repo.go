@@ -347,6 +347,9 @@ func printRepoCloneResult(result *repoclone.Result) {
 	fmt.Printf("Source workspaces not created: %s\n", repoCloneSkippedWorkspaces(result.SourceWorkspacesNotCreated))
 	printRepoCloneTransferSummary("Save point storage", repoCloneTransferByID(result.Transfers, "repo-clone-save-points"), false)
 	printRepoCloneTransferSummary("Main workspace", repoCloneTransferByID(result.Transfers, "repo-clone-main-workspace"), false)
+	if result.DoctorStrict != "" {
+		fmt.Printf("Doctor strict: %s\n", result.DoctorStrict)
+	}
 }
 
 func printRepoCloneDryRun(result *repoclone.Result) {

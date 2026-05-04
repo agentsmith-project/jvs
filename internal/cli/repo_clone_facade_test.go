@@ -30,6 +30,7 @@ func TestRepoCloneCommandClonesCurrentRepoToExplicitMissingTarget(t *testing.T) 
 	assert.Contains(t, stdout, "Save points copied: main history closure (1)")
 	assert.Contains(t, stdout, "Workspaces created: main only")
 	assert.Contains(t, stdout, "Source workspaces not created: none")
+	assert.Contains(t, stdout, "Doctor strict: passed")
 	assert.Contains(t, stdout, "Save point storage: Copy method:")
 	assert.Contains(t, stdout, "Main workspace: Copy method:")
 
@@ -208,6 +209,47 @@ func TestRepoCloneExternalControlSourceRequiresTargetControlRoot(t *testing.T) {
 	assert.NoDirExists(t, target)
 }
 
+func TestRepoCloneExternalControlDirtySourceHintUsesPublicVocabulary(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	sourceControl := filepath.Join(base, "source-control")
+	sourcePayload := filepath.Join(base, "source-payload")
+	initSeparatedControlForCLITest(t, sourceControl, sourcePayload, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("source v1"), 0644))
+	saveOut, err := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", sourceControl,
+		"--workspace", "main",
+		"save", "-m", "source baseline",
+	)
+	require.NoError(t, err, saveOut)
+	require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("source v2 unsaved"), 0644))
+
+	targetControl := filepath.Join(base, "target-control")
+	targetPayload := filepath.Join(base, "target-payload")
+	stdout, stderr, exitCode := runContractSubprocess(t, base,
+		"--json",
+		"--control-root", sourceControl,
+		"--workspace", "main",
+		"repo", "clone",
+		targetPayload,
+		"--target-control-root", targetControl,
+		"--save-points", "main",
+	)
+
+	require.Equal(t, 1, exitCode, "clone unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	env := decodeContractEnvelope(t, stdout)
+	assert.False(t, env.OK)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, errclass.ErrSourceDirty.Code, env.Error.Code)
+	assert.Contains(t, env.Error.Hint, "JVS repo clone")
+	assert.Contains(t, env.Error.Hint, "external control root")
+	assert.NotContains(t, env.Error.Hint, "separated")
+	assert.JSONEq(t, `null`, string(env.Data))
+	assert.NoDirExists(t, targetControl)
+	assert.NoDirExists(t, targetPayload)
+}
+
 func TestRepoCloneRepoFlagSeparatedSourceRejectsPositionalTarget(t *testing.T) {
 	base := setupSeparatedControlCLICWD(t)
 	sourceControl := filepath.Join(base, "source-control")
@@ -353,6 +395,7 @@ func TestRepoCloneDryRunDoesNotCreateTargetAndUsesExpectedTransferRecords(t *tes
 
 	_, data := decodeFacadeDataMap(t, stdout)
 	assert.Equal(t, true, data["dry_run"])
+	assert.NotContains(t, data, "target_repo_id")
 	transfers := requireRepoCloneTransferMaps(t, data, 2)
 	for _, record := range transfers {
 		assert.Equal(t, "repo_clone", record["operation"])

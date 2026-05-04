@@ -1,6 +1,6 @@
 # Save Point And Workspace Semantics
 
-**Status:** Active clean redesign, non-release-facing, and not part of the v0 public contract.
+**Status:** Implemented design record for the current save point/workspace model; active clean redesign, non-release-facing, and not part of the v0 public contract. The release-facing source of truth remains the user docs and CLI spec.
 
 This note tracks the clean redesign direction for contributors. The release
 path is defined by the active user and contract docs:
@@ -18,8 +18,11 @@ JVS presents a small product model:
 
 - A folder is the real directory where work happens.
 - A workspace is a JVS-managed real folder.
-- A save point is an immutable saved copy of managed files in one workspace.
-- History lists save points.
+- A save point is created from a workspace and then belongs to the project
+  history graph.
+- A workspace points at save points in that project history graph.
+- History lists project save points through the active workspace's view of that
+  graph.
 - View opens a read-only view of a save point.
 - Restore is preview-first and plan-bound.
 - Recovery inspects, resumes, or rolls back interrupted restore work.
@@ -29,6 +32,8 @@ JVS presents a small product model:
 ## Design Direction
 
 - Public docs and help use save point vocabulary only.
+- Do not reintroduce branch vocabulary: save points are project history nodes,
+  not branches, and workspaces are named real folders that point at those nodes.
 - Restore run must revalidate the preview plan before writing files.
 - Workspace creation from a save point starts a new history and records source
   provenance.

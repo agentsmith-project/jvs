@@ -25,8 +25,10 @@ Most users can stay inside the folder they want to operate on and omit
 ## External Control Root
 
 Most users can ignore this section. By default, JVS keeps control data in the
-workspace folder's `.jvs/`. Use an external control root only when an operator
-or platform integration explicitly gives you one.
+workspace folder's `.jvs/`. External control root is an operator/platform
+profile: a trusted runner keeps JVS control data outside the workspace folder
+and targets every command explicitly. Use it only when an operator or platform
+integration explicitly gives you both a control root and a workspace name.
 
 Create one by naming the workspace folder and the external control root:
 
@@ -34,13 +36,27 @@ Create one by naming the workspace folder and the external control root:
 jvs init [folder] --control-root C --workspace main
 ```
 
-After that, target the workspace with the control root and workspace name
-together:
+After that, every command in this profile must target the workspace with the
+control root and workspace name together:
 
 ```bash
 jvs --control-root C --workspace main status
 jvs --control-root C --workspace main save -m "baseline"
+jvs --control-root C --workspace main history
+jvs --control-root C --workspace main history from
+jvs --control-root C --workspace main view <save>
+jvs --control-root C --workspace main restore <save> --discard-unsaved
+jvs --control-root C --workspace main restore --run <restore-plan-id>
+jvs --control-root C --workspace main recovery status
+jvs --control-root C --workspace main recovery resume <recovery-plan>
+jvs --control-root C --workspace main recovery rollback <recovery-plan>
+jvs --control-root C --workspace main cleanup preview
+jvs --control-root C --workspace main cleanup run --plan-id <cleanup-plan-id>
 ```
+
+A bare workspace folder cannot safely auto-discover an external control root.
+Do not rely on ordinary current-directory discovery for this profile; pass
+`--control-root C --workspace main` in scripts and platform runners.
 
 For external control root status, human `status` labels the external control
 root as `Control data: C`. JSON `status` uses `data.control_root` and does not
@@ -68,6 +84,11 @@ root:
 ```bash
 jvs --control-root C --workspace main repo clone <target-folder> --target-control-root TC --save-points main
 ```
+
+For external control root clone, the target workspace folder and target control
+root may be missing or empty. Non-empty/adopt/merge/overwrite target roots fail
+closed; keep the workspace folder and control root as one matched set in backup
+and migration procedures.
 
 External control root sources default to the main history closure for clone.
 Ordinary `repo clone` still defaults to `--save-points all`; external control
@@ -114,7 +135,8 @@ instead.
 
 ## `jvs save -m "message"`
 
-Create a save point from the active workspace.
+Create a save point from the active workspace. The save point becomes part of
+the project history graph, and the workspace points at it.
 
 ```bash
 jvs save -m "baseline"
@@ -125,7 +147,7 @@ A message is required. The command prints the new full save point ID.
 
 ## `jvs history`
 
-List save points for the active workspace.
+List project save points through the active workspace's pointer and provenance.
 
 ```bash
 jvs history
@@ -151,7 +173,7 @@ Direction commands:
 | Command | Use |
 | --- | --- |
 | `jvs history to <save>` | Show the path of history ending at a save point |
-| `jvs history from [<save>]` | Show history starting from a save point; omit `<save>` to start from the active workspace's current position |
+| `jvs history from [<save>]` | Show history starting from a save point; omit `<save>` to start from the active workspace's source/started-from save point, or from the earliest ancestor when there is no explicit source |
 
 Human history output shows a copyable ID or short ID for each save point. That
 short form is usually enough in commands that ask for `<save>`. If JVS says it
@@ -303,8 +325,8 @@ Copy the current local JVS project into a new folder. The source is the project
 you are in, or the project named by global `--repo <path>`.
 
 These examples assume you are running the command from the project folder. If
-you are inside a `main` subfolder, choose a target outside the project folder,
-such as `../../project-copy`.
+you run from a nested folder, choose a target outside the project folder, such
+as `../../project-copy`.
 
 ```bash
 jvs repo clone ../project-copy
@@ -316,7 +338,8 @@ second form to preview a smaller copy before JVS creates any files.
 
 Behavior:
 
-- `<target-folder>` must be a new folder path that does not already exist.
+- For ordinary `.jvs/` projects, `<target-folder>` must be a new folder path
+  that does not already exist.
 - `<target-folder>` must be outside the source project and every source
   workspace. Do not choose a folder inside the project you are copying.
 - By default, JVS copies all save points, the same as `--save-points all`.
@@ -328,6 +351,11 @@ Behavior:
   including earlier save points that history depends on.
 - `--dry-run` checks what would happen and prints the plan, but does not create
   the target folder or any files.
+
+External control root clone has a different target-shape rule: the target
+workspace folder and target control root may be missing or empty, but non-empty
+target roots fail closed. See [External Control Root](#external-control-root)
+for the explicit operator form.
 
 The source project is unchanged.
 

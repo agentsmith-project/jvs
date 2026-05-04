@@ -2,11 +2,11 @@
 
 **Subtitle:** local JVS project clone handoff.
 
-**Status:** active clean redesign, non-release-facing, not part of the v0 public contract. Clean future milestone handoff.
+**Status:** implemented design record for current repo clone behavior; active clean redesign, non-release-facing, not part of the v0 public contract. The release-facing source of truth is `docs/02_CLI_SPEC.md` and `docs/user/`; later clone refinements stay in this record until promoted.
 
 **中文名:** 本地 JVS project clone。
 
-本文面向产品、工程和 QA，定义 `jvs repo clone` 的产品口径和验收边界。它只讨论文档和行为合同，不包含实现代码。
+本文面向产品、工程和 QA，记录 `jvs repo clone` 的产品口径和验收边界。它只讨论文档和行为合同，不包含实现代码；若与 release-facing docs 冲突，以 release-facing docs 为准。
 
 ## 文档验收标准
 
@@ -170,7 +170,8 @@ Source workspaces not created: experiment, review
 目标 repo 必须是新的 JVS project：
 
 - `.jvs/repo_id` 使用新生成值。
-- JSON 输出包含 `source_repo_id` 和 `target_repo_id`。
+- Completed clone JSON 输出包含 `source_repo_id` 和 `target_repo_id`。Dry-run
+  JSON 是计划结果，不创建真实 target repo，因此不要求实际 `target_repo_id`。
 - clone manifest/audit 记录 source provenance，但目标运行时 discovery 只认 target repo。
 - 目标 locator 或 workspace config 不得指向 source repo。
 
@@ -183,7 +184,7 @@ Source workspaces not created: experiment, review
 | `source_repo_root` | 源 repo display path |
 | `source_repo_id` | 源 repo identity，仅用于 provenance |
 | `target_repo_root` | 目标 repo path |
-| `target_repo_id` | 新 repo identity |
+| `target_repo_id` | 新 repo identity；只在 completed clone manifest 中存在 |
 | `save_points_mode` | `all` 或 `main` |
 | `save_points_copied` | 数量和 ID 列表或可审计摘要 |
 | `imported_save_points_count` | canonical imported save point ID 列表数量 |
@@ -447,7 +448,7 @@ No files were created.
 
 ## JSON Output 草案
 
-JSON 使用现有 envelope。成功 `data` 建议包含：
+JSON 使用现有 envelope。Completed clone 成功 `data` 建议包含：
 
 ```json
 {
@@ -492,6 +493,11 @@ JSON 使用现有 envelope。成功 `data` 建议包含：
   "error": null
 }
 ```
+
+Dry-run 使用同一 envelope 和 clone planning fields，但 `dry_run` 为 `true`，不创建
+target folder/control data，也不生成真实 target repo identity。Dry-run JSON 可以
+省略 `target_repo_id` 或将其置为 `null`；completed clone JSON 必须包含实际
+`target_repo_id`。
 
 失败 envelope：
 

@@ -52,13 +52,24 @@ treat as important moments.
 
 | Command | What happens |
 | --- | --- |
-| `jvs init` | Adds JVS control data to the folder. Your existing files stay in place. |
-| `jvs save -m "message"` | Creates a save point. Your files stay as they are. |
-| `jvs restore <save>` | Preview only. No files change. |
-| `jvs restore --run <restore-plan-id>` | Changes files in the workspace according to the previewed restore plan. |
-| `jvs workspace new <folder> --from <save>` | Creates another real folder at the path you choose. |
+| `jvs init [folder]` | Adds JVS control data to the folder. Your existing files stay in place. |
+| `jvs save -m "message"` | Creates a save point from the current workspace. Your files stay as they are. |
+| `jvs workspace new <folder> --from <save>` | Creates another real workspace folder at the path you choose. The original workspace is unchanged. |
+| `jvs workspace rename <old> <new>` | Changes the JVS workspace name only. The real folder is not moved. |
+| `jvs workspace move <name> <new-folder>` | Preview only. The workspace folder is not moved. |
+| `jvs workspace move --run <workspace-move-plan-id>` | Moves the selected workspace folder and updates its workspace entry. |
 | `jvs workspace delete <name>` | Preview only. The workspace folder is not deleted. |
 | `jvs workspace delete --run <workspace-delete-plan-id>` | Deletes that workspace folder and its workspace entry. Save point storage stays. |
+| `jvs repo clone <target-folder>` | Creates a new local JVS project folder with a new repo identity. The source project is unchanged. |
+| `jvs repo clone <target-folder> --dry-run` | Preview/check only. No target project folder is created. |
+| `jvs repo move <new-folder>` | Preview only. The project folder is not moved. |
+| `jvs repo move --run <repo-move-plan-id>` | Moves the project folder while keeping the same repo identity and save point history. |
+| `jvs repo rename <new-folder-name>` | Preview only. The project folder is not renamed. |
+| `jvs repo rename --run <repo-rename-plan-id>` | Renames the project folder within the same parent directory. |
+| `jvs repo detach` | Preview only. JVS metadata is not archived and files are not moved. |
+| `jvs repo detach --run <repo-detach-plan-id>` | Archives JVS metadata and stops treating the project folder as an active JVS repo. Working files stay in place. |
+| `jvs restore <save>` | Preview only. No files change. |
+| `jvs restore --run <restore-plan-id>` | Changes files in the workspace according to the previewed restore plan. |
 | `jvs cleanup preview` | Preview only. No storage is removed. |
 | `jvs cleanup run --plan-id <cleanup-plan-id>` | Removes save point storage that the reviewed cleanup plan selected. |
 | `jvs recovery resume <plan>` | Continues an interrupted restore and may change files. |
@@ -68,13 +79,27 @@ Commands such as `jvs status`, `jvs history`, `jvs view`, `jvs workspace list`,
 and `jvs workspace path` are for looking around. They do not change your
 workspace files.
 
+The biggest real-folder risks are easy to remember:
+
+- `workspace new` and `repo clone` create new folders.
+- `workspace move`, `repo move`, and `repo rename` move or rename existing
+  folders only when you run the reviewed plan.
+- `workspace delete --run` deletes a workspace folder, but not save point
+  storage.
+- `repo detach --run` keeps working files but archives JVS metadata; after that,
+  the folder is no longer an active JVS repo.
+
 ## Preview-First Rule
 
 JVS uses reviewed plans for the higher-impact operations:
 
 ```text
 restore preview -> restore run
+workspace move preview -> workspace move run
 workspace delete preview -> workspace delete run
+repo move preview -> repo move run
+repo rename preview -> repo rename run
+repo detach preview -> repo detach run
 cleanup preview -> cleanup run
 ```
 

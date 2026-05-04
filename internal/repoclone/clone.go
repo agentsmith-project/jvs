@@ -112,6 +112,13 @@ type transferPlans struct {
 	mainPlan   *engine.TransferPlan
 }
 
+type separatedPublishedRoot struct {
+	targetRoot    string
+	targetExisted bool
+	role          string
+	publishedInfo os.FileInfo
+}
+
 // Clone plans or executes a local JVS project clone.
 func Clone(options Options) (*Result, error) {
 	prepared, err := prepare(options)
@@ -514,7 +521,7 @@ func rejectDirtySourceWorkspaces(repoRoot string, workspaces []*model.WorktreeCo
 			if separatedSource {
 				return errclass.ErrSourceDirty.
 					WithMessagef("Cannot clone: source workspace %q has unsaved changes.", cfg.Name).
-					WithHint("Save those changes as a save point first. JVS separated repo clone only creates target workspace \"main\".")
+					WithHint("Save those changes as a save point first. JVS repo clone with an external control root only creates target workspace \"main\".")
 			}
 			return &errclass.JVSError{
 				Code:    "E_UNSAVED_CHANGES",
@@ -914,19 +921,20 @@ func (p *preparedClone) executeSeparated() (*Result, error) {
 	if _, err := validateSeparatedCloneTargetRoots(p.targetControlRoot, p.targetPayloadRoot); err != nil {
 		return nil, atomicPublishBlockedError(err)
 	}
-	if err := publishSeparatedCloneRoot(stagingPayload, p.targetPayloadRoot, p.targetPayloadExisted, "payload"); err != nil {
+	publishedPayload, err := publishSeparatedCloneRoot(stagingPayload, p.targetPayloadRoot, p.targetPayloadExisted, "payload")
+	if err != nil {
 		return nil, atomicPublishBlockedError(err)
 	}
 	if p.options.Hooks.AfterSeparatedPayloadPublish != nil {
 		if err := p.options.Hooks.AfterSeparatedPayloadPublish(p.targetPayloadRoot, p.targetPayloadRoot); err != nil {
-			if rollbackErr := rollbackSeparatedPublishedRoot(p.targetPayloadRoot, p.targetPayloadExisted, "payload"); rollbackErr != nil {
+			if rollbackErr := rollbackSeparatedPublishedRoot(publishedPayload); rollbackErr != nil {
 				return nil, atomicPublishBlockedError(fmt.Errorf("after separated payload publish hook: %w; rollback target folder: %v", err, rollbackErr))
 			}
 			return nil, atomicPublishBlockedError(fmt.Errorf("after separated payload publish hook: %w", err))
 		}
 	}
-	if err := publishSeparatedCloneRoot(stagingControl, p.targetControlRoot, p.targetControlExisted, "control"); err != nil {
-		if rollbackErr := rollbackSeparatedPublishedRoot(p.targetPayloadRoot, p.targetPayloadExisted, "payload"); rollbackErr != nil {
+	if _, err := publishSeparatedCloneRoot(stagingControl, p.targetControlRoot, p.targetControlExisted, "control"); err != nil {
+		if rollbackErr := rollbackSeparatedPublishedRoot(publishedPayload); rollbackErr != nil {
 			return nil, atomicPublishBlockedError(fmt.Errorf("%w; rollback target folder: %v", err, rollbackErr))
 		}
 		return nil, atomicPublishBlockedError(err)
@@ -1039,31 +1047,76 @@ func validateSeparatedCloneMaterializedPayloadBoundary(source *repo.Repo, payloa
 	})
 }
 
-func publishSeparatedCloneRoot(stagingRoot, targetRoot string, targetExisted bool, role string) error {
+func publishSeparatedCloneRoot(stagingRoot, targetRoot string, targetExisted bool, role string) (*separatedPublishedRoot, error) {
+	stagingInfo, err := os.Lstat(stagingRoot)
+	if err != nil {
+		return nil, fmt.Errorf("stat staging %s root before publish: %w", role, err)
+	}
+	if stagingInfo.Mode()&os.ModeSymlink != 0 || !stagingInfo.IsDir() {
+		return nil, fmt.Errorf("staging %s root is not a safe directory: %s", role, stagingRoot)
+	}
 	if targetExisted {
 		if existed, err := validateSeparatedCloneTargetEmptyOrMissing(targetRoot, "target "+role+" root"); err != nil {
-			return err
+			return nil, err
 		} else if !existed {
-			return errclass.ErrAtomicPublishBlocked.WithMessagef("target %s root disappeared before publish: %s", role, targetRoot)
+			return nil, errclass.ErrAtomicPublishBlocked.WithMessagef("target %s root disappeared before publish: %s", role, targetRoot)
 		}
 		if err := os.Remove(targetRoot); err != nil {
-			return fmt.Errorf("remove empty target %s root before publish: %w", role, err)
+			return nil, fmt.Errorf("remove empty target %s root before publish: %w", role, err)
 		}
 	}
 	if err := fsutil.RenameNoReplaceAndSync(stagingRoot, targetRoot); err != nil {
-		return fmt.Errorf("publish target %s root: %w", role, err)
+		if targetExisted {
+			_ = restoreEmptySeparatedTargetRoot(targetRoot, role)
+		}
+		return nil, fmt.Errorf("publish target %s root: %w", role, err)
 	}
-	return nil
+	targetInfo, err := os.Lstat(targetRoot)
+	if err != nil {
+		return nil, fmt.Errorf("stat published target %s root: %w", role, err)
+	}
+	if !os.SameFile(stagingInfo, targetInfo) {
+		return nil, fmt.Errorf("published target %s root changed before identity capture: %s", role, targetRoot)
+	}
+	return &separatedPublishedRoot{
+		targetRoot:    targetRoot,
+		targetExisted: targetExisted,
+		role:          role,
+		publishedInfo: stagingInfo,
+	}, nil
 }
 
-func rollbackSeparatedPublishedRoot(targetRoot string, targetExisted bool, role string) error {
-	if err := os.RemoveAll(targetRoot); err != nil {
-		return fmt.Errorf("remove published target %s root: %w", role, err)
+func rollbackSeparatedPublishedRoot(published *separatedPublishedRoot) error {
+	if published == nil {
+		return nil
 	}
-	if targetExisted {
-		if err := os.Mkdir(targetRoot, 0755); err != nil && !os.IsExist(err) {
-			return fmt.Errorf("restore empty target %s root: %w", role, err)
+	targetInfo, err := os.Lstat(published.targetRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if published.targetExisted {
+				return restoreEmptySeparatedTargetRoot(published.targetRoot, published.role)
+			}
+			return nil
 		}
+		return fmt.Errorf("stat published target %s root before rollback: %w", published.role, err)
+	}
+	if targetInfo.Mode()&os.ModeSymlink != 0 || !targetInfo.IsDir() || !os.SameFile(published.publishedInfo, targetInfo) {
+		return fmt.Errorf("target %s root changed after publish; refusing to remove: %s", published.role, published.targetRoot)
+	}
+	if err := os.RemoveAll(published.targetRoot); err != nil {
+		return fmt.Errorf("remove published target %s root: %w", published.role, err)
+	}
+	if published.targetExisted {
+		if err := restoreEmptySeparatedTargetRoot(published.targetRoot, published.role); err != nil {
+			return err
+		}
+	}
+	return fsutil.FsyncDir(filepath.Dir(published.targetRoot))
+}
+
+func restoreEmptySeparatedTargetRoot(targetRoot, role string) error {
+	if err := os.Mkdir(targetRoot, 0755); err != nil && !os.IsExist(err) {
+		return fmt.Errorf("restore empty target %s root: %w", role, err)
 	}
 	return fsutil.FsyncDir(filepath.Dir(targetRoot))
 }

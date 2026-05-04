@@ -3,7 +3,7 @@
 **Subtitle:** control data location handoff for advanced operators and platform
 integrations.
 
-**Status:** active clean redesign, non-release-facing, not part of the v0 public contract. This is the product handoff for the external control root milestone.
+**Status:** implemented design record for the current external control root operator/platform profile; active clean redesign, non-release-facing, not part of the v0 public contract. The release-facing source of truth is `docs/02_CLI_SPEC.md` and `docs/user/`; later lifecycle parity and API work stay here until promoted.
 
 **中文名:** 外部控制数据根。
 

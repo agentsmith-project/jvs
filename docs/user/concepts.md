@@ -48,8 +48,9 @@ workspace is unchanged.
 
 ## Save Point
 
-A save point is a saved state of a workspace. It includes the files JVS saves,
-your message, and the time it was created.
+A save point is a project history node created from a workspace. It includes the
+files JVS saves, your message, and the time it was created. A workspace creates
+save points, and then points at save points in the shared project history graph.
 
 Create one with:
 
@@ -67,7 +68,8 @@ jvs workspace new ../experiment --from <save>
 ```
 
 Save points are not edited in place. If you restore old files and then save
-again, JVS creates a new save point.
+again, JVS creates a new save point in the project history graph. This is not a
+branch model; workspaces are named real folders that point at save points.
 
 `jvs history` also shows a copyable ID or short ID for each save point. That is
 usually enough. If JVS says the ID is ambiguous or non-unique, use a longer
@@ -76,7 +78,7 @@ copy the `save_point_id` field for the save point you chose.
 
 ## History
 
-History is the list of save points for a workspace:
+History is the project save point graph as seen from the active workspace:
 
 ```bash
 jvs history
@@ -101,7 +103,9 @@ jvs history --limit 0
 ```
 
 `--limit 0` means no limit. `jvs history from` without a save point starts from
-the active workspace's current position.
+the active workspace's source/started-from save point. If that workspace has no
+explicit source, it starts from the earliest ancestor of the current workspace
+pointer.
 
 ## View
 

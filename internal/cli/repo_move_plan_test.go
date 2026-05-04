@@ -81,6 +81,53 @@ func TestRepoMovePreviewFromInsideRepoWritesPlanOnlyAndIncludesExplicitRepoSafeC
 	assert.Empty(t, pending)
 }
 
+func TestRepoMoveAndRenamePreviewShellQuotesRunCommands(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		command string
+		args    func(repoRoot string) []string
+	}{
+		{
+			name:    "move",
+			command: "move",
+			args: func(repoRoot string) []string {
+				return []string{filepath.Join(filepath.Dir(repoRoot), "moved repo")}
+			},
+		},
+		{
+			name:    "rename",
+			command: "rename",
+			args: func(string) []string {
+				return []string{"renamed-repo"}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repoRoot := setupRepoMoveUnsafePathRepo(t)
+			jsonArgs := append([]string{"--json", "repo", tc.command}, tc.args(repoRoot)...)
+			stdout, err := executeCommand(createTestRootCmd(), jsonArgs...)
+			require.NoError(t, err, stdout)
+			preview := decodeRepoMovePreview(t, stdout)
+			base := filepath.Dir(filepath.Dir(repoRoot))
+			sep := string(os.PathSeparator)
+			expectedRepoArg := "'" + base + sep + "parent dir; echo '\\''parent'\\''" + sep + "repo dir; echo '\\''repo'\\'''"
+			expectedParentArg := "'" + base + sep + "parent dir; echo '\\''parent'\\'''"
+			expectedRunPrefix := "jvs --repo " + expectedRepoArg + " repo " + tc.command + " --run "
+			expectedRun := expectedRunPrefix + preview.PlanID
+			expectedSafeRunPrefix := "cd " + expectedParentArg + " && " + expectedRunPrefix
+			expectedSafeRun := expectedSafeRunPrefix + preview.PlanID
+			assert.Equal(t, expectedRun, preview.RunCommand)
+			assert.Equal(t, expectedSafeRun, preview.SafeRunCommand)
+
+			humanArgs := append([]string{"repo", tc.command}, tc.args(repoRoot)...)
+			human, err := executeCommand(createTestRootCmd(), humanArgs...)
+			require.NoError(t, err, human)
+			assert.Contains(t, human, "Run: `"+expectedRunPrefix)
+			assert.Contains(t, human, "Safe run: `"+expectedSafeRunPrefix)
+		})
+	}
+}
+
 func TestRepoMoveRunFromInsideOldRepoFailsBeforeJournalOrMutation(t *testing.T) {
 	fixture := setupRepoMoveFixture(t, "repomoveunsafecwd")
 	target := filepath.Join(filepath.Dir(fixture.repoRoot), "moved-repo")
@@ -212,6 +259,22 @@ func TestRepoRenameValidatesBasenameOnlyAndRunsAsRepoRename(t *testing.T) {
 	assert.NoDirExists(t, fixture.repoRoot)
 	assert.DirExists(t, target)
 	assert.Equal(t, fixture.repoID, readRepoMoveTestRepoID(t, target))
+}
+
+func TestRepoMovePreviewRejectsTargetInsideRegisteredExternalWorkspace(t *testing.T) {
+	fixture := setupRepoMoveFixture(t, "repomoveexternaloverlap")
+	target := filepath.Join(fixture.externalWorkspace, "nested-repo")
+
+	stdout, err := executeCommand(createTestRootCmd(), "repo", "move", target)
+	require.Error(t, err)
+	assert.Empty(t, stdout)
+	assert.Contains(t, err.Error(), "external workspace")
+	assert.DirExists(t, fixture.repoRoot)
+	assert.NoDirExists(t, target)
+	assert.NoDirExists(t, filepath.Join(fixture.repoRoot, ".jvs", repoMovePlansDirName))
+	pending, pendingErr := lifecycle.ListPendingOperations(fixture.repoRoot)
+	require.NoError(t, pendingErr)
+	assert.Empty(t, pending)
 }
 
 func TestRepoMoveExternalLocatorPreflightFailsClosedBeforeMovingRoot(t *testing.T) {
@@ -443,6 +506,20 @@ func setupRepoMoveFixture(t *testing.T, name string) repoMoveFixture {
 		savePointID:       savePointID,
 		externalWorkspace: filepath.Join(filepath.Dir(repoRoot), "feature"),
 	}
+}
+
+func setupRepoMoveUnsafePathRepo(t *testing.T) string {
+	t.Helper()
+	base := t.TempDir()
+	repoRoot := filepath.Join(base, "parent dir; echo 'parent'", "repo dir; echo 'repo'")
+	require.NoError(t, os.MkdirAll(filepath.Dir(repoRoot), 0755))
+	originalWd, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, os.Chdir(originalWd)) })
+	r, err := repo.InitTarget(repoRoot)
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(r.Root))
+	return r.Root
 }
 
 func previewRepoMove(t *testing.T, repoRoot, target string) repoMovePreviewData {

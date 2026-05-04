@@ -447,6 +447,74 @@ func TestSeparatedCloneAtomicControlPublishFailureRollsBackPayloadAndRetrySuccee
 	assertFileContent(t, filepath.Join(targetPayload, "app.txt"), "main v1")
 }
 
+func TestSeparatedCloneControlPublishFailureRestoresPreexistingEmptyPayloadRoot(t *testing.T) {
+	sourceControl, sourcePayload := setupSeparatedCloneSourceRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("main v1"), 0644))
+	_ = createCloneSavePoint(t, sourceControl, "main", "main baseline")
+
+	targetBase := t.TempDir()
+	targetControl := filepath.Join(targetBase, "target-control")
+	targetPayload := filepath.Join(targetBase, "target-payload")
+	require.NoError(t, os.MkdirAll(targetControl, 0755))
+	require.NoError(t, os.MkdirAll(targetPayload, 0755))
+
+	_, err := repoclone.Clone(repoclone.Options{
+		SourceRepoRoot:    sourceControl,
+		TargetControlRoot: targetControl,
+		TargetPayloadRoot: targetPayload,
+		SavePointsMode:    repoclone.SavePointsModeMain,
+		RequestedEngine:   model.EngineCopy,
+		Hooks: repoclone.Hooks{
+			AfterSeparatedPayloadPublish: func(publishedPayloadRoot, targetPayloadRoot string) error {
+				require.Equal(t, targetPayload, targetPayloadRoot)
+				require.DirExists(t, publishedPayloadRoot)
+				return os.WriteFile(filepath.Join(targetControl, "block-control-publish.txt"), []byte("block"), 0644)
+			},
+		},
+	})
+
+	assertJVSErrorCode(t, err, errclass.ErrAtomicPublishBlocked.Code)
+	assert.DirExists(t, targetPayload)
+	assert.Empty(t, readCloneDirNames(t, targetPayload))
+	assert.NoDirExists(t, filepath.Join(targetPayload, ".jvs"))
+	assert.NoFileExists(t, filepath.Join(targetPayload, "app.txt"))
+	assert.NoDirExists(t, filepath.Join(targetControl, ".jvs"))
+	assertFileContent(t, filepath.Join(targetControl, "block-control-publish.txt"), "block")
+}
+
+func TestSeparatedCloneControlPublishFailureDoesNotRemoveReplacedPayload(t *testing.T) {
+	sourceControl, sourcePayload := setupSeparatedCloneSourceRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("main v1"), 0644))
+	_ = createCloneSavePoint(t, sourceControl, "main", "main baseline")
+
+	targetBase := t.TempDir()
+	targetControl := filepath.Join(targetBase, "target-control")
+	targetPayload := filepath.Join(targetBase, "target-payload")
+	_, err := repoclone.Clone(repoclone.Options{
+		SourceRepoRoot:    sourceControl,
+		TargetControlRoot: targetControl,
+		TargetPayloadRoot: targetPayload,
+		SavePointsMode:    repoclone.SavePointsModeMain,
+		RequestedEngine:   model.EngineCopy,
+		Hooks: repoclone.Hooks{
+			AfterSeparatedPayloadPublish: func(publishedPayloadRoot, targetPayloadRoot string) error {
+				require.Equal(t, targetPayload, targetPayloadRoot)
+				require.DirExists(t, publishedPayloadRoot)
+				require.NoError(t, os.RemoveAll(targetPayload))
+				require.NoError(t, os.MkdirAll(targetPayload, 0755))
+				require.NoError(t, os.WriteFile(filepath.Join(targetPayload, "external.txt"), []byte("external replacement"), 0644))
+				require.NoError(t, os.MkdirAll(targetControl, 0755))
+				return os.WriteFile(filepath.Join(targetControl, "block-control-publish.txt"), []byte("block"), 0644)
+			},
+		},
+	})
+
+	assertJVSErrorCode(t, err, errclass.ErrAtomicPublishBlocked.Code)
+	assertFileContent(t, filepath.Join(targetPayload, "external.txt"), "external replacement")
+	assert.NoFileExists(t, filepath.Join(targetPayload, "app.txt"))
+	assert.NoDirExists(t, filepath.Join(targetControl, ".jvs"))
+}
+
 func TestSeparatedCloneMaterializesMainFromSavedStateWhenSourceMutatesAfterPrepare(t *testing.T) {
 	sourceControl, sourcePayload := setupSeparatedCloneSourceRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("saved state"), 0644))
@@ -1108,6 +1176,18 @@ func assertNoCloneStaging(t *testing.T, dir string) {
 	matches, err := filepath.Glob(filepath.Join(dir, "*.clone-staging-*"))
 	require.NoError(t, err)
 	assert.Empty(t, matches)
+}
+
+func readCloneDirNames(t *testing.T, dir string) []string {
+	t.Helper()
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names
 }
 
 func assertNoProbeResidue(t *testing.T, dirs ...string) {

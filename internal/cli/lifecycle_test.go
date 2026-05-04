@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -61,6 +62,15 @@ func TestLifecycleInitSaveHistoryStatusCurrentCommands(t *testing.T) {
 	savePoints, ok := history["save_points"].([]any)
 	require.True(t, ok)
 	require.Len(t, savePoints, 1)
+}
+
+func TestLifecycleNotInsideWorkspaceHintDoesNotSuggestLegacyMainDirectory(t *testing.T) {
+	err := notInsideWorkspaceError()
+	jvsErr, ok := err.(*errclass.JVSError)
+	require.True(t, ok)
+
+	assert.Contains(t, jvsErr.Hint, "workspace folder")
+	assert.NotContains(t, jvsErr.Hint, "main/")
 }
 
 func TestLifecycleCleanupPreviewUsesCurrentContract(t *testing.T) {

@@ -378,6 +378,64 @@ func TestDocs_UserCommandsDocumentsExternalControlRoot(t *testing.T) {
 	}
 }
 
+func TestDocs_RepoCloneDocumentsOrdinaryAndExternalTargetContracts(t *testing.T) {
+	cliDoc := "docs/02_CLI_SPEC.md"
+	cliBody := readRepoFile(t, cliDoc)
+	cloneSection := strings.Join(strings.Fields(markdownSectionByHeading(t, cliDoc, cliBody, "## Repo Clone")), " ")
+	for _, required := range []string{
+		"Ordinary `.jvs/` clone requires `<target-folder>` to be missing",
+		"target workspace folder and target control root may be missing or empty directories; non-empty target roots fail closed",
+		"Ordinary `.jvs/` completed clone JSON includes",
+		"`target_repo_root`",
+		"`target_repo_id`",
+		"External-control completed clone JSON includes",
+		"`target_folder`",
+		"`target_control_root`",
+		"External-control completed clone JSON does not require `target_repo_root`",
+		"Dry-run JSON is a planning result. Because dry-run does not create the target repo, it must not require an actual `target_repo_id`",
+	} {
+		requireReleaseReadinessText(t, "repo clone CLI contract", cloneSection, required)
+	}
+
+	userDoc := "docs/user/commands.md"
+	userBody := readRepoFile(t, userDoc)
+	userCloneSection := strings.Join(strings.Fields(markdownSectionByHeading(t, userDoc, userBody, "### `jvs repo clone <target-folder> [--save-points all|main] [--dry-run]`")), " ")
+	for _, required := range []string{
+		"For ordinary `.jvs/` projects, `<target-folder>` must be a new folder path that does not already exist",
+		"External control root clone has a different target-shape rule",
+		"target workspace folder and target control root may be missing or empty",
+		"non-empty target roots fail closed",
+	} {
+		requireReleaseReadinessText(t, "repo clone user documentation", userCloneSection, required)
+	}
+}
+
+func TestDocs_ReleaseFacingDocsAvoidMainSubfolderModel(t *testing.T) {
+	for _, doc := range []string{
+		"docs/02_CLI_SPEC.md",
+		"docs/user/README.md",
+		"docs/user/commands.md",
+		"docs/user/concepts.md",
+		"docs/user/faq.md",
+		"docs/user/quickstart.md",
+		"docs/user/tutorials.md",
+		"docs/user/examples.md",
+		"docs/user/best-practices.md",
+		"docs/user/safety.md",
+		"docs/user/troubleshooting.md",
+		"docs/user/recovery.md",
+	} {
+		t.Run(doc, func(t *testing.T) {
+			scanPublicDocLines(t, doc, func(lineNo int, line string) {
+				lower := strings.ToLower(line)
+				if strings.Contains(lower, "main subfolder") || strings.Contains(line, "repoRoot/main") {
+					t.Fatalf("%s:%d exposes old main-subfolder repo layout model:\n%s", doc, lineNo, line)
+				}
+			})
+		})
+	}
+}
+
 func TestDocs_OperatorDocsDocumentExternalControlRoot(t *testing.T) {
 	runbookDoc := "docs/13_OPERATION_RUNBOOK.md"
 	runbook := readRepoFile(t, runbookDoc)

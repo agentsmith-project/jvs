@@ -85,6 +85,12 @@ func InitSeparatedControl(controlRoot, payloadRoot, workspaceName string) (*Repo
 		}
 		payloadCreated = true
 	}
+	if err := validateSeparatedPayloadInitSymlinkBoundary(roots); err != nil {
+		if payloadCreated {
+			_ = os.RemoveAll(roots.payloadPath)
+		}
+		return nil, err
+	}
 
 	controlCreated := false
 	if !controlExisted {
@@ -507,6 +513,44 @@ func validateSeparatedPayloadSymlinkBoundary(controlRoot, payloadRoot string) er
 	if err != nil {
 		return errclass.ErrPathBoundaryEscape.WithMessagef("resolve payload root boundary: %v", err)
 	}
+	return walkSeparatedPayloadSymlinkBoundary(controlReal, payloadReal, payloadRoot)
+}
+
+func validateSeparatedPayloadInitSymlinkBoundary(roots separatedInitRoots) error {
+	controlReal := roots.controlPhysical
+	controlInfo, err := os.Lstat(roots.controlPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return permissionOrWrappedErr("stat control root boundary", err)
+		}
+	} else {
+		if controlInfo.Mode()&os.ModeSymlink != 0 || !controlInfo.IsDir() {
+			return errclass.ErrPathBoundaryEscape.WithMessagef("control root is not a real directory: %s", roots.controlPath)
+		}
+		controlReal, err = existingPhysicalPath(roots.controlPath)
+		if err != nil {
+			return errclass.ErrPathBoundaryEscape.WithMessagef("resolve control root boundary: %v", err)
+		}
+	}
+
+	payloadInfo, err := os.Lstat(roots.payloadPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return errclass.ErrPayloadMissing.WithMessagef("payload root does not exist: %s", roots.payloadPath)
+		}
+		return permissionOrWrappedErr("stat payload root boundary", err)
+	}
+	if payloadInfo.Mode()&os.ModeSymlink != 0 || !payloadInfo.IsDir() {
+		return errclass.ErrPathBoundaryEscape.WithMessagef("payload root is not a real directory: %s", roots.payloadPath)
+	}
+	payloadReal, err := existingPhysicalPath(roots.payloadPath)
+	if err != nil {
+		return errclass.ErrPathBoundaryEscape.WithMessagef("resolve payload root boundary: %v", err)
+	}
+	return walkSeparatedPayloadSymlinkBoundary(controlReal, payloadReal, roots.payloadPath)
+}
+
+func walkSeparatedPayloadSymlinkBoundary(controlReal, payloadReal, payloadRoot string) error {
 	return filepath.WalkDir(payloadRoot, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return errclass.ErrPathBoundaryEscape.WithMessagef("walk payload boundary: %v", walkErr)

@@ -122,6 +122,32 @@ func TestSeparatedInitAdoptsExistingNonEmptyPayloadWithoutControlMarker(t *testi
 	require.Equal(t, payloadRoot, cfg.RealPath)
 }
 
+func TestSeparatedInitRejectsPayloadSymlinkEscapeWithoutControlMutation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior differs on Windows")
+	}
+
+	base := t.TempDir()
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	outsideRoot := filepath.Join(base, "outside")
+	require.NoError(t, os.MkdirAll(payloadRoot, 0755))
+	require.NoError(t, os.MkdirAll(outsideRoot, 0755))
+	outsideFile := filepath.Join(outsideRoot, "secret.txt")
+	require.NoError(t, os.WriteFile(outsideFile, []byte("outside\n"), 0644))
+	linkPath := filepath.Join(payloadRoot, "escape")
+	if err := os.Symlink(outsideFile, linkPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	_, err := repo.InitSeparatedControl(controlRoot, payloadRoot, "main")
+	require.ErrorIs(t, err, errclass.ErrPathBoundaryEscape)
+	require.NoFileExists(t, filepath.Join(controlRoot, ".jvs"))
+	require.NoFileExists(t, controlRoot)
+	require.FileExists(t, linkPath)
+	require.FileExists(t, outsideFile)
+}
+
 func TestSeparatedInitRejectsPayloadRootSymlinkWithoutMutation(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink behavior differs on Windows")

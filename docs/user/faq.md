@@ -18,8 +18,9 @@ name. The folder path is what your editor, scripts, and shell commands use.
 
 ## What Is A Save Point?
 
-A save point is a saved copy of the files in a workspace, with a message and
-creation facts. Create one with:
+A save point is a project history node created from a workspace's files, with a
+message and creation facts. A workspace creates save points, and then points at
+save points in the shared project history graph. Create one with:
 
 ```bash
 jvs save -m "baseline"
@@ -38,7 +39,8 @@ jvs restore <save> --path src/config.yaml
 ## Does Restore Change History?
 
 No. Restore copies files from a save point into the workspace. History
-is kept. A later save creates a new save point in that workspace.
+is kept. A later save creates a new save point in the project history graph, and
+the workspace points at that new save point.
 
 ## Which Commands Only Preview?
 

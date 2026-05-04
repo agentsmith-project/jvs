@@ -120,6 +120,33 @@ func TestSeparatedControlInitAdoptsExistingNonEmptyFolderAndCanSave(t *testing.T
 	assert.Equal(t, savePointID, statusData["newest_save_point"])
 }
 
+func TestSeparatedControlInitRejectsPayloadSymlinkEscapeBeforeControlData(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	outsideRoot := filepath.Join(base, "outside")
+	require.NoError(t, os.MkdirAll(payloadRoot, 0755))
+	require.NoError(t, os.MkdirAll(outsideRoot, 0755))
+	outsideFile := filepath.Join(outsideRoot, "secret.txt")
+	require.NoError(t, os.WriteFile(outsideFile, []byte("outside\n"), 0644))
+	if err := os.Symlink(outsideFile, filepath.Join(payloadRoot, "escape")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	stdout, stderr, exitCode := runContractSubprocess(t, base,
+		"init",
+		payloadRoot,
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"--json",
+	)
+
+	requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrPathBoundaryEscape.Code)
+	assert.NoFileExists(t, filepath.Join(controlRoot, ".jvs"))
+	assert.NoFileExists(t, controlRoot)
+	assert.FileExists(t, outsideFile)
+}
+
 func TestSeparatedControlInitHumanUsesFolderAndControlDataLanguage(t *testing.T) {
 	base := setupSeparatedControlCLICWD(t)
 	emptyBin := filepath.Join(base, "empty-bin")

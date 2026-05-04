@@ -161,6 +161,17 @@ func TestStorySeparatedCloneTargetErrorsFailClosed(t *testing.T) {
 		code  string
 	}{
 		{
+			name: "occupied control",
+			setup: func(root string) (string, string) {
+				controlRoot := filepath.Join(root, "occupied-control")
+				payloadRoot := filepath.Join(root, "occupied-payload")
+				createFiles(t, controlRoot, map[string]string{"user.txt": "keep\n"})
+				return controlRoot, payloadRoot
+			},
+			mode: "main",
+			code: "E_TARGET_ROOT_OCCUPIED",
+		},
+		{
 			name: "occupied payload",
 			setup: func(root string) (string, string) {
 				controlRoot := filepath.Join(root, "occupied-control")

@@ -2,11 +2,21 @@
 
 **Subtitle:** filesystem-aware transfer planning handoff.
 
-**Status:** active clean redesign, non-release-facing, not part of the v0 public contract. Clean future milestone handoff，非当前 GA blocker。
+**Status:** implemented design record for current transfer reporting plus later
+filesystem-aware copy refinements; active clean redesign, non-release-facing,
+not part of the v0 public contract. Remaining gated filesystem work is later
+work, 非当前 GA blocker。
 
 **中文名:** 智能复制边界。
 
-本文面向产品、工程和 QA，说明下一阶段如何让 JVS 在每次真正需要 materialize/copy 文件时，按本次 source path + materialization destination 的真实边界选择复制方式。它不是当前 v0 GA 的阻塞项，也不是公开用户手册。实现后，JVS 的长期心智应从“按 repo root 判断 engine”转为“按这一次文件从哪里写到哪里判断能不能快”。旧的 repo-root-only 判断最多作为过渡期 default/requested hint，不应保留为长期产品口径。
+本文面向产品、工程和 QA，说明 JVS transfer reporting 的设计原因，以及后续
+如何在每次真正需要 materialize/copy 文件时，按本次 source path +
+materialization destination 的真实边界选择复制方式。它不是公开用户手册。
+已进入 release-facing docs 的字段和文案以 `docs/02_CLI_SPEC.md` 和
+`docs/user/` 为准；本文用于解释当前模型和 later copy-planning refinements。
+长期心智应从“按 repo root 判断 engine”转为“按这一次文件从哪里写到哪里判断
+能不能快”。旧的 repo-root-only 判断最多作为过渡期 default/requested hint，
+不应保留为长期产品口径。
 
 ## 文档验收标准
 
@@ -15,7 +25,8 @@
 - 产品能直接拿它解释用户心智：JVS 会检查本次两个位置，再选择 fast copy 或 normal copy；速度可能因位置变化，安全性不变。
 - 工程能直接拿它拆阶段：先稳定 intent/result contract，再接 save + workspace new，再接 restore preview/run + view，最后对齐 recovery copy points 和 capacity gate。
 - QA 能直接拿它抽测试矩阵：覆盖优化不可用、pair 不支持、fake fast-path 成功、fallback 成功/失败、跨设备容量、preview/run 变化、命令级集成、真实 gated profile。
-- 文档明确这是 clean future milestone，不把当前 GA、远程同步、公开手动 engine 选择、特定文件系统认证矩阵扩进范围。
+- 文档明确哪些 transfer reporting 已进入当前合同，哪些 gated filesystem
+  optimization 仍是 later work；不把远程同步、公开手动 engine 选择、特定文件系统认证矩阵扩进范围。
 - 文档不把 btrfs、zfs、APFS、JuiceFS 等品牌名变成普通用户承诺；承诺落在能力探测、运行时 fallback 和清楚输出。
 - 文档不把 recovery backup 的 rename/ledger 安全模型改写成普通 copy transfer。
 

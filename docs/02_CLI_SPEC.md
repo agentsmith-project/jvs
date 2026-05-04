@@ -14,9 +14,9 @@ procedures.
 | --- | --- |
 | `folder` | The real filesystem directory where the user works. |
 | `workspace` | The JVS name for a managed real folder. `main` is the default. |
-| `save point` | An immutable saved copy of the managed files in one workspace. |
+| `save point` | An immutable project history node created from a workspace's managed files. |
 | `save` | Create a new save point from the active workspace. |
-| `history` | List save points and find candidates by path or message. |
+| `history` | List project save points through the active workspace's pointer and provenance. |
 | `view` | Open a read-only view of a save point or a path inside it. |
 | `restore` | Copy managed files from a save point into a workspace. |
 | `unsaved changes` | Managed files differ from the known save point/source state, or JVS cannot prove they match. |
@@ -82,12 +82,16 @@ They must not appear in public help, examples, or release-facing workflows.
 Most users use `jvs init [folder]`, and JVS stores control data in that
 workspace folder's `.jvs/`. Advanced operators and platform integrations can
 place the same workspace's control data in an explicit external control root.
-This is a control data location choice, not a second product model.
+This is an operator/platform profile and a control data location choice, not a
+second product model.
 
 - Create an external-control-root workspace with
   `jvs init [folder] --control-root C --workspace main`.
 - After init, target it with
   `jvs --control-root C --workspace main <command>`.
+- A bare workspace folder cannot safely auto-discover an external control root;
+  operator scripts must pass `--control-root C --workspace main` for status,
+  save, history, view, restore, recovery, cleanup, doctor, and clone.
 - For external control roots, human `status` labels the external control root as
   `Control data: C`, while `Folder` remains the workspace folder.
 - JSON `status` uses `data.control_root` and omits `data.repo` for external
@@ -101,6 +105,8 @@ This is a control data location choice, not a second product model.
 - External control root repo clone uses a main-only target folder plus target
   control root:
   `jvs --control-root C --workspace main repo clone <target-folder> --target-control-root TC --save-points main`.
+- External clone target workspace folder and target control root may be missing
+  or empty directories. Non-empty/adopt/merge/overwrite target roots fail closed.
 - For ordinary clone omitted `--save-points` means `all`; for external control
   root omitted `--save-points` means `main`. Operators should pass
   `--save-points main` explicitly for external clone scripts.
@@ -179,7 +185,12 @@ inputs.
 
 Rules:
 
-- `<target-folder>` must not already exist.
+- Ordinary `.jvs/` clone requires `<target-folder>` to be missing; it must not
+  already exist.
+- External-control clone uses the source selector
+  `--control-root C --workspace main` plus `--target-control-root TC`. Its
+  target workspace folder and target control root may be missing or empty
+  directories; non-empty target roots fail closed.
 - `<target-folder>` must be outside every source workspace.
 - The target gets a new repository identity.
 - The target creates only workspace `main`.
@@ -200,13 +211,11 @@ Human output must show:
 - copy method for save point storage and main workspace
 - strict doctor result for a completed clone
 
-Required JSON `data` fields include:
+Shared JSON `data` fields include:
 
 - `operation`
 - `source_repo_root`
-- `target_repo_root`
 - `source_repo_id`
-- `target_repo_id`
 - `save_points_mode`
 - `save_points_copied_count`
 - `save_points_copied`
@@ -216,6 +225,23 @@ Required JSON `data` fields include:
 - `transfers`
 - `clone_manifest` when `--save-points all` completes
 - `dry_run` for dry runs
+
+Ordinary `.jvs/` completed clone JSON includes:
+
+- `target_repo_root`
+- `target_repo_id`
+
+External-control completed clone JSON includes:
+
+- `target_folder`
+- `target_control_root`
+- `target_repo_id`
+
+External-control completed clone JSON does not require `target_repo_root`.
+
+Dry-run JSON is a planning result. Because dry-run does not create the target
+repo, it must not require an actual `target_repo_id`; completed clone JSON must
+include `target_repo_id`.
 
 ## Repo Move
 
@@ -421,8 +447,9 @@ control root status prints `Control data` instead.
 
 ### `jvs save [-m message] [--json]`
 
-Create a save point for the active workspace. A message is required, either as
-`-m/--message` or as the positional message accepted by the implementation.
+Create a save point from the active workspace and add it to the project history
+graph. A message is required, either as `-m/--message` or as the positional
+message accepted by the implementation.
 
 Rules:
 
@@ -450,11 +477,11 @@ Required JSON `data` fields:
 
 ### `jvs history [--path <path>] [--limit <n>|-n <n>] [--grep <text>] [--json]`
 
-Show save points for the active workspace. `--path` searches for save points
-that contain a workspace-relative path and returns candidates without changing
-files. `--grep` filters by message substring. `--limit` and `-n` limit displayed
-save points; `--limit 0` means no limit. Messages and tags are not restore/view
-targets.
+Show project save points through the active workspace's pointer and provenance.
+`--path` searches for save points that contain a workspace-relative path and
+returns candidates without changing files. `--grep` filters by message
+substring. `--limit` and `-n` limit displayed save points; `--limit 0` means no
+limit. Messages and tags are not restore/view targets.
 
 ### `jvs history to <save> [--limit <n>|-n <n>] [--json]`
 
@@ -463,7 +490,8 @@ Show the history path ending at one concrete save point.
 ### `jvs history from [<save>] [--limit <n>|-n <n>] [--json]`
 
 Show history starting from a save point. When `<save>` is omitted, start from
-the active workspace's current pointer.
+the active workspace's source/started-from save point; if there is no explicit
+source, start from the earliest ancestor of the current workspace pointer.
 
 Required JSON `data` fields:
 

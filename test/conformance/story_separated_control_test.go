@@ -30,7 +30,8 @@ func TestStorySeparatedControlInitCreatesMissingRootsAndReportsAuthoritativeJSON
 	requireAbsolutePathExists(t, controlRoot)
 	requireAbsolutePathExists(t, payloadRoot)
 	requireAbsolutePathAbsent(t, filepath.Join(payloadRoot, ".jvs"))
-	requireSeparatedControlAuthoritativeJSON(t, stdout, stderr, controlRoot, payloadRoot, "main")
+	initData := requireSeparatedControlAuthoritativeJSON(t, stdout, stderr, controlRoot, payloadRoot, "main")
+	requireSeparatedControlSetupFields(t, initData, payloadRoot)
 }
 
 func TestStorySeparatedControlExplicitStatusIgnoresCleanCWD(t *testing.T) {
@@ -309,6 +310,40 @@ func TestStorySeparatedControlOccupiedControlRootFailsWithoutMutation(t *testing
 	requireDirectoryEntries(t, controlRoot, []string{"sentinel.txt"})
 }
 
+func TestStorySeparatedControlInitRejectsWorkspaceSymlinkEscapeWithoutControlMutation(t *testing.T) {
+	base := t.TempDir()
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	outsideRoot := filepath.Join(base, "outside")
+	if err := os.MkdirAll(payloadRoot, 0755); err != nil {
+		t.Fatalf("create payload root: %v", err)
+	}
+	if err := os.MkdirAll(outsideRoot, 0755); err != nil {
+		t.Fatalf("create outside root: %v", err)
+	}
+	outsideFile := filepath.Join(outsideRoot, "secret.txt")
+	if err := os.WriteFile(outsideFile, []byte("outside\n"), 0644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	if err := os.Symlink(outsideFile, filepath.Join(payloadRoot, "escape")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	stdout, stderr, code := runJVS(t, base, "init",
+		payloadRoot,
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"--json",
+	)
+
+	requireSeparatedControlJSONError(t, stdout, stderr, code, "E_PATH_BOUNDARY_ESCAPE")
+	requireAbsolutePathAbsent(t, filepath.Join(controlRoot, ".jvs"))
+	requireAbsolutePathAbsent(t, controlRoot)
+	if got := readAbsoluteFile(t, outsideFile); got != "outside\n" {
+		t.Fatalf("outside symlink target mutated: %q", got)
+	}
+}
+
 func TestStorySeparatedControlInitAdoptsExistingNonEmptyWorkspaceFolder(t *testing.T) {
 	base := t.TempDir()
 	controlRoot := filepath.Join(base, "control")
@@ -345,6 +380,7 @@ func TestStorySeparatedControlInitAdoptsExistingNonEmptyWorkspaceFolder(t *testi
 	if initData["unsaved_changes"] != true || initData["newest_save_point"] != nil {
 		t.Fatalf("adopted init should report unsaved, not-yet-saved files: %#v", initData)
 	}
+	requireSeparatedControlSetupFields(t, initData, payloadRoot)
 	if got := readAbsoluteFile(t, userFile); got != "adopt me\n" {
 		t.Fatalf("adopted workspace file mutated: %q", got)
 	}
@@ -486,6 +522,39 @@ func requireSeparatedControlRegistryEntry(t *testing.T, controlRoot, workspaceFo
 	}
 	if config["real_path"] != workspaceFolder {
 		t.Fatalf("registry real_path = %#v, want %q in %#v", config["real_path"], workspaceFolder, config)
+	}
+}
+
+func requireSeparatedControlSetupFields(t *testing.T, data map[string]any, workspaceFolder string) {
+	t.Helper()
+
+	capabilities, ok := data["capabilities"].(map[string]any)
+	if !ok {
+		t.Fatalf("external init JSON missing capabilities object: %#v", data)
+	}
+	if capabilities["target_path"] != workspaceFolder {
+		t.Fatalf("capabilities.target_path = %#v, want %q in %#v", capabilities["target_path"], workspaceFolder, capabilities)
+	}
+	if capabilities["write_probe"] != true {
+		t.Fatalf("capabilities.write_probe = %#v, want true in %#v", capabilities["write_probe"], capabilities)
+	}
+	effectiveEngine, ok := data["effective_engine"].(string)
+	if !ok || effectiveEngine == "" {
+		t.Fatalf("external init JSON missing effective_engine: %#v", data)
+	}
+	if capabilities["recommended_engine"] != effectiveEngine {
+		t.Fatalf("effective_engine = %#v, want capabilities.recommended_engine %#v in %#v", effectiveEngine, capabilities["recommended_engine"], data)
+	}
+	metadata, ok := data["metadata_preservation"].(map[string]any)
+	if !ok || len(metadata) == 0 {
+		t.Fatalf("external init JSON missing metadata_preservation object: %#v", data["metadata_preservation"])
+	}
+	performanceClass, ok := data["performance_class"].(string)
+	if !ok || performanceClass == "" {
+		t.Fatalf("external init JSON missing performance_class: %#v", data)
+	}
+	if _, ok := data["warnings"].([]any); !ok {
+		t.Fatalf("external init JSON warnings should be an array: %#v", data["warnings"])
 	}
 }
 

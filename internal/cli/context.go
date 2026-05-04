@@ -503,7 +503,7 @@ func resolveNamedWorkspace(repoRoot, name string) (string, error) {
 func notInsideWorkspaceError() error {
 	return errclass.ErrNotWorkspace.
 		WithMessage("not inside a workspace").
-		WithHint("Run from a workspace directory such as main/, or pass --workspace <name>.")
+		WithHint("Run from a workspace folder, or pass --workspace <name>.")
 }
 
 func missingWorkspaceError(name string) error {

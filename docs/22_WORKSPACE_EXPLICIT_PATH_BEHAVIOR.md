@@ -1,10 +1,14 @@
 # Workspace Path And History Pointer Semantics
 
-**状态:** 产品行为改进交接稿 / development handoff candidate。
+**状态:** 已实现设计记录 / implemented design record。
 
-**Release classification:** active clean redesign, non-release-facing, not part of the v0 public contract.
+**Release classification:** implemented design record for explicit workspace
+folders and history pointer semantics; active clean redesign,
+non-release-facing, not part of the v0 public contract.
 
-本文定义产品行为和 UX 规则，供开发团队实现前对齐；它不是代码实现方案，也暂不作为 v0 公共契约。
+本文记录已进入 release-facing CLI/user docs 的 explicit workspace folder 和
+history pointer 设计。它用于解释设计原因，不是用户合同；若与
+`docs/02_CLI_SPEC.md` 或 `docs/user/` 冲突，以 release-facing 文档为准。
 
 ## 背景
 
@@ -56,7 +60,7 @@ jvs workspace new <folder> --from <save> --name <name>
 - 如果 basename 不合法，或者推导出的 name 已存在，应报错。
 - 如果 `--name <name>` 不合法或已存在，也应报错。
 - 不自动改名，不自动追加后缀。
-- 当前产品未 GA，倾向干净重构，不保留旧 `workspace new <name>` 的隐式路径行为。
+- 当前 GA 口径采用干净模型，不保留旧 `workspace new <name>` 的隐式路径行为。
 
 ## 术语
 
@@ -159,11 +163,11 @@ jvs workspace list --status
 同一个 repo 下有多个 workspace 后，用户会自然想看“这些 workspace 在历史树里的位置”。这里的产品心智应保持简单：
 
 - repo history tree 的主体是 save point graph。
-- 不引入“每个 save point 属于哪个 workspace”的心智负担。
+- save point 由 workspace 创建，但属于 repo/project history graph。
 - workspace 标签只是渲染时叠加的当前指针标签。
 - workspace 标签不是 save point 自身属性。
 
-也就是说，save point 仍然是 repo 历史里的节点；workspace 只是指向某个节点的当前位置。
+也就是说，save point 仍然是 repo/project 历史里的节点；workspace 只是指向某个节点的当前位置。
 
 workspace 当前指针表示当前 workspace 的内容来源 save point。
 
@@ -284,9 +288,9 @@ jvs history from <save>
 jvs history from
 ```
 
-用户心智：我想看当前 workspace 从它的创始/source save point 往后长出的后续树。
+用户心智：我想看当前 workspace 从它的 source/started-from save point 往后长出的后续树。
 
-`history from` 省略 `<save>` 时，默认起点是当前 workspace 的 source/origin save point。如果当前 workspace 没有 `started_from`，则从当前指针沿 parent 往前追溯到最早 ancestor，再从那里展示后续。
+`history from` 省略 `<save>` 时，默认起点是当前 workspace 的 source/started-from save point。如果当前 workspace 没有 `started_from`，则从当前指针沿 parent 往前追溯到最早 ancestor，再从那里展示后续。
 
 当前 workspace 还没有自己的 save point 时，`jvs history` 不应只显示 `No save points yet`。它应显示当前指针所指向的 source save point 及其来路，让用户知道自己站在哪里。
 

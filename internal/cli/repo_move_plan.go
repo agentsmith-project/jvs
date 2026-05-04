@@ -103,6 +103,9 @@ func createRepoMovePlan(repoRoot, targetFolder, operation, command string) (*rep
 	if err != nil {
 		return nil, err
 	}
+	if err := validateRepoMoveTargetOutsideExternalWorkspaces(targetRoot, external); err != nil {
+		return nil, err
+	}
 	planID := uuidutil.NewV4()
 	runCommand := repoMoveExplicitRunCommand(command, sourceRoot, planID)
 	plan := &repoMovePlan{
@@ -183,7 +186,10 @@ func prepareFreshRepoMoveRun(plan *repoMovePlan) error {
 	if err := validateRepoMoveMainAtSource(plan.SourceRepoRoot); err != nil {
 		return err
 	}
-	return validateRepoMoveExternalWorkspaces(plan, plan.SourceRepoRoot)
+	if err := validateRepoMoveExternalWorkspaces(plan, plan.SourceRepoRoot); err != nil {
+		return err
+	}
+	return validateRepoMoveTargetOutsideExternalWorkspaces(plan.TargetRepoRoot, plan.ExternalWorkspaces)
 }
 
 func pendingRepoMovePlanRecord(repoRoot string, plan *repoMovePlan) (lifecycle.OperationRecord, bool, error) {
@@ -382,6 +388,56 @@ func validateRepoMoveExternalWorkspaces(plan *repoMovePlan, expectedRepoRoot str
 		}
 	}
 	return nil
+}
+
+func validateRepoMoveTargetOutsideExternalWorkspaces(targetRoot string, external []repoMoveExternalWorkspace) error {
+	if len(external) == 0 {
+		return nil
+	}
+	targetAbs, err := filepath.Abs(targetRoot)
+	if err != nil {
+		return fmt.Errorf("resolve destination repo folder: %w", err)
+	}
+	targetAbs = filepath.Clean(targetAbs)
+	targetPhysical, err := repoMoveTargetPhysicalPath(targetAbs)
+	if err != nil {
+		return err
+	}
+
+	for _, item := range external {
+		workspaceAbs, err := filepath.Abs(item.Folder)
+		if err != nil {
+			return fmt.Errorf("resolve external workspace %q folder: %w", item.Workspace, err)
+		}
+		workspaceAbs = filepath.Clean(workspaceAbs)
+		workspacePhysical, err := filepath.EvalSymlinks(workspaceAbs)
+		if err != nil {
+			return fmt.Errorf("resolve external workspace %q folder physically: %w", item.Workspace, err)
+		}
+		workspacePhysical = filepath.Clean(workspacePhysical)
+
+		insideLexical, err := repoMovePathContains(workspaceAbs, targetAbs)
+		if err != nil {
+			return err
+		}
+		insidePhysical, err := repoMovePathContains(workspacePhysical, targetPhysical)
+		if err != nil {
+			return err
+		}
+		if insideLexical || insidePhysical {
+			return fmt.Errorf("new repo folder must not be inside registered external workspace %q: %s", item.Workspace, item.Folder)
+		}
+	}
+	return nil
+}
+
+func repoMoveTargetPhysicalPath(targetAbs string) (string, error) {
+	parent := filepath.Dir(targetAbs)
+	parentPhysical, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return "", fmt.Errorf("resolve destination parent physically: %w", err)
+	}
+	return filepath.Clean(filepath.Join(parentPhysical, filepath.Base(targetAbs))), nil
 }
 
 func validateRepoMoveExternalWorkspace(plan *repoMovePlan, external repoMoveExternalWorkspace, expectedRepoRoot string) error {
@@ -732,11 +788,11 @@ func deleteRepoMovePlan(repoRoot, planID string) {
 }
 
 func repoMoveExplicitRunCommand(command, sourceRoot, planID string) string {
-	return "jvs --repo " + sourceRoot + " repo " + command + " --run " + planID
+	return "jvs --repo " + shellQuoteArg(sourceRoot) + " repo " + command + " --run " + planID
 }
 
 func repoMoveSafeRunCommand(sourceRoot, runCommand string) string {
-	return "cd " + filepath.Dir(sourceRoot) + " && " + runCommand
+	return "cd " + shellQuoteArg(filepath.Dir(sourceRoot)) + " && " + runCommand
 }
 
 func validateRepoRenameFolderName(name string) error {
