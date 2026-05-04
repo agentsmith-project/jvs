@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"encoding"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -118,48 +121,134 @@ func publicJSONData(data any) (any, error) {
 	if data == nil {
 		return nil, nil
 	}
-	raw, err := json.Marshal(data)
-	if err != nil {
-		return nil, fmt.Errorf("encode public JSON data: %w", err)
-	}
-	var decoded any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return nil, fmt.Errorf("decode public JSON data: %w", err)
-	}
-	return publicJSONValue(decoded)
+	state := &publicJSONState{seen: map[publicJSONVisit]bool{}}
+	return publicJSONValue(state, reflect.ValueOf(data), "")
 }
 
-func publicJSONValue(value any) (any, error) {
-	switch typed := value.(type) {
-	case map[string]any:
-		return publicJSONMap(typed)
-	case []any:
-		out := make([]any, 0, len(typed))
-		for _, item := range typed {
-			publicItem, err := publicJSONValue(item)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, publicItem)
+type publicJSONObjectOverlay struct {
+	data          any
+	fields        map[string]any
+	defaultFields map[string]any
+	objectError   string
+}
+
+func publicJSONDataWithObjectFields(data any, fields, defaultFields map[string]any, objectError string) any {
+	return publicJSONObjectOverlay{
+		data:          data,
+		fields:        fields,
+		defaultFields: defaultFields,
+		objectError:   objectError,
+	}
+}
+
+func publicJSONValue(state *publicJSONState, value reflect.Value, jsonName string) (any, error) {
+	if jsonName == "transfers" {
+		return publicJSONTransfers(value)
+	}
+
+	value = publicJSONUnwrapInterface(value)
+	if !value.IsValid() {
+		return nil, nil
+	}
+	if overlay, ok := publicJSONObjectOverlayFromValue(value); ok {
+		return publicJSONOverlayObject(state, overlay)
+	}
+	if publicJSONUsesCustomMarshaler(value) {
+		return value.Interface(), nil
+	}
+
+	switch value.Kind() {
+	case reflect.Pointer:
+		if value.IsNil() {
+			return nil, nil
 		}
-		return out, nil
+		leave, err := state.enter(value)
+		if err != nil {
+			return nil, err
+		}
+		defer leave()
+		return publicJSONValue(state, value.Elem(), jsonName)
+	case reflect.Struct:
+		return publicJSONStruct(state, value)
+	case reflect.Map:
+		leave, err := state.enter(value)
+		if err != nil {
+			return nil, err
+		}
+		defer leave()
+		return publicJSONMap(state, value)
+	case reflect.Slice:
+		if value.IsNil() {
+			return nil, nil
+		}
+		if value.Type().Elem().Kind() == reflect.Uint8 {
+			return value.Interface(), nil
+		}
+		leave, err := state.enter(value)
+		if err != nil {
+			return nil, err
+		}
+		defer leave()
+		return publicJSONSlice(state, value)
+	case reflect.Array:
+		return publicJSONSlice(state, value)
 	default:
-		return value, nil
+		return value.Interface(), nil
 	}
 }
 
-func publicJSONMap(in map[string]any) (map[string]any, error) {
-	out := make(map[string]any, len(in))
-	for key, value := range in {
-		if key == "transfers" {
-			transfers, err := publicJSONTransfers(value)
-			if err != nil {
-				return nil, err
+func publicJSONObjectOverlayFromValue(value reflect.Value) (publicJSONObjectOverlay, bool) {
+	if !value.IsValid() || !value.CanInterface() {
+		return publicJSONObjectOverlay{}, false
+	}
+	switch overlay := value.Interface().(type) {
+	case publicJSONObjectOverlay:
+		return overlay, true
+	case *publicJSONObjectOverlay:
+		if overlay == nil {
+			return publicJSONObjectOverlay{}, false
+		}
+		return *overlay, true
+	default:
+		return publicJSONObjectOverlay{}, false
+	}
+}
+
+func publicJSONOverlayObject(state *publicJSONState, overlay publicJSONObjectOverlay) (map[string]any, error) {
+	baseValue := reflect.ValueOf(overlay.data)
+	publicBase, err := publicJSONValue(state, baseValue, "")
+	if err != nil {
+		return nil, err
+	}
+
+	base, ok := publicBase.(map[string]any)
+	if !ok {
+		if publicBase == nil && publicJSONOverlayNilStringMap(baseValue) {
+			base = map[string]any{}
+		} else {
+			if overlay.objectError != "" {
+				return nil, errors.New(overlay.objectError)
 			}
-			out[key] = transfers
+			return nil, errors.New("public JSON data with object fields must be an object")
+		}
+	}
+
+	out := make(map[string]any, len(base)+len(overlay.defaultFields)+len(overlay.fields))
+	for key, value := range base {
+		out[key] = value
+	}
+	for key, value := range overlay.defaultFields {
+		if _, exists := out[key]; exists {
 			continue
 		}
-		publicValue, err := publicJSONValue(value)
+		publicValue, err := publicJSONValue(state, reflect.ValueOf(value), key)
+		if err != nil {
+			return nil, err
+		}
+		out[key] = publicValue
+	}
+	for key, value := range overlay.fields {
+		publicValue, err := publicJSONValue(state, reflect.ValueOf(value), key)
 		if err != nil {
 			return nil, err
 		}
@@ -168,25 +257,218 @@ func publicJSONMap(in map[string]any) (map[string]any, error) {
 	return out, nil
 }
 
-func publicJSONTransfers(value any) ([]any, error) {
-	items, ok := value.([]any)
+func publicJSONOverlayNilStringMap(value reflect.Value) bool {
+	value = publicJSONUnwrapInterface(value)
+	return value.IsValid() && value.Kind() == reflect.Map && value.IsNil() && value.Type().Key().Kind() == reflect.String
+}
+
+type publicJSONState struct {
+	seen map[publicJSONVisit]bool
+}
+
+type publicJSONVisit struct {
+	typ reflect.Type
+	ptr uintptr
+}
+
+func (s *publicJSONState) enter(value reflect.Value) (func(), error) {
+	key, ok := publicJSONVisitKey(value)
 	if !ok {
+		return func() {}, nil
+	}
+	if s.seen[key] {
+		return nil, fmt.Errorf("encode public JSON data: cyclic value")
+	}
+	s.seen[key] = true
+	return func() {
+		delete(s.seen, key)
+	}, nil
+}
+
+func publicJSONVisitKey(value reflect.Value) (publicJSONVisit, bool) {
+	switch value.Kind() {
+	case reflect.Map, reflect.Pointer, reflect.Slice:
+		if value.IsNil() {
+			return publicJSONVisit{}, false
+		}
+		ptr := value.Pointer()
+		if ptr == 0 {
+			return publicJSONVisit{}, false
+		}
+		return publicJSONVisit{typ: value.Type(), ptr: ptr}, true
+	default:
+		return publicJSONVisit{}, false
+	}
+}
+
+func publicJSONUnwrapInterface(value reflect.Value) reflect.Value {
+	for value.IsValid() && value.Kind() == reflect.Interface {
+		if value.IsNil() {
+			return reflect.Value{}
+		}
+		value = value.Elem()
+	}
+	return value
+}
+
+func publicJSONUsesCustomMarshaler(value reflect.Value) bool {
+	if !value.IsValid() {
+		return false
+	}
+	if value.CanInterface() {
+		if _, ok := value.Interface().(json.Marshaler); ok {
+			return true
+		}
+		if _, ok := value.Interface().(encoding.TextMarshaler); ok {
+			return true
+		}
+	}
+	if value.CanAddr() {
+		address := value.Addr()
+		if address.CanInterface() {
+			if _, ok := address.Interface().(json.Marshaler); ok {
+				return true
+			}
+			if _, ok := address.Interface().(encoding.TextMarshaler); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func publicJSONStruct(state *publicJSONState, value reflect.Value) (map[string]any, error) {
+	out := map[string]any{}
+	valueType := value.Type()
+	for i := 0; i < valueType.NumField(); i++ {
+		field := valueType.Field(i)
+		fieldName, tagOptions := publicJSONParseTag(field.Tag.Get("json"))
+		if fieldName == "-" {
+			continue
+		}
+		flattenAnonymous := publicJSONFlattensAnonymousField(field, fieldName)
+		if field.PkgPath != "" && !flattenAnonymous {
+			continue
+		}
+
+		fieldValue := value.Field(i)
+		if flattenAnonymous {
+			publicValue, err := publicJSONValue(state, fieldValue, "")
+			if err != nil {
+				return nil, err
+			}
+			if publicMap, ok := publicValue.(map[string]any); ok {
+				for key, value := range publicMap {
+					out[key] = value
+				}
+			}
+			continue
+		}
+
+		if fieldName == "" {
+			fieldName = field.Name
+		}
+		if tagOptions.Contains("omitempty") && publicJSONIsEmptyValue(fieldValue) {
+			continue
+		}
+		publicValue, err := publicJSONValue(state, fieldValue, fieldName)
+		if err != nil {
+			return nil, err
+		}
+		out[fieldName] = publicValue
+	}
+	return out, nil
+}
+
+func publicJSONMap(state *publicJSONState, value reflect.Value) (any, error) {
+	if value.IsNil() {
+		return nil, nil
+	}
+	if value.Type().Key().Kind() != reflect.String {
+		return value.Interface(), nil
+	}
+	out := make(map[string]any, value.Len())
+	iter := value.MapRange()
+	for iter.Next() {
+		key := iter.Key().String()
+		publicValue, err := publicJSONValue(state, iter.Value(), key)
+		if err != nil {
+			return nil, err
+		}
+		out[key] = publicValue
+	}
+	return out, nil
+}
+
+func publicJSONSlice(state *publicJSONState, value reflect.Value) ([]any, error) {
+	out := make([]any, 0, value.Len())
+	for i := 0; i < value.Len(); i++ {
+		publicValue, err := publicJSONValue(state, value.Index(i), "")
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, publicValue)
+	}
+	return out, nil
+}
+
+func publicJSONTransfers(value reflect.Value) ([]any, error) {
+	value = publicJSONUnwrapInterface(value)
+	if !value.IsValid() {
 		return nil, fmt.Errorf("public JSON transfers must be an array")
 	}
-	out := make([]any, 0, len(items))
-	for _, item := range items {
-		recordMap, ok := item.(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("public JSON transfer must be an object")
+	for value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return nil, fmt.Errorf("public JSON transfers must be an array")
 		}
-		publicRecord := transfer.PublicRecordFromRecord(transferRecordFromPublicJSONMap(recordMap))
-		publicMap, err := publicTransferRecordMap(publicRecord)
+		value = publicJSONUnwrapInterface(value.Elem())
+	}
+	if value.Kind() != reflect.Slice && value.Kind() != reflect.Array {
+		return nil, fmt.Errorf("public JSON transfers must be an array")
+	}
+	if value.Kind() == reflect.Slice && value.IsNil() {
+		return nil, fmt.Errorf("public JSON transfers must be an array")
+	}
+
+	out := make([]any, 0, value.Len())
+	for i := 0; i < value.Len(); i++ {
+		publicMap, err := publicJSONTransferRecordMap(value.Index(i))
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, publicMap)
 	}
 	return out, nil
+}
+
+func publicJSONTransferRecordMap(value reflect.Value) (map[string]any, error) {
+	value = publicJSONUnwrapInterface(value)
+	for value.IsValid() && value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return nil, fmt.Errorf("public JSON transfer must be an object")
+		}
+		value = publicJSONUnwrapInterface(value.Elem())
+	}
+	if !value.IsValid() || !value.CanInterface() {
+		return nil, fmt.Errorf("public JSON transfer must be an object")
+	}
+
+	switch record := value.Interface().(type) {
+	case transfer.Record:
+		return publicTransferRecordMap(transfer.PublicRecordFromRecord(record))
+	case transfer.PublicRecord:
+		return publicTransferRecordMap(record)
+	}
+
+	raw, err := json.Marshal(value.Interface())
+	if err != nil {
+		return nil, fmt.Errorf("encode public transfer record: %w", err)
+	}
+	var record transfer.Record
+	if err := json.Unmarshal(raw, &record); err != nil {
+		return nil, fmt.Errorf("decode public transfer record: %w", err)
+	}
+	return publicTransferRecordMap(transfer.PublicRecordFromRecord(record))
 }
 
 func publicTransferRecordMap(record transfer.PublicRecord) (map[string]any, error) {
@@ -201,53 +483,78 @@ func publicTransferRecordMap(record transfer.PublicRecord) (map[string]any, erro
 	return out, nil
 }
 
-func transferRecordFromPublicJSONMap(in map[string]any) transfer.Record {
-	return transfer.Record{
-		TransferID:                 publicJSONString(in, "transfer_id"),
-		Operation:                  publicJSONString(in, "operation"),
-		Phase:                      publicJSONString(in, "phase"),
-		Primary:                    publicJSONBool(in, "primary"),
-		ResultKind:                 transfer.ResultKind(publicJSONString(in, "result_kind")),
-		PermissionScope:            transfer.PermissionScope(publicJSONString(in, "permission_scope")),
-		SourceRole:                 publicJSONString(in, "source_role"),
-		SourcePath:                 publicJSONString(in, "source_path"),
-		DestinationRole:            publicJSONString(in, "destination_role"),
-		MaterializationDestination: publicJSONString(in, "materialization_destination"),
-		CapabilityProbePath:        publicJSONString(in, "capability_probe_path"),
-		PublishedDestination:       publicJSONString(in, "published_destination"),
-		CheckedForThisOperation:    publicJSONBool(in, "checked_for_this_operation"),
-		RequestedEngine:            model.EngineType(publicJSONString(in, "requested_engine")),
-		EffectiveEngine:            model.EngineType(publicJSONString(in, "effective_engine")),
-		OptimizedTransfer:          publicJSONBool(in, "optimized_transfer"),
-		PerformanceClass:           transfer.PerformanceClass(publicJSONString(in, "performance_class")),
-		DegradedReasons:            publicJSONStringSlice(in, "degraded_reasons"),
-		Warnings:                   publicJSONStringSlice(in, "warnings"),
+type publicJSONTagOptions string
+
+func publicJSONParseTag(tag string) (string, publicJSONTagOptions) {
+	if comma := strings.Index(tag, ","); comma >= 0 {
+		return tag[:comma], publicJSONTagOptions(tag[comma+1:])
 	}
+	return tag, ""
 }
 
-func publicJSONString(in map[string]any, key string) string {
-	value, _ := in[key].(string)
-	return value
-}
-
-func publicJSONBool(in map[string]any, key string) bool {
-	value, _ := in[key].(bool)
-	return value
-}
-
-func publicJSONStringSlice(in map[string]any, key string) []string {
-	raw, ok := in[key].([]any)
-	if !ok {
-		return nil
+func (o publicJSONTagOptions) Contains(option string) bool {
+	if len(o) == 0 {
+		return false
 	}
-	out := make([]string, 0, len(raw))
-	for _, item := range raw {
-		if value, ok := item.(string); ok {
-			out = append(out, value)
+	for len(o) > 0 {
+		var next string
+		if comma := strings.Index(string(o), ","); comma >= 0 {
+			next = string(o[:comma])
+			o = o[comma+1:]
+		} else {
+			next = string(o)
+			o = ""
+		}
+		if next == option {
+			return true
 		}
 	}
-	return out
+	return false
 }
+
+func publicJSONFlattensAnonymousField(field reflect.StructField, fieldName string) bool {
+	if !field.Anonymous || fieldName != "" {
+		return false
+	}
+	fieldType := field.Type
+	if fieldType.Kind() == reflect.Pointer {
+		fieldType = fieldType.Elem()
+	}
+	if fieldType.Kind() != reflect.Struct {
+		return false
+	}
+	if fieldType.Implements(publicJSONMarshalerType) || reflect.PointerTo(fieldType).Implements(publicJSONMarshalerType) {
+		return false
+	}
+	if fieldType.Implements(publicTextMarshalerType) || reflect.PointerTo(fieldType).Implements(publicTextMarshalerType) {
+		return false
+	}
+	return true
+}
+
+func publicJSONIsEmptyValue(value reflect.Value) bool {
+	switch value.Kind() {
+	case reflect.Array, reflect.Map, reflect.Slice, reflect.String:
+		return value.Len() == 0
+	case reflect.Bool:
+		return !value.Bool()
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return value.Int() == 0
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return value.Uint() == 0
+	case reflect.Float32, reflect.Float64:
+		return value.Float() == 0
+	case reflect.Interface, reflect.Pointer:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
+var (
+	publicJSONMarshalerType = reflect.TypeOf((*json.Marshaler)(nil)).Elem()
+	publicTextMarshalerType = reflect.TypeOf((*encoding.TextMarshaler)(nil)).Elem()
+)
 
 func publicRestoredPathSources(sources []model.RestoredPathSource) []publicRestoredPathSource {
 	if len(sources) == 0 {

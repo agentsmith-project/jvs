@@ -1,15 +1,19 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/agentsmith-project/jvs/internal/engine"
 	"github.com/agentsmith-project/jvs/internal/recovery"
 	jvsrepo "github.com/agentsmith-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/internal/transfer"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/agentsmith-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
@@ -37,6 +41,61 @@ func TestSeparatedControlInitJSONReportsFolderAndControlData(t *testing.T) {
 	assert.Equal(t, "main", *env.Workspace)
 	assertExternalControlDataShape(t, data, controlRoot, payloadRoot, "main")
 	assert.NoFileExists(t, filepath.Join(payloadRoot, jvsrepo.JVSDirName))
+}
+
+func TestSeparatedControlOutputJSONPreservesInt64WhileSanitizingTransfers(t *testing.T) {
+	const largeByteCount int64 = 1<<53 + 1
+	controlRoot := "/control"
+	folder := "/workspace/project"
+	data := struct {
+		Transfers                []transfer.Record `json:"transfers"`
+		ReclaimableBytesEstimate int64             `json:"reclaimable_bytes_estimate"`
+	}{
+		Transfers: []transfer.Record{
+			{
+				TransferID:                 "cleanup-primary",
+				Operation:                  "cleanup",
+				Phase:                      "capacity_reclaim",
+				Primary:                    true,
+				ResultKind:                 transfer.ResultKindFinal,
+				PermissionScope:            transfer.PermissionScopeExecution,
+				SourceRole:                 "save_point_payload",
+				SourcePath:                 "/control/.jvs/snapshots/1708300800000-deadbeef/payload",
+				DestinationRole:            "cleanup_staging",
+				MaterializationDestination: "/control/.jvs/tmp/cleanup/payload",
+				CapabilityProbePath:        "/control/.jvs/tmp",
+				PublishedDestination:       "/control/.jvs/snapshots/1708300800000-deadbeef/payload",
+				CheckedForThisOperation:    true,
+				RequestedEngine:            engine.EngineAuto,
+				EffectiveEngine:            model.EngineCopy,
+				PerformanceClass:           transfer.PerformanceClassNormalCopy,
+				DegradedReasons:            []string{},
+				Warnings:                   []string{},
+			},
+		},
+		ReclaimableBytesEstimate: largeByteCount,
+	}
+
+	stdout := captureSeparatedControlJSONOutput(t, data, &jvsrepo.SeparatedContext{
+		ControlRoot: controlRoot,
+		PayloadRoot: folder,
+		Workspace:   "main",
+	})
+
+	assert.Contains(t, stdout, `"reclaimable_bytes_estimate": 9007199254740993`)
+	assert.NotContains(t, stdout, `9007199254740992`)
+	assert.NotContains(t, stdout, `9.007199254740992e+15`)
+	assert.NotContains(t, stdout, ".jvs/snapshots")
+	assert.NotContains(t, stdout, "payload")
+
+	_, decoded := decodeSeparatedControlDataMap(t, stdout)
+	assertExternalControlDataShape(t, decoded, controlRoot, folder, "main")
+	record := requireSeparatedTransferByID(t, decoded, "cleanup-primary")
+	assert.Equal(t, "save_point_content", record["source_role"])
+	assert.Equal(t, "save_point:1708300800000-deadbeef", record["source_path"])
+	assert.Equal(t, "temporary_folder", record["materialization_destination"])
+	assert.Equal(t, "control_data", record["capability_probe_path"])
+	assert.Equal(t, "save_point:1708300800000-deadbeef", record["published_destination"])
 }
 
 func TestSeparatedControlInitAdoptsExistingNonEmptyFolderAndCanSave(t *testing.T) {
@@ -873,6 +932,31 @@ func decodeSeparatedControlDataMap(t *testing.T, stdout string) (contractEnvelop
 	var data map[string]any
 	require.NoError(t, json.Unmarshal(env.Data, &data), stdout)
 	return env, data
+}
+
+func captureSeparatedControlJSONOutput(t *testing.T, data any, ctx *jvsrepo.SeparatedContext) string {
+	t.Helper()
+
+	oldJSONOutput := jsonOutput
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	defer r.Close()
+	jsonOutput = true
+	os.Stdout = w
+	defer func() {
+		os.Stdout = oldStdout
+		jsonOutput = oldJSONOutput
+	}()
+
+	outputErr := outputJSONWithSeparatedControl(data, ctx, separatedDoctorStrictNotRun)
+	require.NoError(t, w.Close())
+	require.NoError(t, outputErr)
+
+	var buf bytes.Buffer
+	_, err = io.Copy(&buf, r)
+	require.NoError(t, err)
+	return buf.String()
 }
 
 func assertExternalControlDataShape(t *testing.T, data map[string]any, controlRoot, folder, workspace string) {

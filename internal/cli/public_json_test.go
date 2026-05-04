@@ -120,6 +120,127 @@ func TestPublicJSONBoundarySanitizesTransferRecords(t *testing.T) {
 	assert.Equal(t, "save_point:1708300800000-deadbeef", record["published_destination"])
 }
 
+func TestPublicJSONBoundaryPreservesLargeIntegersWhileSanitizingTransfers(t *testing.T) {
+	const largeByteCount int64 = 1<<53 + 1
+	raw := struct {
+		Transfers                []transfer.Record `json:"transfers"`
+		ReclaimableBytesEstimate int64             `json:"reclaimable_bytes_estimate"`
+		Capacity                 map[string]any    `json:"capacity"`
+	}{
+		Transfers: []transfer.Record{
+			{
+				TransferID:                 "cleanup-primary",
+				Operation:                  "cleanup",
+				Phase:                      "capacity_reclaim",
+				Primary:                    true,
+				ResultKind:                 transfer.ResultKindFinal,
+				PermissionScope:            transfer.PermissionScopeExecution,
+				SourceRole:                 "save_point_payload",
+				SourcePath:                 "/repo/.jvs/snapshots/1708300800000-deadbeef/payload",
+				DestinationRole:            "cleanup_staging",
+				MaterializationDestination: "/repo/.jvs/tmp/cleanup/payload",
+				CapabilityProbePath:        "/repo/.jvs/tmp",
+				PublishedDestination:       "/repo/.jvs/snapshots/1708300800000-deadbeef/payload",
+				CheckedForThisOperation:    true,
+				RequestedEngine:            engine.EngineAuto,
+				EffectiveEngine:            model.EngineCopy,
+				OptimizedTransfer:          false,
+				PerformanceClass:           transfer.PerformanceClassNormalCopy,
+				DegradedReasons:            []string{},
+				Warnings:                   []string{},
+			},
+		},
+		ReclaimableBytesEstimate: largeByteCount,
+		Capacity: map[string]any{
+			"total_bytes": largeByteCount,
+		},
+	}
+
+	publicData, err := publicJSONData(raw)
+	require.NoError(t, err)
+	payload, err := json.Marshal(publicData)
+	require.NoError(t, err)
+	publicJSON := string(payload)
+
+	assert.Contains(t, publicJSON, `"reclaimable_bytes_estimate":9007199254740993`)
+	assert.Contains(t, publicJSON, `"total_bytes":9007199254740993`)
+	assert.NotContains(t, publicJSON, `9007199254740992`)
+	assert.NotContains(t, publicJSON, `9.007199254740992e+15`)
+	assert.NotContains(t, publicJSON, ".jvs/snapshots")
+	assert.NotContains(t, publicJSON, "payload")
+
+	data, ok := publicData.(map[string]any)
+	require.True(t, ok, "public JSON data should be an object: %#v", publicData)
+	record := requirePublicJSONTransferByID(t, data, "cleanup-primary")
+	assert.Equal(t, "save_point_content", record["source_role"])
+	assert.Equal(t, "save_point:1708300800000-deadbeef", record["source_path"])
+	assert.Equal(t, "temporary_folder", record["materialization_destination"])
+	assert.Equal(t, "control_data", record["capability_probe_path"])
+	assert.Equal(t, "save_point:1708300800000-deadbeef", record["published_destination"])
+}
+
+func TestPublicJSONBoundarySanitizesNestedTransferRecords(t *testing.T) {
+	raw := map[string]any{
+		"groups": []any{
+			&struct {
+				Metadata map[string]any `json:"metadata"`
+			}{
+				Metadata: map[string]any{
+					"transfers": []transfer.Record{
+						{
+							TransferID:                 "nested-primary",
+							Operation:                  "save",
+							Phase:                      "materialization",
+							Primary:                    true,
+							ResultKind:                 transfer.ResultKindFinal,
+							PermissionScope:            transfer.PermissionScopeExecution,
+							SourceRole:                 "save_point_payload",
+							SourcePath:                 "/repo/.jvs/snapshots/1708300800000-deadbeef/payload",
+							DestinationRole:            "save_point_staging",
+							MaterializationDestination: "/repo/.jvs/tmp/save/payload",
+							CapabilityProbePath:        "/repo/.jvs/tmp",
+							PublishedDestination:       "/repo/.jvs/snapshots/1708300800000-deadbeef/payload",
+							CheckedForThisOperation:    true,
+							RequestedEngine:            engine.EngineAuto,
+							EffectiveEngine:            model.EngineCopy,
+							OptimizedTransfer:          false,
+							PerformanceClass:           transfer.PerformanceClassNormalCopy,
+							DegradedReasons:            []string{},
+							Warnings:                   []string{},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	publicData, err := publicJSONData(raw)
+	require.NoError(t, err)
+	payload, err := json.Marshal(publicData)
+	require.NoError(t, err)
+	publicJSON := string(payload)
+	assert.NotContains(t, publicJSON, ".jvs/snapshots")
+	assert.NotContains(t, publicJSON, "payload")
+	assert.NotContains(t, publicJSON, "save_point_staging")
+
+	data, ok := publicData.(map[string]any)
+	require.True(t, ok, "public JSON data should be an object: %#v", publicData)
+	groups, ok := data["groups"].([]any)
+	require.True(t, ok, "groups should be an array: %#v", data["groups"])
+	require.Len(t, groups, 1)
+	group, ok := groups[0].(map[string]any)
+	require.True(t, ok, "group should be an object: %#v", groups[0])
+	metadata, ok := group["metadata"].(map[string]any)
+	require.True(t, ok, "metadata should be an object: %#v", group["metadata"])
+	record := requirePublicJSONTransferByID(t, metadata, "nested-primary")
+	assert.Equal(t, "save_point_content", record["source_role"])
+	assert.Equal(t, "save_point:1708300800000-deadbeef", record["source_path"])
+	assert.Equal(t, "save_point_content", record["destination_role"])
+	assert.Equal(t, "temporary_folder", record["materialization_destination"])
+	assert.Equal(t, "control_data", record["capability_probe_path"])
+	assert.Equal(t, "save_point:1708300800000-deadbeef", record["published_destination"])
+}
+
 func TestPublicJSONBoundarySanitizesTransferFreeText(t *testing.T) {
 	raw := struct {
 		Transfers []transfer.Record `json:"transfers"`

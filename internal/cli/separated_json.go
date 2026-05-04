@@ -1,9 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
-	"fmt"
-
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
 )
@@ -23,19 +20,6 @@ func separatedControlFields(ctx *repo.SeparatedContext, doctorStrict string) sep
 	}
 }
 
-func applySeparatedControlMapFields(out map[string]any, ctx *repo.SeparatedContext, doctorStrict string) {
-	if out == nil || ctx == nil {
-		return
-	}
-	out["control_root"] = ctx.ControlRoot
-	if _, ok := out["folder"]; !ok {
-		out["folder"] = ctx.PayloadRoot
-	}
-	if _, ok := out["workspace"]; !ok {
-		out["workspace"] = ctx.Workspace
-	}
-}
-
 func outputJSONWithSeparatedControl(data any, ctx *repo.SeparatedContext, doctorStrict string) error {
 	if !jsonOutput {
 		return nil
@@ -51,42 +35,14 @@ func separatedControlJSONData(data any, ctx *repo.SeparatedContext, doctorStrict
 	if ctx == nil {
 		return data, nil
 	}
-	out, err := jsonObjectMap(data)
-	if err != nil {
-		return nil, err
+	fields := map[string]any{
+		"control_root": ctx.ControlRoot,
 	}
-	applySeparatedControlMapFields(out, ctx, doctorStrict)
-	return out, nil
-}
-
-func jsonObjectMap(data any) (map[string]any, error) {
-	switch value := data.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(value))
-		for key, item := range value {
-			out[key] = item
-		}
-		return out, nil
-	case map[string]string:
-		out := make(map[string]any, len(value))
-		for key, item := range value {
-			out[key] = item
-		}
-		return out, nil
-	default:
-		raw, err := json.Marshal(data)
-		if err != nil {
-			return nil, fmt.Errorf("encode external control root JSON data: %w", err)
-		}
-		var out map[string]any
-		if err := json.Unmarshal(raw, &out); err != nil {
-			return nil, fmt.Errorf("decode external control root JSON data object: %w", err)
-		}
-		if out == nil {
-			return nil, fmt.Errorf("external control root JSON data must be an object")
-		}
-		return out, nil
+	defaultFields := map[string]any{
+		"folder":    ctx.PayloadRoot,
+		"workspace": ctx.Workspace,
 	}
+	return publicJSONDataWithObjectFields(data, fields, defaultFields, "external control root JSON data must be an object"), nil
 }
 
 func validateSeparatedPayloadSymlinkBoundary(ctx *repo.SeparatedContext) error {
