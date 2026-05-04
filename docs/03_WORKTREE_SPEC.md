@@ -44,9 +44,9 @@ workspace folders are user-selected real directories created through
 `jvs workspace new <folder> --from <save>` and targeted by changing directories
 or using `--workspace`.
 
-Workspace payload folders must not contain JVS control data or runtime state.
-Save, restore, view, and cleanup logic must treat that data as outside user
-payload.
+Workspace folders must not contain JVS control data or runtime state. Save,
+restore, view, and cleanup logic must treat that data as outside managed
+workspace content.
 
 ## Removal And Cleanup Boundary
 

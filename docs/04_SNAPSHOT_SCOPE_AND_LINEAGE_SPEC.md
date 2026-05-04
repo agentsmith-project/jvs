@@ -23,7 +23,7 @@ Excluded from scope:
 - runtime state for active operations
 - restore plans, recovery plans, and cleanup plans
 
-Published save point payloads are implementation-owned storage. Storage paths
+Published save point content is implementation-owned storage. Storage paths
 and field names are not public vocabulary.
 
 ## Descriptor Fields
@@ -56,5 +56,5 @@ Cleanup and UI must not collapse these into a branch/merge mental model.
 
 ## Integrity Responsibilities
 
-Descriptor checksums and payload root hashes protect save point integrity.
+Descriptor checksums and content root hashes protect save point integrity.
 `jvs doctor --strict` is the public health command.

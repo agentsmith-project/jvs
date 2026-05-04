@@ -71,7 +71,7 @@ func TestRepoCloneAllManifestTruncationFailsClosedForDoctorAndCleanupPreview(t *
 	require.Error(t, err)
 	var jvsErr *errclass.JVSError
 	require.ErrorAs(t, err, &jvsErr)
-	assert.Equal(t, errclass.ErrGCPlanMismatch.Code, jvsErr.Code)
+	assert.Equal(t, errclass.ErrCleanupPlanMismatch.Code, jvsErr.Code)
 	assert.Contains(t, jvsErr.Message, "imported clone history")
 }
 

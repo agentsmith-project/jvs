@@ -46,7 +46,7 @@ Source docs:
 Tasks:
 
 - Ensure save captures managed files only.
-- Ensure control data is never payload.
+- Ensure control data is never workspace content.
 - Publish save points atomically.
 - Keep engine performance claims scoped to engine and filesystem support.
 - Preserve provenance from workspace creation and restore.

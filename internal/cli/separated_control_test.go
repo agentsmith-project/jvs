@@ -439,7 +439,8 @@ func TestSeparatedControlStatusJSONPayloadLocatorErrorHasNullData(t *testing.T) 
 	env := decodeContractEnvelope(t, stdout)
 	assert.False(t, env.OK)
 	require.NotNil(t, env.Error)
-	assert.Equal(t, "E_PAYLOAD_LOCATOR_PRESENT", env.Error.Code)
+	assert.Equal(t, "E_WORKSPACE_CONTROL_MARKER_PRESENT", env.Error.Code)
+	assert.NotContains(t, env.Error.Code, "PAYLOAD")
 	assert.JSONEq(t, `null`, string(env.Data))
 }
 
@@ -705,7 +706,7 @@ func TestSeparatedControlDoctorStrictJSONWorkspaceControlMarkerReportsDiagnostic
 	assertExternalControlDataShape(t, data, controlRoot, payloadRoot, "main")
 	assert.Equal(t, false, data["healthy"])
 	assertSeparatedDoctorChecks(t, data, map[string]string{
-		"workspace_control_marker": "E_PAYLOAD_LOCATOR_PRESENT",
+		"workspace_control_marker": "E_WORKSPACE_CONTROL_MARKER_PRESENT",
 	})
 }
 

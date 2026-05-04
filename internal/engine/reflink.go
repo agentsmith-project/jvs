@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +16,8 @@ import (
 type ReflinkEngine struct {
 	CopyEngine *CopyEngine
 }
+
+var errReflinkFallbackBlocked = errors.New("reflink fallback blocked")
 
 // NewReflinkEngine creates a new ReflinkEngine.
 func NewReflinkEngine() *ReflinkEngine {
@@ -33,7 +36,7 @@ func (e *ReflinkEngine) Clone(src, dst string) (*CloneResult, error) {
 	if err := os.MkdirAll(dst, 0755); err != nil {
 		return nil, fmt.Errorf("create dst directory: %w", err)
 	}
-	return e.cloneInto(src, dst)
+	return e.cloneInto(src, dst, cloneDestinationExisting)
 }
 
 // CloneToNew clones src into an owned destination path whose leaf must not
@@ -43,10 +46,13 @@ func (e *ReflinkEngine) CloneToNew(src, dst string) (*CloneResult, error) {
 	if err := PrepareCloneToNewDestination(dst); err != nil {
 		return nil, err
 	}
-	return e.cloneInto(src, dst)
+	if err := revalidateCloneToNewDestination(dst); err != nil {
+		return nil, err
+	}
+	return e.cloneInto(src, dst, cloneDestinationNew)
 }
 
-func (e *ReflinkEngine) cloneInto(src, dst string) (*CloneResult, error) {
+func (e *ReflinkEngine) cloneInto(src, dst string, mode cloneDestinationMode) (*CloneResult, error) {
 	result := NewCloneResult(model.EngineReflinkCopy)
 	var dirs []dirMode
 	var rootInfo os.FileInfo
@@ -67,16 +73,46 @@ func (e *ReflinkEngine) cloneInto(src, dst string) (*CloneResult, error) {
 
 		switch {
 		case info.IsDir():
-			if err := e.copyDir(path, dstPath, info); err != nil {
+			if mode == cloneDestinationNew {
+				if err := ensureCloneNewPath(dst, rel, dstPath); err != nil {
+					return err
+				}
+				if err := e.copyDirToNew(path, dstPath, info); err != nil {
+					return err
+				}
+			} else if err := e.copyDir(path, dstPath, info); err != nil {
 				return err
 			}
 			dirs = append(dirs, dirMode{path: dstPath, mode: info.Mode().Perm()})
 			return nil
 
 		case info.Mode()&os.ModeSymlink != 0:
+			if mode == cloneDestinationNew {
+				if err := ensureCloneNewPath(dst, rel, dstPath); err != nil {
+					return err
+				}
+				return e.copySymlinkToNew(path, dstPath, info)
+			}
 			return e.copySymlink(path, dstPath, info)
 
 		default:
+			if mode == cloneDestinationNew {
+				if err := ensureCloneNewPath(dst, rel, dstPath); err != nil {
+					return err
+				}
+				if err := reflinkFileToNew(path, dstPath, info); err != nil {
+					if errors.Is(err, errReflinkFallbackBlocked) {
+						return err
+					}
+					result.AddDegradation("reflink", model.EngineCopy)
+					copyEngine := e.CopyEngine
+					if copyEngine == nil {
+						copyEngine = NewCopyEngine()
+					}
+					return copyEngine.copyFileToNew(path, dstPath, info)
+				}
+				return nil
+			}
 			if err := reflinkFile(path, dstPath, info); err != nil {
 				result.AddDegradation("reflink", model.EngineCopy)
 				return e.copyFile(path, dstPath, info)
@@ -108,12 +144,20 @@ func (e *ReflinkEngine) copyDir(src, dst string, info os.FileInfo) error {
 	return os.MkdirAll(dst, writableDirMode(info.Mode().Perm()))
 }
 
+func (e *ReflinkEngine) copyDirToNew(src, dst string, info os.FileInfo) error {
+	return os.Mkdir(dst, writableDirMode(info.Mode().Perm()))
+}
+
 func (e *ReflinkEngine) copySymlink(src, dst string, info os.FileInfo) error {
 	target, err := os.Readlink(src)
 	if err != nil {
 		return fmt.Errorf("readlink: %w", err)
 	}
 	return os.Symlink(target, dst)
+}
+
+func (e *ReflinkEngine) copySymlinkToNew(src, dst string, info os.FileInfo) error {
+	return e.copySymlink(src, dst, info)
 }
 
 func (e *ReflinkEngine) copyFile(src, dst string, info os.FileInfo) error {

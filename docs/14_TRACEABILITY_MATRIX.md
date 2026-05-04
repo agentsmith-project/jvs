@@ -50,7 +50,7 @@ Evidence:
 - status JSON `started_from_save_point`
 - first-save provenance tests
 
-## Promise 4: Control Data Is Not Payload
+## Promise 4: Control Data Is Not Workspace Content
 
 Normative docs:
 
@@ -60,7 +60,7 @@ Normative docs:
 
 Evidence:
 
-- payload purity and generic boundary tests
+- managed-file boundary tests
 - migration/runtime-state boundary tests
 - doctor layout checks
 

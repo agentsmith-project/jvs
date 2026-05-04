@@ -132,7 +132,7 @@ return fmt.Errorf("failed to read descriptor: %w", err)
 - `ErrNameInvalid` - Invalid name format
 - `ErrPathEscape` - Path traversal attempt
 - `ErrDescriptorCorrupt` - Descriptor checksum failed
-- `ErrPayloadHashMismatch` - Payload hash check failed
+- `ErrSavePointHashMismatch` - Save point content hash check failed
 - `ErrLineageBroken` - Save point history relationship is inconsistent
 - `ErrFormatUnsupported` - Format version not supported
 - `ErrAuditChainBroken` - Audit hash chain validation failed

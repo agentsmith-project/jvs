@@ -19,7 +19,7 @@ Core promises:
 - Save point-first: the public saved unit is an immutable saved copy of
   managed files in one folder.
 - Verifiable: published save points can be checked through descriptors,
-  payload hashes, doctor checks, and audit records.
+  content hashes, doctor checks, and audit records.
 - Automation-safe: public state has deterministic CLI and JSON output.
 - Recoverable: destructive restore runs are preview-first and have recovery
   plans.
@@ -35,7 +35,7 @@ feasible, and error messages.
 | `workspace` | The JVS name for a managed real folder. `main` is the default. |
 | `JVS project` | The control data and workspace registry for save points. |
 | `managed file` | A workspace file captured by save and managed by restore. |
-| `JVS control/runtime state` | Non-payload data used by JVS for control and active operations; not saved, viewed, restored, or deleted as user payload. |
+| `JVS control/runtime state` | JVS-owned data used for control and active operations; not saved, viewed, restored, or deleted as workspace content. |
 | `save point` | An immutable saved copy of managed files plus creation facts. |
 | `save` | Create a save point from the active workspace. |
 | `history` | List save points or find candidates. |
@@ -75,7 +75,7 @@ The adopted folder remains the user's working folder. JVS control data lives in
 Invariants:
 
 - Workspace folders are real directories.
-- JVS control data and runtime state are not user payload.
+- JVS control data and runtime state are not workspace content.
 - A save point captures exactly one workspace's managed files.
 - Published save point content and creation facts are immutable.
 - Restore copies content into a workspace; it does not rewrite history.

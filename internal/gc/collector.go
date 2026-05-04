@@ -62,7 +62,7 @@ type cleanupPublicError struct {
 
 func newCleanupPublicError(message string, cause error) error {
 	return &cleanupPublicError{
-		public: errclass.ErrGCPlanMismatch.WithMessage(message),
+		public: errclass.ErrCleanupPlanMismatch.WithMessage(message),
 		cause:  cause,
 	}
 }
@@ -555,11 +555,11 @@ func (c *Collector) revalidatePlan(plan *model.GCPlan) ([]model.SnapshotID, erro
 	currentComparable := make([]model.SnapshotID, 0, len(plan.ToDelete))
 	for _, id := range plan.ToDelete {
 		if err := id.Validate(); err != nil {
-			return nil, errclass.ErrGCPlanMismatch.WithMessagef("invalid planned snapshot ID %q: %v", string(id), err)
+			return nil, errclass.ErrCleanupPlanMismatch.WithMessagef("invalid planned save point ID %q: %v", string(id), err)
 		}
 		residue, err := c.deletionResidue(id)
 		if err != nil {
-			return nil, errclass.ErrGCPlanMismatch.WithMessagef("invalid planned snapshot ID %q: %v", string(id), err)
+			return nil, errclass.ErrCleanupPlanMismatch.WithMessagef("invalid planned save point ID %q: %v", string(id), err)
 		}
 		if residue.snapshotExists {
 			currentComparable = append(currentComparable, id)
@@ -582,7 +582,7 @@ func (c *Collector) revalidatePlan(plan *model.GCPlan) ([]model.SnapshotID, erro
 			pending = append(pending, id)
 			continue
 		}
-		return nil, errclass.ErrGCPlanMismatch.WithMessagef("planned snapshot %s is missing without committed tombstone", id)
+		return nil, errclass.ErrCleanupPlanMismatch.WithMessagef("planned save point %s is missing without committed tombstone", id)
 	}
 	sortSnapshotIDs(pending)
 	sortSnapshotIDs(currentComparable)
@@ -590,14 +590,14 @@ func (c *Collector) revalidatePlan(plan *model.GCPlan) ([]model.SnapshotID, erro
 	currentCandidates := append([]model.SnapshotID(nil), current.toDelete...)
 	sortSnapshotIDs(currentCandidates)
 	if !sameSnapshotIDs(currentComparable, currentCandidates) {
-		return nil, errclass.ErrGCPlanMismatch.WithMessagef("candidate set changed; run cleanup preview again: planned=%v current=%v", currentComparable, currentCandidates)
+		return nil, errclass.ErrCleanupPlanMismatch.WithMessagef("candidate set changed; run cleanup preview again: planned=%v current=%v", currentComparable, currentCandidates)
 	}
 	currentProtected := append([]model.SnapshotID(nil), current.protectedSet...)
 	sortSnapshotIDs(currentProtected)
 	plannedProtected := append([]model.SnapshotID(nil), plan.ProtectedSet...)
 	sortSnapshotIDs(plannedProtected)
 	if !sameSnapshotIDs(plannedProtected, currentProtected) {
-		return nil, errclass.ErrGCPlanMismatch.WithMessagef("protected set changed; run cleanup preview again: planned=%v current=%v", plannedProtected, currentProtected)
+		return nil, errclass.ErrCleanupPlanMismatch.WithMessagef("protected set changed; run cleanup preview again: planned=%v current=%v", plannedProtected, currentProtected)
 	}
 	return pending, nil
 }
@@ -606,7 +606,7 @@ func (c *Collector) collectRetryTombstoneEvidence(plan *model.GCPlan) (map[model
 	evidence := make(map[model.SnapshotID]bool)
 	for _, id := range plan.ToDelete {
 		if err := id.Validate(); err != nil {
-			return nil, errclass.ErrGCPlanMismatch.WithMessagef("invalid planned snapshot ID %q: %v", string(id), err)
+			return nil, errclass.ErrCleanupPlanMismatch.WithMessagef("invalid planned save point ID %q: %v", string(id), err)
 		}
 		tombstone, err := c.loadTombstone(id)
 		if err != nil {
@@ -942,10 +942,10 @@ func regularFileExists(path string) bool {
 func (c *Collector) currentRepoID() (string, error) {
 	r, err := repo.Discover(c.repoRoot)
 	if err != nil {
-		return "", errclass.ErrGCPlanMismatch.WithMessage("cannot read current repository identity")
+		return "", errclass.ErrCleanupPlanMismatch.WithMessage("cannot read current repository identity")
 	}
 	if r.RepoID == "" {
-		return "", errclass.ErrGCPlanMismatch.WithMessage("current repository identity is missing")
+		return "", errclass.ErrCleanupPlanMismatch.WithMessage("current repository identity is missing")
 	}
 	return r.RepoID, nil
 }
@@ -1145,33 +1145,33 @@ func (c *Collector) LoadPlan(planID string) (*model.GCPlan, error) {
 	path, err := repo.GCPlanPathForRead(c.repoRoot, planID)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, errclass.ErrGCPlanMismatch.WithMessagef("cleanup plan %q not found", planID)
+			return nil, errclass.ErrCleanupPlanMismatch.WithMessagef("cleanup plan %q not found", planID)
 		}
-		return nil, errclass.ErrGCPlanMismatch.WithMessagef("cleanup plan %q is not readable", planID)
+		return nil, errclass.ErrCleanupPlanMismatch.WithMessagef("cleanup plan %q is not readable", planID)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, errclass.ErrGCPlanMismatch.WithMessagef("cleanup plan %q not found", planID)
+			return nil, errclass.ErrCleanupPlanMismatch.WithMessagef("cleanup plan %q not found", planID)
 		}
-		return nil, errclass.ErrGCPlanMismatch.WithMessagef("cleanup plan %q is not readable", planID)
+		return nil, errclass.ErrCleanupPlanMismatch.WithMessagef("cleanup plan %q is not readable", planID)
 	}
 	var plan model.GCPlan
 	if err := json.Unmarshal(data, &plan); err != nil {
-		return nil, errclass.ErrGCPlanMismatch.WithMessagef("cleanup plan %q is not valid JSON", planID)
+		return nil, errclass.ErrCleanupPlanMismatch.WithMessagef("cleanup plan %q is not valid JSON", planID)
 	}
 	if plan.SchemaVersion != model.GCPlanSchemaVersion {
-		return nil, errclass.ErrGCPlanMismatch.WithMessagef("cleanup plan %q has unsupported schema version", planID)
+		return nil, errclass.ErrCleanupPlanMismatch.WithMessagef("cleanup plan %q has unsupported schema version", planID)
 	}
 	if plan.PlanID != planID {
-		return nil, errclass.ErrGCPlanMismatch.WithMessagef("cleanup plan %q plan_id does not match request", planID)
+		return nil, errclass.ErrCleanupPlanMismatch.WithMessagef("cleanup plan %q plan_id does not match request", planID)
 	}
 	repoID, err := c.currentRepoID()
 	if err != nil {
 		return nil, err
 	}
 	if plan.RepoID != repoID {
-		return nil, errclass.ErrGCPlanMismatch.WithMessagef("cleanup plan %q belongs to a different repository", planID)
+		return nil, errclass.ErrCleanupPlanMismatch.WithMessagef("cleanup plan %q belongs to a different repository", planID)
 	}
 	return &plan, nil
 }

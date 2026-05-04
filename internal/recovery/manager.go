@@ -14,6 +14,7 @@ import (
 
 	"github.com/agentsmith-project/jvs/internal/capacitygate"
 	"github.com/agentsmith-project/jvs/internal/engine"
+	"github.com/agentsmith-project/jvs/internal/integrity"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/restoreplan"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
@@ -30,6 +31,7 @@ const SchemaVersion = 1
 
 var (
 	ErrBackupMissing                                    = errors.New("recovery backup is missing")
+	ErrBackupUntrusted                                  = errors.New("recovery backup identity cannot be verified")
 	writePlanFile                                       = fsutil.AtomicWrite
 	restoreBackupClone                                  = cloneRecoveryBackupToNew
 	restoreBackupCapacityGate                           = capacitygate.Default()
@@ -162,6 +164,7 @@ type Backup struct {
 	State             BackupState   `json:"state,omitempty"`
 	TouchedPaths      []string      `json:"touched_paths,omitempty"`
 	Entries           []BackupEntry `json:"entries,omitempty"`
+	PayloadEvidence   string        `json:"payload_evidence,omitempty"`
 	PayloadRolledBack bool          `json:"payload_rolled_back,omitempty"`
 }
 
@@ -493,6 +496,17 @@ func (m *Manager) ValidateLiveBackup(plan *Plan) error {
 }
 
 func (m *Manager) validateLiveBackup(plan *Plan) (repo.WorktreePayloadBoundary, error) {
+	boundary, err := m.validateLiveBackupShape(plan)
+	if err != nil {
+		return repo.WorktreePayloadBoundary{}, err
+	}
+	if err := validateBackupPayloadEvidence(boundary, plan); err != nil {
+		return repo.WorktreePayloadBoundary{}, err
+	}
+	return boundary, nil
+}
+
+func (m *Manager) validateLiveBackupShape(plan *Plan) (repo.WorktreePayloadBoundary, error) {
 	if plan == nil {
 		return repo.WorktreePayloadBoundary{}, fmt.Errorf("recovery plan is required")
 	}
@@ -515,6 +529,14 @@ func (m *Manager) validateLiveBackup(plan *Plan) (repo.WorktreePayloadBoundary, 
 		}
 	}
 	return boundary, nil
+}
+
+func (m *Manager) BackupPayloadEvidence(plan *Plan) (string, error) {
+	boundary, err := m.validateLiveBackupShape(plan)
+	if err != nil {
+		return "", err
+	}
+	return backupPayloadEvidence(boundary, plan)
 }
 
 func CurrentEvidence(repoRoot string, plan *Plan) (string, error) {
@@ -612,6 +634,53 @@ func recoveryEvidenceForPreview(repoRoot string, preview *restoreplan.Plan) (str
 	return restoreplan.WorkspaceEvidence(repoRoot, preview.Workspace)
 }
 
+func validateBackupPayloadEvidence(boundary repo.WorktreePayloadBoundary, plan *Plan) error {
+	if plan == nil || !backupPayloadRestoreRequired(plan.Backup) {
+		return nil
+	}
+	expectedBackup := strings.TrimSpace(plan.Backup.PayloadEvidence)
+	if expectedBackup == "" {
+		return fmt.Errorf("%w: recovery plan has no backup content evidence; no files were changed", ErrBackupUntrusted)
+	}
+	expectedPreRecovery := strings.TrimSpace(plan.PreRecoveryEvidence)
+	if expectedPreRecovery == "" {
+		return fmt.Errorf("%w: recovery plan has no pre-recovery evidence; no files were changed", ErrBackupUntrusted)
+	}
+	if expectedBackup != expectedPreRecovery {
+		return fmt.Errorf("%w: backup evidence does not match the expected pre-recovery state; no files were changed", ErrBackupUntrusted)
+	}
+	actual, err := backupPayloadEvidence(boundary, plan)
+	if err != nil {
+		return fmt.Errorf("verify recovery backup identity: %w", err)
+	}
+	if actual != expectedBackup {
+		return fmt.Errorf("%w: recovery backup content does not match the recovery plan; no files were changed", ErrBackupUntrusted)
+	}
+	return nil
+}
+
+func backupPayloadEvidence(boundary repo.WorktreePayloadBoundary, plan *Plan) (string, error) {
+	switch plan.Backup.Scope {
+	case BackupScopeWhole:
+		if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(plan.Backup.Path); err != nil {
+			return "", err
+		}
+		hash, err := integrity.ComputePayloadRootHashWithExclusions(plan.Backup.Path, boundary.ExcludesRelativePath)
+		if err != nil {
+			return "", fmt.Errorf("scan recovery backup evidence: %w", err)
+		}
+		return string(hash), nil
+	case BackupScopePath:
+		planPath, err := pathutil.CleanRel(plan.Path)
+		if err != nil {
+			return "", fmt.Errorf("recovery path is not safe: %w", err)
+		}
+		return restoreplan.PathEvidenceFromRoot(plan.Backup.Path, planPath, boundary.ExcludesRelativePath)
+	default:
+		return "", fmt.Errorf("unsupported backup scope")
+	}
+}
+
 func validateBackupPath(boundaryRoot, planFolder, backupPath string) error {
 	if strings.TrimSpace(backupPath) == "" {
 		return fmt.Errorf("backup folder is required")
@@ -645,6 +714,10 @@ func validateBackupPath(boundaryRoot, planFolder, backupPath string) error {
 func (m *Manager) restoreWholeBackup(plan *Plan, boundary repo.WorktreePayloadBoundary, backupPath, transferOperation string) error {
 	tempPath := boundary.Root + ".recovery-restore-tmp-" + uuidutil.NewV4()[:8]
 	defer os.RemoveAll(tempPath)
+	rootIdentity, err := captureManagedRootIdentity(boundary.Root)
+	if err != nil {
+		return err
+	}
 	bytes, err := capacitygate.TreeSize(backupPath, nil)
 	if err != nil {
 		return fmt.Errorf("measure recovery backup: %w", err)
@@ -668,10 +741,49 @@ func (m *Manager) restoreWholeBackup(plan *Plan, boundary repo.WorktreePayloadBo
 	if err := m.materializeRecoveryBackupCopy(intent); err != nil {
 		return fmt.Errorf("copy recovery backup: %w", err)
 	}
+	if err := validateManagedRootIdentity(boundary.Root, rootIdentity); err != nil {
+		return err
+	}
 	if err := clearManagedDirectory(boundary); err != nil {
 		return err
 	}
 	return moveManagedContents(tempPath, boundary.Root, boundary.ExcludesRelativePath)
+}
+
+type managedRootIdentity struct {
+	root string
+	info os.FileInfo
+}
+
+func captureManagedRootIdentity(root string) (managedRootIdentity, error) {
+	info, err := os.Lstat(root)
+	if err != nil {
+		return managedRootIdentity{}, fmt.Errorf("stat workspace folder: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return managedRootIdentity{}, fmt.Errorf("workspace folder is symlink: %s", root)
+	}
+	if !info.IsDir() {
+		return managedRootIdentity{}, fmt.Errorf("workspace folder is not a directory: %s", root)
+	}
+	return managedRootIdentity{root: filepath.Clean(root), info: info}, nil
+}
+
+func validateManagedRootIdentity(root string, expected managedRootIdentity) error {
+	current, err := os.Lstat(root)
+	if err != nil {
+		return fmt.Errorf("revalidate workspace folder after backup staging: %w", err)
+	}
+	if current.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("workspace folder is symlink after backup staging: %s", root)
+	}
+	if !current.IsDir() {
+		return fmt.Errorf("workspace folder is not a directory after backup staging: %s", root)
+	}
+	if filepath.Clean(root) != expected.root || !os.SameFile(expected.info, current) {
+		return fmt.Errorf("workspace folder changed after backup staging; no files were changed")
+	}
+	return nil
 }
 
 func (m *Manager) restorePathBackup(plan *Plan, payloadRoot, backupPath string, entries []BackupEntry, transferOperation string) error {
@@ -726,6 +838,9 @@ func (m *Manager) restorePathBackup(plan *Plan, payloadRoot, backupPath string, 
 	for _, entry := range entries {
 		clean := entry.Path
 		dst := filepath.Join(payloadRoot, clean)
+		if err := pathutil.ValidateNoSymlinkParents(payloadRoot, clean); err != nil {
+			return fmt.Errorf("recovery path parent is not safe: %w", err)
+		}
 		if err := os.RemoveAll(dst); err != nil {
 			return fmt.Errorf("remove restored path %s: %w", clean, err)
 		}

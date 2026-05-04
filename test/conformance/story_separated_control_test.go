@@ -220,7 +220,7 @@ func TestStorySeparatedControlPayloadLocatorPresentFailsClosed(t *testing.T) {
 				"--json",
 			)
 
-			requireSeparatedControlJSONError(t, stdout, stderr, code, "E_PAYLOAD_LOCATOR_PRESENT")
+			requireSeparatedControlJSONError(t, stdout, stderr, code, "E_WORKSPACE_CONTROL_MARKER_PRESENT")
 			requireAbsolutePathPresent(t, filepath.Join(payloadRoot, ".jvs"))
 			requireAbsolutePathAbsent(t, controlRoot)
 		})
@@ -239,7 +239,7 @@ func TestStorySeparatedControlBoundaryRootCasesFailWithoutMutation(t *testing.T)
 			name:        "same root",
 			controlRoot: func(base string) string { return filepath.Join(base, "repo") },
 			payloadRoot: func(base string) string { return filepath.Join(base, "repo") },
-			wantCode:    "E_CONTROL_PAYLOAD_OVERLAP",
+			wantCode:    "E_CONTROL_WORKSPACE_OVERLAP",
 			wantMissing: []func(base string) string{
 				func(base string) string { return filepath.Join(base, "repo") },
 			},
@@ -248,7 +248,7 @@ func TestStorySeparatedControlBoundaryRootCasesFailWithoutMutation(t *testing.T)
 			name:        "payload inside control",
 			controlRoot: func(base string) string { return filepath.Join(base, "control") },
 			payloadRoot: func(base string) string { return filepath.Join(base, "control", "payload") },
-			wantCode:    "E_PAYLOAD_INSIDE_CONTROL",
+			wantCode:    "E_WORKSPACE_INSIDE_CONTROL",
 			wantMissing: []func(base string) string{
 				func(base string) string { return filepath.Join(base, "control") },
 			},
@@ -257,7 +257,7 @@ func TestStorySeparatedControlBoundaryRootCasesFailWithoutMutation(t *testing.T)
 			name:        "control inside payload",
 			controlRoot: func(base string) string { return filepath.Join(base, "payload", "control") },
 			payloadRoot: func(base string) string { return filepath.Join(base, "payload") },
-			wantCode:    "E_CONTROL_INSIDE_PAYLOAD",
+			wantCode:    "E_CONTROL_INSIDE_WORKSPACE",
 			wantMissing: []func(base string) string{
 				func(base string) string { return filepath.Join(base, "payload") },
 			},

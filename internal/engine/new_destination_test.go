@@ -37,3 +37,34 @@ func TestCloneToNewCreatesParentAndLeavesLeafForEngine(t *testing.T) {
 
 	assert.FileExists(t, filepath.Join(dst, "file.txt"))
 }
+
+func TestCloneToNewRejectsSymlinkDestinationParent(t *testing.T) {
+	engines := []struct {
+		name string
+		eng  engine.Engine
+	}{
+		{name: "copy", eng: engine.NewCopyEngine()},
+		{name: "reflink", eng: engine.NewReflinkEngine()},
+	}
+
+	for _, tt := range engines {
+		t.Run(tt.name, func(t *testing.T) {
+			src := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(src, "file.txt"), []byte("payload"), 0644))
+
+			base := t.TempDir()
+			outside := t.TempDir()
+			linkParent := filepath.Join(base, "link-parent")
+			if err := os.Symlink(outside, linkParent); err != nil {
+				t.Skipf("symlinks not supported: %v", err)
+			}
+			dst := filepath.Join(linkParent, "owned-new")
+
+			_, err := engine.CloneToNew(tt.eng, src, dst)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "symlink")
+			_, statErr := os.Lstat(filepath.Join(outside, "owned-new"))
+			assert.True(t, os.IsNotExist(statErr), "clone must not materialize through a symlink parent")
+		})
+	}
+}

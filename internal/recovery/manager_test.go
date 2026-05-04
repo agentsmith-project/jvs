@@ -305,6 +305,7 @@ func TestRestoreBackupDoesNotRestoreControlDataFromBackup(t *testing.T) {
 		PreWorktreeState: recovery.WorktreeState{Name: "main", RealPath: repoRoot},
 		Backup:           recovery.Backup{Path: backupPath, Scope: recovery.BackupScopeWhole, State: recovery.BackupStateRequired},
 	}
+	recordRecoveryBackupPayloadEvidence(t, repoRoot, &plan)
 
 	require.NoError(t, recovery.NewManager(repoRoot).RestoreBackup(&plan))
 	content, err := os.ReadFile(filepath.Join(repoRoot, "file.txt"))
@@ -347,6 +348,176 @@ func TestRestorePathBackupRequiredEntryMissingFailsClosedWithoutDeletingCurrentP
 	content, readErr := os.ReadFile(filepath.Join(mainPath, "app.txt"))
 	require.NoError(t, readErr)
 	assert.Equal(t, "restored current", string(content))
+}
+
+func TestRestorePathBackupRevalidatesDestinationParentAfterStaging(t *testing.T) {
+	repoRoot, repoID := setupRecoveryManagerRepo(t)
+	mainPath := recoveryMainPayloadPath(t, repoRoot)
+	require.NoError(t, os.MkdirAll(filepath.Join(mainPath, "safe"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "safe", "app.txt"), []byte("restored current"), 0644))
+	outside := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "app.txt"), []byte("outside original"), 0644))
+
+	backupPath := recoveryBackupPath(t, mainPath)
+	require.NoError(t, os.MkdirAll(filepath.Join(backupPath, "safe"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(backupPath, "safe", "app.txt"), []byte("original backup"), 0644))
+	plan := recovery.Plan{
+		SchemaVersion:    recovery.SchemaVersion,
+		RepoID:           repoID,
+		PlanID:           "RP-path-parent-race",
+		Status:           recovery.StatusActive,
+		Operation:        recovery.OperationRestorePath,
+		RestorePlanID:    "restore-preview",
+		Workspace:        "main",
+		Folder:           mainPath,
+		SourceSavePoint:  model.NewSnapshotID(),
+		Path:             "safe/app.txt",
+		CreatedAt:        time.Now().UTC(),
+		UpdatedAt:        time.Now().UTC(),
+		PreWorktreeState: recovery.WorktreeState{Name: "main", RealPath: mainPath},
+		Backup: recovery.Backup{
+			Path:         backupPath,
+			Scope:        recovery.BackupScopePath,
+			State:        recovery.BackupStateRequired,
+			TouchedPaths: []string{"safe/app.txt"},
+			Entries:      []recovery.BackupEntry{{Path: "safe/app.txt", HadOriginal: true}},
+		},
+	}
+	recordRecoveryBackupPayloadEvidence(t, repoRoot, &plan)
+	restoreClone := recovery.SetRestoreBackupCloneHookForTest(func(src, dst string) error {
+		if _, err := engine.CloneToNew(engine.NewCopyEngine(), src, dst); err != nil {
+			return err
+		}
+		require.NoError(t, os.RemoveAll(filepath.Join(mainPath, "safe")))
+		require.NoError(t, os.Symlink(outside, filepath.Join(mainPath, "safe")))
+		return nil
+	})
+	defer restoreClone()
+
+	err := recovery.NewManager(repoRoot).RestoreBackup(&plan)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "symlink")
+	content, readErr := os.ReadFile(filepath.Join(outside, "app.txt"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "outside original", string(content))
+}
+
+func TestRestoreWholeBackupRevalidatesRootIdentityAfterStagingSymlinkReplacement(t *testing.T) {
+	repoRoot, repoID := setupRecoveryManagerRepo(t)
+	mainPath := recoveryMainPayloadPath(t, repoRoot)
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "current.txt"), []byte("restored current"), 0644))
+	outside := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "outside.txt"), []byte("outside original"), 0644))
+
+	backupPath := recoveryBackupPath(t, mainPath)
+	require.NoError(t, os.MkdirAll(backupPath, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(backupPath, "original.txt"), []byte("original backup"), 0644))
+	plan := recovery.Plan{
+		SchemaVersion:    recovery.SchemaVersion,
+		RepoID:           repoID,
+		PlanID:           "RP-whole-root-race",
+		Status:           recovery.StatusActive,
+		Operation:        recovery.OperationRestore,
+		RestorePlanID:    "restore-preview",
+		Workspace:        "main",
+		Folder:           mainPath,
+		SourceSavePoint:  model.NewSnapshotID(),
+		CreatedAt:        time.Now().UTC(),
+		UpdatedAt:        time.Now().UTC(),
+		PreWorktreeState: recovery.WorktreeState{Name: "main", RealPath: mainPath},
+		Backup:           recovery.Backup{Path: backupPath, Scope: recovery.BackupScopeWhole, State: recovery.BackupStateRequired},
+	}
+	recordRecoveryBackupPayloadEvidence(t, repoRoot, &plan)
+	restoreClone := recovery.SetRestoreBackupCloneHookForTest(func(src, dst string) error {
+		if _, err := engine.CloneToNew(engine.NewCopyEngine(), src, dst); err != nil {
+			return err
+		}
+		require.NoError(t, os.RemoveAll(mainPath))
+		if err := os.Symlink(outside, mainPath); err != nil {
+			t.Skipf("symlinks not supported: %v", err)
+		}
+		return nil
+	})
+	defer restoreClone()
+
+	err := recovery.NewManager(repoRoot).RestoreBackup(&plan)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "symlink")
+	assert.Equal(t, "outside original", string(requireReadFile(t, filepath.Join(outside, "outside.txt"))))
+	assert.NoFileExists(t, filepath.Join(outside, "original.txt"))
+}
+
+func TestRestoreBackupRejectsMissingPayloadEvidenceBeforeMutation(t *testing.T) {
+	repoRoot, repoID := setupRecoveryManagerRepo(t)
+	mainPath := recoveryMainPayloadPath(t, repoRoot)
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "current.txt"), []byte("restored current"), 0644))
+	backupPath := recoveryBackupPath(t, mainPath)
+	require.NoError(t, os.MkdirAll(backupPath, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(backupPath, "original.txt"), []byte("original backup"), 0644))
+	plan := recovery.Plan{
+		SchemaVersion:       recovery.SchemaVersion,
+		RepoID:              repoID,
+		PlanID:              "RP-missing-backup-evidence",
+		Status:              recovery.StatusActive,
+		Operation:           recovery.OperationRestore,
+		RestorePlanID:       "restore-preview",
+		Workspace:           "main",
+		Folder:              mainPath,
+		SourceSavePoint:     model.NewSnapshotID(),
+		CreatedAt:           time.Now().UTC(),
+		UpdatedAt:           time.Now().UTC(),
+		PreWorktreeState:    recovery.WorktreeState{Name: "main", RealPath: mainPath},
+		PreRecoveryEvidence: "expected-pre-recovery-evidence",
+		Backup:              recovery.Backup{Path: backupPath, Scope: recovery.BackupScopeWhole, State: recovery.BackupStateRequired},
+	}
+
+	mgr := recovery.NewManager(repoRoot)
+	err := mgr.RestoreBackup(&plan)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, recovery.ErrBackupUntrusted)
+	assert.Contains(t, err.Error(), "no backup content evidence")
+	assert.Empty(t, mgr.LastTransferRecords())
+	assert.Equal(t, "restored current", string(requireReadFile(t, filepath.Join(mainPath, "current.txt"))))
+	assert.NoFileExists(t, filepath.Join(mainPath, "original.txt"))
+	assert.FileExists(t, filepath.Join(backupPath, "original.txt"))
+}
+
+func TestRestoreBackupRejectsTamperedPayloadEvidenceBeforeMutation(t *testing.T) {
+	repoRoot, repoID := setupRecoveryManagerRepo(t)
+	mainPath := recoveryMainPayloadPath(t, repoRoot)
+	require.NoError(t, os.WriteFile(filepath.Join(mainPath, "current.txt"), []byte("restored current"), 0644))
+	backupPath := recoveryBackupPath(t, mainPath)
+	require.NoError(t, os.MkdirAll(backupPath, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(backupPath, "original.txt"), []byte("original backup"), 0644))
+	plan := recovery.Plan{
+		SchemaVersion:    recovery.SchemaVersion,
+		RepoID:           repoID,
+		PlanID:           "RP-tampered-backup-evidence",
+		Status:           recovery.StatusActive,
+		Operation:        recovery.OperationRestore,
+		RestorePlanID:    "restore-preview",
+		Workspace:        "main",
+		Folder:           mainPath,
+		SourceSavePoint:  model.NewSnapshotID(),
+		CreatedAt:        time.Now().UTC(),
+		UpdatedAt:        time.Now().UTC(),
+		PreWorktreeState: recovery.WorktreeState{Name: "main", RealPath: mainPath},
+		Backup:           recovery.Backup{Path: backupPath, Scope: recovery.BackupScopeWhole, State: recovery.BackupStateRequired},
+	}
+	recordRecoveryBackupPayloadEvidence(t, repoRoot, &plan)
+	require.NoError(t, os.WriteFile(filepath.Join(backupPath, "original.txt"), []byte("tampered backup"), 0644))
+
+	mgr := recovery.NewManager(repoRoot)
+	err := mgr.RestoreBackup(&plan)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, recovery.ErrBackupUntrusted)
+	assert.Contains(t, err.Error(), "does not match")
+	assert.Empty(t, mgr.LastTransferRecords())
+	assert.Equal(t, "restored current", string(requireReadFile(t, filepath.Join(mainPath, "current.txt"))))
+	assert.NoFileExists(t, filepath.Join(mainPath, "original.txt"))
+	assert.Equal(t, "tampered backup", string(requireReadFile(t, filepath.Join(backupPath, "original.txt"))))
 }
 
 func TestRestorePathPlanRejectsWholeBackupScopeWithoutMutatingWorkspace(t *testing.T) {
@@ -531,6 +702,7 @@ func TestRestorePathBackupCopyFailureKeepsBackupReusable(t *testing.T) {
 			Entries:      []recovery.BackupEntry{{Path: "app.txt", HadOriginal: true}},
 		},
 	}
+	recordRecoveryBackupPayloadEvidence(t, repoRoot, &plan)
 	restoreClone := recovery.SetRestoreBackupCloneHookForTest(func(src, dst string) error {
 		return errors.New("injected backup copy failure")
 	})
@@ -571,6 +743,7 @@ func TestRestoreWholeBackupCopyFailureKeepsBackupReusable(t *testing.T) {
 		PreWorktreeState: recovery.WorktreeState{Name: "main", RealPath: mainPath},
 		Backup:           recovery.Backup{Path: backupPath, Scope: recovery.BackupScopeWhole, State: recovery.BackupStateRequired},
 	}
+	recordRecoveryBackupPayloadEvidence(t, repoRoot, &plan)
 	restoreClone := recovery.SetRestoreBackupCloneHookForTest(func(src, dst string) error {
 		return errors.New("injected backup copy failure")
 	})
@@ -613,6 +786,7 @@ func TestRestoreWholeBackupCapacityFailurePreventsCopyAndPreservesPayloads(t *te
 		PreWorktreeState: recovery.WorktreeState{Name: "main", RealPath: mainPath},
 		Backup:           recovery.Backup{Path: backupPath, Scope: recovery.BackupScopeWhole, State: recovery.BackupStateRequired},
 	}
+	recordRecoveryBackupPayloadEvidence(t, repoRoot, &plan)
 	restoreCapacity := recovery.SetRestoreBackupCapacityGateForTest(capacitygate.Gate{Meter: &recoveryStaticMeter{available: 5}, SafetyMarginBytes: 0})
 	defer restoreCapacity()
 	cloneCalled := false
@@ -660,6 +834,7 @@ func TestRestoreWholeBackupRecordsFinalTransferForRecoveryCopyPoint(t *testing.T
 		PreWorktreeState: recovery.WorktreeState{Name: "main", RealPath: mainPath},
 		Backup:           recovery.Backup{Path: backupPath, Scope: recovery.BackupScopeWhole, State: recovery.BackupStateRequired},
 	}
+	recordRecoveryBackupPayloadEvidence(t, repoRoot, &plan)
 	planner := &recoveryRecordingPlanner{}
 	restorePlanner := recovery.SetRestoreBackupTransferPlannerForTest(planner)
 	defer restorePlanner()
@@ -721,6 +896,7 @@ func TestRestorePathBackupAbsentOriginalRemovesRestoredPath(t *testing.T) {
 			Entries:      []recovery.BackupEntry{{Path: "created.txt", HadOriginal: false}},
 		},
 	}
+	recordRecoveryBackupPayloadEvidence(t, repoRoot, &plan)
 
 	require.NoError(t, recovery.NewManager(repoRoot).RestoreBackup(&plan))
 	assert.NoFileExists(t, filepath.Join(mainPath, "created.txt"))
@@ -754,6 +930,7 @@ func TestRestorePathBackupAbsentOriginalDoesNotGateCopyOrRecordTransfer(t *testi
 			Entries:      []recovery.BackupEntry{{Path: "created.txt", HadOriginal: false}},
 		},
 	}
+	recordRecoveryBackupPayloadEvidence(t, repoRoot, &plan)
 	restoreCapacity := recovery.SetRestoreBackupCapacityGateForTest(capacitygate.Gate{Meter: &recoveryStaticMeter{available: 0}, SafetyMarginBytes: 0})
 	defer restoreCapacity()
 	cloneCalled := false
@@ -800,6 +977,7 @@ func TestRestorePathBackupOriginalRecordsTransferOnlyForCopiedEntry(t *testing.T
 			Entries:      []recovery.BackupEntry{{Path: "app.txt", HadOriginal: true}},
 		},
 	}
+	recordRecoveryBackupPayloadEvidence(t, repoRoot, &plan)
 	planner := &recoveryRecordingPlanner{}
 	restorePlanner := recovery.SetRestoreBackupTransferPlannerForTest(planner)
 	defer restorePlanner()
@@ -875,6 +1053,16 @@ func requireReadFile(t *testing.T, path string) []byte {
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	return data
+}
+
+func recordRecoveryBackupPayloadEvidence(t *testing.T, repoRoot string, plan *recovery.Plan) {
+	t.Helper()
+	evidence, err := recovery.NewManager(repoRoot).BackupPayloadEvidence(plan)
+	require.NoError(t, err)
+	plan.Backup.PayloadEvidence = evidence
+	if strings.TrimSpace(plan.PreRecoveryEvidence) == "" {
+		plan.PreRecoveryEvidence = evidence
+	}
 }
 
 func writeRawRecoveryPlan(t *testing.T, repoRoot, planID string, value map[string]any) error {

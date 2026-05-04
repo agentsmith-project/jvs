@@ -328,7 +328,7 @@ func validateSeparatedInitRoots(controlRoot, payloadRoot string) (separatedInitR
 	if same, known, err := sameExistingPath(controlPath, payloadPath); err != nil {
 		return separatedInitRoots{}, permissionOrWrappedErr("compare control and payload identity", err)
 	} else if known && same {
-		return separatedInitRoots{}, errclass.ErrControlPayloadOverlap.WithMessage("control root and payload root refer to the same filesystem object")
+		return separatedInitRoots{}, errclass.ErrControlWorkspaceOverlap.WithMessage("control root and payload root refer to the same filesystem object")
 	}
 	return separatedInitRoots{
 		controlPath:     controlPath,
@@ -340,13 +340,13 @@ func validateSeparatedInitRoots(controlRoot, payloadRoot string) (separatedInitR
 
 func validateSeparatedRootBoundary(controlPath, payloadPath, controlPhysical, payloadPhysical string) error {
 	if controlPath == payloadPath || controlPhysical == payloadPhysical {
-		return errclass.ErrControlPayloadOverlap.WithMessage("control root and payload root must be distinct")
+		return errclass.ErrControlWorkspaceOverlap.WithMessage("control root and payload root must be distinct")
 	}
 	if absPathContains(controlPath, payloadPath) || absPathContains(controlPhysical, payloadPhysical) {
-		return errclass.ErrPayloadInsideControl.WithMessage("payload root must not be inside control root")
+		return errclass.ErrWorkspaceInsideControl.WithMessage("payload root must not be inside control root")
 	}
 	if absPathContains(payloadPath, controlPath) || absPathContains(payloadPhysical, controlPhysical) {
-		return errclass.ErrControlInsidePayload.WithMessage("control root must not be inside payload root")
+		return errclass.ErrControlInsideWorkspace.WithMessage("control root must not be inside payload root")
 	}
 	return nil
 }
@@ -446,7 +446,7 @@ func validateSeparatedRegisteredPayloadRoot(controlRoot, payloadRoot string) err
 	info, err := os.Lstat(payloadRoot)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return errclass.ErrPayloadMissing.WithMessagef("payload root does not exist: %s", payloadRoot)
+			return errclass.ErrWorkspaceMissing.WithMessagef("payload root does not exist: %s", payloadRoot)
 		}
 		return permissionOrWrappedErr("stat payload root", err)
 	}
@@ -454,7 +454,7 @@ func validateSeparatedRegisteredPayloadRoot(controlRoot, payloadRoot string) err
 		return errclass.ErrPathBoundaryEscape.WithMessagef("payload root must not be a symlink: %s", payloadRoot)
 	}
 	if !info.IsDir() {
-		return errclass.ErrPayloadMissing.WithMessagef("payload root is not a directory: %s", payloadRoot)
+		return errclass.ErrWorkspaceMissing.WithMessagef("payload root is not a directory: %s", payloadRoot)
 	}
 	controlPhysical, err := existingPhysicalPath(controlRoot)
 	if err != nil {
@@ -463,7 +463,7 @@ func validateSeparatedRegisteredPayloadRoot(controlRoot, payloadRoot string) err
 	payloadPhysical, err := existingPhysicalPath(payloadRoot)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return errclass.ErrPayloadMissing.WithMessagef("payload root does not exist: %s", payloadRoot)
+			return errclass.ErrWorkspaceMissing.WithMessagef("payload root does not exist: %s", payloadRoot)
 		}
 		return permissionOrWrappedErr("resolve payload root", err)
 	}
@@ -473,7 +473,7 @@ func validateSeparatedRegisteredPayloadRoot(controlRoot, payloadRoot string) err
 func rejectPayloadLocatorPresent(payloadRoot string) error {
 	locatorPath := filepath.Join(payloadRoot, JVSDirName)
 	if _, err := os.Lstat(locatorPath); err == nil {
-		return errclass.ErrPayloadLocatorPresent.WithMessagef("payload root contains root-level %s path: %s", JVSDirName, locatorPath)
+		return errclass.ErrWorkspaceControlMarkerPresent.WithMessagef("payload root contains root-level %s path: %s", JVSDirName, locatorPath)
 	} else if os.IsNotExist(err) {
 		return nil
 	} else if errors.Is(err, os.ErrPermission) {
@@ -497,7 +497,7 @@ func validateSeparatedPayloadSymlinkBoundary(controlRoot, payloadRoot string) er
 	payloadInfo, err := os.Lstat(payloadRoot)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return errclass.ErrPayloadMissing.WithMessagef("payload root does not exist: %s", payloadRoot)
+			return errclass.ErrWorkspaceMissing.WithMessagef("payload root does not exist: %s", payloadRoot)
 		}
 		return permissionOrWrappedErr("stat payload root boundary", err)
 	}
@@ -536,7 +536,7 @@ func validateSeparatedPayloadInitSymlinkBoundary(roots separatedInitRoots) error
 	payloadInfo, err := os.Lstat(roots.payloadPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return errclass.ErrPayloadMissing.WithMessagef("payload root does not exist: %s", roots.payloadPath)
+			return errclass.ErrWorkspaceMissing.WithMessagef("payload root does not exist: %s", roots.payloadPath)
 		}
 		return permissionOrWrappedErr("stat payload root boundary", err)
 	}

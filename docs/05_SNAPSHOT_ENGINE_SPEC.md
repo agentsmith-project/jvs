@@ -35,9 +35,9 @@ High-level save flow:
 1. Resolve workspace and managed-file boundary.
 2. Check capacity before staging.
 3. Materialize managed files into unpublished staging.
-4. Compute payload root hash.
+4. Compute content root hash.
 5. Build descriptor and descriptor checksum.
-6. Publish payload and descriptor atomically.
+6. Publish content and descriptor atomically.
 7. Update workspace save point metadata last.
 8. Append audit record and clean runtime state.
 

@@ -115,7 +115,9 @@ Recovery requirements:
 - `recovery resume` retries or confirms the restore and leaves history
   unchanged.
 - `recovery rollback` restores the saved pre-restore state when evidence
-  proves it is safe.
+  proves it is safe. When a retained recovery backup is required, its content
+  evidence must still match the saved pre-restore evidence before any rollback
+  copy is attempted.
 - Source save points referenced by active recovery plans remain protected from
   cleanup until the plan is resolved.
 
@@ -157,4 +159,4 @@ jvs restore 1771589366482-abc12345 --save-first
 | Unsaved changes | Restore would overwrite unsaved managed files | Save first, or preview again with `--save-first` or `--discard-unsaved` |
 | Target changed since preview | New save point or file evidence changed after preview | Run a new preview |
 | Active recovery plan | A previous restore is unresolved | Use `jvs recovery status`, then resume or rollback |
-| Recovery backup missing/unsafe | Rollback cannot prove the saved state | Escalate with the recovery plan and preserved evidence |
+| Recovery backup missing/unsafe or content evidence mismatch | Rollback cannot prove the saved state | Leave the recovery plan active; escalate with the recovery plan and preserved evidence |

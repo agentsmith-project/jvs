@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -43,9 +44,9 @@ func createLibraryWorkspace(t *testing.T, client *jvs.Client, name string) strin
 	_, err := wtMgr.Create(name, nil)
 	require.NoError(t, err)
 
-	payloadPath, err := wtMgr.Path(name)
+	workspacePath, err := wtMgr.Path(name)
 	require.NoError(t, err)
-	return payloadPath
+	return workspacePath
 }
 
 func setSavePointCreatedAt(t *testing.T, client *jvs.Client, savePointID jvs.SavePointID, createdAt time.Time) {
@@ -218,6 +219,64 @@ func TestPublicFacadeKeepsLegacyStorageNamesOutOfPublicAPI(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestPublicFacadeSavePointUsesContentHashVocabulary(t *testing.T) {
+	fields := publicFacadeStructFields(t, "SavePoint")
+	contentField, ok := fields["ContentRootHash"]
+	require.True(t, ok, "pkg/jvs.SavePoint must expose ContentRootHash")
+	assert.Equal(t, "content_root_hash", contentField)
+
+	if tag, ok := fields["PayloadRootHash"]; ok {
+		t.Fatalf("pkg/jvs.SavePoint must not expose PayloadRootHash with json tag %q", tag)
+	}
+	for name, tag := range fields {
+		assert.NotContains(t, name, "Payload")
+		assert.NotContains(t, tag, "payload")
+	}
+}
+
+func publicFacadeStructFields(t *testing.T, structName string) map[string]string {
+	t.Helper()
+
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, filepath.Join("..", "..", "pkg", "jvs"), nil, 0)
+	require.NoError(t, err)
+	pkg, ok := pkgs["jvs"]
+	require.True(t, ok, "pkg/jvs should parse as package jvs")
+
+	fields := make(map[string]string)
+	for _, file := range pkg.Files {
+		for _, decl := range file.Decls {
+			genDecl, ok := decl.(*ast.GenDecl)
+			if !ok {
+				continue
+			}
+			for _, spec := range genDecl.Specs {
+				typeSpec, ok := spec.(*ast.TypeSpec)
+				if !ok || typeSpec.Name.Name != structName {
+					continue
+				}
+				structType, ok := typeSpec.Type.(*ast.StructType)
+				require.True(t, ok, "pkg/jvs.%s should be a struct", structName)
+				for _, field := range structType.Fields.List {
+					if len(field.Names) == 0 || field.Tag == nil {
+						continue
+					}
+					tag, err := strconv.Unquote(field.Tag.Value)
+					require.NoError(t, err)
+					jsonName := reflect.StructTag(tag).Get("json")
+					jsonName = strings.TrimSuffix(strings.Split(jsonName, ",")[0], ",")
+					for _, name := range field.Names {
+						fields[name.Name] = jsonName
+					}
+				}
+				return fields
+			}
+		}
+	}
+	t.Fatalf("pkg/jvs.%s not found", structName)
+	return nil
 }
 
 func TestInit_CreatesNewRepo(t *testing.T) {

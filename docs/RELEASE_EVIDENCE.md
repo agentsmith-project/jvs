@@ -6,7 +6,7 @@ evidence for the published GA line.
 
 Evidence model:
 
-- Tag/source archive readiness: a source archive is the immutable tag snapshot
+- Tag/source archive readiness: a source archive is the immutable source archive
   captured when the tag is created. It may contain readiness or candidate
   evidence from that moment, and it must not be rewritten to add facts created
   by release publication.
@@ -44,10 +44,10 @@ Raw logs and `coverage.out` are not stored here.
   workspace move/rename/delete preview/run and recovery posture, external
   workspace pending lifecycle evidence, machine-readable
   `recommended_next_command`, repo clone workflow, and filesystem-aware
-  transfer planning/implementation.
-- Source archive boundary: no immutable `v0.4.6` tag snapshot exists yet. When
-  the pending final tag is created, the source archive will be the immutable tag
-  snapshot and will record readiness from tag time.
+  transfer planning/implementation, plus pre-GA public vocabulary cleanup.
+- Source archive boundary: no immutable `v0.4.6` tag source archive exists yet.
+  When the pending final tag is created, the source archive will be the
+  immutable source archive and will record readiness from tag time.
 - publication final evidence: pending. The future GitHub Release page and
   post-release main ledger will record workflow run, release state, artifacts,
   checksum validation, signing identity, smoke, and coverage facts after the
@@ -58,8 +58,9 @@ Raw logs and `coverage.out` are not stored here.
   changes, repo detach metadata, registered workspace updates, external
   workspace pending lifecycle discovery, `recommended_next_command` recovery
   guidance, repo clone workflow coverage, imported clone history protection,
-  cleanup boundaries, and filesystem-aware transfer behavior across save,
-  view, restore, workspace creation, and clone paths.
+  cleanup boundaries, filesystem-aware transfer behavior across save, view,
+  restore, workspace creation, and clone paths, and public vocabulary cleanup
+  for Go facade fields, error codes, and transfer JSON reporting.
 
 ### Release gate summary
 
@@ -103,6 +104,10 @@ to CI and the post-release evidence ledger.
   lifecycle evidence, strict doctor, integrity checks, restore preview/run and
   recovery behavior, runtime repair path, cleanup boundaries, and
   filesystem-aware transfer planning before publication.
+- Public vocabulary readiness: release-gate coverage is expected to keep
+  `pkg/jvs.SavePoint` on `ContentRootHash` / `content_root_hash`, public
+  errors on `E_SAVE_POINT_*` and `E_CLEANUP_*`, and transfer JSON public
+  references plus free-text sanitizer output on content/save point vocabulary.
 - Pending lifecycle readiness: interrupted repo or workspace lifecycle work is
   expected to report the pending operation and machine-readable
   `recommended_next_command` instead of treating the half-completed state as
@@ -124,6 +129,11 @@ to CI and the post-release evidence ledger.
   recovery posture, external workspace pending lifecycle evidence,
   machine-readable `recommended_next_command`, repo clone workflow, and
   filesystem-aware transfer planning/implementation.
+- Public vocabulary cleanup evidence: this pre-GA public vocabulary cleanup is
+  a clean break with no backward-compatible aliases. The user-visible surface
+  is `ContentRootHash` / `content_root_hash`, `E_SAVE_POINT_*`,
+  `E_CLEANUP_*`, transfer JSON public references, and transfer free-text
+  sanitizer output.
 - Runtime-state migration boundary: non-portable JVS runtime state remains
   destination-local and must be rebuilt at the destination with
   `jvs doctor --strict --repair-runtime`.
@@ -173,9 +183,9 @@ to CI and the post-release evidence ledger.
   visibility, `jvs history from` default source behavior, workspace pointer
   movement after saving, implicit workspace creation rejection, and `--name`
   decoupling from folder basename.
-- Source archive boundary: no immutable `v0.4.5` tag snapshot exists yet. When
-  the pending final tag is created, the source archive will be the immutable tag
-  snapshot and will record readiness from tag time.
+- Source archive boundary: no immutable `v0.4.5` tag source archive exists yet.
+  When the pending final tag is created, the source archive will be the
+  immutable source archive and will record readiness from tag time.
 - publication final evidence: pending. The future GitHub Release page and
   post-release main ledger will record workflow run, release state, artifacts,
   checksum validation, signing identity, smoke, and coverage facts after the
@@ -295,9 +305,9 @@ to CI and the post-release evidence ledger.
 - Baseline: user documentation GA readiness, Best Practices discoverability,
   non-technical workflow tutorials, workflow placeholder conformance, and
   product gap visibility for portability and backup workflow.
-- Source archive boundary: no immutable `v0.4.4` tag snapshot exists yet. When
-  the pending final tag is created, the source archive will be the immutable tag
-  snapshot and will record readiness from tag time.
+- Source archive boundary: no immutable `v0.4.4` tag source archive exists yet.
+  When the pending final tag is created, the source archive will be the
+  immutable source archive and will record readiness from tag time.
 - publication final evidence: pending. The future GitHub Release page and
   post-release main ledger will record workflow run, release state, artifacts,
   checksum validation, signing identity, smoke, and coverage facts after the
@@ -413,9 +423,9 @@ to CI and the post-release evidence ledger.
 - Baseline: cleanup public boundary hardening, GA safety/clarity, migration
   whole-folder copy fail-closed docs/conformance hardening, and compact shell
   function guard scope coverage.
-- Source archive boundary: no immutable `v0.4.3` tag snapshot exists yet. When
-  the pending final tag is created, the source archive will be the immutable tag
-  snapshot and will record readiness from tag time.
+- Source archive boundary: no immutable `v0.4.3` tag source archive exists yet.
+  When the pending final tag is created, the source archive will be the
+  immutable source archive and will record readiness from tag time.
 - publication final evidence: pending. The future GitHub Release page and
   post-release main ledger will record workflow run, release state, artifacts,
   checksum validation, signing identity, smoke, and coverage facts after the
@@ -526,7 +536,7 @@ to CI and the post-release evidence ledger.
 - Commit message: `ci: publish release signatures as bundles`
 - Changelog heading date: `2026-04-28`
 - Baseline: save point public-contract convergence and GA docs alignment.
-- Source archive boundary: the `v0.4.2` source archive is the immutable tag snapshot
+- Source archive boundary: the `v0.4.2` source archive is the immutable source archive
   for the release and records readiness from tag time.
 - Tag source archive evidence class: `GA candidate readiness`
 - publication final evidence: GitHub Release page and post-release main ledger

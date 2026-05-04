@@ -36,22 +36,6 @@ var workspaceCmd = &cobra.Command{
 	},
 }
 
-const workspacePublicUsageTemplate = `Usage:
-  {{.CommandPath}} [command]
-
-Available Commands:
-{{- range .Commands}}{{if .IsAvailableCommand}}
- {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}
-
-Flags:
-{{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}
-
-Global Flags:
-{{.InheritedFlags.FlagUsages | trimTrailingWhitespaces}}
-
-Use "{{.CommandPath}} [command] --help" for more information about a command.
-`
-
 var workspaceNewCmd = &cobra.Command{
 	Use:   "new <folder> --from <save>",
 	Short: "Create a workspace from a save point",
@@ -546,7 +530,6 @@ func printWorkspaceMoveRunResult(result publicWorkspaceMoveRunResult) {
 }
 
 func init() {
-	workspaceCmd.SetUsageTemplate(workspacePublicUsageTemplate)
 	workspaceNewCmd.Flags().StringVar(&workspaceNewFromRef, "from", "", "save point ID to copy into the new workspace")
 	workspaceNewCmd.Flags().StringVar(&workspaceNewName, "name", "", "workspace name (defaults to the folder name)")
 	workspaceListCmd.Flags().BoolVar(&workspaceListStatus, "status", false, "include unsaved change status")

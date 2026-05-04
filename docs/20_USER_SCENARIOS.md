@@ -118,7 +118,7 @@ Acceptance criteria:
   the explicit target path.
 - The source workspace is unchanged.
 - The printed folder carries only the control information needed for command
-  targeting; that information is not user payload.
+  targeting; that information is not workspace content.
 - The new workspace starts with no newest save point until first save.
 - Status and JSON record `started_from_save_point`.
 - First save in the new workspace starts its own history and records
@@ -129,14 +129,14 @@ Current coverage:
 - Workspace creation conformance covers distinct folders, source preservation,
   entered-folder targeting, first-save history, and `started_from_save_point`.
 - Boundary conformance covers workspace targeting state as JVS control data,
-  not payload.
+  not workspace content.
 
-## GA-US-04: User Payload Boundary
+## GA-US-04: Managed Content Boundary
 
 Persona: user who expects JVS to manage only their files, not JVS control data.
 
 Goal: save, view, and restore managed content while JVS control data and
-runtime state remain outside the user payload.
+runtime state remain outside managed workspace content.
 
 Workflow:
 
@@ -151,12 +151,12 @@ jvs doctor --strict
 Expected behavior: managed paths such as `managed/report.txt` can be saved,
 viewed, and restored. JVS control data and runtime state for workspace
 targeting, active operations, restore plans, recovery plans, and cleanup plans
-are never saved, viewed, restored, deleted, or recreated as user payload.
+are never saved, viewed, restored, deleted, or recreated as user files.
 
 Acceptance criteria:
 
 - Save captures managed files and excludes JVS control data.
-- View materializes only user payload and rejects attempts to view JVS control
+- View materializes only saved content and rejects attempts to view JVS control
   data as a path inside a save point.
 - Restore rejects JVS control paths as restore targets.
 - Whole-workspace restore does not delete or recreate JVS control data or
@@ -168,8 +168,8 @@ Acceptance criteria:
 
 Current coverage:
 
-- Payload purity, migration/runtime-state boundary, and doctor layout checks.
-- `TestBoundaryJSON_UserPayloadExcludesJVSControlData` covers managed payload
+- Managed-file boundary, migration/runtime-state boundary, and doctor layout checks.
+- `TestBoundaryJSON_UserPayloadExcludesJVSControlData` covers managed-file
   purity for JVS control data, restore plans, recovery plans, cleanup plans,
   and active operation state.
 
@@ -194,7 +194,7 @@ change the real folder, workspace metadata, or history.
 
 Acceptance criteria:
 
-- `jvs view <save>` opens a read-only view of the saved payload.
+- `jvs view <save>` opens a read-only view of the saved content.
 - `jvs view <save> <path>` opens a read-only view of a file or directory path.
 - Large files and directories use the same read-only contract as small files.
 - Active views protect their source save point from cleanup while open.
@@ -332,11 +332,11 @@ public contract.
 
 - Guided selection could help users pick a save point or path candidate
   without turning messages, labels, or tags into restore targets.
-- Future payload-boundary features are outside GA; GA does not provide
+- Future managed-file boundary features are outside GA; GA does not provide
   configurable file selection.
 - Domain-specific presets, templates, or workflow bundles are explicitly out
   of the GA plan. They can be reconsidered only if they compile to the generic
-  capabilities above and do not change payload, view, restore, recovery, or
+  capabilities above and do not change save, view, restore, recovery, or
   cleanup semantics.
 
 ## Safety Principles
@@ -348,7 +348,7 @@ public contract.
 - `jvs workspace new <folder> --from <save>` creates a separate real folder.
 - Workspace removal must preview first, run only a reviewed plan, and leave
   save point storage deletion to cleanup.
-- JVS control data and runtime state are never user payload.
+- JVS control data and runtime state are never workspace content.
 - `jvs recovery status`, `jvs recovery resume`, and `jvs recovery rollback`
   are the public path for interrupted restore.
 - `jvs cleanup preview` and `jvs cleanup run --plan-id <plan-id>` keep cleanup

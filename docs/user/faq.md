@@ -59,7 +59,8 @@ jvs doctor --strict
 ```
 
 `jvs view` opens a read-only view path. Use `jvs view close <view-id>` when you
-are finished.
+are finished; it clears JVS-owned view state and releases cleanup protection for
+that open view.
 
 ## Which Commands Only Preview Or Check?
 
@@ -99,6 +100,7 @@ jvs repo rename --run <repo-rename-plan-id>
 jvs repo detach --run <repo-detach-plan-id>
 jvs recovery resume <recovery-plan>
 jvs recovery rollback <recovery-plan>
+jvs doctor --repair-runtime
 jvs cleanup run --plan-id <cleanup-plan-id>
 ```
 
@@ -106,7 +108,9 @@ jvs cleanup run --plan-id <cleanup-plan-id>
 the JVS workspace name, not the real folder path. Move, delete, rename, detach,
 restore, and cleanup runs should use the plan ID from the preview you just
 reviewed. Recovery resume or rollback may change files while finishing an
-interrupted restore.
+interrupted restore. `jvs doctor --repair-runtime` changes JVS runtime state in
+JVS control data by running safe automatic repairs after interrupted operations;
+it does not rewrite workspace files or save point history.
 
 ## Why Does Restore Stop When I Have Unsaved Changes?
 
@@ -237,8 +241,10 @@ copy behavior, JVS can use it; otherwise it falls back to portable file copies.
 ## Is JVS A Backup System?
 
 No. Save points help recover local folder state, but you still need normal
-backups for disk loss, account loss, or machine loss. Back up both your folder
-contents and the `.jvs/` control data using your storage tools.
+backups for disk loss, account loss, or machine loss. For an ordinary `.jvs/`
+project, back up the whole folder, including `.jvs/`, if you want history to
+come with the files. For an external control root, back up the workspace folder
+and the control root together.
 
 ## What Should I Do After A Crash During Restore?
 

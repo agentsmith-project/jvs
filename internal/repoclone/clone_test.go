@@ -224,7 +224,7 @@ func TestSeparatedCloneRejectsTargetOverlapOccupiedAndAllProtection(t *testing.T
 				return root, root
 			},
 			mode:        repoclone.SavePointsModeMain,
-			code:        errclass.ErrControlPayloadOverlap.Code,
+			code:        errclass.ErrControlWorkspaceOverlap.Code,
 			wantMessage: "workspace folder",
 		},
 		{
@@ -234,7 +234,7 @@ func TestSeparatedCloneRejectsTargetOverlapOccupiedAndAllProtection(t *testing.T
 				return controlRoot, filepath.Join(controlRoot, "payload")
 			},
 			mode:        repoclone.SavePointsModeMain,
-			code:        errclass.ErrPayloadInsideControl.Code,
+			code:        errclass.ErrWorkspaceInsideControl.Code,
 			wantMessage: "target folder",
 		},
 		{
@@ -244,7 +244,7 @@ func TestSeparatedCloneRejectsTargetOverlapOccupiedAndAllProtection(t *testing.T
 				return filepath.Join(payloadRoot, "control"), payloadRoot
 			},
 			mode:        repoclone.SavePointsModeMain,
-			code:        errclass.ErrControlInsidePayload.Code,
+			code:        errclass.ErrControlInsideWorkspace.Code,
 			wantMessage: "target folder",
 		},
 		{
@@ -347,7 +347,7 @@ func TestSeparatedCloneRejectsActiveSourceStateBeforeTargetWrites(t *testing.T) 
 			setup: func(t *testing.T, controlRoot string) {
 				require.NoError(t, os.WriteFile(filepath.Join(controlRoot, ".jvs", "restore-plans", "restore-plan.json"), []byte("{}\n"), 0644))
 			},
-			code: errclass.ErrActiveOperationBlocking.Code,
+			code: errclass.ErrRecoveryBlocking.Code,
 		},
 		{
 			name: "recovery plan",

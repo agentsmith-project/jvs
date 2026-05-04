@@ -176,7 +176,8 @@ func TestSeparatedControlOpsPayloadLocatorPresentFailsClosedBeforeMutation(t *te
 			env := decodeContractEnvelope(t, stdout)
 			require.False(t, env.OK, stdout)
 			require.NotNil(t, env.Error)
-			assert.Equal(t, "E_PAYLOAD_LOCATOR_PRESENT", env.Error.Code)
+			assert.Equal(t, "E_WORKSPACE_CONTROL_MARKER_PRESENT", env.Error.Code)
+			assert.NotContains(t, env.Error.Code, "PAYLOAD")
 			assert.JSONEq(t, `null`, string(env.Data))
 		})
 	}
@@ -711,7 +712,7 @@ func assertSeparatedTransferSource(t *testing.T, data map[string]any, payloadRoo
 	assert.Equal(t, payloadRoot, primary["source_path"])
 }
 
-func assertSeparatedSaveTransfer(t *testing.T, data map[string]any, controlRoot, payloadRoot string) {
+func assertSeparatedSaveTransfer(t *testing.T, data map[string]any, _ string, payloadRoot string) {
 	t.Helper()
 
 	primary := requireSeparatedTransferByID(t, data, "save-primary")
@@ -719,29 +720,29 @@ func assertSeparatedSaveTransfer(t *testing.T, data map[string]any, controlRoot,
 	assert.Equal(t, "materialization", primary["phase"])
 	assert.Equal(t, "workspace_content", primary["source_role"])
 	assert.Equal(t, payloadRoot, primary["source_path"])
-	assert.Equal(t, "save_point_staging", primary["destination_role"])
-	assertPathUnder(t, primary["materialization_destination"], filepath.Join(controlRoot, ".jvs"))
-	assertPathUnder(t, primary["published_destination"], filepath.Join(controlRoot, ".jvs", "snapshots"))
-	assertPathUnder(t, primary["capability_probe_path"], filepath.Join(controlRoot, ".jvs"))
+	assert.Equal(t, "save_point_content", primary["destination_role"])
+	assert.Equal(t, "temporary_folder", primary["materialization_destination"])
+	assertStringHasPrefix(t, primary["published_destination"], "save_point:")
+	assert.Equal(t, "control_data", primary["capability_probe_path"])
 	assertSeparatedTransferCopyEvidence(t, primary)
 }
 
-func assertSeparatedViewTransfer(t *testing.T, data map[string]any, controlRoot, viewPath string) {
+func assertSeparatedViewTransfer(t *testing.T, data map[string]any, _ string, _ string) {
 	t.Helper()
 
 	primary := requireSeparatedTransferByID(t, data, "view-primary")
 	assert.Equal(t, "view", primary["operation"])
 	assert.Equal(t, "view_materialization", primary["phase"])
-	assert.Equal(t, "save_point_payload", primary["source_role"])
-	assertPathUnder(t, primary["source_path"], filepath.Join(controlRoot, ".jvs", "snapshots"))
-	assert.Equal(t, "view_directory", primary["destination_role"])
-	assertPathUnder(t, primary["materialization_destination"], filepath.Join(controlRoot, ".jvs", "views"))
-	assertPathUnder(t, primary["capability_probe_path"], filepath.Join(controlRoot, ".jvs", "views"))
-	assert.Equal(t, viewPath, primary["published_destination"])
+	assert.Equal(t, "save_point_content", primary["source_role"])
+	assertStringHasPrefix(t, primary["source_path"], "save_point:")
+	assert.Equal(t, "content_view", primary["destination_role"])
+	assertStringHasPrefix(t, primary["materialization_destination"], "content_view:")
+	assert.Equal(t, primary["materialization_destination"], primary["capability_probe_path"])
+	assertStringHasPrefix(t, primary["published_destination"], primary["materialization_destination"].(string))
 	assertSeparatedTransferCopyEvidence(t, primary)
 }
 
-func assertSeparatedRestorePreviewTransfer(t *testing.T, data map[string]any, controlRoot, payloadRoot string) {
+func assertSeparatedRestorePreviewTransfer(t *testing.T, data map[string]any, _ string, payloadRoot string) {
 	t.Helper()
 
 	primary := requireSeparatedTransferByID(t, data, "restore-preview-validation-primary")
@@ -749,15 +750,16 @@ func assertSeparatedRestorePreviewTransfer(t *testing.T, data map[string]any, co
 	assert.Equal(t, "preview_validation", primary["phase"])
 	assert.Equal(t, "expected", primary["result_kind"])
 	assert.Equal(t, "preview_only", primary["permission_scope"])
-	assert.Equal(t, "save_point_payload", primary["source_role"])
-	assertPathUnder(t, primary["source_path"], filepath.Join(controlRoot, ".jvs", "snapshots"))
-	assert.Equal(t, "restore_preview_validation", primary["destination_role"])
-	assertPathUnder(t, primary["materialization_destination"], filepath.Join(controlRoot, ".jvs"))
+	assert.Equal(t, "save_point_content", primary["source_role"])
+	assertStringHasPrefix(t, primary["source_path"], "save_point:")
+	assert.Equal(t, "temporary_folder", primary["destination_role"])
+	assert.Equal(t, "temporary_folder", primary["materialization_destination"])
+	assert.Equal(t, "control_data", primary["capability_probe_path"])
 	assert.Equal(t, payloadRoot, primary["published_destination"])
 	assertSeparatedTransferCopyEvidence(t, primary)
 }
 
-func assertSeparatedRestoreRunTransfers(t *testing.T, data map[string]any, controlRoot, payloadRoot string) {
+func assertSeparatedRestoreRunTransfers(t *testing.T, data map[string]any, _ string, payloadRoot string) {
 	t.Helper()
 
 	validation := requireSeparatedTransferByID(t, data, "restore-run-source-validation")
@@ -765,21 +767,22 @@ func assertSeparatedRestoreRunTransfers(t *testing.T, data map[string]any, contr
 	assert.Equal(t, "source_validation", validation["phase"])
 	assert.Equal(t, "final", validation["result_kind"])
 	assert.Equal(t, "execution", validation["permission_scope"])
-	assert.Equal(t, "save_point_payload", validation["source_role"])
-	assertPathUnder(t, validation["source_path"], filepath.Join(controlRoot, ".jvs", "snapshots"))
-	assert.Equal(t, "restore_source_validation", validation["destination_role"])
-	assertPathUnder(t, validation["materialization_destination"], filepath.Join(controlRoot, ".jvs"))
+	assert.Equal(t, "save_point_content", validation["source_role"])
+	assertStringHasPrefix(t, validation["source_path"], "save_point:")
+	assert.Equal(t, "temporary_folder", validation["destination_role"])
+	assert.Equal(t, "temporary_folder", validation["materialization_destination"])
+	assert.Equal(t, "control_data", validation["capability_probe_path"])
 	assert.Equal(t, payloadRoot, validation["published_destination"])
 	assertSeparatedTransferCopyEvidence(t, validation)
 
 	primary := requireSeparatedTransferByID(t, data, "restore-run-primary")
 	assert.Equal(t, "restore", primary["operation"])
 	assert.Equal(t, "materialization", primary["phase"])
-	assert.Equal(t, "save_point_payload", primary["source_role"])
-	assertPathUnder(t, primary["source_path"], filepath.Join(controlRoot, ".jvs", "snapshots"))
-	assert.Equal(t, "restore_staging", primary["destination_role"])
-	assertPathUnder(t, primary["materialization_destination"], filepath.Dir(payloadRoot))
-	assert.NotContains(t, filepath.ToSlash(primary["materialization_destination"].(string)), filepath.ToSlash(controlRoot))
+	assert.Equal(t, "save_point_content", primary["source_role"])
+	assertStringHasPrefix(t, primary["source_path"], "save_point:")
+	assert.Equal(t, "temporary_folder", primary["destination_role"])
+	assert.Equal(t, "temporary_folder", primary["materialization_destination"])
+	assert.Equal(t, filepath.Dir(payloadRoot), primary["capability_probe_path"])
 	assert.Equal(t, payloadRoot, primary["published_destination"])
 	assertSeparatedTransferCopyEvidence(t, primary)
 }
@@ -808,6 +811,14 @@ func assertSeparatedTransferCopyEvidence(t *testing.T, record map[string]any) {
 	assert.Contains(t, []any{"copy", "juicefs_clone", "reflink_copy"}, record["effective_engine"])
 	assert.Contains(t, []any{"fast_copy", "normal_copy"}, record["performance_class"])
 	require.NotEmpty(t, record["capability_probe_path"])
+}
+
+func assertStringHasPrefix(t *testing.T, got any, prefix string) {
+	t.Helper()
+
+	value, ok := got.(string)
+	require.True(t, ok, "value should be a string: %#v", got)
+	assert.True(t, strings.HasPrefix(value, prefix), "%q should start with %q", value, prefix)
 }
 
 func assertPathUnder(t *testing.T, got any, root string) {

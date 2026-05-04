@@ -18,14 +18,14 @@ to the selected engine and filesystem support.
 ## Design Principles
 
 1. Control/data separation: JVS control data is never managed workspace
-   payload.
+   content.
 2. Filesystem-native operation: a workspace is a normal real folder.
 3. Save point-first history: the public saved unit is a save point, not a Git
    commit or branch.
 4. Preview before destructive restore: file replacement is plan-bound and
    revalidated.
 5. Recoverable mutation: interrupted restore has status/resume/rollback.
-6. Verifiable state: checksums, payload hashes, doctor checks, and audit
+6. Verifiable state: checksums, content hashes, doctor checks, and audit
    records make repository state inspectable.
 
 ## Public Surface
@@ -75,7 +75,7 @@ Commands outside this visible surface are not public product vocabulary.
                                 |
 +-------------------------------v----------------------------------+
 |                    Engines and verification                      |
-| juicefs-clone | reflink-copy | copy | checksums | payload hashes |
+| juicefs-clone | reflink-copy | copy | checksums | content hashes |
 +-------------------------------+----------------------------------+
                                 |
 +-------------------------------v----------------------------------+
@@ -114,7 +114,7 @@ Capacity and mutation preconditions are checked
 Creator materializes managed files into unpublished staging
         |
         v
-Payload hash and descriptor checksum are computed
+Content hash and descriptor checksum are computed
         |
         v
 Save point is published atomically
@@ -126,7 +126,7 @@ Workspace newest save point, provenance, and audit log are updated
 Rules:
 
 - JVS control data and runtime state are not captured as user content.
-- A save point becomes visible only after payload and descriptor durability
+- A save point becomes visible only after content and descriptor durability
   requirements are complete.
 - Failed or interrupted saves must not expose partial save points.
 - Save records provenance from workspace creation and restore when applicable.
@@ -194,7 +194,7 @@ JVS does not virtualize the shell working directory.
 The repository/project coordinates:
 
 - repo identity and format version
-- save point descriptors and payload storage
+- save point descriptors and content storage
 - workspace metadata and real paths
 - runtime operation records
 - recovery plans
@@ -208,7 +208,7 @@ are repaired at the destination.
 
 ## Engine Model
 
-JVS materializes save point payloads through an engine abstraction.
+JVS materializes save point content through an engine abstraction.
 
 | Engine | Public class | Requirement |
 | --- | --- | --- |
@@ -226,7 +226,7 @@ JVS uses two save point integrity layers:
 
 - Descriptor checksum: SHA-256 over canonical descriptor fields, excluding
   mutable verification state.
-- Payload root hash: deterministic SHA-256 over the materialized managed-file
+- Content root hash: deterministic SHA-256 over the materialized managed-file
   tree.
 
 `jvs doctor --strict` validates repository layout, publish state, workspace

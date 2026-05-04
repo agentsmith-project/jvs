@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	clidoctor "github.com/agentsmith-project/jvs/internal/doctor"
 	"github.com/agentsmith-project/jvs/internal/transfer"
+	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
@@ -110,6 +112,141 @@ func publicSavePointCreated(desc *model.Descriptor, unsavedChanges bool, transfe
 	}
 	record.RestoredPaths = publicRestoredPathSources(desc.RestoredPaths)
 	return record
+}
+
+func publicJSONData(data any) (any, error) {
+	if data == nil {
+		return nil, nil
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("encode public JSON data: %w", err)
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return nil, fmt.Errorf("decode public JSON data: %w", err)
+	}
+	return publicJSONValue(decoded)
+}
+
+func publicJSONValue(value any) (any, error) {
+	switch typed := value.(type) {
+	case map[string]any:
+		return publicJSONMap(typed)
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			publicItem, err := publicJSONValue(item)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, publicItem)
+		}
+		return out, nil
+	default:
+		return value, nil
+	}
+}
+
+func publicJSONMap(in map[string]any) (map[string]any, error) {
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		if key == "transfers" {
+			transfers, err := publicJSONTransfers(value)
+			if err != nil {
+				return nil, err
+			}
+			out[key] = transfers
+			continue
+		}
+		publicValue, err := publicJSONValue(value)
+		if err != nil {
+			return nil, err
+		}
+		out[key] = publicValue
+	}
+	return out, nil
+}
+
+func publicJSONTransfers(value any) ([]any, error) {
+	items, ok := value.([]any)
+	if !ok {
+		return nil, fmt.Errorf("public JSON transfers must be an array")
+	}
+	out := make([]any, 0, len(items))
+	for _, item := range items {
+		recordMap, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("public JSON transfer must be an object")
+		}
+		publicRecord := transfer.PublicRecordFromRecord(transferRecordFromPublicJSONMap(recordMap))
+		publicMap, err := publicTransferRecordMap(publicRecord)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, publicMap)
+	}
+	return out, nil
+}
+
+func publicTransferRecordMap(record transfer.PublicRecord) (map[string]any, error) {
+	raw, err := json.Marshal(record)
+	if err != nil {
+		return nil, fmt.Errorf("encode public transfer record: %w", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("decode public transfer record: %w", err)
+	}
+	return out, nil
+}
+
+func transferRecordFromPublicJSONMap(in map[string]any) transfer.Record {
+	return transfer.Record{
+		TransferID:                 publicJSONString(in, "transfer_id"),
+		Operation:                  publicJSONString(in, "operation"),
+		Phase:                      publicJSONString(in, "phase"),
+		Primary:                    publicJSONBool(in, "primary"),
+		ResultKind:                 transfer.ResultKind(publicJSONString(in, "result_kind")),
+		PermissionScope:            transfer.PermissionScope(publicJSONString(in, "permission_scope")),
+		SourceRole:                 publicJSONString(in, "source_role"),
+		SourcePath:                 publicJSONString(in, "source_path"),
+		DestinationRole:            publicJSONString(in, "destination_role"),
+		MaterializationDestination: publicJSONString(in, "materialization_destination"),
+		CapabilityProbePath:        publicJSONString(in, "capability_probe_path"),
+		PublishedDestination:       publicJSONString(in, "published_destination"),
+		CheckedForThisOperation:    publicJSONBool(in, "checked_for_this_operation"),
+		RequestedEngine:            model.EngineType(publicJSONString(in, "requested_engine")),
+		EffectiveEngine:            model.EngineType(publicJSONString(in, "effective_engine")),
+		OptimizedTransfer:          publicJSONBool(in, "optimized_transfer"),
+		PerformanceClass:           transfer.PerformanceClass(publicJSONString(in, "performance_class")),
+		DegradedReasons:            publicJSONStringSlice(in, "degraded_reasons"),
+		Warnings:                   publicJSONStringSlice(in, "warnings"),
+	}
+}
+
+func publicJSONString(in map[string]any, key string) string {
+	value, _ := in[key].(string)
+	return value
+}
+
+func publicJSONBool(in map[string]any, key string) bool {
+	value, _ := in[key].(bool)
+	return value
+}
+
+func publicJSONStringSlice(in map[string]any, key string) []string {
+	raw, ok := in[key].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		if value, ok := item.(string); ok {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func publicRestoredPathSources(sources []model.RestoredPathSource) []publicRestoredPathSource {
@@ -226,6 +363,26 @@ func publicSnapshotIDs(ids []model.SnapshotID) []string {
 }
 
 func publicErrorCodeVocabulary(code string) string {
+	switch code {
+	case "E_WORKTREE_PAYLOAD_INVALID":
+		return "E_WORKSPACE_PATH_BINDING_INVALID"
+	case "E_WORKTREE_PAYLOAD_MISSING":
+		return errclass.ErrWorkspaceMissing.Code
+	case "E_CONTROL_PAYLOAD_OVERLAP":
+		return errclass.ErrControlWorkspaceOverlap.Code
+	case "E_PAYLOAD_INSIDE_CONTROL":
+		return errclass.ErrWorkspaceInsideControl.Code
+	case "E_CONTROL_INSIDE_PAYLOAD":
+		return errclass.ErrControlInsideWorkspace.Code
+	case "E_PAYLOAD_LOCATOR_PRESENT":
+		return errclass.ErrWorkspaceControlMarkerPresent.Code
+	case "E_PAYLOAD_MISSING":
+		return "E_SAVE_POINT_MISSING"
+	case "E_PAYLOAD_INVALID":
+		return "E_SAVE_POINT_INVALID"
+	case "E_PAYLOAD_HASH_MISMATCH":
+		return errclass.ErrSavePointHashMismatch.Code
+	}
 	code = strings.ReplaceAll(code, "WORKTREE", "WORKSPACE")
 	code = strings.ReplaceAll(code, "SNAPSHOT", "SAVE_POINT")
 	code = strings.ReplaceAll(code, "CHECKPOINT", "SAVE_POINT")
@@ -235,7 +392,7 @@ func publicErrorCodeVocabulary(code string) string {
 }
 
 func publicContractVocabulary(value string) string {
-	replacer := strings.NewReplacer(
+	value = strings.NewReplacer(
 		"head_snapshot_id", "content_source",
 		"latest_snapshot_id", "newest_save_point",
 		"base_snapshot_id", "started_from_save_point",
@@ -262,6 +419,21 @@ func publicContractVocabulary(value string) string {
 		"worktree", "workspace",
 		"Worktrees", "Workspaces",
 		"Worktree", "Workspace",
-	)
-	return replacer.Replace(value)
+	).Replace(value)
+	return strings.NewReplacer(
+		"payload_root_hash", "save_point_hash",
+		"payload path is bound", "folder path is bound",
+		"payload path invalid", "folder path invalid",
+		"payload directory missing", "folder missing",
+		"compute payload hash", "compute save point hash",
+		"payload hash mismatch", "save point hash mismatch",
+		"payload missing", "save point storage missing",
+		"READY payload_root_hash", "READY save_point_hash",
+		"Payload path is bound", "Folder path is bound",
+		"Payload path invalid", "Folder path invalid",
+		"Payload directory missing", "Folder missing",
+		"Compute payload hash", "Compute save point hash",
+		"Payload hash mismatch", "Save point hash mismatch",
+		"Payload missing", "Save point storage missing",
+	).Replace(value)
 }

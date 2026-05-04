@@ -13,7 +13,7 @@ workspace state without a server or Git-style mental model.
 1. Real folders come first.
 2. A workspace is a managed real folder.
 3. A save point is immutable once published.
-4. JVS control data is never workspace payload.
+4. JVS control data is never workspace content.
 5. Restore copies content into a workspace; it does not rewrite history.
 6. Destructive restore is preview-first and recovery-backed.
 7. Cleanup is review-first and must protect workspace history, open views,

@@ -58,6 +58,6 @@ product terminology.
 
 - Results from one filesystem or mount do not imply the same performance on
   another.
-- Copy fallback is linear in payload bytes and file count.
+- Copy fallback is linear in content bytes and file count.
 - Strict integrity checks can be I/O intensive.
 - Cleanup deletion can be dominated by filesystem unlink behavior.

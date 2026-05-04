@@ -189,7 +189,7 @@ func TestStorySeparatedCloneTargetErrorsFailClosed(t *testing.T) {
 				return targetRoot, targetRoot
 			},
 			mode: "main",
-			code: "E_CONTROL_PAYLOAD_OVERLAP",
+			code: "E_CONTROL_WORKSPACE_OVERLAP",
 		},
 		{
 			name: "payload inside control",
@@ -198,7 +198,7 @@ func TestStorySeparatedCloneTargetErrorsFailClosed(t *testing.T) {
 				return controlRoot, filepath.Join(controlRoot, "payload")
 			},
 			mode: "main",
-			code: "E_PAYLOAD_INSIDE_CONTROL",
+			code: "E_WORKSPACE_INSIDE_CONTROL",
 		},
 		{
 			name: "control inside payload",
@@ -207,7 +207,7 @@ func TestStorySeparatedCloneTargetErrorsFailClosed(t *testing.T) {
 				return filepath.Join(payloadRoot, "control"), payloadRoot
 			},
 			mode: "main",
-			code: "E_CONTROL_INSIDE_PAYLOAD",
+			code: "E_CONTROL_INSIDE_WORKSPACE",
 		},
 		{
 			name: "all protection missing",
@@ -238,6 +238,34 @@ func TestStorySeparatedCloneTargetErrorsFailClosed(t *testing.T) {
 			requireAbsolutePathAbsent(t, filepath.Join(payloadRoot, ".jvs"))
 		})
 	}
+}
+
+func TestStorySeparatedCloneSourcePendingRestorePlanIsRecoveryBlocking(t *testing.T) {
+	base := t.TempDir()
+	sourceControl := filepath.Join(base, "source-control")
+	sourcePayload := filepath.Join(base, "source-payload")
+	initSeparatedControlRepo(t, base, sourceControl, sourcePayload, "main")
+	createFiles(t, sourcePayload, map[string]string{"app.txt": "source v1\n"})
+	separatedJSON(t, base, sourceControl, "main", "save", "-m", "source baseline")
+	createFiles(t, filepath.Join(sourceControl, ".jvs", "restore-plans"), map[string]string{"pending.json": "{}\n"})
+
+	targetControl := filepath.Join(base, "target-control")
+	targetPayload := filepath.Join(base, "target-payload")
+	stdout, stderr, code := runJVS(t, base,
+		"--json",
+		"--control-root", sourceControl,
+		"--workspace", "main",
+		"repo", "clone",
+		targetPayload,
+		"--target-control-root", targetControl,
+		"--save-points", "main",
+	)
+	env := requireSeparatedControlJSONError(t, stdout, stderr, code, "E_RECOVERY_BLOCKING")
+	if !strings.Contains(env.Error.Message, "restore plan") {
+		t.Fatalf("pending restore plan error should explain the source blocker: %#v", env.Error)
+	}
+	requireAbsolutePathAbsent(t, filepath.Join(targetControl, ".jvs"))
+	requireAbsolutePathAbsent(t, filepath.Join(targetPayload, "app.txt"))
 }
 
 func requireSeparatedCloneExternalControlRootJSON(t *testing.T, stdout, stderr, targetControlRoot, targetFolder string) map[string]any {
@@ -299,18 +327,18 @@ func seedSeparatedCloneExtraRuntimeFiles(t *testing.T, controlRoot string) {
 	}
 }
 
-func requireSeparatedCloneTransfers(t *testing.T, data map[string]any, sourceControl, sourcePayload, targetControl, targetPayload string) {
+func requireSeparatedCloneTransfers(t *testing.T, data map[string]any, _ string, sourcePayload, _ string, targetPayload string) {
 	t.Helper()
 
 	save := requireSeparatedCloneTransferByID(t, data, "repo-clone-save-points")
-	if save["source_path"] != filepath.Join(sourceControl, ".jvs") {
-		t.Fatalf("clone save-point transfer source_path = %#v, want source control .jvs in %#v", save["source_path"], save)
+	if save["source_path"] != "control_data" {
+		t.Fatalf("clone save-point transfer source_path = %#v, want public control_data in %#v", save["source_path"], save)
 	}
-	if save["published_destination"] != filepath.Join(targetControl, ".jvs") {
-		t.Fatalf("clone save-point transfer published_destination = %#v, want target control .jvs in %#v", save["published_destination"], save)
+	if save["published_destination"] != "control_data" {
+		t.Fatalf("clone save-point transfer published_destination = %#v, want public control_data in %#v", save["published_destination"], save)
 	}
-	if path, _ := save["materialization_destination"].(string); strings.Contains(filepath.ToSlash(path), filepath.ToSlash(targetPayload)) {
-		t.Fatalf("clone save-point transfer materialized in target payload: %#v", save)
+	if save["materialization_destination"] != "temporary_folder" {
+		t.Fatalf("clone save-point transfer materialization = %#v, want temporary_folder in %#v", save["materialization_destination"], save)
 	}
 	requireSeparatedCloneCopyEvidence(t, save)
 
@@ -324,8 +352,8 @@ func requireSeparatedCloneTransfers(t *testing.T, data map[string]any, sourceCon
 	if main["capability_probe_path"] != filepath.Dir(targetPayload) {
 		t.Fatalf("clone main transfer capability_probe_path = %#v, want payload parent in %#v", main["capability_probe_path"], main)
 	}
-	if path, _ := main["materialization_destination"].(string); strings.Contains(filepath.ToSlash(path), filepath.ToSlash(targetControl)) {
-		t.Fatalf("clone main transfer materialized in target control: %#v", main)
+	if main["materialization_destination"] != "temporary_folder" {
+		t.Fatalf("clone main transfer materialization = %#v, want temporary_folder in %#v", main["materialization_destination"], main)
 	}
 	requireSeparatedCloneCopyEvidence(t, main)
 }

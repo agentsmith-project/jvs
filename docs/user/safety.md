@@ -22,6 +22,8 @@ Before a command that can change files, folders, or JVS control data:
 - For preview/run commands, run only the command JVS prints after `Run:`.
 - For `workspace new`, `workspace rename`, and `repo clone` without `--dry-run`,
   check the target folder or name before pressing Enter.
+- Use `jvs doctor --repair-runtime` only when you intend JVS to repair runtime
+  state in its control data.
 - Use `--save-first` when current local changes matter.
 - Use `--discard-unsaved` only when current local changes are intentionally
   disposable.
@@ -97,6 +99,7 @@ jvs repo rename --run <repo-rename-plan-id>
 jvs repo detach --run <repo-detach-plan-id>
 jvs recovery resume <recovery-plan>
 jvs recovery rollback <recovery-plan>
+jvs doctor --repair-runtime
 jvs cleanup run --plan-id <cleanup-plan-id>
 ```
 
@@ -117,6 +120,7 @@ What they change:
 | `jvs repo detach --run <repo-detach-plan-id>` | Archives JVS control data and stops active JVS management | Project working files |
 | `jvs recovery resume <recovery-plan>` | Continues an interrupted restore | Save point history |
 | `jvs recovery rollback <recovery-plan>` | Restores the protected pre-restore folder state when possible | Save point history |
+| `jvs doctor --repair-runtime` | Runs safe automatic runtime repairs in JVS control data | Workspace files and save point history |
 | `jvs cleanup run --plan-id <cleanup-plan-id>` | Save point storage listed by the cleanup plan | Workspace folders |
 
 Run commands are tied to the preview plan for the same operation. If the folder
@@ -155,6 +159,9 @@ Close views when finished:
 ```bash
 jvs view close <view-id>
 ```
+
+Closing a view clears JVS-owned view state and releases cleanup protection for
+that open view.
 
 ## Restore With Local Changes
 
@@ -281,3 +288,8 @@ jvs doctor --strict
 Save points help with local folder recovery, but they are not a replacement for
 backups. Use your normal storage backup process for machine loss, disk loss, or
 account loss.
+
+For an ordinary `.jvs/` project, back up the whole project folder including
+`.jvs/` when you want history to travel with the files. For an external control
+root, back up the workspace folder and control root together as one matched
+pair.

@@ -264,6 +264,15 @@ func runRecoveryRollback(repoRoot, planID string, separated *repo.SeparatedConte
 			return err
 		}
 		if state.State == recovery.RecognizedPreMutation {
+			if err := mgr.ValidateLiveBackup(plan); err != nil {
+				if errors.Is(err, recovery.ErrBackupMissing) {
+					if verifyErr := recovery.VerifyMissingBackupRecoveryPoint(repoRoot, plan); verifyErr != nil {
+						return fmt.Errorf("recovery rollback cannot be completed safely: %w", verifyErr)
+					}
+				} else {
+					return fmt.Errorf("recovery rollback cannot be completed safely: %w", err)
+				}
+			}
 			backupRemoved, err := resolveRecoveryPlanAndMaybeRemoveBackup(repoRoot, mgr, plan)
 			if err != nil {
 				return err
@@ -398,6 +407,7 @@ func runRecoveryResume(repoRoot, planID string, separated *repo.SeparatedContext
 		plan.Backup.State = recovery.BackupStatePending
 		plan.Backup.PayloadRolledBack = false
 		plan.Backup.Entries = nil
+		plan.Backup.PayloadEvidence = ""
 		plan.RecoveryEvidence = evidence
 		plan.LastError = ""
 		plan.UpdatedAt = time.Now().UTC()
@@ -511,6 +521,7 @@ func currentRecoveryEvidence(repoRoot string, plan *recovery.Plan) (string, erro
 }
 
 func keepRecoveryPlanActiveAfterRestoreFailure(repoRoot string, plan *recovery.Plan, restoreErr error) error {
+	lastError := restoreErr.Error()
 	if incomplete, ok := restore.AsIncompleteError(restoreErr); ok {
 		plan.Backup.Path = incomplete.BackupPath
 		plan.Backup.PayloadRolledBack = incomplete.PayloadRolledBack
@@ -522,6 +533,14 @@ func keepRecoveryPlanActiveAfterRestoreFailure(repoRoot string, plan *recovery.P
 			plan.Phase = recovery.PhaseBackupRequired
 		}
 		plan.Backup.Entries = recoveryBackupEntriesFromRestore(incomplete.PathEntries)
+		plan.Backup.PayloadEvidence = ""
+		if plan.Backup.State == recovery.BackupStateRequired {
+			if evidence, err := recovery.NewManager(repoRoot).BackupPayloadEvidence(plan); err == nil {
+				plan.Backup.PayloadEvidence = evidence
+			} else {
+				lastError = fmt.Sprintf("%s (recovery backup identity could not be recorded: %v)", lastError, recoveryVocabulary(err.Error()))
+			}
+		}
 	}
 	switch plan.Operation {
 	case recovery.OperationRestore:
@@ -535,7 +554,7 @@ func keepRecoveryPlanActiveAfterRestoreFailure(repoRoot string, plan *recovery.P
 			plan.RecoveryEvidence = evidence
 		}
 	}
-	plan.LastError = restoreErr.Error()
+	plan.LastError = lastError
 	plan.CompletedSteps = []string{"restore attempted", "recovery backup retained"}
 	plan.PendingSteps = []string{"resume restore or rollback"}
 	plan.RecommendedNextCommand = "jvs recovery resume " + plan.PlanID
@@ -633,6 +652,13 @@ func markRecoveryBackupRestored(repoRoot string, plan *recovery.Plan) error {
 	evidence, err := recovery.CurrentEvidence(repoRoot, plan)
 	if err != nil {
 		return err
+	}
+	state, err := recovery.RecognizeCurrentState(repoRoot, plan)
+	if err != nil {
+		return fmt.Errorf("recovery backup restored but the saved state could not be verified: %w", err)
+	}
+	if state.State != recovery.RecognizedPreMutation {
+		return fmt.Errorf("recovery backup restored but the saved state could not be verified")
 	}
 	plan.Phase = recovery.PhaseBackupRestored
 	plan.Backup.State = recovery.BackupStateRolledBack

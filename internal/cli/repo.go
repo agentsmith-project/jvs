@@ -29,7 +29,7 @@ var repoCmd = &cobra.Command{
 }
 
 var repoCloneCmd = &cobra.Command{
-	Use:   "clone [target-folder]",
+	Use:   "clone <target-folder>",
 	Short: "Clone a local JVS project",
 	Args:  validateRepoCloneArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -453,7 +453,7 @@ func printRepoDetachRunResult(result publicRepoDetachRunResult) {
 }
 
 func init() {
-	repoCloneCmd.Flags().StringVar(&repoCloneSavePoints, "save-points", string(repoclone.SavePointsModeAll), "save points to copy: all or main; ordinary clones use all when omitted; external-control clones use main when omitted; use --save-points main to be explicit; --save-points all fails closed for external control roots until imported-history protection is available")
+	repoCloneCmd.Flags().StringVar(&repoCloneSavePoints, "save-points", string(repoclone.SavePointsModeAll), "save points to copy: all or main; ordinary clones use all when omitted; external control root clones use main when omitted; use --save-points main to be explicit; --save-points all fails closed for external control roots until imported-history protection is available")
 	repoCloneCmd.Flags().Lookup("save-points").DefValue = ""
 	repoCloneCmd.Flags().BoolVar(&repoCloneDryRun, "dry-run", false, "plan the clone without creating the target")
 	repoCloneCmd.Flags().StringVar(&repoCloneTargetControlRoot, "target-control-root", "", "target external control data root when control data is outside the target folder")

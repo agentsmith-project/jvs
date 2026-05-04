@@ -24,13 +24,27 @@ recovery plan, doctor, and cleanup.
 - Filesystem-aware transfer planning/implementation is covered across save,
   view, restore, workspace creation, and clone paths so copy behavior matches
   the destination while preserving preview/run review points.
+- Pre-GA public vocabulary cleanup is now release-evidenced across the Go
+  facade, machine-readable error codes, transfer JSON public references, and
+  transfer free-text sanitizer output.
 - Release-facing identity remains `github.com/agentsmith-project/jvs`; release
   URLs use the canonical GitHub project, for example
   `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.0`.
 
 ### Breaking changes
 
-- None for the stable v0 public CLI contract.
+- This is a pre-GA public vocabulary cleanup and clean break for automation
+  that already integrated with candidate builds; no backward-compatible aliases
+  are provided.
+- Public Go facade consumers must read `ContentRootHash` /
+  `content_root_hash` from `pkg/jvs.SavePoint` metadata; the earlier candidate
+  hash field is not kept as an alias.
+- Error-code matchers must use the public `E_SAVE_POINT_*` and `E_CLEANUP_*`
+  families.
+- CLI JSON consumers must treat transfer JSON public references and free-text
+  sanitizer output as content/save point vocabulary, including stable
+  references such as `save_point:<id>`, `content_view:<view-id>[/path]`,
+  `control_data`, and `temporary_folder`.
 - This main-branch version bump is a GA candidate/readiness record only; it
   does not create a final tag, publish release artifacts, or change the on-disk
   repository layout version.
@@ -51,7 +65,7 @@ recovery plan, doctor, and cleanup.
 
 ### Risk labels
 
-- `integrity`: descriptor checksum and payload hash detect independent
+- `integrity`: descriptor checksum and content hash detect independent
   corruption; coordinated descriptor-plus-checksum rewrite remains a v0
   residual risk.
 - `migration`: non-portable JVS runtime state is destination-local and must be
@@ -83,6 +97,10 @@ recovery plan, doctor, and cleanup.
   JVS writes.
 - User-facing portability and backup workflow remains a documented product gap,
   not a new v0 CLI promise.
+- Automation built against earlier candidate vocabulary must update public field
+  and code matches to `ContentRootHash` / `content_root_hash`,
+  `E_SAVE_POINT_*`, `E_CLEANUP_*`, and the content-based transfer JSON
+  summaries; this clean break does not include a compatibility alias layer.
 - Run the restore drill from `docs/13_OPERATION_RUNBOOK.md`, including
   preview/run and recovery status/resume/rollback coverage.
 
@@ -95,7 +113,7 @@ recovery plan, doctor, and cleanup.
 - Candidate state: not final, not tagged, and not published; the release is
   pending final tag creation and publication through the normal CI release
   flow.
-- Source archive boundary: no immutable `v0.4.6` tag snapshot exists yet; when
+- Source archive boundary: no immutable `v0.4.6` tag source archive exists yet; when
   the pending final tag is created, its source archive will record readiness
   from tag time.
 - publication final evidence remains pending; the future GitHub Release page
@@ -106,7 +124,10 @@ recovery plan, doctor, and cleanup.
   repo move/rename/detach, workspace move/rename/delete preview/run and
   recovery posture, external workspace pending lifecycle evidence,
   machine-readable `recommended_next_command`, repo clone workflow, and
-  filesystem-aware transfer planning/implementation.
+  filesystem-aware transfer planning/implementation, plus pre-GA public
+  vocabulary cleanup for `ContentRootHash` / `content_root_hash`,
+  `E_SAVE_POINT_*`, `E_CLEANUP_*`, transfer JSON public references, and
+  free-text sanitizer output.
 
 ### Release artifacts
 
@@ -165,7 +186,7 @@ recovery plan, doctor, and cleanup.
 
 ### Risk labels
 
-- `integrity`: descriptor checksum and payload hash detect independent
+- `integrity`: descriptor checksum and content hash detect independent
   corruption; coordinated descriptor-plus-checksum rewrite remains a v0
   residual risk.
 - `migration`: non-portable JVS runtime state is destination-local and must be
@@ -209,7 +230,7 @@ recovery plan, doctor, and cleanup.
 - Candidate state: not final, not tagged, and not published; the release is
   pending final tag creation and publication through the normal CI release
   flow.
-- Source archive boundary: no immutable `v0.4.5` tag snapshot exists yet; when
+- Source archive boundary: no immutable `v0.4.5` tag source archive exists yet; when
   the pending final tag is created, its source archive will record readiness
   from tag time.
 - publication final evidence remains pending; the future GitHub Release page
@@ -278,7 +299,7 @@ recovery plan, doctor, and cleanup.
 
 ### Risk labels
 
-- `integrity`: descriptor checksum and payload hash detect independent
+- `integrity`: descriptor checksum and content hash detect independent
   corruption; coordinated descriptor-plus-checksum rewrite remains a v0
   residual risk.
 - `migration`: non-portable JVS runtime state is destination-local and must be
@@ -319,7 +340,7 @@ recovery plan, doctor, and cleanup.
 - Candidate state: not final, not tagged, and not published; the release is
   pending final tag creation and publication through the normal CI release
   flow.
-- Source archive boundary: no immutable `v0.4.4` tag snapshot exists yet; when
+- Source archive boundary: no immutable `v0.4.4` tag source archive exists yet; when
   the pending final tag is created, its source archive will record readiness
   from tag time.
 - publication final evidence remains pending; the future GitHub Release page
@@ -382,7 +403,7 @@ recovery plan, doctor, and cleanup.
 
 ### Risk labels
 
-- `integrity`: descriptor checksum and payload hash detect independent
+- `integrity`: descriptor checksum and content hash detect independent
   corruption; coordinated descriptor-plus-checksum rewrite remains a v0
   residual risk.
 - `migration`: non-portable JVS runtime state is destination-local and must be
@@ -418,7 +439,7 @@ recovery plan, doctor, and cleanup.
 - Candidate state: not final, not tagged, and not published; the release is
   pending final tag creation and publication through the normal CI release
   flow.
-- Source archive boundary: no immutable `v0.4.3` tag snapshot exists yet; when
+- Source archive boundary: no immutable `v0.4.3` tag source archive exists yet; when
   the pending final tag is created, its source archive will record readiness
   from tag time.
 - publication final evidence remains pending; the future GitHub Release page
@@ -485,7 +506,7 @@ recovery plan, doctor, and cleanup.
 
 ### Risk labels
 
-- `integrity`: descriptor checksum and payload hash detect independent
+- `integrity`: descriptor checksum and content hash detect independent
   corruption; coordinated descriptor-plus-checksum rewrite remains a v0
   residual risk.
 - `migration`: non-portable JVS runtime state is destination-local and must be
@@ -514,7 +535,7 @@ recovery plan, doctor, and cleanup.
 
 - See the [release evidence ledger](RELEASE_EVIDENCE.md#v042---2026-04-28)
   for the `v0.4.2` final GA release evidence record.
-- Source archive boundary: the `v0.4.2` source archive is the immutable tag snapshot
+- Source archive boundary: the `v0.4.2` source archive is the immutable source archive
   for the release and records readiness from tag time.
 - Tag source archive evidence class: `GA candidate readiness`
 - publication final evidence is recorded on the GitHub Release page and in the

@@ -25,7 +25,7 @@ func TestSeparatedInitRejectsBoundaryRootsWithoutMutation(t *testing.T) {
 			name:        "same root",
 			controlRoot: func(base string) string { return filepath.Join(base, "repo") },
 			payloadRoot: func(base string) string { return filepath.Join(base, "repo") },
-			wantErr:     errclass.ErrControlPayloadOverlap,
+			wantErr:     errclass.ErrControlWorkspaceOverlap,
 			wantMissing: []func(string) string{
 				func(base string) string { return filepath.Join(base, "repo") },
 			},
@@ -34,7 +34,7 @@ func TestSeparatedInitRejectsBoundaryRootsWithoutMutation(t *testing.T) {
 			name:        "payload inside control",
 			controlRoot: func(base string) string { return filepath.Join(base, "control") },
 			payloadRoot: func(base string) string { return filepath.Join(base, "control", "payload") },
-			wantErr:     errclass.ErrPayloadInsideControl,
+			wantErr:     errclass.ErrWorkspaceInsideControl,
 			wantMissing: []func(string) string{
 				func(base string) string { return filepath.Join(base, "control") },
 			},
@@ -43,7 +43,7 @@ func TestSeparatedInitRejectsBoundaryRootsWithoutMutation(t *testing.T) {
 			name:        "control inside payload",
 			controlRoot: func(base string) string { return filepath.Join(base, "payload", "control") },
 			payloadRoot: func(base string) string { return filepath.Join(base, "payload") },
-			wantErr:     errclass.ErrControlInsidePayload,
+			wantErr:     errclass.ErrControlInsideWorkspace,
 			wantMissing: []func(string) string{
 				func(base string) string { return filepath.Join(base, "payload") },
 			},
@@ -74,7 +74,7 @@ func TestSeparatedInitRejectsPhysicalAlias(t *testing.T) {
 	require.NoError(t, os.Symlink(physical, payloadRoot))
 
 	_, err := repo.InitSeparatedControl(controlRoot, payloadRoot, "main")
-	require.ErrorIs(t, err, errclass.ErrControlPayloadOverlap)
+	require.ErrorIs(t, err, errclass.ErrControlWorkspaceOverlap)
 	require.NoDirExists(t, filepath.Join(physical, ".jvs"))
 }
 
@@ -207,7 +207,7 @@ func TestSeparatedInitRejectsPayloadRootControlMarkerWithoutMutation(t *testing.
 			tc.marker(t, payloadRoot)
 
 			_, err := repo.InitSeparatedControl(controlRoot, payloadRoot, "main")
-			require.ErrorIs(t, err, errclass.ErrPayloadLocatorPresent)
+			require.ErrorIs(t, err, errclass.ErrWorkspaceControlMarkerPresent)
 			require.NoFileExists(t, controlRoot)
 		})
 	}
@@ -325,7 +325,7 @@ func TestResolveSeparatedContextPayloadLocatorPresentFailsClosed(t *testing.T) {
 				ControlRoot: controlRoot,
 				Workspace:   "main",
 			})
-			require.ErrorIs(t, err, errclass.ErrPayloadLocatorPresent)
+			require.ErrorIs(t, err, errclass.ErrWorkspaceControlMarkerPresent)
 		})
 	}
 }
@@ -368,7 +368,7 @@ func TestWorktreeManagedPayloadBoundarySeparatedPayloadLocatorPresentFailsClosed
 			tc.marker(t, payloadRoot)
 
 			_, err = repo.WorktreeManagedPayloadBoundary(controlRoot, "main")
-			require.ErrorIs(t, err, errclass.ErrPayloadLocatorPresent)
+			require.ErrorIs(t, err, errclass.ErrWorkspaceControlMarkerPresent)
 		})
 	}
 }
@@ -382,7 +382,7 @@ func TestWorktreeManagedPayloadBoundarySeparatedDoesNotReadPayloadLocatorContent
 	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, ".jvs"), []byte("{not-json"), 0644))
 
 	_, err = repo.WorktreeManagedPayloadBoundary(controlRoot, "main")
-	require.ErrorIs(t, err, errclass.ErrPayloadLocatorPresent)
+	require.ErrorIs(t, err, errclass.ErrWorkspaceControlMarkerPresent)
 	require.NotContains(t, err.Error(), "parse JVS workspace locator")
 }
 
@@ -474,7 +474,7 @@ func TestRevalidateSeparatedContext(t *testing.T) {
 			ExpectedRepoID:      r.RepoID,
 			ExpectedPayloadRoot: payloadRoot,
 		})
-		require.ErrorIs(t, err, errclass.ErrPayloadMissing)
+		require.ErrorIs(t, err, errclass.ErrWorkspaceMissing)
 	})
 
 	t.Run("payload locator present", func(t *testing.T) {
@@ -491,7 +491,7 @@ func TestRevalidateSeparatedContext(t *testing.T) {
 			ExpectedRepoID:      r.RepoID,
 			ExpectedPayloadRoot: payloadRoot,
 		})
-		require.ErrorIs(t, err, errclass.ErrPayloadLocatorPresent)
+		require.ErrorIs(t, err, errclass.ErrWorkspaceControlMarkerPresent)
 	})
 }
 
@@ -572,7 +572,7 @@ func TestResolveSeparatedContextStableErrorCodes(t *testing.T) {
 			ControlRoot: controlRoot,
 			Workspace:   "main",
 		})
-		require.ErrorIs(t, err, errclass.ErrPayloadMissing)
+		require.ErrorIs(t, err, errclass.ErrWorkspaceMissing)
 	})
 
 	t.Run("workspace mismatch", func(t *testing.T) {

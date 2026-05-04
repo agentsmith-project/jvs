@@ -286,7 +286,7 @@ func TestSeparatedStrictDoctorFailureCheckGoldens(t *testing.T) {
 		{
 			name:  "root overlap",
 			check: "root_overlap",
-			code:  errclass.ErrPayloadInsideControl.Code,
+			code:  errclass.ErrWorkspaceInsideControl.Code,
 			seed: func(t *testing.T, base, controlRoot, payloadRoot string) string {
 				t.Helper()
 				inside := filepath.Join(controlRoot, "payload-inside-control")
@@ -304,7 +304,7 @@ func TestSeparatedStrictDoctorFailureCheckGoldens(t *testing.T) {
 		{
 			name:  "workspace control marker",
 			check: "workspace_control_marker",
-			code:  errclass.ErrPayloadLocatorPresent.Code,
+			code:  errclass.ErrWorkspaceControlMarkerPresent.Code,
 			seed: func(t *testing.T, base, controlRoot, payloadRoot string) string {
 				t.Helper()
 				locator := filepath.Join(payloadRoot, repo.JVSDirName)
@@ -899,7 +899,7 @@ func TestDoctorRepairRuntimeRemovesCopiedCleanupPlans(t *testing.T) {
 
 	err = gc.NewCollector(repoPath).Run(plan.PlanID)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, errclass.ErrGCPlanMismatch)
+	assert.ErrorIs(t, err, errclass.ErrCleanupPlanMismatch)
 }
 
 func TestDoctorCheckFlagsCopiedAdoptedMainWorkspaceWhenSourceStillExists(t *testing.T) {

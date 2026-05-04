@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -33,6 +34,7 @@ var releaseEvidenceGatePassPattern = regexp.MustCompile(`(?mi)\|\s*Release gate\
 var releaseEvidencePublishedArtifactCountPattern = regexp.MustCompile(`(?mi)^- Published artifact count:\s*` + "`?" + `[1-9][0-9]*` + "`?")
 var releaseFacingPerformanceClaimPattern = regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_])(?:o\(1\)|instant(?:ly)?|constant-time|constant overhead)([^A-Za-z0-9_]|$)`)
 var releaseFacingStorageScopePattern = regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_-])juicefs-clone([^A-Za-z0-9_-]|$)|\bsupported\s+[^A-Za-z0-9_]*juicefs\b`)
+var releaseFacingLegacyStorageVocabularyPattern = regexp.MustCompile(`(?i)\b(?:payloads?|snapshots?|gc)\b`)
 var negatedReleaseFacingPerformanceClaimPattern = regexp.MustCompile(`(?i)\bnot\s+(?:an?\s+)?(?:o\(1\)|instant(?:ly)?|constant-time|constant overhead)(?:[^A-Za-z0-9_]|$)`)
 var portableLatencyPromisePattern = regexp.MustCompile(`(?i)^\s*\|\s*\d+(?:\.\d+)?\s*(?:kb|mb|gb|tb|kib|mib|gib|tib)\b[^|]*\|.*\b\d+(?:\.\d+)?\s*(?:ms|s|sec|secs|second|seconds)\b`)
 var documentedEngineConstantPattern = regexp.MustCompile(`(?m)^\s*(Engine[A-Za-z0-9_]+)\s+EngineType\s*=\s*"([^"]+)"`)
@@ -388,10 +390,10 @@ func TestDocs_RepoCloneDocumentsOrdinaryAndExternalTargetContracts(t *testing.T)
 		"Ordinary `.jvs/` completed clone JSON includes",
 		"`target_repo_root`",
 		"`target_repo_id`",
-		"External-control completed clone JSON includes",
+		"External control root completed clone JSON includes",
 		"`target_folder`",
 		"`target_control_root`",
-		"External-control completed clone JSON does not require `target_repo_root`",
+		"External control root completed clone JSON does not require `target_repo_root`",
 		"Dry-run JSON is a planning result. Because dry-run does not create the target repo, it must not require an actual `target_repo_id`",
 	} {
 		requireReleaseReadinessText(t, "repo clone CLI contract", cloneSection, required)
@@ -399,7 +401,7 @@ func TestDocs_RepoCloneDocumentsOrdinaryAndExternalTargetContracts(t *testing.T)
 
 	userDoc := "docs/user/commands.md"
 	userBody := readRepoFile(t, userDoc)
-	userCloneSection := strings.Join(strings.Fields(markdownSectionByHeading(t, userDoc, userBody, "### `jvs repo clone <target-folder> [--save-points all|main] [--dry-run]`")), " ")
+	userCloneSection := strings.Join(strings.Fields(markdownSectionByHeading(t, userDoc, userBody, "### `jvs repo clone <target-folder> [--target-control-root <control-root>] [--save-points all|main] [--dry-run]`")), " ")
 	for _, required := range []string{
 		"For ordinary `.jvs/` projects, `<target-folder>` must be a new folder path that does not already exist",
 		"External control root clone has a different target-shape rule",
@@ -435,7 +437,7 @@ func TestDocs_RepoCloneRollbackDocumentsQuarantineSafety(t *testing.T) {
 		{
 			name:    "user command reference",
 			doc:     "docs/user/commands.md",
-			heading: "### `jvs repo clone <target-folder> [--save-points all|main] [--dry-run]`",
+			heading: "### `jvs repo clone <target-folder> [--target-control-root <control-root>] [--save-points all|main] [--dry-run]`",
 			required: []string{
 				"source project is unchanged",
 				"target is not an active JVS repo",
@@ -566,6 +568,298 @@ func TestDocs_UserSafetyPagesCoverHighImpactCommandMap(t *testing.T) {
 	}
 }
 
+func TestDocs_UserSafetyPagesClassifyRepairRuntimeAsMutating(t *testing.T) {
+	for _, tc := range []struct {
+		doc      string
+		required []string
+	}{
+		{
+			doc: "docs/user/README.md",
+			required: []string{
+				"jvs doctor --repair-runtime",
+				"runtime state",
+				"JVS control data",
+			},
+		},
+		{
+			doc: "docs/user/safety.md",
+			required: []string{
+				"jvs doctor --repair-runtime",
+				"safe automatic runtime repairs",
+				"JVS control data",
+			},
+		},
+		{
+			doc: "docs/user/faq.md",
+			required: []string{
+				"jvs doctor --repair-runtime",
+				"changes JVS runtime state",
+				"JVS control data",
+			},
+		},
+		{
+			doc: "docs/user/best-practices.md",
+			required: []string{
+				"jvs doctor --repair-runtime",
+				"changes runtime state",
+				"after an interrupted JVS operation",
+			},
+		},
+	} {
+		t.Run(tc.doc, func(t *testing.T) {
+			body := strings.Join(strings.Fields(readRepoFile(t, tc.doc)), " ")
+			for _, required := range tc.required {
+				requireReleaseReadinessText(t, "doctor repair-runtime safety map", body, required)
+			}
+		})
+	}
+}
+
+func TestDocs_ReleaseFacingDocsDefineProjectRepoAndControlData(t *testing.T) {
+	for _, tc := range []struct {
+		doc      string
+		required []string
+	}{
+		{
+			doc: "docs/user/README.md",
+			required: []string{
+				"Project/repo",
+				"the JVS-managed folder and its save point history",
+				"Control data",
+				"JVS's own state",
+			},
+		},
+		{
+			doc: "docs/user/concepts.md",
+			required: []string{
+				"## Project/Repo",
+				"new repo identity",
+				"## Control Data",
+				"ordinary `.jvs/` project",
+				"external control root",
+			},
+		},
+		{
+			doc: "docs/02_CLI_SPEC.md",
+			required: []string{
+				"`project` / `repo`",
+				"`control data`",
+				"JVS-owned metadata, save point storage, and runtime state",
+			},
+		},
+	} {
+		t.Run(tc.doc, func(t *testing.T) {
+			body := strings.Join(strings.Fields(readRepoFile(t, tc.doc)), " ")
+			for _, required := range tc.required {
+				requireReleaseReadinessText(t, "project repo control data definitions", body, required)
+			}
+		})
+	}
+}
+
+func TestDocs_InitAndRepoCloneSignaturesCoverExternalControlRoot(t *testing.T) {
+	cliSpec := strings.Join(strings.Fields(readRepoFile(t, "docs/02_CLI_SPEC.md")), " ")
+	for _, required := range []string{
+		"### `jvs init [folder] [--control-root C --workspace main] [--json]`",
+		"ordinary `.jvs/` project",
+		"external control root",
+		"### `jvs repo clone <target-folder> [--target-control-root TC] [--save-points all|main] [--dry-run] [--json]`",
+	} {
+		requireReleaseReadinessText(t, "external control root CLI signatures", cliSpec, required)
+	}
+
+	userCommands := strings.Join(strings.Fields(readRepoFile(t, "docs/user/commands.md")), " ")
+	for _, required := range []string{
+		"## `jvs init [folder]`",
+		"jvs init [folder] --control-root C --workspace main",
+		"ordinary `.jvs/` project",
+		"external control root",
+		"### `jvs repo clone <target-folder> [--target-control-root <control-root>] [--save-points all|main] [--dry-run]`",
+	} {
+		requireReleaseReadinessText(t, "external control root user command signatures", userCommands, required)
+	}
+}
+
+func TestDocs_TroubleshootingExternalControlRootRepositoryErrors(t *testing.T) {
+	doc := "docs/user/troubleshooting.md"
+	body := readRepoFile(t, doc)
+	notRepoSection := strings.Join(strings.Fields(markdownSectionByHeading(t, doc, body, "## \"not a JVS repository\"")), " ")
+	for _, required := range []string{
+		"Run ordinary `jvs init` only when you intend to create an ordinary `.jvs/` project",
+		"Do not run ordinary `jvs init` inside an external workspace",
+		"jvs --control-root C --workspace main status",
+		"missing control root",
+		"workspace `.jvs` marker",
+		"root-level `.jvs` path",
+		"unsupported lifecycle",
+	} {
+		requireReleaseReadinessText(t, "external control root troubleshooting", notRepoSection, required)
+	}
+}
+
+func TestDocs_BackupAndCloneIdentityBoundaries(t *testing.T) {
+	bestPractices := strings.Join(strings.Fields(readRepoFile(t, "docs/user/best-practices.md")), " ")
+	for _, required := range []string{
+		"ordinary `.jvs/` project",
+		"back up the whole project folder, including `.jvs/`",
+		"filesystem copy preserves the same repo identity",
+		"use `jvs repo clone` when you need a new repo identity",
+		"external control root",
+		"workspace folder and control root as one matched pair",
+	} {
+		requireReleaseReadinessText(t, "backup and clone identity boundary", bestPractices, required)
+	}
+
+	faq := strings.Join(strings.Fields(readRepoFile(t, "docs/user/faq.md")), " ")
+	for _, required := range []string{
+		"ordinary `.jvs/` project",
+		"back up the whole folder, including `.jvs/`",
+		"external control root",
+		"back up the workspace folder and the control root together",
+	} {
+		requireReleaseReadinessText(t, "backup external control root FAQ", faq, required)
+	}
+}
+
+func TestDocs_RepoCloneDocumentsSourceUnsavedWorkspaceBlocker(t *testing.T) {
+	cliSpec := strings.Join(strings.Fields(markdownSectionByHeading(t, "docs/02_CLI_SPEC.md", readRepoFile(t, "docs/02_CLI_SPEC.md"), "## Repo Clone")), " ")
+	userCommands := strings.Join(strings.Fields(markdownSectionByHeading(t, "docs/user/commands.md", readRepoFile(t, "docs/user/commands.md"), "### `jvs repo clone <target-folder> [--target-control-root <control-root>] [--save-points all|main] [--dry-run]`")), " ")
+	for _, body := range []struct {
+		name string
+		text string
+	}{
+		{name: "CLI spec", text: cliSpec},
+		{name: "user command reference", text: userCommands},
+	} {
+		requireReleaseReadinessText(t, "repo clone unsaved source workspace blocker "+body.name, body.text, "source workspace has unsaved changes")
+		requireReleaseReadinessText(t, "repo clone unsaved source workspace blocker "+body.name, body.text, "source workspaces other than `main` are not created")
+		requireReleaseReadinessText(t, "repo clone unsaved source workspace blocker "+body.name, body.text, "Save those changes as a save point first")
+	}
+}
+
+func TestDocs_ViewCloseDocumentsJVSOwnedStateAndProtectionRelease(t *testing.T) {
+	for _, tc := range []struct {
+		doc     string
+		heading string
+	}{
+		{doc: "docs/user/commands.md", heading: "## `jvs view <save-point> [path]`"},
+		{doc: "docs/user/concepts.md", heading: "## View"},
+		{doc: "docs/user/safety.md", heading: "## History And View Are Read-Only"},
+		{doc: "docs/user/faq.md", heading: "## Which Commands Only Read?"},
+	} {
+		t.Run(tc.doc, func(t *testing.T) {
+			section := strings.Join(strings.Fields(markdownSectionByHeading(t, tc.doc, readRepoFile(t, tc.doc), tc.heading)), " ")
+			requireReleaseReadinessText(t, "view close JVS-owned state", section, "jvs view close <view-id>")
+			requireReleaseReadinessText(t, "view close JVS-owned state", section, "JVS-owned view state")
+			requireReleaseReadinessText(t, "view close JVS-owned state", section, "releases cleanup protection")
+		})
+	}
+}
+
+func TestDocs_TransferJSONContractMatchesImplementedCommands(t *testing.T) {
+	cliSpec := strings.Join(strings.Fields(readRepoFile(t, "docs/02_CLI_SPEC.md")), " ")
+	for _, required := range []string{
+		"## Transfer Reporting JSON",
+		"`data.transfers[]`",
+		"save, restore preview/run, workspace new, view, and repo clone",
+		"does not promise `data.transfers[]` for commands that do not materialize or copy files",
+	} {
+		requireReleaseReadinessText(t, "CLI transfer reporting JSON contract", cliSpec, required)
+	}
+
+	transferPlan := strings.Join(strings.Fields(readRepoFile(t, "docs/23_FILESYSTEM_AWARE_TRANSFER_PLANNING.md")), " ")
+	for _, required := range []string{
+		"implemented design record",
+		"current public CLI contract covers `data.transfers[]` for save, restore preview/run, workspace new, view, and repo clone",
+		"later copy-planning refinements",
+	} {
+		requireReleaseReadinessText(t, "transfer design/current boundary", transferPlan, required)
+	}
+
+	statusSection := markdownSectionByHeading(t, "docs/02_CLI_SPEC.md", readRepoFile(t, "docs/02_CLI_SPEC.md"), "## Status")
+	requireReleaseReadinessAbsentText(t, "status JSON transfer overpromise", statusSection, "`transfers`")
+}
+
+func TestDocs_TransferPlanningPublicExamplesUsePublicVocabulary(t *testing.T) {
+	for _, doc := range []string{
+		"docs/23_FILESYSTEM_AWARE_TRANSFER_PLANNING.md",
+		"docs/24_REPO_CLONE_PRODUCT_PLAN.md",
+	} {
+		t.Run(doc, func(t *testing.T) {
+			for i, line := range strings.Split(readRepoFile(t, doc), "\n") {
+				lineNo := i + 1
+				if transferPlanningPublicRoleExampleLine(line) {
+					for _, forbidden := range []string{
+						"payload",
+						"save_point_staging",
+						"restore_staging",
+						"view_directory",
+					} {
+						if strings.Contains(line, forbidden) {
+							t.Fatalf("%s:%d uses internal transfer role token %q in a public example:\n%s", doc, lineNo, forbidden, line)
+						}
+					}
+				}
+				if transferPlanningPublicPathExampleLine(line) {
+					for _, forbidden := range []string{
+						".jvs/snapshots",
+						".jvs/",
+						".jvs-tmp",
+					} {
+						if strings.Contains(line, forbidden) {
+							t.Fatalf("%s:%d exposes internal transfer path %q in a public example:\n%s", doc, lineNo, forbidden, line)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+func transferPlanningPublicRoleExampleLine(line string) bool {
+	lower := strings.ToLower(line)
+	for _, marker := range []string{
+		"`source_role`",
+		"`destination_role`",
+		`"source_role"`,
+		`"destination_role"`,
+		"| main workspace materialization |",
+		"| save point storage copy |",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func transferPlanningPublicPathExampleLine(line string) bool {
+	lower := strings.ToLower(line)
+	for _, marker := range []string{
+		"`source_path`",
+		"`materialization_destination`",
+		"`capability_probe_path`",
+		"`published_destination`",
+		`"source_path"`,
+		`"materialization_destination"`,
+		`"capability_probe_path"`,
+		`"published_destination"`,
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestDocs_LifecycleDesignRecordDropsKnownStaleFragments(t *testing.T) {
+	doc := "docs/25_REPO_WORKSPACE_LIFECYCLE_PRODUCT_PLAN.md"
+	body := readRepoFile(t, doc)
+	requireReleaseReadinessAbsentText(t, "lifecycle design record stale workspace new dry-run", body, "workspace new` | 继续直接创建 + `--dry-run`")
+	requireReleaseReadinessAbsentText(t, "lifecycle design record stale detach identity", body, "二者可以相同也可以不同")
+	requireReleaseReadinessText(t, "lifecycle design record detach identity", body, "plan_id 只是 preview/run handle；operation_id 是 run journal identity，二者必须不同")
+}
+
 func TestDocs_ReleaseFacingDocsAvoidMainSubfolderModel(t *testing.T) {
 	for _, doc := range []string{
 		"docs/02_CLI_SPEC.md",
@@ -646,7 +940,7 @@ func TestDocs_ConformancePlanDocumentsExternalControlRootCoverage(t *testing.T) 
 		"Explicit external control root selector",
 		"`--control-root C --workspace main`",
 		"workspace-folder control-marker fail-closed",
-		"E_PAYLOAD_LOCATOR_PRESENT",
+		"E_WORKSPACE_CONTROL_MARKER_PRESENT",
 		"doctor strict-json only",
 		"doctor --strict --json",
 		"restore/recovery blocker",
@@ -2100,6 +2394,24 @@ func TestDocs_ReleaseFacingDocsAvoidIgnoreUnmanagedPayloadVocabulary(t *testing.
 	}
 }
 
+func TestDocs_ReleaseFacingDocsUseCurrentStorageTerminology(t *testing.T) {
+	for _, doc := range activePublicContractDocs() {
+		t.Run(doc, func(t *testing.T) {
+			scanPublicDocLines(t, doc, func(lineNo int, line string) {
+				match := releaseFacingLegacyStorageVocabularyPattern.FindString(line)
+				if match == "" {
+					return
+				}
+				if releaseFacingLegacyStorageVocabularyAllowed(line) {
+					return
+				}
+				t.Fatalf("%s:%d exposes legacy storage vocabulary %q; use workspace folder, save point content, control data, runtime state, or content root wording instead:\n%s",
+					doc, lineNo, match, line)
+			})
+		})
+	}
+}
+
 func TestDocs_EngineTransparencySurfacesExcludeDoctor(t *testing.T) {
 	productPlan := readRepoFile(t, "docs/PRODUCT_PLAN.md")
 	engineSection := markdownSectionByHeading(t, "docs/PRODUCT_PLAN.md", productPlan, "## Engine Transparency")
@@ -2416,6 +2728,127 @@ func TestDocs_APIDocumentationLimitsStablePublicGoSurface(t *testing.T) {
 	}
 	if !strings.Contains(doc, "`pkg/model`") || !strings.Contains(doc, "Existing type support") {
 		t.Fatalf("docs/API_DOCUMENTATION.md must mark pkg/model as existing type support, not a retention/pin public surface")
+	}
+}
+
+func TestDocsAndErrclassDoNotExposePayloadErrorCodes(t *testing.T) {
+	for _, doc := range activePublicContractDocs() {
+		t.Run(doc, func(t *testing.T) {
+			scanPublicDocLines(t, doc, func(lineNo int, line string) {
+				if strings.Contains(line, "E_PAYLOAD_") {
+					t.Fatalf("%s:%d exposes internal payload error-code vocabulary:\n%s", doc, lineNo, line)
+				}
+			})
+		})
+	}
+
+	for name, code := range errclassJVSErrorCodes(t) {
+		if strings.Contains(code, "E_PAYLOAD_") {
+			t.Fatalf("pkg/errclass public error %s exposes internal payload error-code vocabulary %q", name, code)
+		}
+	}
+}
+
+func TestDocsAndErrclassUseSavePointCleanupErrorVocabulary(t *testing.T) {
+	codes := errclassJVSErrorCodes(t)
+	for name, wantCode := range map[string]string{
+		"ErrPartialSavePoint":    "E_PARTIAL_SAVE_POINT",
+		"ErrCleanupPlanMismatch": "E_CLEANUP_PLAN_MISMATCH",
+	} {
+		gotCode, ok := codes[name]
+		if !ok {
+			t.Fatalf("pkg/errclass must export public error symbol %s", name)
+		}
+		if gotCode != wantCode {
+			t.Fatalf("pkg/errclass public error %s has code %q, want %q", name, gotCode, wantCode)
+		}
+	}
+
+	for _, name := range exportedErrclassNames(t) {
+		for _, forbidden := range []string{"ErrPartialSnapshot", "ErrGCPlanMismatch"} {
+			if name == forbidden {
+				t.Fatalf("pkg/errclass exports legacy public error symbol %s", name)
+			}
+		}
+	}
+	for name, code := range codes {
+		for _, forbidden := range []string{"E_PARTIAL_SNAPSHOT", "E_GC_PLAN_MISMATCH"} {
+			if code == forbidden {
+				t.Fatalf("pkg/errclass public error %s exposes legacy public code %q", name, code)
+			}
+		}
+	}
+}
+
+func TestDocs_PkgJVSGodocUsesWorkspaceFolderVocabulary(t *testing.T) {
+	body := readRepoFile(t, "pkg/jvs/doc.go")
+	for _, required := range []string{
+		"workspace folder",
+		"workspacePath",
+	} {
+		if !strings.Contains(body, required) {
+			t.Fatalf("pkg/jvs godoc must teach public workspace folder wording %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"payload directory",
+		"payloadPath",
+		"payload path",
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("pkg/jvs godoc exposes legacy payload wording %q", forbidden)
+		}
+	}
+}
+
+func TestDocs_APIDocumentationJVSErrorIncludesHint(t *testing.T) {
+	body := readRepoFile(t, "docs/API_DOCUMENTATION.md")
+	section := markdownSectionByHeading(t, "docs/API_DOCUMENTATION.md", body, "## pkg/errclass")
+	for _, required := range []string{
+		"Code    string",
+		"Message string",
+		"Hint    string",
+	} {
+		if !strings.Contains(section, required) {
+			t.Fatalf("docs/API_DOCUMENTATION.md JVSError example must include %q", required)
+		}
+	}
+}
+
+func TestDocsAndPublicGoAPIDoNotExposeLegacyPayloadNames(t *testing.T) {
+	for _, doc := range activePublicContractDocs() {
+		t.Run(doc, func(t *testing.T) {
+			scanPublicDocLines(t, doc, func(lineNo int, line string) {
+				for _, forbidden := range []string{
+					"ErrPayload",
+					"ErrSeparated",
+					"PayloadRootHash",
+					"payload_root_hash",
+					"Payload hash",
+					"payload hash",
+				} {
+					if strings.Contains(line, forbidden) {
+						t.Fatalf("%s:%d exposes legacy public Go/API vocabulary %q:\n%s", doc, lineNo, forbidden, line)
+					}
+				}
+			})
+		})
+	}
+
+	savePointFields := publicStructJSONFieldMap(t, "pkg/jvs/client.go", "SavePoint")
+	if got := savePointFields["ContentRootHash"]; got != "content_root_hash" {
+		t.Fatalf("pkg/jvs.SavePoint must expose ContentRootHash with json tag content_root_hash; got %q", got)
+	}
+	for fieldName, jsonName := range savePointFields {
+		if strings.Contains(fieldName, "Payload") || strings.Contains(jsonName, "payload") {
+			t.Fatalf("pkg/jvs.SavePoint exposes legacy payload field %s with json tag %q", fieldName, jsonName)
+		}
+	}
+
+	for _, name := range exportedErrclassNames(t) {
+		if strings.Contains(name, "Payload") || strings.Contains(name, "Separated") {
+			t.Fatalf("pkg/errclass exports legacy public error symbol %s", name)
+		}
 	}
 }
 
@@ -3123,12 +3556,35 @@ func TestDocs_ReleaseEvidenceV046GACandidateReadinessRecordsPendingRelease(t *te
 		"machine-readable `recommended_next_command`",
 		"repo clone workflow",
 		"filesystem-aware transfer planning/implementation",
+		"pre-GA public vocabulary cleanup",
+		"clean break",
+		"no backward-compatible aliases",
+		"`ContentRootHash`",
+		"`content_root_hash`",
+		"`E_SAVE_POINT_*`",
+		"`E_CLEANUP_*`",
+		"transfer JSON public references",
+		"free-text sanitizer",
 	} {
 		requireReleaseReadinessText(t, "v0.4.6 changelog candidate entry", changelogEntry, required)
 	}
+	requireReleaseReadinessAbsentText(t, "v0.4.6 changelog candidate entry", changelogEntry, "None for the stable v0 public CLI contract")
 
 	entry := releaseEvidenceEntry(t, readRepoFile(t, "docs/RELEASE_EVIDENCE.md"), heading)
 	requireCandidateReleaseEvidence(t, heading, entry)
+	for _, required := range []string{
+		"pre-GA public vocabulary cleanup",
+		"clean break",
+		"no backward-compatible aliases",
+		"`ContentRootHash`",
+		"`content_root_hash`",
+		"`E_SAVE_POINT_*`",
+		"`E_CLEANUP_*`",
+		"transfer JSON public references",
+		"free-text sanitizer",
+	} {
+		requireReleaseReadinessText(t, "v0.4.6 release evidence public vocabulary cleanup", entry, required)
+	}
 	for _, forbidden := range []struct {
 		name    string
 		pattern *regexp.Regexp
@@ -3158,7 +3614,7 @@ func TestDocs_ReleaseEvidenceDisclosesSourceArchivePublicationBoundary(t *testin
 		t.Run(tc.name, func(t *testing.T) {
 			for _, required := range []string{
 				"source archive",
-				"tag snapshot",
+				"tag source archive",
 				"publication final evidence",
 				"GitHub Release page",
 				"post-release main ledger",
@@ -3273,7 +3729,7 @@ func TestDocs_ReleaseEvidenceTagSourceDisclosureGateRequiresFinalDocs(t *testing
 		"Final evidence location: GitHub Release page and post-release main ledger",
 		"https://github.com/agentsmith-project/jvs/releases/tag/v0.4.3",
 		"source archive boundary",
-		"immutable tag snapshot",
+		"immutable source archive",
 		"publication final evidence",
 		"GitHub Release page",
 		"post-release main ledger",
@@ -3355,7 +3811,7 @@ func TestDocs_ReleaseEvidenceDoesNotMixCandidateAndFinalSemantics(t *testing.T) 
 		if strings.Contains(strings.ToLower(entry), "candidate") {
 			for _, required := range []string{
 				"source archive",
-				"tag snapshot",
+				"tag source archive",
 				"publication final evidence",
 				"GitHub Release page",
 				"post-release main ledger",
@@ -4988,6 +5444,20 @@ func allowedPublicDocCompatibilityLine(doc, line string) bool {
 			}
 		}
 	}
+	if doc == "docs/PERFORMANCE_RESULTS.md" {
+		for _, marker := range []string{"internal/snapshot", "internal/gc"} {
+			if strings.Contains(lower, marker) {
+				return true
+			}
+		}
+	}
+	if doc == "CONTRIBUTING.md" {
+		for _, marker := range []string{"├── gc/", "├── snapshot/"} {
+			if strings.Contains(lower, marker) {
+				return true
+			}
+		}
+	}
 	// This is the JuiceFS mount flag, not the old JVS checkpoint compression flag.
 	if strings.Contains(line, "juicefs mount") && strings.Contains(line, "--compress") {
 		return true
@@ -5000,6 +5470,11 @@ func allowedPublicDocCompatibilityLine(doc, line string) bool {
 		}
 	}
 	return false
+}
+
+func releaseFacingLegacyStorageVocabularyAllowed(line string) bool {
+	lower := strings.ToLower(line)
+	return strings.Contains(lower, "internal storage term")
 }
 
 func traceabilityNormativeDocs(t *testing.T) []string {
@@ -6659,6 +7134,144 @@ func isRunJVSCall(expr ast.Expr) bool {
 	}
 }
 
+func errclassJVSErrorCodes(t *testing.T) map[string]string {
+	t.Helper()
+
+	fset := token.NewFileSet()
+	path := "pkg/errclass/errors.go"
+	file, err := parser.ParseFile(fset, repoFile(t, path), nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+
+	codes := make(map[string]string)
+	ast.Inspect(file, func(node ast.Node) bool {
+		valueSpec, ok := node.(*ast.ValueSpec)
+		if !ok {
+			return true
+		}
+		for i, name := range valueSpec.Names {
+			if !ast.IsExported(name.Name) || !strings.HasPrefix(name.Name, "Err") || i >= len(valueSpec.Values) {
+				continue
+			}
+			code, ok := jvsErrorCodeLiteral(t, valueSpec.Values[i])
+			if ok {
+				codes[name.Name] = code
+			}
+		}
+		return true
+	})
+	if len(codes) == 0 {
+		t.Fatalf("%s must declare public JVSError codes", path)
+	}
+	return codes
+}
+
+func exportedErrclassNames(t *testing.T) []string {
+	t.Helper()
+
+	fset := token.NewFileSet()
+	path := "pkg/errclass/errors.go"
+	file, err := parser.ParseFile(fset, repoFile(t, path), nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+
+	var names []string
+	ast.Inspect(file, func(node ast.Node) bool {
+		valueSpec, ok := node.(*ast.ValueSpec)
+		if !ok {
+			return true
+		}
+		for _, name := range valueSpec.Names {
+			if ast.IsExported(name.Name) && strings.HasPrefix(name.Name, "Err") {
+				names = append(names, name.Name)
+			}
+		}
+		return true
+	})
+	if len(names) == 0 {
+		t.Fatalf("%s must declare public errclass symbols", path)
+	}
+	return names
+}
+
+func jvsErrorCodeLiteral(t *testing.T, expr ast.Expr) (string, bool) {
+	t.Helper()
+
+	if unary, ok := expr.(*ast.UnaryExpr); ok && unary.Op == token.AND {
+		expr = unary.X
+	}
+	composite, ok := expr.(*ast.CompositeLit)
+	if !ok {
+		return "", false
+	}
+	ident, ok := composite.Type.(*ast.Ident)
+	if !ok || ident.Name != "JVSError" {
+		return "", false
+	}
+	for _, elt := range composite.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		key, ok := kv.Key.(*ast.Ident)
+		if !ok || key.Name != "Code" {
+			continue
+		}
+		lit, ok := kv.Value.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			continue
+		}
+		code, err := strconv.Unquote(lit.Value)
+		if err != nil {
+			t.Fatalf("unquote JVSError code %q: %v", lit.Value, err)
+		}
+		return code, true
+	}
+	return "", false
+}
+
+func publicStructJSONFieldMap(t *testing.T, path, structName string) map[string]string {
+	t.Helper()
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, repoFile(t, path), nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+
+	fields := make(map[string]string)
+	ast.Inspect(file, func(node ast.Node) bool {
+		typeSpec, ok := node.(*ast.TypeSpec)
+		if !ok || typeSpec.Name.Name != structName {
+			return true
+		}
+		structType, ok := typeSpec.Type.(*ast.StructType)
+		if !ok {
+			t.Fatalf("%s %s must be a struct", path, structName)
+		}
+		for _, field := range structType.Fields.List {
+			if len(field.Names) == 0 || field.Tag == nil {
+				continue
+			}
+			tag, err := strconv.Unquote(field.Tag.Value)
+			if err != nil {
+				t.Fatalf("unquote %s.%s struct tag: %v", structName, field.Names[0].Name, err)
+			}
+			jsonName := strings.Split(reflect.StructTag(tag).Get("json"), ",")[0]
+			for _, name := range field.Names {
+				fields[name.Name] = jsonName
+			}
+		}
+		return false
+	})
+	if len(fields) == 0 {
+		t.Fatalf("%s must declare public struct %s with JSON fields", path, structName)
+	}
+	return fields
+}
+
 func jsonFieldsForStruct(t *testing.T, path, structName string) []string {
 	t.Helper()
 	fset := token.NewFileSet()
@@ -6929,7 +7542,7 @@ func candidateTagSourceArchiveDisclosureMissing(tag, class string, targets ...re
 	}
 	caseInsensitiveRequirements := []string{
 		"source archive boundary",
-		"immutable tag snapshot",
+		"immutable source archive",
 		"publication final evidence",
 		"GitHub Release page",
 		"post-release main ledger",

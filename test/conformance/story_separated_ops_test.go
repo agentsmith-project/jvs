@@ -451,7 +451,7 @@ func requireSeparatedStoryControlFiles(t *testing.T, controlRoot string) {
 	}
 }
 
-func requireSeparatedStoryTransferSource(t *testing.T, data map[string]any, controlRoot, payloadRoot string) {
+func requireSeparatedStoryTransferSource(t *testing.T, data map[string]any, _ string, payloadRoot string) {
 	t.Helper()
 	transfers, ok := data["transfers"].([]any)
 	if !ok || len(transfers) == 0 {
@@ -464,56 +464,62 @@ func requireSeparatedStoryTransferSource(t *testing.T, data map[string]any, cont
 	if transfer["source_path"] != payloadRoot {
 		t.Fatalf("transfer source_path = %#v, want payload root %q in %#v", transfer["source_path"], payloadRoot, transfer)
 	}
-	requireSeparatedStoryPathUnder(t, transfer["published_destination"], filepath.Join(controlRoot, ".jvs", "snapshots"))
+	requireSeparatedStoryStringPrefix(t, transfer["published_destination"], "save_point:")
 }
 
-func requireSeparatedStoryViewTransfer(t *testing.T, data map[string]any, controlRoot, viewPath string) {
+func requireSeparatedStoryViewTransfer(t *testing.T, data map[string]any, _ string, _ string) {
 	t.Helper()
 	transfer := requireSeparatedStoryTransferByID(t, data, "view-primary")
 	if transfer["operation"] != "view" || transfer["phase"] != "view_materialization" {
 		t.Fatalf("view transfer has wrong operation/phase: %#v", transfer)
 	}
-	requireSeparatedStoryPathUnder(t, transfer["source_path"], filepath.Join(controlRoot, ".jvs", "snapshots"))
-	requireSeparatedStoryPathUnder(t, transfer["materialization_destination"], filepath.Join(controlRoot, ".jvs", "views"))
-	requireSeparatedStoryPathUnder(t, transfer["capability_probe_path"], filepath.Join(controlRoot, ".jvs", "views"))
-	if transfer["published_destination"] != viewPath {
-		t.Fatalf("view published_destination = %#v, want %q in %#v", transfer["published_destination"], viewPath, transfer)
+	requireSeparatedStoryStringPrefix(t, transfer["source_path"], "save_point:")
+	requireSeparatedStoryStringPrefix(t, transfer["materialization_destination"], "content_view:")
+	if transfer["capability_probe_path"] != transfer["materialization_destination"] {
+		t.Fatalf("view capability_probe_path = %#v, want materialization reference in %#v", transfer["capability_probe_path"], transfer)
 	}
+	requireSeparatedStoryStringPrefix(t, transfer["published_destination"], transfer["materialization_destination"].(string))
 	requireSeparatedStoryTransferCopyEvidence(t, transfer)
 }
 
-func requireSeparatedStoryRestorePreviewTransfer(t *testing.T, data map[string]any, controlRoot, payloadRoot string) {
+func requireSeparatedStoryRestorePreviewTransfer(t *testing.T, data map[string]any, _ string, payloadRoot string) {
 	t.Helper()
 	transfer := requireSeparatedStoryTransferByID(t, data, "restore-preview-validation-primary")
 	if transfer["result_kind"] != "expected" || transfer["permission_scope"] != "preview_only" {
 		t.Fatalf("restore preview transfer must be preview-only expected: %#v", transfer)
 	}
-	requireSeparatedStoryPathUnder(t, transfer["source_path"], filepath.Join(controlRoot, ".jvs", "snapshots"))
-	requireSeparatedStoryPathUnder(t, transfer["materialization_destination"], filepath.Join(controlRoot, ".jvs"))
+	requireSeparatedStoryStringPrefix(t, transfer["source_path"], "save_point:")
+	if transfer["materialization_destination"] != "temporary_folder" || transfer["capability_probe_path"] != "control_data" {
+		t.Fatalf("restore preview transfer should use public temporary/control references: %#v", transfer)
+	}
 	if transfer["published_destination"] != payloadRoot {
 		t.Fatalf("restore preview published_destination = %#v, want %q in %#v", transfer["published_destination"], payloadRoot, transfer)
 	}
 	requireSeparatedStoryTransferCopyEvidence(t, transfer)
 }
 
-func requireSeparatedStoryRestoreRunTransfers(t *testing.T, data map[string]any, controlRoot, payloadRoot string) {
+func requireSeparatedStoryRestoreRunTransfers(t *testing.T, data map[string]any, _ string, payloadRoot string) {
 	t.Helper()
 	validation := requireSeparatedStoryTransferByID(t, data, "restore-run-source-validation")
 	if validation["result_kind"] != "final" || validation["permission_scope"] != "execution" {
 		t.Fatalf("restore validation transfer must be final execution: %#v", validation)
 	}
-	requireSeparatedStoryPathUnder(t, validation["source_path"], filepath.Join(controlRoot, ".jvs", "snapshots"))
-	requireSeparatedStoryPathUnder(t, validation["materialization_destination"], filepath.Join(controlRoot, ".jvs"))
+	requireSeparatedStoryStringPrefix(t, validation["source_path"], "save_point:")
+	if validation["materialization_destination"] != "temporary_folder" || validation["capability_probe_path"] != "control_data" {
+		t.Fatalf("restore validation transfer should use public temporary/control references: %#v", validation)
+	}
 	if validation["published_destination"] != payloadRoot {
 		t.Fatalf("restore validation published_destination = %#v, want %q in %#v", validation["published_destination"], payloadRoot, validation)
 	}
 	requireSeparatedStoryTransferCopyEvidence(t, validation)
 
 	primary := requireSeparatedStoryTransferByID(t, data, "restore-run-primary")
-	requireSeparatedStoryPathUnder(t, primary["source_path"], filepath.Join(controlRoot, ".jvs", "snapshots"))
-	requireSeparatedStoryPathUnder(t, primary["materialization_destination"], filepath.Dir(payloadRoot))
-	if path, _ := primary["materialization_destination"].(string); strings.Contains(filepath.ToSlash(path), filepath.ToSlash(controlRoot)) {
-		t.Fatalf("restore primary materialized inside control root: %#v", primary)
+	requireSeparatedStoryStringPrefix(t, primary["source_path"], "save_point:")
+	if primary["materialization_destination"] != "temporary_folder" {
+		t.Fatalf("restore primary materialization should use temporary reference: %#v", primary)
+	}
+	if primary["capability_probe_path"] != filepath.Dir(payloadRoot) {
+		t.Fatalf("restore primary capability_probe_path = %#v, want payload parent in %#v", primary["capability_probe_path"], primary)
 	}
 	if primary["published_destination"] != payloadRoot {
 		t.Fatalf("restore primary published_destination = %#v, want %q in %#v", primary["published_destination"], payloadRoot, primary)
@@ -550,6 +556,14 @@ func requireSeparatedStoryTransferCopyEvidence(t *testing.T, transfer map[string
 	}
 	if transfer["performance_class"] != "fast_copy" && transfer["performance_class"] != "normal_copy" {
 		t.Fatalf("transfer performance_class = %#v, want fast_copy or normal_copy in %#v", transfer["performance_class"], transfer)
+	}
+}
+
+func requireSeparatedStoryStringPrefix(t *testing.T, got any, prefix string) {
+	t.Helper()
+	value, ok := got.(string)
+	if !ok || !strings.HasPrefix(value, prefix) {
+		t.Fatalf("value = %#v, want prefix %q", got, prefix)
 	}
 }
 

@@ -52,6 +52,23 @@ savePoint, err := client.Save(ctx, jvs.SaveOptions{
 workspace. The returned value is save point metadata suitable for logging,
 audit evidence, and later restore selection.
 
+Public save point metadata uses content terminology even though internal
+storage records may use older storage-shaped field names:
+
+```go
+type SavePoint struct {
+    SavePointID        SavePointID      `json:"save_point_id"`
+    WorkspaceName      string           `json:"workspace_name"`
+    CreatedAt          time.Time        `json:"created_at"`
+    Message            string           `json:"message,omitempty"`
+    Tags               []string         `json:"tags,omitempty"`
+    Engine             model.EngineType `json:"engine"`
+    ContentRootHash    model.HashValue  `json:"content_root_hash"`
+    DescriptorChecksum model.HashValue  `json:"descriptor_checksum"`
+    IntegrityState     model.IntegrityState `json:"integrity_state"`
+}
+```
+
 ### History
 
 ```go
@@ -241,6 +258,7 @@ user-facing errors.
 type JVSError struct {
     Code    string
     Message string
+    Hint    string
 }
 ```
 
@@ -249,8 +267,10 @@ Representative stable codes include:
 - `E_NAME_INVALID`
 - `E_PATH_ESCAPE`
 - `E_DESCRIPTOR_CORRUPT`
-- `E_PAYLOAD_HASH_MISMATCH`
+- `E_SAVE_POINT_HASH_MISMATCH`
 - `E_LINEAGE_BROKEN`
+- `E_PARTIAL_SAVE_POINT`
+- `E_CLEANUP_PLAN_MISMATCH`
 - `E_FORMAT_UNSUPPORTED`
 - `E_AUDIT_CHAIN_BROKEN`
 

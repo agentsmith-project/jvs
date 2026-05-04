@@ -38,7 +38,10 @@ jvs recovery rollback <recovery-plan>
 ```
 
 JVS restores the backup it created for the operation when that backup is still
-needed and available.
+needed and available. Before using a retained recovery backup, JVS checks that
+the backup content still matches the saved pre-restore evidence. If the backup
+was changed or replaced, rollback stops with a recovery blocking error and
+leaves the current folder, recovery plan, and backup in place.
 
 ## After Recovery
 

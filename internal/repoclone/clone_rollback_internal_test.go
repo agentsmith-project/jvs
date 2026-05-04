@@ -26,6 +26,7 @@ func TestSeparatedCloneRollbackDoesNotRemoveLateExternalWrite(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "target folder changed after publish; refusing to remove")
+	assert.Contains(t, err.Error(), "inspect and remove it manually")
 	assertFileContentInternal(t, filepath.Join(targetRoot, "external.txt"), "external write")
 	assertFileContentInternal(t, filepath.Join(targetRoot, "app.txt"), "main v1")
 	assertNoRollbackQuarantineInternal(t, targetRoot)
@@ -48,9 +49,159 @@ func TestSeparatedCloneRollbackDoesNotRemoveLateRootReplacement(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "target folder changed after publish; refusing to remove")
+	assert.Contains(t, err.Error(), "inspect and remove it manually")
 	assertFileContentInternal(t, filepath.Join(targetRoot, "external.txt"), "external replacement")
 	assert.NoFileExists(t, filepath.Join(targetRoot, "app.txt"))
 	assertNoRollbackQuarantineInternal(t, targetRoot)
+}
+
+func TestSeparatedClonePublishDoesNotRemoveLatePreexistingTargetReplacement(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		replace func(t *testing.T, path string)
+		assert  func(t *testing.T, path string)
+	}{
+		{
+			name: "symlink",
+			replace: func(t *testing.T, path string) {
+				replacementTarget := filepath.Join(filepath.Dir(path), "external-real")
+				require.NoError(t, os.MkdirAll(replacementTarget, 0755))
+				require.NoError(t, os.Remove(path))
+				if err := os.Symlink(replacementTarget, path); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+			},
+			assert: func(t *testing.T, path string) {
+				info, err := os.Lstat(path)
+				require.NoError(t, err)
+				assert.NotZero(t, info.Mode()&os.ModeSymlink)
+			},
+		},
+		{
+			name: "file",
+			replace: func(t *testing.T, path string) {
+				require.NoError(t, os.Remove(path))
+				require.NoError(t, os.WriteFile(path, []byte("external file\n"), 0644))
+			},
+			assert: func(t *testing.T, path string) {
+				assertFileContentInternal(t, path, "external file\n")
+			},
+		},
+		{
+			name: "non-empty directory",
+			replace: func(t *testing.T, path string) {
+				require.NoError(t, os.WriteFile(filepath.Join(path, "external.txt"), []byte("external directory\n"), 0644))
+			},
+			assert: func(t *testing.T, path string) {
+				assertFileContentInternal(t, filepath.Join(path, "external.txt"), "external directory\n")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sourceControl, sourcePayload := setupSeparatedCloneSourceRepoInternal(t)
+			require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("main v1"), 0644))
+			_ = createCloneSavePointInternal(t, sourceControl, "main", "main baseline")
+
+			targetBase := t.TempDir()
+			targetControl := filepath.Join(targetBase, "target-control")
+			targetPayload := filepath.Join(targetBase, "target-payload")
+			require.NoError(t, os.MkdirAll(targetControl, 0755))
+			require.NoError(t, os.MkdirAll(targetPayload, 0755))
+			hookCalled := false
+			installBeforeRemoveEmptyTargetRootHook(t, func(root, role string) error {
+				if root != targetPayload || role != "payload" {
+					return nil
+				}
+				hookCalled = true
+				tc.replace(t, root)
+				return nil
+			})
+
+			_, err := Clone(Options{
+				SourceRepoRoot:    sourceControl,
+				TargetControlRoot: targetControl,
+				TargetPayloadRoot: targetPayload,
+				SavePointsMode:    SavePointsModeMain,
+				RequestedEngine:   model.EngineCopy,
+			})
+
+			require.True(t, hookCalled, "test must replace the target after empty-root validation and before remove")
+			assertJVSErrorCodeInternal(t, err, errclass.ErrAtomicPublishBlocked.Code)
+			assert.Contains(t, err.Error(), "changed before publish; refusing to remove")
+			tc.assert(t, targetPayload)
+			assert.NoDirExists(t, filepath.Join(targetControl, repo.JVSDirName))
+		})
+	}
+}
+
+func TestSeparatedClonePublishDoesNotRemoveTargetReplacedAfterEmptyRevalidation(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		replace func(t *testing.T, path string)
+		assert  func(t *testing.T, path string)
+	}{
+		{
+			name: "symlink",
+			replace: func(t *testing.T, path string) {
+				replacementTarget := filepath.Join(filepath.Dir(path), "external-real-after-revalidate")
+				require.NoError(t, os.MkdirAll(replacementTarget, 0755))
+				require.NoError(t, os.Remove(path))
+				if err := os.Symlink(replacementTarget, path); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+			},
+			assert: func(t *testing.T, path string) {
+				info, err := os.Lstat(path)
+				require.NoError(t, err)
+				assert.NotZero(t, info.Mode()&os.ModeSymlink)
+			},
+		},
+		{
+			name: "file",
+			replace: func(t *testing.T, path string) {
+				require.NoError(t, os.Remove(path))
+				require.NoError(t, os.WriteFile(path, []byte("external file after revalidate\n"), 0644))
+			},
+			assert: func(t *testing.T, path string) {
+				assertFileContentInternal(t, path, "external file after revalidate\n")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sourceControl, sourcePayload := setupSeparatedCloneSourceRepoInternal(t)
+			require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("main v1"), 0644))
+			_ = createCloneSavePointInternal(t, sourceControl, "main", "main baseline")
+
+			targetBase := t.TempDir()
+			targetControl := filepath.Join(targetBase, "target-control")
+			targetPayload := filepath.Join(targetBase, "target-payload")
+			require.NoError(t, os.MkdirAll(targetControl, 0755))
+			require.NoError(t, os.MkdirAll(targetPayload, 0755))
+			hookCalled := false
+			installAfterRevalidateEmptyTargetRootHook(t, func(root, role string) error {
+				if root != targetPayload || role != "payload" {
+					return nil
+				}
+				hookCalled = true
+				tc.replace(t, root)
+				return nil
+			})
+
+			_, err := Clone(Options{
+				SourceRepoRoot:    sourceControl,
+				TargetControlRoot: targetControl,
+				TargetPayloadRoot: targetPayload,
+				SavePointsMode:    SavePointsModeMain,
+				RequestedEngine:   model.EngineCopy,
+			})
+
+			require.True(t, hookCalled, "test must replace the target after empty-root revalidation and before remove")
+			assertJVSErrorCodeInternal(t, err, errclass.ErrAtomicPublishBlocked.Code)
+			assert.Contains(t, err.Error(), "changed before publish; refusing to remove")
+			tc.assert(t, targetPayload)
+			assert.NoDirExists(t, filepath.Join(targetControl, repo.JVSDirName))
+		})
+	}
 }
 
 func TestSeparatedCloneRollbackDoesNotRemoveQuarantineWriteBeforeFinalCleanup(t *testing.T) {
@@ -145,6 +296,26 @@ func installRollbackBeforeFinalCleanupHook(t *testing.T, hook func(string) error
 	separatedCloneRollbackBeforeFinalCleanupHook = hook
 	t.Cleanup(func() {
 		separatedCloneRollbackBeforeFinalCleanupHook = previous
+	})
+}
+
+func installBeforeRemoveEmptyTargetRootHook(t *testing.T, hook func(root, role string) error) {
+	t.Helper()
+
+	previous := separatedCloneBeforeRemoveEmptyTargetRootHook
+	separatedCloneBeforeRemoveEmptyTargetRootHook = hook
+	t.Cleanup(func() {
+		separatedCloneBeforeRemoveEmptyTargetRootHook = previous
+	})
+}
+
+func installAfterRevalidateEmptyTargetRootHook(t *testing.T, hook func(root, role string) error) {
+	t.Helper()
+
+	previous := separatedCloneAfterRevalidateEmptyTargetRootHook
+	separatedCloneAfterRevalidateEmptyTargetRootHook = hook
+	t.Cleanup(func() {
+		separatedCloneAfterRevalidateEmptyTargetRootHook = previous
 	})
 }
 

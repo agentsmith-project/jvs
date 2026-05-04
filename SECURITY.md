@@ -40,7 +40,7 @@ JVS is designed with a **save-point-first, filesystem-native** security architec
 ### Integrity Protection (Two-Layer Model)
 
 1. **Descriptor Checksum**: Each save point descriptor includes a SHA-256 checksum covering all descriptor fields
-2. **Payload Root Hash**: Each save point includes a SHA-256 hash of the complete payload directory tree
+2. **Content Root Hash**: Each save point includes a SHA-256 hash of the complete saved workspace-folder content tree
 
 Verification requires both layers to pass:
 ```bash
@@ -101,7 +101,7 @@ JVS relies on OS-level filesystem permissions for access control:
    destination-local, then run `jvs doctor --strict --repair-runtime` on the
    restored destination
 4. **Use JuiceFS authentication** to control access to underlying storage
-5. **Never commit JVS control data** to Git; it is metadata, not payload
+5. **Never commit JVS control data** to Git; it is metadata, not workspace content
 
 ## Vulnerability Disclosure Process
 

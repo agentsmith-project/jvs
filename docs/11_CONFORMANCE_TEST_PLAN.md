@@ -110,7 +110,7 @@ UX.
   the target.
 - Workspace-folder control-marker fail-closed coverage creates a root-level
   `.jvs` file, directory, and symlink under the workspace folder. Each case
-  returns `E_PAYLOAD_LOCATOR_PRESENT`; an external workspace locator is human
+  returns `E_WORKSPACE_CONTROL_MARKER_PRESENT`; an external workspace locator is human
   discovery only, not runtime authority.
 - Doctor strict-json only coverage uses `doctor --strict --json` for external
   control roots. `--repair-runtime`, `--repair-list`, and other repair variants

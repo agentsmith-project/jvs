@@ -498,10 +498,10 @@ func TestRecoveryRollbackBackupRestoreSurfacesTransferInHumanAndJSON(t *testing.
 		assert.Equal(t, true, primary["primary"])
 		assert.Equal(t, "final", primary["result_kind"])
 		assert.Equal(t, "execution", primary["permission_scope"])
-		assert.Equal(t, "recovery_backup_payload", primary["source_role"])
+		assert.Equal(t, "recovery_backup_content", primary["source_role"])
 		assert.Contains(t, primary["source_path"], ".restore-backup-")
-		assert.Equal(t, "recovery_restore_staging", primary["destination_role"])
-		assert.Contains(t, primary["materialization_destination"], ".recovery-restore-tmp-")
+		assert.Equal(t, "temporary_folder", primary["destination_role"])
+		assert.Equal(t, "temporary_folder", primary["materialization_destination"])
 		assert.Equal(t, repoRoot, primary["published_destination"])
 		assert.Equal(t, true, primary["checked_for_this_operation"])
 		assert.Contains(t, []any{"fast_copy", "normal_copy"}, primary["performance_class"])
@@ -769,6 +769,41 @@ func TestRecoveryRollbackCompletesAfterBackupPayloadRestoredButMetadataWriteFail
 	assert.Equal(t, model.SnapshotID(originalID), cfg.HeadSnapshotID)
 }
 
+func TestRecoveryRollbackRejectsReplacedBackupBeforeMutation(t *testing.T) {
+	repoRoot, sourceID, _ := setupWholeRecoveryRepo(t)
+	recoveryPlanID := createWholeRecoveryFailure(t, sourceID)
+	plan, err := recovery.NewManager(repoRoot).Load(recoveryPlanID)
+	require.NoError(t, err)
+	require.Equal(t, recovery.BackupStateRequired, plan.Backup.State)
+	require.NotEmpty(t, plan.PreRecoveryEvidence)
+	require.Equal(t, plan.PreRecoveryEvidence, plan.Backup.PayloadEvidence)
+	require.DirExists(t, plan.Backup.Path)
+
+	require.NoError(t, os.RemoveAll(plan.Backup.Path))
+	require.NoError(t, os.MkdirAll(plan.Backup.Path, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(plan.Backup.Path, "replaced.txt"), []byte("replaced backup"), 0644))
+	beforePins := documentedPinCount(t, repoRoot)
+
+	stdout, err := executeCommand(createTestRootCmd(), "recovery", "rollback", recoveryPlanID)
+	require.Error(t, err)
+	require.Empty(t, stdout)
+	assert.Contains(t, err.Error(), "recovery rollback cannot be completed safely")
+	assert.Contains(t, err.Error(), "recovery backup")
+	assert.Contains(t, err.Error(), "no files were changed")
+	assertRecoveryOutputOmitsInternalVocabulary(t, err.Error())
+
+	plan, err = recovery.NewManager(repoRoot).Load(recoveryPlanID)
+	require.NoError(t, err)
+	assert.Equal(t, recovery.StatusActive, plan.Status)
+	assert.Equal(t, beforePins, documentedPinCount(t, repoRoot))
+	assert.FileExists(t, filepath.Join(plan.Backup.Path, "replaced.txt"))
+
+	content, err := os.ReadFile(filepath.Join(repoRoot, "source.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "source", string(content))
+	assert.NoFileExists(t, filepath.Join(repoRoot, "original.txt"))
+}
+
 func TestRecoveryRollbackWithEvidenceAndMissingBackupResolvesWithoutMutation(t *testing.T) {
 	repoRoot, sourceID, originalID := setupWholeRecoveryRepo(t)
 	planID := createCrashRecoveryPlanWithMissingBackup(t, repoRoot, sourceID)
@@ -885,10 +920,10 @@ func TestRecoveryResumeWithBackupRestoreSurfacesBothTransfersInJSON(t *testing.T
 	assert.Equal(t, true, backupTransfer["primary"])
 	assert.Equal(t, "final", backupTransfer["result_kind"])
 	assert.Equal(t, "execution", backupTransfer["permission_scope"])
-	assert.Equal(t, "recovery_backup_payload", backupTransfer["source_role"])
+	assert.Equal(t, "recovery_backup_content", backupTransfer["source_role"])
 	assert.Contains(t, backupTransfer["source_path"], ".restore-backup-")
-	assert.Equal(t, "recovery_restore_staging", backupTransfer["destination_role"])
-	assert.Contains(t, backupTransfer["materialization_destination"], ".recovery-restore-tmp-")
+	assert.Equal(t, "temporary_folder", backupTransfer["destination_role"])
+	assert.Equal(t, "temporary_folder", backupTransfer["materialization_destination"])
 	assert.Equal(t, repoRoot, backupTransfer["published_destination"])
 	assert.Equal(t, true, backupTransfer["checked_for_this_operation"])
 	assert.Equal(t, "auto", backupTransfer["requested_engine"])
@@ -1396,6 +1431,7 @@ func createWholeResumePlanRequiringBackupRestore(t *testing.T, repoRoot, sourceI
 		RecoveryEvidence:       recoveryEvidence,
 		RecommendedNextCommand: "jvs recovery resume " + planID,
 	}
+	recordCLIRecoveryBackupPayloadEvidence(t, repoRoot, &plan)
 	require.NoError(t, recovery.NewManager(repoRoot).Write(&plan))
 	return planID
 }
@@ -1424,11 +1460,10 @@ func assertRecoveryResumeRestoreTransfer(t *testing.T, record map[string]any, re
 	assert.Equal(t, true, record["primary"])
 	assert.Equal(t, "final", record["result_kind"])
 	assert.Equal(t, "execution", record["permission_scope"])
-	assert.Equal(t, "save_point_payload", record["source_role"])
-	assert.Equal(t, filepath.Join(repoRoot, ".jvs", "snapshots", sourceID), record["source_path"])
-	assert.Equal(t, "restore_staging", record["destination_role"])
-	assert.Contains(t, record["materialization_destination"], ".restore-tmp-")
-	assert.NotEqual(t, mainPath, record["materialization_destination"])
+	assert.Equal(t, "save_point_content", record["source_role"])
+	assert.Equal(t, "save_point:"+sourceID, record["source_path"])
+	assert.Equal(t, "temporary_folder", record["destination_role"])
+	assert.Equal(t, "temporary_folder", record["materialization_destination"])
 	assert.Equal(t, filepath.Dir(repoRoot), record["capability_probe_path"])
 	assert.Equal(t, mainPath, record["published_destination"])
 	assert.Equal(t, true, record["checked_for_this_operation"])
@@ -1503,6 +1538,16 @@ func readRecoveryPlanFileMap(t *testing.T, repoRoot, planID string) map[string]a
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal(data, &raw))
 	return raw
+}
+
+func recordCLIRecoveryBackupPayloadEvidence(t *testing.T, repoRoot string, plan *recovery.Plan) {
+	t.Helper()
+	evidence, err := recovery.NewManager(repoRoot).BackupPayloadEvidence(plan)
+	require.NoError(t, err)
+	plan.Backup.PayloadEvidence = evidence
+	if strings.TrimSpace(plan.PreRecoveryEvidence) == "" {
+		plan.PreRecoveryEvidence = evidence
+	}
 }
 
 func recoveryPlanIDFromText(t *testing.T, value string) string {

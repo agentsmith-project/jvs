@@ -23,6 +23,21 @@ folder you name. In both cases, your existing files stay in place.
 JVS adds `.jvs/` control data inside the folder. Treat that as JVS's own notes.
 You normally do not open it or edit it yourself.
 
+## Project/Repo
+
+A project, or repo, is the JVS-managed folder together with its save point
+history and workspace list. Ordinary `repo clone` creates a separate project
+with a new repo identity. Moving or renaming a project with JVS keeps the same
+repo identity and history.
+
+## Control Data
+
+Control data is JVS's own state for save point history, workspace records,
+runtime state, and recovery. In an ordinary `.jvs/` project, control data lives
+inside the folder as `.jvs/`. In an external control root workflow, the
+workspace folder stays separate from the external control root that stores the
+control data.
+
 ## Workspace
 
 A workspace is a folder JVS knows by name. The first workspace is named `main`.
@@ -123,7 +138,9 @@ your current workspace. Close the view when you are done:
 jvs view close <view-id>
 ```
 
-View does not change workspace files and does not change history.
+View does not change workspace files and does not change history. Closing a
+view clears JVS-owned view state and releases cleanup protection for that open
+view.
 
 ## Restore
 

@@ -29,6 +29,8 @@ workspace folder's `.jvs/`. External control root is an operator/platform
 profile: a trusted runner keeps JVS control data outside the workspace folder
 and targets every command explicitly. Use it only when an operator or platform
 integration explicitly gives you both a control root and a workspace name.
+The current external control root contract is main-only, so use
+`--workspace main`.
 
 Create one by naming the workspace folder and the external control root:
 
@@ -77,6 +79,8 @@ jvs --json --control-root C --workspace main doctor --strict
 ```
 
 In shorthand, this advanced workflow supports `doctor --strict --json` only.
+Do not add `--repair-runtime`; runtime repair is for ordinary `.jvs/`
+projects, not external control root inspection.
 
 External control root clone uses a main-only target folder plus target control
 root:
@@ -107,13 +111,17 @@ Adopt a folder for JVS. With no argument, adopts the directory you are in.
 ```bash
 jvs init
 jvs init /path/to/folder
+jvs init [folder] --control-root C --workspace main
 ```
 
 Behavior:
 
 - Existing files stay in place.
-- `.jvs/` control data is created in the folder.
-- The folder is registered as workspace `main`.
+- For an ordinary `.jvs/` project, `.jvs/` control data is created in the
+  folder.
+- For an external control root, control data is created in `C`, while the
+  folder remains the workspace folder.
+- The folder is registered as workspace `main` in either shape.
 - The first save point is created later with `jvs save`.
 
 ## `jvs status`
@@ -191,7 +199,8 @@ jvs view close <view-id>
 ```
 
 The save point must be a full ID or an unambiguous ID prefix. View does not
-change workspace files or history.
+change workspace files or history. `jvs view close <view-id>` clears JVS-owned
+view state and releases cleanup protection for that open view.
 
 ## `jvs restore [save-point] [--path path]`
 
@@ -319,7 +328,7 @@ Common commands:
 | `jvs repo detach` | Preview stopping JVS management of the current project folder while keeping working files |
 | `jvs repo detach --run <repo-detach-plan-id>` | Run a reviewed detach plan |
 
-### `jvs repo clone <target-folder> [--save-points all|main] [--dry-run]`
+### `jvs repo clone <target-folder> [--target-control-root <control-root>] [--save-points all|main] [--dry-run]`
 
 Copy the current local JVS project into a new folder. The source is the project
 you are in, or the project named by global `--repo <path>`.
@@ -331,6 +340,7 @@ as `../../project-copy`.
 ```bash
 jvs repo clone ../project-copy
 jvs repo clone ../project-copy-preview --save-points main --dry-run
+jvs --control-root C --workspace main repo clone ../project-copy --target-control-root TC --save-points main
 ```
 
 Use the first form when you want a full local copy with saved history. Use the
@@ -347,6 +357,10 @@ Behavior:
 - Even in the default mode, the target creates only one workspace, named
   `main`, at `<target-folder>`.
 - Other workspaces from the source project are not created in the target.
+- If a source workspace has unsaved changes, including a source workspace other
+  than `main`, clone fails closed. Save those changes as a save point first if
+  they should be included; source workspaces other than `main` are not created
+  in the target.
 - `--save-points main` copies only the saved history needed by source `main`,
   including earlier save points that history depends on.
 - `--dry-run` checks what would happen and prints the plan, but does not create
@@ -378,8 +392,8 @@ jvs --repo <old-repo-root> repo move --run <repo-move-plan-id>
 ```
 
 `repo move` keeps the same `repo_id`, save point history, workspace names, and
-external workspace folders. It updates the main workspace path and registered
-external workspace connections to the new project folder. If your shell is
+registered workspace paths. It updates the main workspace path and registered
+workspace path records to the new project folder. If your shell is
 inside the old project folder, use the printed safe run command from a parent
 folder.
 
@@ -396,7 +410,7 @@ jvs --repo <old-repo-root> repo rename --run <repo-rename-plan-id>
 ```
 
 `repo rename` is preview-first and keeps the same `repo_id`, save point
-history, workspace names, and external workspace folders.
+history, workspace names, and registered workspace paths.
 
 ### `jvs repo detach`
 
@@ -404,7 +418,7 @@ Stop JVS managing the current project folder while keeping the project working
 files in place. This is preview-first.
 
 `jvs repo detach` checks the active project identity, verifies that `main` is
-the project folder, and verifies registered external workspace connections
+the project folder, and verifies registered workspace path records
 before it prints a plan. The preview does not archive metadata and does not
 move or delete files.
 
@@ -415,8 +429,8 @@ jvs repo detach
 jvs repo detach --run <repo-detach-plan-id>
 ```
 
-The run archives JVS metadata under `.jvs-detached`, marks registered external
-workspace connections as detached/orphaned, and leaves save point storage in
+The run archives JVS metadata under `.jvs-detached`, marks registered workspace
+path records as detached/orphaned, and leaves save point storage in
 the archive. After success, ordinary `jvs status` from the project folder no
 longer treats it as an active JVS repo.
 
@@ -464,8 +478,12 @@ jvs doctor --repair-list
 jvs doctor --repair-runtime
 ```
 
-`--strict` performs deeper integrity checks. `--repair-runtime` runs safe
-automatic repairs for leftover state from interrupted JVS operations.
+`--strict` performs deeper integrity checks. `--repair-runtime` changes JVS
+control data by running safe automatic runtime repairs for leftover state from
+interrupted JVS operations; it does not rewrite workspace files or save point
+history. It applies to ordinary `.jvs/` projects. For external control roots,
+use `jvs --json --control-root C --workspace main doctor --strict`; JVS rejects
+`--repair-runtime` for that selector.
 
 ## Shell Completion
 

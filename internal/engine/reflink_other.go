@@ -11,3 +11,7 @@ import (
 func reflinkFile(_, _ string, _ os.FileInfo) error {
 	return fmt.Errorf("reflink not supported on this platform")
 }
+
+func reflinkFileToNew(_, _ string, _ os.FileInfo) error {
+	return fmt.Errorf("reflink not supported on this platform")
+}

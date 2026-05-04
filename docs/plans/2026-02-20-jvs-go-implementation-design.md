@@ -55,7 +55,7 @@ jvs doctor --strict
 
 The implementation should preserve these design properties:
 
-- Control data is not workspace payload.
+- Control data is not workspace content.
 - Save point publish is atomic from the public reader's perspective.
 - Restore is preview-first and history-preserving.
 - Restore run revalidates the reviewed plan before writing.

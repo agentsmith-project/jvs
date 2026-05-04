@@ -14,6 +14,9 @@ procedures.
 | --- | --- |
 | `folder` | The real filesystem directory where the user works. |
 | `workspace` | The JVS name for a managed real folder. `main` is the default. |
+| `project` / `repo` | The JVS-managed folder, its stable repo identity, workspace list, and save point history. |
+| `control data` | JVS-owned metadata, save point storage, and runtime state. In the ordinary shape it lives in `.jvs/`; in the external control root shape it lives outside the workspace folder. |
+| `external control root` | Explicit advanced/operator control data location outside the workspace folder, selected with `--control-root <path> --workspace main`. |
 | `save point` | An immutable project history node created from a workspace's managed files. |
 | `save` | Create a new save point from the active workspace. |
 | `history` | List project save points through the active workspace's pointer and provenance. |
@@ -89,6 +92,8 @@ second product model.
   `jvs init [folder] --control-root C --workspace main`.
 - After init, target it with
   `jvs --control-root C --workspace main <command>`.
+- The current external control root contract is main-only; use
+  `--workspace main` for this profile.
 - A bare workspace folder cannot safely auto-discover an external control root;
   operator scripts must pass `--control-root C --workspace main` for status,
   save, history, view, restore, recovery, cleanup, doctor, and clone.
@@ -100,8 +105,10 @@ second product model.
   main` is the explicit selector for this workflow.
 - `--repo` is not an external control root selector; it remains an advanced
   target assertion for ordinary project paths.
-- External control root doctor supports `doctor --strict --json` only, for
-  example `jvs --json --control-root C --workspace main doctor --strict`.
+- External control root doctor is strict inspection only: use
+  `jvs --json --control-root C --workspace main doctor --strict`.
+  `--repair-runtime` is rejected for this selector and is not an external
+  control root repair path.
 - External control root repo clone uses a main-only target folder plus target
   control root:
   `jvs --control-root C --workspace main repo clone <target-folder> --target-control-root TC --save-points main`.
@@ -125,7 +132,7 @@ JSON output uses this envelope:
   "schema_version": 1,
   "command": "status",
   "ok": true,
-  "repo_root": "/abs/folder",
+  "repo_root": "/abs/project-or-control-root",
   "workspace": "main",
   "data": {},
   "error": null
@@ -134,6 +141,40 @@ JSON output uses this envelope:
 
 On error, `ok` is false, `data` is null, and `error` contains a stable code,
 message, and optional hint.
+
+Top-level `repo_root` names the resolved control data root for the command. For
+ordinary `.jvs/` projects that is the project folder. For external control root
+commands it is the explicit control root, not the workspace folder; command data
+uses `data.folder` for the workspace folder and `data.control_root` for the
+control root when those fields apply.
+
+## Transfer Reporting JSON
+
+The implemented public CLI contract exposes `data.transfers[]` for commands
+that currently materialize or copy files: save, restore preview/run, workspace
+new, view, and repo clone. Each transfer record describes the source role,
+destination role, materialization destination, capability probe path, published
+destination, effective engine, optimized flag, performance class, degraded
+reasons, warnings, and whether the copy method was checked for this operation.
+
+Transfer roles and locations are public reporting vocabulary, not internal
+storage evidence. Roles use user-facing concepts such as `workspace_content`,
+`save_point_content`, `content_view`, `temporary_folder`, `save_point_storage`,
+and `target_main_workspace`. Location fields may be absolute user folder paths
+when the location is user-visible, or stable references such as
+`save_point:<id>`, `content_view:<view-id>[/path]`, `control_data`, and
+`temporary_folder` when the operation touches JVS-owned control data or runtime
+state. Public JSON must not require clients to know, parse, or depend on the
+internal `.jvs` layout.
+
+The `warnings` and `degraded_reasons` arrays are also public summaries. They
+must preserve useful human context without exposing raw engine stdout/stderr
+diagnostics, temporary staging paths, or internal storage paths.
+
+This contract does not promise `data.transfers[]` for commands that do not
+materialize or copy files. Do not infer transfers for status, history, cleanup,
+doctor, view close, workspace rename, workspace move/delete, repo move/rename,
+or repo detach unless a future release explicitly promotes that field.
 
 ## Save Point IDs
 
@@ -148,11 +189,17 @@ must choose an explicit save point ID before a mutating operation.
 
 ## Setup
 
-### `jvs init [folder] [--json]`
+### `jvs init [folder] [--control-root C --workspace main] [--json]`
 
 Adopt an existing folder. When no folder is provided, the shell working folder
-is used. Existing files stay in place; JVS stores control data in `.jvs/` and
-registers the folder as workspace `main`.
+is used. Existing files stay in place.
+
+There are two supported control data shapes:
+
+- Ordinary `.jvs/` project: `jvs init [folder]` stores control data in the
+  workspace folder's `.jvs/` and registers the folder as workspace `main`.
+- External control root: `jvs init [folder] --control-root C --workspace main`
+  stores control data in `C` while the folder remains the workspace folder.
 
 Human output must show:
 
@@ -176,7 +223,7 @@ Required JSON `data` fields include:
 
 ## Repo Clone
 
-### `jvs repo clone <target-folder> [--save-points all|main] [--dry-run] [--json]`
+### `jvs repo clone <target-folder> [--target-control-root TC] [--save-points all|main] [--dry-run] [--json]`
 
 Clone a local or mounted JVS project into a new folder. The source is the
 current discovered project, or the project named by global `--repo <path>`.
@@ -187,15 +234,19 @@ Rules:
 
 - Ordinary `.jvs/` clone requires `<target-folder>` to be missing; it must not
   already exist.
-- External-control clone uses the source selector
+- External control root clone uses the source selector
   `--control-root C --workspace main` plus `--target-control-root TC`. Its
   target workspace folder and target control root may be missing or empty
   directories; non-empty target roots fail closed.
 - `<target-folder>` must be outside every source workspace.
 - The target gets a new repository identity.
 - The target creates only workspace `main`.
-- Source workspaces other than `main`, source workspace locators, runtime
-  state, and cleanup plans are not copied.
+- Source workspaces other than `main`, registered workspace path records for
+  those source workspaces, runtime state, and cleanup plans are not copied.
+- If any source workspace has unsaved changes, including source workspaces
+  other than `main`, clone fails closed. Save those changes as a save point
+  first if they should be included; source workspaces other than `main` are not
+  created in the target.
 - `--save-points all` copies all ready save points and writes durable imported
   clone history metadata for cleanup protection.
 - `--save-points main` copies the source `main` history/provenance closure.
@@ -239,13 +290,13 @@ Ordinary `.jvs/` completed clone JSON includes:
 - `target_repo_root`
 - `target_repo_id`
 
-External-control completed clone JSON includes:
+External control root completed clone JSON includes:
 
 - `target_folder`
 - `target_control_root`
 - `target_repo_id`
 
-External-control completed clone JSON does not require `target_repo_root`.
+External control root completed clone JSON does not require `target_repo_root`.
 
 Dry-run JSON is a planning result. Because dry-run does not create the target
 repo, it must not require an actual `target_repo_id`; completed clone JSON must
@@ -257,7 +308,7 @@ include `target_repo_id`.
 
 Preview moving the whole JVS project folder to `<new-folder>`. This is not
 `repo clone`: the command keeps the same `repo_id`, save point history,
-workspace names, and external workspace folders. The preview writes only a
+workspace names, and registered workspace paths. The preview writes only a
 repo move plan and must not move files.
 
 Rules:
@@ -265,8 +316,8 @@ Rules:
 - `<new-folder>` must not already exist.
 - The move uses same-filesystem no-overwrite atomic rename in the public v0
   contract.
-- The preview and run must verify every registered external workspace
-  connection is reachable, writable, well-formed, and fresh for the current
+- The preview and run must verify every registered workspace path record is
+  reachable, writable, well-formed, and fresh for the current
   repo identity.
 - The preview prints a reviewed run command. When the current directory is
   inside the source repo folder, the safe run command must use
@@ -286,15 +337,16 @@ Required preview JSON `data` fields include:
 - `repo_id_changed: false`
 - `save_point_history_changed: false`
 - `main_workspace_updated: false`
-- `external_workspaces`
+- `external_workspaces` (registered workspace path records)
 - `run_command`
 - `safe_run_command`
 
 ### `jvs repo move --run <repo-move-plan-id> [--json]`
 
 Run a reviewed repo move plan. Run must revalidate the source and destination
-identities, external workspace connections, locks, and current directory safety
-before writing a durable lifecycle operation journal or moving the repo folder.
+identities, registered workspace path records, locks, and current directory
+safety before writing a durable lifecycle operation journal or moving the repo
+folder.
 
 Required run JSON `data` fields include:
 
@@ -310,7 +362,7 @@ Required run JSON `data` fields include:
 - `repo_id_changed: false`
 - `save_point_history_changed: false`
 - `main_workspace_updated: true`
-- `external_workspaces_updated`
+- `external_workspaces_updated` (registered workspace path records updated)
 
 ## Repo Rename
 
@@ -320,7 +372,7 @@ Preview renaming the project folder within the same parent directory. Repo
 rename is basename-only sugar over repo move: `<new-folder-name>` must be a
 folder basename, not an absolute path, relative path, `.`, `..`, or a string
 with a path separator. It preserves `repo_id`, save point history, workspace
-names, and external workspace folders.
+names, and registered workspace paths.
 
 Required preview JSON `data` fields include:
 
@@ -335,7 +387,7 @@ Required preview JSON `data` fields include:
 - `repo_id_changed: false`
 - `save_point_history_changed: false`
 - `main_workspace_updated: false`
-- `external_workspaces`
+- `external_workspaces` (registered workspace path records)
 - `run_command`
 - `safe_run_command`
 
@@ -359,7 +411,7 @@ Required run JSON `data` fields include:
 - `repo_id_changed: false`
 - `save_point_history_changed: false`
 - `main_workspace_updated: true`
-- `external_workspaces_updated`
+- `external_workspaces_updated` (registered workspace path records updated)
 
 ## Repo Detach
 
@@ -372,7 +424,7 @@ Preview rules:
 
 - The current project must be an active JVS repo.
 - Workspace `main` must be the project folder.
-- All registered external workspace connections must be reachable, writable,
+- All registered workspace path records must be reachable, writable,
   well-formed, and fresh for the current repo identity.
 - The preview writes only the detach plan. It must not write a lifecycle
   journal, archive metadata, move files, or delete files.
@@ -385,7 +437,7 @@ Required preview JSON `data` fields include:
 - `repo_root`
 - `repo_id`
 - `archive_path`
-- `external_workspaces`
+- `external_workspaces` (registered workspace path records)
 - `run_command`
 
 ### `jvs repo detach --run <repo-detach-plan-id> [--json]`
@@ -399,8 +451,8 @@ Run rules:
 - Archive active `.jvs` metadata under `.jvs-detached/<repo-id>-<operation-id>-<utc-timestamp>/`.
 - Write a durable `DETACHING` marker in the archive directory before moving
   active metadata.
-- Publish `DETACHED` metadata after external workspace locators are marked
-  detached/orphaned.
+- Publish `DETACHED` metadata after registered workspace path records are
+  marked detached/orphaned.
 - Preserve project working files and save point storage.
 - After success, ordinary discovery from the project folder must not report an
   active JVS repo.
@@ -420,7 +472,7 @@ Required run JSON `data` fields include:
 - `working_files_preserved`
 - `active_repo_detached`
 - `save_point_storage_removed`
-- `external_workspaces_updated`
+- `external_workspaces_updated` (registered workspace path records updated)
 - `recommended_next_command`
 
 ## Status
@@ -482,6 +534,7 @@ Required JSON `data` fields:
 - `restored_from` when applicable
 - `restored_paths` when applicable
 - `unsaved_changes`
+- `transfers`
 
 ### `jvs history [--path <path>] [--limit <n>|-n <n>] [--grep <text>] [--json]`
 
@@ -533,9 +586,21 @@ Rules:
 - Open views protect their source save point from cleanup while the operation
   is active.
 
+Required JSON `data` fields include:
+
+- `folder`
+- `workspace`
+- `save_point`
+- `view_id`
+- `view_path` (the read-only content path)
+- `read_only`
+- `no_workspace_or_history_changed`
+- `transfers`
+
 ### `jvs view close <view-id|path>`
 
-Close a read-only view and release the associated active view protection.
+Close a read-only view, clear JVS-owned view state, and release the associated
+active view cleanup protection.
 
 ## Restore
 
@@ -571,6 +636,7 @@ Required preview JSON `data` fields:
 - `expected_folder_evidence` or `expected_path_evidence`
 - `managed_files`
 - `options`
+- `transfers`
 - `history_changed: false`
 - `files_changed: false`
 - `run_command`
@@ -597,6 +663,7 @@ Required run JSON fields for whole-workspace restore:
 - `files_state`
 - `history_changed: false`
 - `files_changed: true`
+- `transfers`
 
 Required run JSON fields for path restore:
 
@@ -616,6 +683,7 @@ Required run JSON fields for path restore:
 - `files_state`
 - `history_changed: false`
 - `files_changed: true`
+- `transfers`
 
 ## Restore Recovery
 
@@ -671,6 +739,7 @@ Required JSON `data` fields:
 - `history_head`
 - `original_workspace_unchanged`
 - `unsaved_changes`
+- `transfers`
 
 ### `jvs workspace list [--status] [--json]`
 
@@ -699,8 +768,8 @@ Rules:
 - `--dry-run` checks and reports the planned metadata change without writing a
   lifecycle operation journal or changing workspace metadata.
 - A normal rename writes a durable lifecycle operation journal before changing
-  registry or external workspace connection metadata.
-- If an external workspace connection is present, it must be reachable,
+  registry or registered workspace path metadata.
+- If a registered workspace path record is present, it must be reachable,
   writable, well-formed, and fresh for the old workspace name before the
   command updates it.
 
@@ -714,7 +783,7 @@ Required JSON `data` fields include:
 - `workspace`
 - `folder`
 - `folder_moved: false`
-- `workspace_connection_updated`
+- `workspace_connection_updated` (registered workspace path record updated)
 - `save_point_history_changed: false`
 
 ### `jvs workspace move <name> <new-folder>`
@@ -837,12 +906,20 @@ Required run JSON `data` fields:
 ### `jvs doctor [--strict] [--repair-runtime] [--repair-list] [--json]`
 
 Check repository health. `--strict` includes full save point integrity
-verification. `--repair-runtime` is limited to safe runtime cleanup and
-destination-local workspace folder path rebinding after filesystem migration.
-If a copied external workspace still points at a source folder, strict doctor
+verification.
+
+For ordinary `.jvs/` projects, `--repair-runtime` is limited to safe runtime
+cleanup and destination-local registered workspace path rebinding after
+filesystem migration. If a physically copied ordinary project still has a
+registered workspace path that points at the source folder, strict doctor
 reports an unhealthy workspace path binding until `--repair-runtime` can prove
-and store the destination sibling binding. A skipped or failed rebind therefore
-leaves `doctor --strict --repair-runtime` unhealthy.
+and store the destination binding. A skipped or failed rebind therefore leaves
+`doctor --strict --repair-runtime` unhealthy.
+
+For external control roots, doctor is strict inspection only:
+`jvs --json --control-root C --workspace main doctor --strict`.
+`--repair-runtime` is rejected for that explicit selector and must not be used
+to repair external control root workspace binding.
 
 Public automatic repair actions:
 

@@ -115,13 +115,12 @@ func TestViewJSONUsesSavePointSchema(t *testing.T) {
 	require.Equal(t, true, primary["primary"])
 	require.Equal(t, "final", primary["result_kind"])
 	require.Equal(t, "execution", primary["permission_scope"])
-	require.Equal(t, "save_point_payload", primary["source_role"])
-	require.Equal(t, "view_directory", primary["destination_role"])
-	require.NotEmpty(t, primary["source_path"])
-	require.NotEmpty(t, primary["materialization_destination"])
-	require.NotEmpty(t, primary["capability_probe_path"])
-	require.Equal(t, filepath.Dir(primary["materialization_destination"].(string)), primary["capability_probe_path"])
-	require.Equal(t, viewPath, primary["published_destination"])
+	require.Equal(t, "save_point_content", primary["source_role"])
+	require.Equal(t, "save_point:"+firstID, primary["source_path"])
+	require.Equal(t, "content_view", primary["destination_role"])
+	require.Equal(t, "content_view:"+data["view_id"].(string), primary["materialization_destination"])
+	require.Equal(t, "content_view:"+data["view_id"].(string), primary["capability_probe_path"])
+	require.Equal(t, "content_view:"+data["view_id"].(string)+"/file.txt", primary["published_destination"])
 	require.Equal(t, true, primary["checked_for_this_operation"])
 	require.Equal(t, "auto", primary["requested_engine"])
 	require.NotEmpty(t, primary["effective_engine"])
@@ -172,9 +171,9 @@ func TestViewPlansTransferToPayloadMaterializationPath(t *testing.T) {
 	require.Len(t, transfers, 1)
 	primary, ok := transfers[0].(map[string]any)
 	require.True(t, ok, "primary transfer should be an object: %#v", transfers[0])
-	require.Equal(t, payloadRoot, primary["materialization_destination"])
-	require.Equal(t, filepath.Dir(payloadRoot), primary["capability_probe_path"])
-	require.Equal(t, viewPath, primary["published_destination"])
+	require.Equal(t, "content_view:"+data["view_id"].(string), primary["materialization_destination"])
+	require.Equal(t, "content_view:"+data["view_id"].(string), primary["capability_probe_path"])
+	require.Equal(t, "content_view:"+data["view_id"].(string)+"/file.txt", primary["published_destination"])
 	require.Equal(t, "normal_copy", primary["performance_class"])
 	require.Equal(t, false, primary["optimized_transfer"])
 	require.Equal(t, "copy", primary["effective_engine"])
@@ -726,7 +725,7 @@ func viewPayloadRoot(t *testing.T, viewPath, pathInside string) string {
 	for range strings.Split(pathInside, "/") {
 		root = filepath.Dir(root)
 	}
-	require.Equal(t, "payload", filepath.Base(root))
+	require.Equal(t, "content", filepath.Base(root))
 	return root
 }
 

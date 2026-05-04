@@ -181,6 +181,9 @@ Close the view when you are done:
 jvs view close <view-id>
 ```
 
+Closing a view clears JVS-owned view state and releases cleanup protection for
+that open view.
+
 Restore only after the old content is the one you meant to bring back.
 
 ## Restore One Path When One Thing Is Wrong
@@ -267,6 +270,10 @@ When a restore was interrupted, start with `jvs recovery status`.
 `jvs recovery resume <recovery-plan>` and
 `jvs recovery rollback <recovery-plan>` may change files while finishing or
 rolling back that interrupted restore.
+
+After an interrupted JVS operation, `jvs doctor --repair-runtime` changes
+runtime state in JVS control data by running safe automatic repairs. It is not
+an inspection-only command.
 
 What to check before running:
 
@@ -370,12 +377,20 @@ JVS helps with local folder history, but it is not a replacement for normal
 backups. Keep using your usual backup system for disk loss, laptop loss, cloud
 account problems, or accidental deletion outside JVS.
 
-When backing up a JVS folder, back up the whole folder, including `.jvs/`, if
-you want the save point history to come with it. If you copy only the visible
-project files and leave `.jvs/` behind, you may still have the files, but not
-the JVS save points.
+When backing up an ordinary `.jvs/` project, back up the whole project folder,
+including `.jvs/`, if you want the save point history to come with it. If you
+copy only the visible project files and leave `.jvs/` behind, you may still
+have the files, but not the JVS save points.
 
-When moving or copying a JVS folder:
+A filesystem copy preserves the same repo identity. That is right for a backup
+or offline migration, but it is not the same as clone. Use `jvs repo clone`
+when you need a new repo identity.
+
+For an external control root, back up the workspace folder and control root as
+one matched pair. Restoring only one side can leave files and control data out
+of sync.
+
+When moving or copying an ordinary `.jvs/` project folder:
 
 - copy the whole folder as one unit
 - open the copied folder and run `jvs status`

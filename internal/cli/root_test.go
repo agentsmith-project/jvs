@@ -201,19 +201,50 @@ func TestWorkspaceCommand_HelpListsPublicManagementSubcommands(t *testing.T) {
 	assert.NotContains(t, stdout, "checkpoint")
 }
 
+func TestWorkspaceLeafHelpUsesLeafUsageAndArgs(t *testing.T) {
+	for _, tc := range []struct {
+		args      []string
+		wantUsage string
+		wantArgs  string
+	}{
+		{args: []string{"new"}, wantUsage: "jvs workspace new <folder> --from <save>", wantArgs: "--from"},
+		{args: []string{"list"}, wantUsage: "jvs workspace list", wantArgs: "--status"},
+		{args: []string{"path"}, wantUsage: "jvs workspace path [<name>]", wantArgs: "[<name>]"},
+		{args: []string{"rename"}, wantUsage: "jvs workspace rename <old> <new>", wantArgs: "<old> <new>"},
+		{args: []string{"move"}, wantUsage: "jvs workspace move <name> <new-folder>", wantArgs: "<name> <new-folder>"},
+		{args: []string{"delete"}, wantUsage: "jvs workspace delete <name>", wantArgs: "<name>"},
+	} {
+		t.Run(tc.args[0], func(t *testing.T) {
+			commandArgs := append([]string{"workspace"}, tc.args...)
+			commandArgs = append(commandArgs, "--help")
+			stdout, err := executeCommand(createTestRootCmd(), commandArgs...)
+			require.NoError(t, err)
+
+			assert.Contains(t, stdout, "Usage:")
+			assert.Contains(t, stdout, tc.wantUsage)
+			assert.Contains(t, stdout, tc.wantArgs)
+			assert.NotContains(t, stdout, "[command]")
+			assert.NotContains(t, stdout, "Available Commands:")
+		})
+	}
+}
+
 func TestRepoCloneHelpDocumentsExternalControlTargetWithoutPayloadAlias(t *testing.T) {
 	stdout, err := executeCommand(createTestRootCmd(), "repo", "clone", "--help")
 	require.NoError(t, err)
 
+	assert.Contains(t, stdout, "jvs repo clone <target-folder>")
 	assert.Contains(t, stdout, "control data is outside the target folder")
 	assert.Contains(t, stdout, "ordinary clones use all when omitted")
-	assert.Contains(t, stdout, "external-control clones use main when omitted")
+	assert.Contains(t, stdout, "external control root clones use main when omitted")
 	assert.Contains(t, stdout, "--save-points main")
 	assert.Contains(t, stdout, "--save-points all fails closed")
 	assert.Contains(t, stdout, "--target-control-root")
+	assert.NotContains(t, stdout, "jvs repo clone [target-folder]")
 	assert.NotContains(t, stdout, `(default "all")`)
 	assert.NotContains(t, stdout, "--target-payload-root")
 	assert.NotContains(t, stdout, "separated-control")
+	assert.NotContains(t, stdout, "external-control clones")
 }
 
 func TestWorkspaceCommand_RenameIsNameOnlyAndUpdatesExternalLocator(t *testing.T) {

@@ -43,7 +43,7 @@ func TestCollectorPlanFailsClosedForInvalidImportedCloneHistoryManifest(t *testi
 
 	var jvsErr *errclass.JVSError
 	require.ErrorAs(t, err, &jvsErr)
-	assert.Equal(t, errclass.ErrGCPlanMismatch.Code, jvsErr.Code)
+	assert.Equal(t, errclass.ErrCleanupPlanMismatch.Code, jvsErr.Code)
 	assert.Contains(t, jvsErr.Message, "imported clone history")
 	assertNoCleanupPreviewPlanForGCTest(t, repoPath)
 }
@@ -58,7 +58,7 @@ func TestCollectorPlanFailsClosedForImportedCloneHistoryMissingSavePoint(t *test
 
 	var jvsErr *errclass.JVSError
 	require.ErrorAs(t, err, &jvsErr)
-	assert.Equal(t, errclass.ErrGCPlanMismatch.Code, jvsErr.Code)
+	assert.Equal(t, errclass.ErrCleanupPlanMismatch.Code, jvsErr.Code)
 	assert.Contains(t, jvsErr.Message, "imported clone history")
 	assertNoCleanupPreviewPlanForGCTest(t, repoPath)
 }

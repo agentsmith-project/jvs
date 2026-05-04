@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
@@ -61,6 +62,27 @@ func TestCleanupProtectionGroupJSONUsesStableReasonToken(t *testing.T) {
 	assert.JSONEq(t, `{"reason":"open_view","count":1,"save_points":["sp_1"]}`, string(data))
 }
 
+func TestSavePointPublicFacadeUsesContentRootHash(t *testing.T) {
+	desc := &model.Descriptor{
+		SnapshotID:         model.SnapshotID("1708300800000-feedface"),
+		WorktreeName:       "main",
+		CreatedAt:          time.Unix(0, 0).UTC(),
+		Engine:             model.EngineCopy,
+		PayloadRootHash:    model.HashValue("content-hash"),
+		DescriptorChecksum: model.HashValue("descriptor-checksum"),
+		IntegrityState:     model.IntegrityVerified,
+	}
+
+	savePoint := publicSavePoint(desc)
+	require.NotNil(t, savePoint)
+	assert.Equal(t, model.HashValue("content-hash"), savePoint.ContentRootHash)
+
+	data, err := json.Marshal(savePoint)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"content_root_hash":"content-hash"`)
+	assert.NotContains(t, string(data), "payload_root_hash")
+}
+
 func TestPublicCleanupPlanMapsProtectionReasonsToFacadeConstants(t *testing.T) {
 	plan, err := publicCleanupPlan(&model.GCPlan{
 		ProtectionGroups: []model.GCProtectionGroup{
@@ -111,9 +133,9 @@ func TestCleanupFacadeErrorAsIsExposeOnlyPublicCleanupClass(t *testing.T) {
 
 	var jvsErr *errclass.JVSError
 	require.True(t, errors.As(err, &jvsErr), "cleanup facade error should expose a public JVSError")
-	assert.Equal(t, errclass.ErrGCPlanMismatch.Code, jvsErr.Code)
+	assert.Equal(t, errclass.ErrCleanupPlanMismatch.Code, jvsErr.Code)
 	assert.Contains(t, jvsErr.Message, "save point storage")
-	assert.True(t, errors.Is(err, errclass.ErrGCPlanMismatch), "cleanup facade error should match the public cleanup class")
+	assert.True(t, errors.Is(err, errclass.ErrCleanupPlanMismatch), "cleanup facade error should match the public cleanup class")
 	assert.False(t, errors.Is(err, &errclass.JVSError{Code: "E_READY_INVALID"}), "cleanup facade error must not match internal readiness classes")
 
 	assert.Contains(t, err.Error(), "save point storage")

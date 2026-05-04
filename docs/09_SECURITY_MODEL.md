@@ -9,7 +9,7 @@ authorization in the public contract.
 ## Protected Assets
 
 - save point descriptors
-- save point payload storage
+- save point content storage
 - workspace metadata and provenance
 - recovery plans and restore backups
 - audit records
@@ -27,7 +27,7 @@ cryptographic transparency log or remote attestation system.
 Save point integrity uses:
 
 - descriptor checksum
-- payload root hash
+- content root hash
 - publish-ready markers
 - audit chain checks
 

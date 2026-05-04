@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/agentsmith-project/jvs/pkg/fsutil"
 	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
@@ -52,7 +53,7 @@ func (e *JuiceFSEngine) clone(src, dst string, ownedNewDestination bool) (*Clone
 	// Check if juicefs command is available
 	if !e.isJuiceFSAvailable() {
 		// Fall back to copy engine
-		result, err := e.CopyEngine.Clone(src, dst)
+		result, err := e.copyFallback(src, dst, ownedNewDestination)
 		if err != nil {
 			return nil, err
 		}
@@ -63,7 +64,7 @@ func (e *JuiceFSEngine) clone(src, dst string, ownedNewDestination bool) (*Clone
 	// Check if source is on JuiceFS
 	if !e.isSourceOnJuiceFS(src) {
 		// Fall back to copy engine
-		result, err := e.CopyEngine.Clone(src, dst)
+		result, err := e.copyFallback(src, dst, ownedNewDestination)
 		if err != nil {
 			return nil, err
 		}
@@ -72,7 +73,22 @@ func (e *JuiceFSEngine) clone(src, dst string, ownedNewDestination bool) (*Clone
 	}
 
 	// Execute juicefs clone
-	cmd := exec.Command("juicefs", "clone", src, dst, "-p")
+	if ownedNewDestination {
+		if err := revalidateCloneToNewDestination(dst); err != nil {
+			return nil, err
+		}
+	}
+	commandDst := dst
+	var staging *juiceFSCloneStaging
+	if ownedNewDestination {
+		var err error
+		staging, err = prepareJuiceFSCloneStaging(dst)
+		if err != nil {
+			return nil, err
+		}
+		commandDst = staging.payload
+	}
+	cmd := exec.Command("juicefs", "clone", src, commandDst, "-p")
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -81,17 +97,12 @@ func (e *JuiceFSEngine) clone(src, dst string, ownedNewDestination bool) (*Clone
 	if err := cmd.Run(); err != nil {
 		context := juiceFSCommandContext(stdout.String(), stderr.String())
 		if ownedNewDestination {
-			if cleanupErr := os.RemoveAll(dst); cleanupErr != nil {
+			if cleanupErr := cleanupJuiceFSCloneStaging(staging); cleanupErr != nil {
 				return nil, fmt.Errorf("%s; cleanup partial destination: %w", juiceFSCloneFailureMessage(context), cleanupErr)
-			}
-			if _, statErr := os.Lstat(dst); statErr == nil {
-				return nil, fmt.Errorf("%s; cleanup partial destination left existing path: %s", juiceFSCloneFailureMessage(context), dst)
-			} else if !os.IsNotExist(statErr) {
-				return nil, fmt.Errorf("%s; verify partial destination cleanup: %w", juiceFSCloneFailureMessage(context), statErr)
 			}
 		}
 		// Fall back to copy on failure
-		result, err := e.CopyEngine.Clone(src, dst)
+		result, err := e.copyFallback(src, dst, ownedNewDestination)
 		if err != nil {
 			if context != "" {
 				return nil, fmt.Errorf("%s, fallback copy: %w", juiceFSCloneFailureMessage(context), err)
@@ -105,7 +116,130 @@ func (e *JuiceFSEngine) clone(src, dst string, ownedNewDestination bool) (*Clone
 		return result, nil
 	}
 
+	if ownedNewDestination {
+		if err := publishJuiceFSCloneStaging(staging, dst); err != nil {
+			if cleanupErr := cleanupJuiceFSCloneStaging(staging); cleanupErr != nil {
+				return nil, fmt.Errorf("publish juicefs clone: %v; cleanup partial destination: %w", err, cleanupErr)
+			}
+			result, fallbackErr := e.copyFallback(src, dst, true)
+			if fallbackErr != nil {
+				return nil, fmt.Errorf("publish juicefs clone: %v, fallback copy: %w", err, fallbackErr)
+			}
+			result.AddDegradation("juicefs-publish-failed", model.EngineCopy)
+			return result, nil
+		}
+		if err := cleanupJuiceFSCloneStaging(staging); err != nil {
+			return nil, fmt.Errorf("cleanup juicefs clone staging: %w", err)
+		}
+	}
 	return NewCloneResult(model.EngineJuiceFSClone), nil
+}
+
+type juiceFSCloneStaging struct {
+	dir     string
+	payload string
+	info    os.FileInfo
+}
+
+func prepareJuiceFSCloneStaging(dst string) (*juiceFSCloneStaging, error) {
+	if err := validateCloneDestinationParent(dst); err != nil {
+		return nil, fmt.Errorf("clone destination parent is not safe: %w", err)
+	}
+	stagingDir, err := os.MkdirTemp(filepath.Dir(dst), ".jvs-juicefs-partial-")
+	if err != nil {
+		return nil, fmt.Errorf("create juicefs clone staging: %w", err)
+	}
+	info, err := os.Lstat(stagingDir)
+	if err != nil {
+		_ = os.RemoveAll(stagingDir)
+		return nil, fmt.Errorf("stat juicefs clone staging: %w", err)
+	}
+	staging := &juiceFSCloneStaging{
+		dir:     stagingDir,
+		payload: filepath.Join(stagingDir, "payload"),
+		info:    info,
+	}
+	if err := revalidateCloneToNewDestination(staging.payload); err != nil {
+		_ = os.RemoveAll(stagingDir)
+		return nil, fmt.Errorf("prepare juicefs clone staging: %w", err)
+	}
+	return staging, nil
+}
+
+func publishJuiceFSCloneStaging(staging *juiceFSCloneStaging, dst string) error {
+	if err := validateJuiceFSCloneStaging(staging); err != nil {
+		return err
+	}
+	if err := revalidateCloneToNewDestination(dst); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(staging.payload); err != nil {
+		return fmt.Errorf("stat juicefs partial destination: %w", err)
+	}
+	if err := fsutil.RenameNoReplaceAndSync(staging.payload, dst); err != nil {
+		return fmt.Errorf("publish juicefs partial destination: %w", err)
+	}
+	return nil
+}
+
+func cleanupJuiceFSCloneStaging(staging *juiceFSCloneStaging) error {
+	if staging == nil {
+		return nil
+	}
+	info, err := os.Lstat(staging.dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat juicefs clone staging: %w", err)
+	}
+	if err := validateJuiceFSCloneStagingInfo(staging, info); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(staging.dir); err != nil {
+		return err
+	}
+	if _, statErr := os.Lstat(staging.dir); statErr == nil {
+		return fmt.Errorf("partial destination staging still exists: %s", staging.dir)
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("verify partial destination cleanup: %w", statErr)
+	}
+	return nil
+}
+
+func validateJuiceFSCloneStaging(staging *juiceFSCloneStaging) error {
+	if staging == nil {
+		return fmt.Errorf("juicefs clone staging is required")
+	}
+	info, err := os.Lstat(staging.dir)
+	if err != nil {
+		return fmt.Errorf("stat juicefs clone staging: %w", err)
+	}
+	return validateJuiceFSCloneStagingInfo(staging, info)
+}
+
+func validateJuiceFSCloneStagingInfo(staging *juiceFSCloneStaging, info os.FileInfo) error {
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("juicefs clone staging is symlink: %s", staging.dir)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("juicefs clone staging is not a directory: %s", staging.dir)
+	}
+	if !os.SameFile(staging.info, info) {
+		return fmt.Errorf("juicefs clone staging changed before cleanup; no files were removed")
+	}
+	return nil
+}
+
+func (e *JuiceFSEngine) copyFallback(src, dst string, ownedNewDestination bool) (*CloneResult, error) {
+	copyEngine := e.CopyEngine
+	if copyEngine == nil {
+		copyEngine = NewCopyEngine()
+	}
+	if ownedNewDestination {
+		return copyEngine.CloneToNew(src, dst)
+	}
+	return copyEngine.Clone(src, dst)
 }
 
 func (e *JuiceFSEngine) isJuiceFSAvailable() bool {

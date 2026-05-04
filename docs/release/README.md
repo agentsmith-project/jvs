@@ -16,8 +16,8 @@ Active release entry points:
 | `../SIGNING.md` | Artifact signing and verification |
 | `../11_CONFORMANCE_TEST_PLAN.md` | Required conformance evidence |
 
-A source archive is the immutable tag snapshot. It may contain readiness or
-candidate evidence from tag time and is not moved to add publication facts.
+A source archive is the immutable tag source archive. It may contain readiness
+or candidate evidence from tag time and is not moved to add publication facts.
 Publication final evidence belongs on the GitHub Release page and in the
 post-release main ledger on `main`, where exact release URL, tag, workflow run,
 commit, release state, asset count, checksum, signing identity, smoke, and

@@ -6,14 +6,14 @@ Public model:
 
 - A workspace is a real folder managed by JVS.
 - A save point is a saved copy of managed files plus immutable creation facts.
-- JVS control data is never managed workspace payload.
+- JVS control data is never managed workspace content.
 
 ## Public Layout Rules
 
 - The adopted folder remains the user workspace.
-- Workspace payload folders contain user files only.
+- Workspace folders contain user files only.
 - JVS control data must be excluded from save, restore, view, and cleanup
-  payload operations.
+  content operations.
 - Runtime state is not portable across backup or migration.
 - Public docs and JSON facades use save point and workspace terms, not storage
   directory names or storage-shaped metadata fields.
@@ -29,7 +29,7 @@ examples, restore targets, or cleanup policy.
 Portable durable state:
 
 - repository identity and format records
-- save point descriptors and payload storage
+- save point descriptors and content storage
 - workspace metadata
 - audit records
 - durable cleanup tombstones when present

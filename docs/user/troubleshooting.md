@@ -12,20 +12,46 @@ corruption.
 
 ## "not a JVS repository"
 
-You are outside a folder adopted by JVS, or JVS cannot find `.jvs/`.
+You are outside a folder adopted by JVS, JVS cannot find ordinary `.jvs/`
+control data, or you are in an external-control-root workspace without the
+explicit selector.
 
-Fix:
+For an ordinary `.jvs/` project, move to the project folder and check status:
 
 ```bash
 cd /path/to/your/folder
 jvs status
 ```
 
-If the folder has not been adopted yet:
+Run ordinary `jvs init` only when you intend to create an ordinary `.jvs/`
+project:
 
 ```bash
 jvs init
 ```
+
+Do not run ordinary `jvs init` inside an external workspace. That creates a
+different project with control data inside the workspace folder.
+
+For an external control root, use the explicit selector your operator or
+platform gave you:
+
+```bash
+jvs --control-root C --workspace main status
+```
+
+Common external-control-root causes:
+
+- **Explicit selector missing**: add `--control-root C --workspace main`.
+  `--repo` is not an external control root selector.
+- **Missing control root**: the control root path was moved, not mounted, or
+  not passed to the command. Restore the control root or use the right path.
+- **Workspace `.jvs` marker**: a root-level `.jvs` path in the workspace folder
+  is a blocker for the strict external profile. File, directory, and symlink
+  forms all fail closed because they confuse control authority.
+- **Unsupported lifecycle**: repo move, repo rename, repo detach, workspace
+  move, workspace rename, workspace delete, and workspace new are not supported
+  for external control roots today.
 
 ## "save point ID is required"
 

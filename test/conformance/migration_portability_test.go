@@ -28,7 +28,7 @@ func TestMigrationPhysicalCopyRepairRuntimeRebindsAdoptedMainWorkspace(t *testin
 	if code == 0 {
 		t.Fatalf("strict doctor should fail before repair when copied real_path points offline\nstdout=%s\nstderr=%s", stdout, stderr)
 	}
-	assertMigrationDoctorFinding(t, stdout, stderr, "E_WORKSPACE_PAYLOAD_INVALID")
+	assertMigrationDoctorFinding(t, stdout, stderr, "E_WORKSPACE_PATH_BINDING_INVALID")
 
 	stdout, stderr, code = runJVSInRepo(t, copiedRepo, "--json", "doctor", "--strict", "--repair-runtime")
 	if code != 0 {
@@ -121,7 +121,7 @@ func TestMigrationPhysicalCopyRepairRuntimeRebindsAdoptedMainWorkspaceWhenSource
 	if code == 0 {
 		t.Fatalf("strict doctor should fail before repair when copied real_path points at online source\nstdout=%s\nstderr=%s", stdout, stderr)
 	}
-	assertMigrationDoctorFinding(t, stdout, stderr, "E_WORKSPACE_PAYLOAD_INVALID")
+	assertMigrationDoctorFinding(t, stdout, stderr, "E_WORKSPACE_PATH_BINDING_INVALID")
 
 	stdout, stderr, code = runJVSInRepo(t, copiedRepo, "--json", "doctor", "--strict", "--repair-runtime")
 	if code != 0 {

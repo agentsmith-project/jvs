@@ -729,6 +729,35 @@ func TestPublicCLIDoctorAndCleanupJSONHideInternalContractFields(t *testing.T) {
 	assert.Equal(t, false, doctorData["healthy"])
 }
 
+func TestPublicCLIDoctorStrictMapsSavePointIntegrityPayloadCodes(t *testing.T) {
+	t.Run("missing save point storage", func(t *testing.T) {
+		repoPath, _ := setupPublicCLIRepo(t, "missing-save-point-storage")
+		require.NoError(t, os.WriteFile("file.txt", []byte("baseline"), 0644))
+		savePointID := createCheckpointForPublicCLI(t, "baseline")
+		require.NoError(t, os.RemoveAll(filepath.Join(repoPath, ".jvs", "snapshots", savePointID)))
+
+		stdout, stderr, exitCode := runContractSubprocess(t, repoPath, "--json", "doctor", "--strict")
+		require.Equal(t, 1, exitCode, "doctor unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+		assert.Empty(t, strings.TrimSpace(stderr))
+		assertPublicJSONDataOmitsInternalContractFields(t, stdout)
+		assertPublicDoctorFindingCode(t, stdout, "E_SAVE_POINT_MISSING")
+		assertPublicDoctorFindingCodeAbsent(t, stdout, "E_WORKSPACE_MISSING")
+	})
+
+	t.Run("hash mismatch", func(t *testing.T) {
+		repoPath, _ := setupPublicCLIRepo(t, "save-point-hash-mismatch")
+		require.NoError(t, os.WriteFile("file.txt", []byte("baseline"), 0644))
+		savePointID := createCheckpointForPublicCLI(t, "baseline")
+		require.NoError(t, os.WriteFile(filepath.Join(repoPath, ".jvs", "snapshots", savePointID, "tampered.txt"), []byte("tampered"), 0644))
+
+		stdout, stderr, exitCode := runContractSubprocess(t, repoPath, "--json", "doctor", "--strict")
+		require.Equal(t, 1, exitCode, "doctor unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+		assert.Empty(t, strings.TrimSpace(stderr))
+		assertPublicJSONDataOmitsInternalContractFields(t, stdout)
+		assertPublicDoctorFindingCode(t, stdout, "E_SAVE_POINT_HASH_MISMATCH")
+	})
+}
+
 func assertPublicJSONDataOmitsInternalContractFields(t *testing.T, stdout string) {
 	t.Helper()
 
@@ -747,6 +776,42 @@ func assertPublicJSONDataOmitsInternalContractFields(t *testing.T, stdout string
 	} {
 		assert.NotContains(t, data, forbidden)
 	}
+	assert.NotContains(t, strings.ToLower(data), "payload")
+}
+
+func assertPublicDoctorFindingCode(t *testing.T, stdout, want string) {
+	t.Helper()
+
+	if !publicDoctorFindingCodePresent(t, stdout, want) {
+		t.Fatalf("doctor output missing finding %s: %s", want, stdout)
+	}
+}
+
+func assertPublicDoctorFindingCodeAbsent(t *testing.T, stdout, forbidden string) {
+	t.Helper()
+
+	if publicDoctorFindingCodePresent(t, stdout, forbidden) {
+		t.Fatalf("doctor output unexpectedly contains finding %s: %s", forbidden, stdout)
+	}
+}
+
+func publicDoctorFindingCodePresent(t *testing.T, stdout, code string) bool {
+	t.Helper()
+
+	var data struct {
+		Findings []struct {
+			ErrorCode string `json:"error_code"`
+		} `json:"findings"`
+	}
+	env := decodeContractEnvelope(t, stdout)
+	require.True(t, env.OK, stdout)
+	require.NoError(t, json.Unmarshal(env.Data, &data), stdout)
+	for _, finding := range data.Findings {
+		if finding.ErrorCode == code {
+			return true
+		}
+	}
+	return false
 }
 
 func makeAllDescriptorsOldForPublicCLI(t *testing.T, repoPath string) {

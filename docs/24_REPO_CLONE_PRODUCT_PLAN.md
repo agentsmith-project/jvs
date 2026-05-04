@@ -99,7 +99,7 @@ jvs --repo /abs/source repo clone /abs/target --save-points all --json
 
 ### `--save-points all`
 
-`all` 表示复制源 repo 中所有 durable save point descriptors 和 payload storage，让目标 repo 能保留源 repo 的完整 save point 历史。
+`all` 表示复制源 repo 中所有 durable save point descriptors 和 content storage，让目标 repo 能保留源 repo 的完整 save point 历史。
 
 关键边界：
 
@@ -264,8 +264,8 @@ cleanup、doctor 和 verify 必须把 `PathSources`、`RestoredFrom`、`Restored
 
 | Transfer | Source role | Destination role | 说明 |
 | --- | --- | --- | --- |
-| Save point storage copy | `save_point_storage` | `target_save_point_storage` | 复制 `all` 或 `main` 闭包需要的 durable descriptors/payloads |
-| Main workspace materialization | `source_main_current_state` 或 `save_point_payload` | `target_main_workspace` | 把目标 `main` folder materialize 成 source main 当前内容 |
+| Save point storage copy | `save_point_storage` | `target_save_point_storage` | 复制 `all` 或 `main` 闭包需要的 durable descriptors/content storage |
+| Main workspace materialization | `source_main_current_state` 或 `save_point_content` | `target_main_workspace` | 把目标 `main` folder materialize 成 source main 当前内容 |
 
 规则：
 
@@ -556,7 +556,7 @@ target folder/control data，也不生成真实 target repo identity。Dry-run J
 ### Phase 2: All Save Points With Imported Protection
 
 - 交付 `--save-points all`。
-- 复制所有 durable save point descriptors/payloads。
+- 复制所有 durable save point descriptors/content storage。
 - 增加 durable imported-save-point manifest/protection。
 - cleanup preview/run 展示并 revalidate imported protection group。
 - doctor strict 校验 imported manifest/protection 一致性。
@@ -567,7 +567,7 @@ target folder/control data，也不生成真实 target repo identity。Dry-run J
 
 - 更新 CLI spec、conformance plan、release evidence 和 user docs。
 - 加入真实大目录和跨设备 gated profile evidence。
-- 补齐错误文案、dry-run 文案和 JSON snapshots。
+- 补齐错误文案、dry-run 文案和 JSON golden files。
 - 明确从 Phase 1 到 Phase 2 的兼容说明。
 
 ## QA 验收矩阵

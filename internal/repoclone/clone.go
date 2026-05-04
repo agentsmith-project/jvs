@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/agentsmith-project/jvs/internal/capacitygate"
@@ -127,6 +128,8 @@ type separatedPublishedRoot struct {
 
 var separatedCloneRollbackBeforeRemoveHook func(targetRoot string) error
 var separatedCloneRollbackBeforeFinalCleanupHook func(quarantineRoot string) error
+var separatedCloneBeforeRemoveEmptyTargetRootHook func(targetRoot, role string) error
+var separatedCloneAfterRevalidateEmptyTargetRootHook func(targetRoot, role string) error
 var separatedCloneRenameNoReplaceAndSync = fsutil.RenameNoReplaceAndSync
 
 // Clone plans or executes a local JVS project clone.
@@ -346,13 +349,13 @@ func validateSeparatedCloneTargetRoots(controlRoot, payloadRoot string) (separat
 		return separatedCloneTargetRoots{}, errclass.ErrPathBoundaryEscape.WithMessagef("resolve target folder: %v", err)
 	}
 	if controlPath == payloadPath || controlPhysical == payloadPhysical {
-		return separatedCloneTargetRoots{}, errclass.ErrControlPayloadOverlap.WithMessage("target control root and workspace folder must be distinct")
+		return separatedCloneTargetRoots{}, errclass.ErrControlWorkspaceOverlap.WithMessage("target control root and workspace folder must be distinct")
 	}
 	if pathInsideOrEqual(controlPath, payloadPath) || pathInsideOrEqual(controlPhysical, payloadPhysical) {
-		return separatedCloneTargetRoots{}, errclass.ErrPayloadInsideControl.WithMessage("target folder must not be inside target control root")
+		return separatedCloneTargetRoots{}, errclass.ErrWorkspaceInsideControl.WithMessage("target folder must not be inside target control root")
 	}
 	if pathInsideOrEqual(payloadPath, controlPath) || pathInsideOrEqual(payloadPhysical, controlPhysical) {
-		return separatedCloneTargetRoots{}, errclass.ErrControlInsidePayload.WithMessage("target control root must not be inside target folder")
+		return separatedCloneTargetRoots{}, errclass.ErrControlInsideWorkspace.WithMessage("target control root must not be inside target folder")
 	}
 	controlExisted, err := validateSeparatedCloneTargetEmptyOrMissing(controlPath, "target control root")
 	if err != nil {
@@ -373,27 +376,41 @@ func validateSeparatedCloneTargetRoots(controlRoot, payloadRoot string) (separat
 }
 
 func validateSeparatedCloneTargetEmptyOrMissing(path, role string) (bool, error) {
+	inspection, err := inspectSeparatedCloneTargetEmptyOrMissing(path, role)
+	if err != nil {
+		return inspection.existed, err
+	}
+	return inspection.existed, nil
+}
+
+type separatedCloneTargetRootInspection struct {
+	existed bool
+	info    os.FileInfo
+}
+
+func inspectSeparatedCloneTargetEmptyOrMissing(path, role string) (separatedCloneTargetRootInspection, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return false, nil
+			return separatedCloneTargetRootInspection{}, nil
 		}
-		return false, fmt.Errorf("stat %s: %w", role, err)
+		return separatedCloneTargetRootInspection{}, fmt.Errorf("stat %s: %w", role, err)
 	}
+	inspection := separatedCloneTargetRootInspection{existed: true, info: info}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return true, errclass.ErrTargetRootOccupied.WithMessagef("%s must not be a symlink: %s", role, path)
+		return inspection, errclass.ErrTargetRootOccupied.WithMessagef("%s must not be a symlink: %s", role, path)
 	}
 	if !info.IsDir() {
-		return true, errclass.ErrTargetRootOccupied.WithMessagef("%s exists and is not a directory: %s", role, path)
+		return inspection, errclass.ErrTargetRootOccupied.WithMessagef("%s exists and is not a directory: %s", role, path)
 	}
 	entries, err := os.ReadDir(path)
 	if err != nil {
-		return true, fmt.Errorf("read %s: %w", role, err)
+		return inspection, fmt.Errorf("read %s: %w", role, err)
 	}
 	if len(entries) > 0 {
-		return true, errclass.ErrTargetRootOccupied.WithMessagef("%s must be empty or missing: %s", role, path)
+		return inspection, errclass.ErrTargetRootOccupied.WithMessagef("%s must be empty or missing: %s", role, path)
 	}
-	return true, nil
+	return inspection, nil
 }
 
 func rejectTargetInsideSourceWorkspaces(repoRoot, target string, workspaces []*model.WorktreeConfig) error {
@@ -585,11 +602,11 @@ func rejectSeparatedSourceActiveOperation(repoRoot string) error {
 			WithHint("Run or remove the pending source cleanup plan before cloning.")
 	}
 	if entry, err := firstActiveControlEntry(filepath.Join(repoRoot, repo.JVSDirName, "restore-plans"), nil); err != nil {
-		return errclass.ErrActiveOperationBlocking.
+		return errclass.ErrRecoveryBlocking.
 			WithMessagef("Cannot clone: source restore plans cannot be inspected: %v", err).
 			WithHint("Run doctor --strict for the source control root before cloning.")
 	} else if entry != "" {
-		return errclass.ErrActiveOperationBlocking.
+		return errclass.ErrRecoveryBlocking.
 			WithMessagef("Cannot clone: source restore plan %s is pending.", entry).
 			WithHint("Run or remove the pending source restore plan before cloning.")
 	}
@@ -1088,13 +1105,28 @@ func publishSeparatedCloneRoot(stagingRoot, targetRoot string, targetExisted boo
 		}
 	}
 	if targetExisted {
-		if existed, err := validateSeparatedCloneTargetEmptyOrMissing(targetRoot, "target "+role+" root"); err != nil {
+		targetInspection, err := inspectSeparatedCloneTargetEmptyOrMissing(targetRoot, "target "+role+" root")
+		if err != nil {
 			return nil, err
-		} else if !existed {
+		}
+		if !targetInspection.existed {
 			return nil, errclass.ErrAtomicPublishBlocked.WithMessagef("target %s root disappeared before publish: %s", role, targetRoot)
 		}
-		if err := os.Remove(targetRoot); err != nil {
-			return nil, fmt.Errorf("remove empty target %s root before publish: %w", role, err)
+		if separatedCloneBeforeRemoveEmptyTargetRootHook != nil {
+			if err := separatedCloneBeforeRemoveEmptyTargetRootHook(targetRoot, role); err != nil {
+				return nil, err
+			}
+		}
+		if err := revalidateSeparatedCloneEmptyTargetRootBeforeRemove(targetRoot, role, targetInspection.info); err != nil {
+			return nil, err
+		}
+		if separatedCloneAfterRevalidateEmptyTargetRootHook != nil {
+			if err := separatedCloneAfterRevalidateEmptyTargetRootHook(targetRoot, role); err != nil {
+				return nil, err
+			}
+		}
+		if err := removeSeparatedCloneEmptyTargetRootBeforePublish(targetRoot, role, targetInspection.info); err != nil {
+			return nil, err
 		}
 	}
 	if err := separatedCloneRenameNoReplaceAndSync(stagingRoot, targetRoot); err != nil {
@@ -1120,6 +1152,108 @@ func publishSeparatedCloneRoot(stagingRoot, targetRoot string, targetExisted boo
 		publishedInfo:    stagingInfo,
 		rollbackEvidence: rollbackEvidence,
 	}, nil
+}
+
+func revalidateSeparatedCloneEmptyTargetRootBeforeRemove(targetRoot, role string, expected os.FileInfo) error {
+	targetLabel := separatedPublishedRootPublicLabel(role)
+	current, err := inspectSeparatedCloneTargetEmptyOrMissing(targetRoot, "target "+role+" root")
+	if err != nil {
+		return separatedCloneTargetChangedBeforePublishError(targetLabel, targetRoot, err)
+	}
+	if !current.existed {
+		return fmt.Errorf("target %s disappeared before publish: %s", targetLabel, targetRoot)
+	}
+	if expected == nil || current.info == nil || !os.SameFile(expected, current.info) {
+		return separatedCloneTargetChangedBeforePublishError(targetLabel, targetRoot, nil)
+	}
+	return nil
+}
+
+func removeSeparatedCloneEmptyTargetRootBeforePublish(targetRoot, role string, expected os.FileInfo) error {
+	targetLabel := separatedPublishedRootPublicLabel(role)
+	removalRoot, err := separatedCloneEmptyTargetRemovalRoot(targetRoot)
+	if err != nil {
+		return fmt.Errorf("prepare empty target %s removal: %w", targetLabel, err)
+	}
+	if err := fsutil.RenameNoReplaceAndSync(targetRoot, removalRoot); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("target %s disappeared before publish: %s", targetLabel, targetRoot)
+		}
+		if fsutil.IsCommitUncertain(err) {
+			cause := err
+			if validateErr := validateMovedSeparatedCloneEmptyTargetRoot(removalRoot, targetRoot, role, expected); validateErr != nil {
+				cause = validateErr
+			}
+			if _, statErr := os.Lstat(removalRoot); statErr == nil {
+				return restoreMovedSeparatedCloneEmptyTargetRoot(removalRoot, targetRoot, targetLabel, cause)
+			}
+			return cause
+		}
+		return separatedCloneTargetChangedBeforePublishError(targetLabel, targetRoot, err)
+	}
+	if err := validateMovedSeparatedCloneEmptyTargetRoot(removalRoot, targetRoot, role, expected); err != nil {
+		return restoreMovedSeparatedCloneEmptyTargetRoot(removalRoot, targetRoot, targetLabel, err)
+	}
+	if err := removeEmptyDirectory(removalRoot); err != nil {
+		return restoreMovedSeparatedCloneEmptyTargetRoot(
+			removalRoot,
+			targetRoot,
+			targetLabel,
+			separatedCloneTargetChangedBeforePublishError(targetLabel, targetRoot, fmt.Errorf("remove moved empty target: %w", err)),
+		)
+	}
+	return nil
+}
+
+func validateMovedSeparatedCloneEmptyTargetRoot(removalRoot, targetRoot, role string, expected os.FileInfo) error {
+	targetLabel := separatedPublishedRootPublicLabel(role)
+	current, err := inspectSeparatedCloneTargetEmptyOrMissing(removalRoot, "target "+role+" root")
+	if err != nil {
+		return separatedCloneTargetChangedBeforePublishError(targetLabel, targetRoot, err)
+	}
+	if !current.existed {
+		return separatedCloneTargetChangedBeforePublishError(targetLabel, targetRoot, fmt.Errorf("moved target disappeared: %s", removalRoot))
+	}
+	if expected == nil || current.info == nil || !os.SameFile(expected, current.info) {
+		return separatedCloneTargetChangedBeforePublishError(targetLabel, targetRoot, nil)
+	}
+	return nil
+}
+
+func restoreMovedSeparatedCloneEmptyTargetRoot(removalRoot, targetRoot, targetLabel string, cause error) error {
+	if err := fsutil.RenameNoReplaceAndSync(removalRoot, targetRoot); err != nil {
+		return fmt.Errorf("%w; preserve changed target %s at %s; restore original path: %v", cause, targetLabel, removalRoot, err)
+	}
+	return cause
+}
+
+func separatedCloneEmptyTargetRemovalRoot(targetRoot string) (string, error) {
+	parent := filepath.Dir(targetRoot)
+	base := filepath.Base(targetRoot)
+	for range 16 {
+		candidate := filepath.Join(parent, "."+base+".empty-remove-"+uuidutil.NewV4()[:8])
+		if _, err := os.Lstat(candidate); os.IsNotExist(err) {
+			return candidate, nil
+		} else if err != nil {
+			return "", fmt.Errorf("stat empty target removal path: %w", err)
+		}
+	}
+	return "", fmt.Errorf("allocate empty target removal path")
+}
+
+func removeEmptyDirectory(path string) error {
+	if err := syscall.Rmdir(path); err != nil {
+		return &os.PathError{Op: "rmdir", Path: path, Err: err}
+	}
+	return nil
+}
+
+func separatedCloneTargetChangedBeforePublishError(targetLabel, targetRoot string, detail error) error {
+	message := fmt.Sprintf("target %s changed before publish; refusing to remove: %s; inspect and remove it manually", targetLabel, targetRoot)
+	if detail != nil {
+		message = fmt.Sprintf("%s: %v", message, detail)
+	}
+	return fmt.Errorf("%s", message)
 }
 
 func separatedPublishedRootAfterCommitUncertain(err error, stagingInfo os.FileInfo, targetRoot string, targetExisted bool, role, rollbackEvidence string) *separatedPublishedRoot {
@@ -1172,7 +1306,7 @@ func rollbackSeparatedPublishedRoot(published *separatedPublishedRoot) error {
 				return restoreEmptySeparatedTargetRoot(published.targetRoot, published.role)
 			}
 		}
-		return fmt.Errorf("target %s changed after publish; refusing to remove: %s", targetLabel, published.targetRoot)
+		return separatedCloneRollbackChangedError(targetLabel, published.targetRoot)
 	}
 
 	if err := validateSeparatedPublishedRootForRollback(published, quarantineRoot, targetLabel); err != nil {
@@ -1235,7 +1369,7 @@ func quarantineSeparatedPublishedRoot(published *separatedPublishedRoot) error {
 				return restoreEmptySeparatedTargetRoot(published.targetRoot, published.role)
 			}
 		}
-		return fmt.Errorf("target %s changed after publish; refusing to remove: %s", targetLabel, published.targetRoot)
+		return separatedCloneRollbackChangedError(targetLabel, published.targetRoot)
 	}
 
 	cause := fmt.Errorf("target %s was quarantined at %s; inspect and remove it manually", targetLabel, quarantineRoot)
@@ -1252,10 +1386,10 @@ func validateSeparatedPublishedRootForRollback(published *separatedPublishedRoot
 	if published.rollbackEvidence != "" {
 		currentEvidence, err := separatedCloneRootEvidence(root)
 		if err != nil {
-			return fmt.Errorf("target %s changed after publish; refusing to remove: inspect tree: %w", targetLabel, err)
+			return separatedCloneRollbackChangedInspectError(targetLabel, err)
 		}
 		if currentEvidence != published.rollbackEvidence {
-			return fmt.Errorf("target %s changed after publish; refusing to remove: %s", targetLabel, published.targetRoot)
+			return separatedCloneRollbackChangedError(targetLabel, published.targetRoot)
 		}
 	}
 	return nil
@@ -1270,9 +1404,17 @@ func validateSeparatedPublishedRootIdentityForRollback(published *separatedPubli
 		return fmt.Errorf("stat published target %s before rollback: %w", targetLabel, err)
 	}
 	if targetInfo.Mode()&os.ModeSymlink != 0 || !targetInfo.IsDir() || !os.SameFile(published.publishedInfo, targetInfo) {
-		return fmt.Errorf("target %s changed after publish; refusing to remove: %s", targetLabel, published.targetRoot)
+		return separatedCloneRollbackChangedError(targetLabel, published.targetRoot)
 	}
 	return nil
+}
+
+func separatedCloneRollbackChangedError(targetLabel, targetRoot string) error {
+	return fmt.Errorf("target %s changed after publish; refusing to remove: %s; inspect and remove it manually", targetLabel, targetRoot)
+}
+
+func separatedCloneRollbackChangedInspectError(targetLabel string, err error) error {
+	return fmt.Errorf("target %s changed after publish; refusing to remove: inspect tree: %w; inspect and remove it manually", targetLabel, err)
 }
 
 func separatedCloneRollbackQuarantineRoot(targetRoot string) (string, error) {
@@ -1372,9 +1514,13 @@ func writeRegularFileEvidence(dst io.Writer, path, rel string, expected os.FileI
 }
 
 func atomicPublishBlockedError(err error) error {
+	hint := "The target was not activated. Choose missing or empty target roots and retry."
+	if err != nil && (strings.Contains(err.Error(), "refusing to remove") || strings.Contains(err.Error(), "quarantined at")) {
+		hint = "The target was not safely activated. Inspect the target path and remove it manually before retrying."
+	}
 	return errclass.ErrAtomicPublishBlocked.
 		WithMessagef("Cannot publish clone target atomically: %v", err).
-		WithHint("The target was not activated. Choose missing or empty target roots and retry.")
+		WithHint(hint)
 }
 
 func (p *preparedClone) checkCapacity(mainBoundary repo.WorktreePayloadBoundary) error {

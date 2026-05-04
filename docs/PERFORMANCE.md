@@ -16,7 +16,7 @@ constant-time claims.
 | restore preview | O(source + target metadata) | impact calculation and expected evidence |
 | restore run | engine-dependent write path | revalidation, backup, materialization |
 | `jvs workspace new <folder> --from <save>` | engine-dependent materialization | source read and new workspace creation |
-| `jvs doctor --strict` | O(repository state + integrity checks selected) | layout checks, descriptor reads, audit, payload verification when strict requires it |
+| `jvs doctor --strict` | O(repository state + integrity checks selected) | layout checks, descriptor reads, audit, content verification when strict requires it |
 
 ## Engine Classes
 
@@ -75,8 +75,8 @@ vocabulary.
 - Save and restore scale with managed-file count and bytes unless the selected
   engine/storage provides metadata clone behavior.
 - History and cleanup planning scale with descriptor count.
-- Strict doctor can be I/O intensive when it includes full payload integrity.
-- Cleanup deletion cost depends on candidate payload size and filesystem
+- Strict doctor can be I/O intensive when it includes full content integrity.
+- Cleanup deletion cost depends on candidate save point content size and filesystem
   deletion behavior.
 
 ## Boundaries

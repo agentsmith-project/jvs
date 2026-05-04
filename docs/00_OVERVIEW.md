@@ -19,7 +19,7 @@ jvs restore <save>
 Core guarantees:
 
 1. Workspaces are real folders, not virtualized folders.
-2. JVS control data is never saved as workspace payload.
+2. JVS control data is never saved as workspace content.
 3. A save point is immutable once published.
 4. Restore is preview-first and does not rewrite save point history.
 5. Interrupted restore is closed by recovery status/resume/rollback.

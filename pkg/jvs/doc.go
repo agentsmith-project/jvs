@@ -7,10 +7,10 @@
 //
 // JVS operations are filesystem-based and follow these concurrency rules:
 //
-//   - Save() is safe when no concurrent writes to the payload directory.
+//   - Save() is safe when no concurrent writes to the workspace folder.
 //     Quiesce writers before saving a folder state.
 //
-//   - Restore() is safe when no concurrent reads from the payload directory.
+//   - Restore() is safe when no concurrent reads from the workspace folder.
 //     Quiesce readers and writers before restoring a folder state.
 //
 //   - Multiple Client instances for DIFFERENT repositories are fully independent
@@ -24,14 +24,14 @@
 //
 //	// Open or initialize a managed folder.
 //	client, err := jvs.OpenOrInit(repoPath, jvs.InitOptions{Name: "workspace"})
-//	payloadPath := client.WorkspacePath("main")
+//	workspacePath := client.WorkspacePath("main")
 //
 //	// Restore a chosen save point before using the folder.
 //	if latest, _ := client.LatestSavePoint(ctx, "main"); latest != nil {
 //	    client.Restore(ctx, jvs.RestoreOptions{Target: latest.SavePointID.String()})
 //	}
 //
-//	// Use payloadPath as the application workspace, then save completed work.
+//	// Use workspacePath as the application content folder, then save completed work.
 //	client.Save(ctx, jvs.SaveOptions{
 //	    Message: "completed workspace update",
 //	})

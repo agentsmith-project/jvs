@@ -69,7 +69,7 @@ func TestCollectorPlanActiveOperationScanFailureUsesPublicCleanupLanguage(t *tes
 
 	var jvsErr *errclass.JVSError
 	require.ErrorAs(t, err, &jvsErr)
-	assert.Equal(t, errclass.ErrGCPlanMismatch.Code, jvsErr.Code)
+	assert.Equal(t, errclass.ErrCleanupPlanMismatch.Code, jvsErr.Code)
 	assert.Contains(t, jvsErr.Message, "active operations")
 	assert.Contains(t, jvsErr.Message, "doctor --strict")
 	assertCleanupActiveOperationErrorOmitsInternalVocabulary(t, jvsErr.Code)

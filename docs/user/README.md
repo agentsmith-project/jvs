@@ -7,6 +7,9 @@ learn the implementation. The everyday ideas are:
 - **Folder**: the normal directory your editor and tools already use.
 - **Workspace**: JVS's name for a folder it is looking after.
 - **Save point**: a named saved state of that workspace.
+- **Project/repo**: the JVS-managed folder and its save point history.
+- **Control data**: JVS's own state for history, workspaces, runtime checks,
+  and recovery.
 
 ## Start Here
 
@@ -74,6 +77,7 @@ treat as important moments.
 | `jvs cleanup run --plan-id <cleanup-plan-id>` | Removes save point storage that the reviewed cleanup plan selected. |
 | `jvs recovery resume <plan>` | Continues an interrupted restore and may change files. |
 | `jvs recovery rollback <plan>` | Returns the folder to the protected pre-restore state when possible. |
+| `jvs doctor --repair-runtime` | Runs safe automatic repairs for runtime state in JVS control data. Workspace files and save point history stay unchanged. |
 
 Commands such as `jvs status`, `jvs history`, `jvs view`, `jvs workspace list`,
 and `jvs workspace path` are for looking around. They do not change your

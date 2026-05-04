@@ -13,7 +13,7 @@ tests, and shipped artifacts describe the same user-visible behavior.
 - Any public command, flag, state vocabulary, ref semantics, or JSON field
   change requires an explicit changelog entry, release evidence, and
   conformance coverage.
-- A tag source archive is the immutable tag snapshot. It can only contain facts
+- A tag source archive is the immutable source archive. It can only contain facts
   available when the tag was created, including source readiness or candidate
   evidence, and must not be rewritten to add post-publication facts.
 - publication final evidence lives on the GitHub Release page and the
@@ -121,9 +121,9 @@ pending.
 
 Final tagged release entries must not leave unresolved candidate or pending
 publication facts. If the tag source archive still records readiness or
-candidate evidence, the final entry must explicitly label that tag snapshot,
-state that the tag was not moved, and place publication final evidence in the
-GitHub Release page plus the post-release main ledger. Final entries must
+candidate evidence, the final entry must explicitly label that tag source
+archive, state that the tag was not moved, and place publication final evidence
+in the GitHub Release page plus the post-release main ledger. Final entries must
 record exact coverage result and threshold, final tag and tagged commit,
 release-gate result, representative repo results, published artifact,
 checksum, smoke, and signing evidence, and final release URL.

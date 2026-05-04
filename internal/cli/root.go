@@ -137,7 +137,11 @@ func outputJSON(v any) error {
 	if !jsonOutput {
 		return nil
 	}
-	envelope := newJSONEnvelope(true, v, nil)
+	publicData, err := publicJSONData(v)
+	if err != nil {
+		return err
+	}
+	envelope := newJSONEnvelope(true, publicData, nil)
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(envelope)

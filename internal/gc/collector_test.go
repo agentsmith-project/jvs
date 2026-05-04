@@ -1105,7 +1105,7 @@ func TestCollector_LoadPlan_Invalid(t *testing.T) {
 	collector := gc.NewCollector(repoPath)
 	_, err := collector.LoadPlan("nonexistent-plan")
 	assert.Error(t, err)
-	assert.ErrorIs(t, err, errclass.ErrGCPlanMismatch)
+	assert.ErrorIs(t, err, errclass.ErrCleanupPlanMismatch)
 	assert.NotContains(t, err.Error(), "control leaf")
 	assert.NotContains(t, err.Error(), repoPath)
 }
@@ -1122,7 +1122,7 @@ func TestCollector_LoadPlan_InvalidJSON(t *testing.T) {
 	collector := gc.NewCollector(repoPath)
 	_, err := collector.LoadPlan("invalid-plan")
 	assert.Error(t, err)
-	assert.ErrorIs(t, err, errclass.ErrGCPlanMismatch)
+	assert.ErrorIs(t, err, errclass.ErrCleanupPlanMismatch)
 }
 
 func TestCollector_LoadPlanRejectsPlanIDMismatch(t *testing.T) {
@@ -1143,7 +1143,7 @@ func TestCollector_LoadPlanRejectsPlanIDMismatch(t *testing.T) {
 	collector := gc.NewCollector(repoPath)
 	_, err = collector.LoadPlan("requested-plan")
 	require.Error(t, err)
-	assert.ErrorIs(t, err, errclass.ErrGCPlanMismatch)
+	assert.ErrorIs(t, err, errclass.ErrCleanupPlanMismatch)
 	assert.Contains(t, err.Error(), "plan_id")
 	assert.NotContains(t, err.Error(), repoPath)
 }
@@ -1161,7 +1161,7 @@ func TestCollector_LoadPlanRejectsRepoMismatch(t *testing.T) {
 	collector := gc.NewCollector(repoPath)
 	_, err := collector.LoadPlan(plan.PlanID)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, errclass.ErrGCPlanMismatch)
+	assert.ErrorIs(t, err, errclass.ErrCleanupPlanMismatch)
 	assert.Contains(t, err.Error(), "repository")
 	assert.NotContains(t, err.Error(), repoPath)
 }

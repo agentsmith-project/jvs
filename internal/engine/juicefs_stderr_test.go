@@ -65,6 +65,27 @@ func TestJuiceFSCloneToNewRemovesPartialDestinationBeforeFallback(t *testing.T) 
 	assert.NoFileExists(t, filepath.Join(dst, "stale.txt"))
 }
 
+func TestJuiceFSCloneToNewFailureCleanupPreservesLateReplacement(t *testing.T) {
+	binDir := t.TempDir()
+	juicefsPath := filepath.Join(binDir, "juicefs")
+	require.NoError(t, os.WriteFile(juicefsPath, []byte("#!/bin/sh\nmkdir -p \"$3\"\nprintf stale > \"$3/stale.txt\"\nrm -rf \"$JVS_TEST_REPLACEMENT_DST\"\nmkdir -p \"$JVS_TEST_REPLACEMENT_DST\"\nprintf user > \"$JVS_TEST_REPLACEMENT_DST/user.txt\"\nprintf 'partial clone\\n' >&2\nexit 7\n"), 0755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	src := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(src, "file.txt"), []byte("payload"), 0644))
+	dst := filepath.Join(t.TempDir(), "clone")
+	t.Setenv("JVS_TEST_REPLACEMENT_DST", dst)
+
+	eng := NewJuiceFSEngine()
+	eng.isOnJuiceFSFunc = func(string) bool { return true }
+
+	result, err := eng.CloneToNew(src, dst)
+	require.Error(t, err)
+	assert.Nil(t, result)
+	assert.FileExists(t, filepath.Join(dst, "user.txt"))
+	assert.NoFileExists(t, filepath.Join(dst, "file.txt"))
+}
+
 func TestJuiceFSCloneToNewFailsClosedWhenPartialCleanupFails(t *testing.T) {
 	binDir := t.TempDir()
 	juicefsPath := filepath.Join(binDir, "juicefs")
@@ -76,6 +97,12 @@ func TestJuiceFSCloneToNewFailsClosedWhenPartialCleanupFails(t *testing.T) {
 	dstParent := t.TempDir()
 	dst := filepath.Join(dstParent, "clone")
 	t.Cleanup(func() {
+		_ = filepath.WalkDir(dstParent, func(path string, d os.DirEntry, err error) error {
+			if err == nil && d.IsDir() {
+				_ = os.Chmod(path, 0755)
+			}
+			return nil
+		})
 		_ = os.Chmod(dstParent, 0755)
 	})
 

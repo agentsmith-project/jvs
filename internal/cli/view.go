@@ -228,7 +228,7 @@ func openReadOnlySavePointView(repoRoot, workspaceName string, savePointID model
 	}
 
 	viewRoot := filepath.Join(repoRoot, repo.JVSDirName, "views", viewID)
-	payloadRoot := filepath.Join(viewRoot, "payload")
+	payloadRoot := filepath.Join(viewRoot, "content")
 	sourceEstimate, err := snapshotpayload.EstimateMaterializationCapacity(state.SnapshotDir, snapshotpayload.OptionsFromDescriptor(state.Descriptor))
 	if err != nil {
 		return publicViewResult{}, err
@@ -240,8 +240,8 @@ func openReadOnlySavePointView(repoRoot, workspaceName string, savePointID model
 		SourceSavePoint: string(savePointID),
 		Path:            pathInside,
 		Components: []capacitygate.Component{
-			{Name: "payload hash", Path: filepath.Join(os.TempDir(), "jvs-payload-hash-probe"), Bytes: sourceEstimate.PeakBytes},
-			{Name: "view payload", Path: payloadRoot, Bytes: sourceEstimate.PeakBytes},
+			{Name: "content hash", Path: filepath.Join(os.TempDir(), "jvs-content-hash-probe"), Bytes: sourceEstimate.PeakBytes},
+			{Name: "view content", Path: payloadRoot, Bytes: sourceEstimate.PeakBytes},
 			{Name: "view metadata", Path: viewRoot, Bytes: metadataFloor},
 		},
 		FailureMessages: []string{"No view was opened.", "No files or history changed."},
@@ -417,7 +417,7 @@ func closeReadOnlySavePointView(repoRoot, rawViewID string) (publicViewCloseResu
 		return publicViewCloseResult{}, err
 	}
 	viewRoot := filepath.Join(repoRoot, repo.JVSDirName, "views", viewID)
-	viewPath := filepath.Join(viewRoot, "payload")
+	viewPath := filepath.Join(viewRoot, "content")
 
 	pin, pinPresent, err := readViewPin(repoRoot, viewID)
 	if err != nil {

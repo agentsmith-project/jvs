@@ -28,7 +28,7 @@ func (e *CopyEngine) Name() model.EngineType {
 // Clone recursively copies src to dst.
 // Returns a degraded result if hardlinks were detected (they become separate copies).
 func (e *CopyEngine) Clone(src, dst string) (*CloneResult, error) {
-	result, _, err := e.cloneInto(src, dst)
+	result, _, err := e.cloneInto(src, dst, cloneDestinationExisting)
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +47,10 @@ func (e *CopyEngine) CloneToNew(src, dst string) (*CloneResult, error) {
 	if err := PrepareCloneToNewDestination(dst); err != nil {
 		return nil, err
 	}
-	result, rootInfo, err := e.cloneInto(src, dst)
+	if err := revalidateCloneToNewDestination(dst); err != nil {
+		return nil, err
+	}
+	result, rootInfo, err := e.cloneInto(src, dst, cloneDestinationNew)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +66,7 @@ func (e *CopyEngine) CloneToNew(src, dst string) (*CloneResult, error) {
 	return result, nil
 }
 
-func (e *CopyEngine) cloneInto(src, dst string) (*CloneResult, os.FileInfo, error) {
+func (e *CopyEngine) cloneInto(src, dst string, mode cloneDestinationMode) (*CloneResult, os.FileInfo, error) {
 	result := NewCloneResult(model.EngineCopy)
 	seenInodes := make(map[uint64]string)
 	var dirs []dirMode
@@ -95,16 +98,35 @@ func (e *CopyEngine) cloneInto(src, dst string) (*CloneResult, os.FileInfo, erro
 
 		switch {
 		case info.IsDir():
-			if err := e.copyDir(path, dstPath, info); err != nil {
+			if mode == cloneDestinationNew {
+				if err := ensureCloneNewPath(dst, rel, dstPath); err != nil {
+					return err
+				}
+				if err := e.copyDirToNew(path, dstPath, info); err != nil {
+					return err
+				}
+			} else if err := e.copyDir(path, dstPath, info); err != nil {
 				return err
 			}
 			dirs = append(dirs, dirMode{path: dstPath, mode: info.Mode().Perm()})
 			return nil
 
 		case info.Mode()&os.ModeSymlink != 0:
+			if mode == cloneDestinationNew {
+				if err := ensureCloneNewPath(dst, rel, dstPath); err != nil {
+					return err
+				}
+				return e.copySymlinkToNew(path, dstPath, info)
+			}
 			return e.copySymlink(path, dstPath, info)
 
 		default:
+			if mode == cloneDestinationNew {
+				if err := ensureCloneNewPath(dst, rel, dstPath); err != nil {
+					return err
+				}
+				return e.copyFileToNew(path, dstPath, info)
+			}
 			return e.copyFile(path, dstPath, info)
 		}
 	})
@@ -127,7 +149,22 @@ func (e *CopyEngine) copyDir(src, dst string, info os.FileInfo) error {
 	return nil
 }
 
+func (e *CopyEngine) copyDirToNew(src, dst string, info os.FileInfo) error {
+	if err := os.Mkdir(dst, writableDirMode(info.Mode().Perm())); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dst, err)
+	}
+	return nil
+}
+
 func (e *CopyEngine) copyFile(src, dst string, info os.FileInfo) error {
+	return e.copyFileWithFlags(src, dst, info, os.O_CREATE|os.O_WRONLY|os.O_TRUNC)
+}
+
+func (e *CopyEngine) copyFileToNew(src, dst string, info os.FileInfo) error {
+	return e.copyFileWithFlags(src, dst, info, os.O_CREATE|os.O_WRONLY|os.O_EXCL)
+}
+
+func (e *CopyEngine) copyFileWithFlags(src, dst string, info os.FileInfo, flags int) error {
 	srcFile, err := os.Open(src)
 	if err != nil {
 		return fmt.Errorf("open src %s: %w", src, err)
@@ -135,7 +172,7 @@ func (e *CopyEngine) copyFile(src, dst string, info os.FileInfo) error {
 	defer srcFile.Close()
 
 	mode := info.Mode().Perm()
-	dstFile, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	dstFile, err := os.OpenFile(dst, flags, mode)
 	if err != nil {
 		return fmt.Errorf("create dst %s: %w", dst, err)
 	}
@@ -150,7 +187,7 @@ func (e *CopyEngine) copyFile(src, dst string, info os.FileInfo) error {
 		return fmt.Errorf("sync %s: %w", dst, err)
 	}
 
-	if err := os.Chmod(dst, mode); err != nil {
+	if err := dstFile.Chmod(mode); err != nil {
 		return fmt.Errorf("chmod %s: %w", dst, err)
 	}
 
@@ -164,6 +201,10 @@ func (e *CopyEngine) copySymlink(src, dst string, info os.FileInfo) error {
 		return fmt.Errorf("readlink %s: %w", src, err)
 	}
 	return os.Symlink(target, dst)
+}
+
+func (e *CopyEngine) copySymlinkToNew(src, dst string, info os.FileInfo) error {
+	return e.copySymlink(src, dst, info)
 }
 
 type dirMode struct {

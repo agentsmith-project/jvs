@@ -59,7 +59,7 @@ type SavePoint struct {
 	Message            string               `json:"message,omitempty"`
 	Tags               []string             `json:"tags,omitempty"`
 	Engine             model.EngineType     `json:"engine"`
-	PayloadRootHash    model.HashValue      `json:"payload_root_hash"`
+	ContentRootHash    model.HashValue      `json:"content_root_hash"`
 	DescriptorChecksum model.HashValue      `json:"descriptor_checksum"`
 	IntegrityState     model.IntegrityState `json:"integrity_state"`
 }
@@ -486,7 +486,7 @@ func publicSavePoint(desc *model.Descriptor) *SavePoint {
 		Message:            desc.Note,
 		Tags:               append([]string(nil), desc.Tags...),
 		Engine:             desc.Engine,
-		PayloadRootHash:    desc.PayloadRootHash,
+		ContentRootHash:    desc.PayloadRootHash,
 		DescriptorChecksum: desc.DescriptorChecksum,
 		IntegrityState:     desc.IntegrityState,
 	}
@@ -571,7 +571,7 @@ func publicCleanupFacadeError(err error) error {
 	}
 	var jvsErr *errclass.JVSError
 	if !errors.As(err, &jvsErr) {
-		jvsErr = errclass.ErrGCPlanMismatch.WithMessage(err.Error())
+		jvsErr = errclass.ErrCleanupPlanMismatch.WithMessage(err.Error())
 	}
 	return &cleanupFacadeError{
 		public: jvsErr,

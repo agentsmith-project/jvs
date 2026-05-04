@@ -82,6 +82,140 @@ func TestRecordFromPlanAndRuntimeFastPathSuccess(t *testing.T) {
 	}`, string(payload))
 }
 
+func TestPublicRecordFromRecordSanitizesInternalStorageVocabulary(t *testing.T) {
+	record := Record{
+		TransferID:                 "view-primary",
+		Operation:                  "view",
+		Phase:                      "view_materialization",
+		Primary:                    true,
+		ResultKind:                 ResultKindFinal,
+		PermissionScope:            PermissionScopeExecution,
+		SourceRole:                 "save_point_payload",
+		SourcePath:                 "/repo/.jvs/snapshots/1708300800000-deadbeef",
+		DestinationRole:            "view_directory",
+		MaterializationDestination: "/repo/.jvs/views/view-1708300800001-feedface/payload",
+		CapabilityProbePath:        "/repo/.jvs/views/view-1708300800001-feedface",
+		PublishedDestination:       "/repo/.jvs/views/view-1708300800001-feedface/payload/src/app.txt",
+		CheckedForThisOperation:    true,
+		RequestedEngine:            engine.EngineAuto,
+		EffectiveEngine:            model.EngineCopy,
+		PerformanceClass:           PerformanceClassNormalCopy,
+		DegradedReasons:            []string{},
+		Warnings:                   []string{},
+	}
+
+	public := PublicRecordFromRecord(record)
+
+	require.Equal(t, "save_point_content", public.SourceRole)
+	require.Equal(t, "save_point:1708300800000-deadbeef", public.SourcePath)
+	require.Equal(t, "content_view", public.DestinationRole)
+	require.Equal(t, "content_view:view-1708300800001-feedface", public.MaterializationDestination)
+	require.Equal(t, "content_view:view-1708300800001-feedface", public.CapabilityProbePath)
+	require.Equal(t, "content_view:view-1708300800001-feedface/src/app.txt", public.PublishedDestination)
+
+	payload, err := json.Marshal(Data{Transfers: []Record{record}})
+	require.NoError(t, err)
+	require.Contains(t, string(payload), "save_point_payload", "internal record JSON is still storage/reporting evidence")
+
+	publicPayload, err := json.Marshal(PublicData{Transfers: []PublicRecord{public}})
+	require.NoError(t, err)
+	require.NotContains(t, string(publicPayload), "payload")
+	require.NotContains(t, string(publicPayload), ".jvs/snapshots")
+	require.NotContains(t, string(publicPayload), "save_point_payload")
+}
+
+func TestPublicRecordFromRecordSanitizesFreeTextDetails(t *testing.T) {
+	record := Record{
+		TransferID:                 "save-primary",
+		Operation:                  "save",
+		Phase:                      "materialization",
+		Primary:                    true,
+		ResultKind:                 ResultKindFinal,
+		PermissionScope:            PermissionScopeExecution,
+		SourceRole:                 "workspace_content",
+		SourcePath:                 "/workspace/project",
+		DestinationRole:            "save_point_staging",
+		MaterializationDestination: "/repo/.jvs/tmp/save/payload",
+		CapabilityProbePath:        "/repo/.jvs/tmp",
+		PublishedDestination:       "/repo/.jvs/snapshots/one/payload",
+		CheckedForThisOperation:    true,
+		RequestedEngine:            engine.EngineAuto,
+		EffectiveEngine:            model.EngineCopy,
+		PerformanceClass:           PerformanceClassNormalCopy,
+		DegradedReasons: []string{
+			"juicefs failed on /repo/.jvs/snapshots/one/payload: payload missing",
+		},
+		Warnings: []string{
+			"fallback copied from /repo/.jvs/tmp/staging/payload after snapshot probe failed",
+		},
+	}
+
+	internalPayload, err := json.Marshal(Data{Transfers: []Record{record}})
+	require.NoError(t, err)
+	require.Contains(t, string(internalPayload), "/repo/.jvs/snapshots/one/payload")
+	require.Contains(t, string(internalPayload), "payload missing")
+
+	public := PublicRecordFromRecord(record)
+	publicPayload, err := json.Marshal(PublicData{Transfers: []PublicRecord{public}})
+	require.NoError(t, err)
+	publicJSON := string(publicPayload)
+	require.NotContains(t, publicJSON, ".jvs")
+	require.NotContains(t, publicJSON, "payload")
+	require.NotContains(t, publicJSON, "snapshot")
+	require.NotContains(t, publicJSON, "/repo/")
+	require.Contains(t, public.DegradedReasons[0], "save point content")
+	require.Contains(t, public.DegradedReasons[0], "save point content missing")
+	require.Contains(t, public.Warnings[0], "internal storage path")
+	require.Contains(t, public.Warnings[0], "save point probe failed")
+}
+
+func TestPublicRecordFromRecordRedactsRawEngineDiagnostics(t *testing.T) {
+	record := Record{
+		TransferID:                 "save-primary",
+		Operation:                  "save",
+		Phase:                      "materialization",
+		Primary:                    true,
+		ResultKind:                 ResultKindFinal,
+		PermissionScope:            PermissionScopeExecution,
+		SourceRole:                 "workspace_content",
+		SourcePath:                 "/workspace/project",
+		DestinationRole:            "save_point_staging",
+		MaterializationDestination: "/repo/.jvs/tmp/save/payload",
+		CapabilityProbePath:        "/repo/.jvs/tmp",
+		PublishedDestination:       "/repo/.jvs/snapshots/one/payload",
+		CheckedForThisOperation:    true,
+		RequestedEngine:            engine.EngineAuto,
+		EffectiveEngine:            model.EngineCopy,
+		PerformanceClass:           PerformanceClassNormalCopy,
+		DegradedReasons: []string{
+			"fast copy unavailable: juicefs-clone-context: stderr: failed on /repo/.jvs/snapshots/one/payload",
+		},
+		Warnings: []string{
+			"juicefs-clone-context: stdout: copied /repo/.jvs/snapshots/one/payload before fallback",
+		},
+	}
+
+	internalPayload, err := json.Marshal(Data{Transfers: []Record{record}})
+	require.NoError(t, err)
+	require.Contains(t, string(internalPayload), "stderr:")
+	require.Contains(t, string(internalPayload), "stdout:")
+	require.Contains(t, string(internalPayload), "/repo/.jvs/snapshots/one/payload")
+
+	public := PublicRecordFromRecord(record)
+	publicPayload, err := json.Marshal(PublicData{Transfers: []PublicRecord{public}})
+	require.NoError(t, err)
+	publicJSON := string(publicPayload)
+	require.NotContains(t, publicJSON, "stderr:")
+	require.NotContains(t, publicJSON, "stdout:")
+	require.NotContains(t, publicJSON, ".jvs")
+	require.NotContains(t, publicJSON, "payload")
+	require.NotContains(t, publicJSON, "snapshot")
+	require.NotContains(t, publicJSON, "/repo/")
+	require.Contains(t, public.DegradedReasons[0], "fast copy unavailable")
+	require.Contains(t, public.DegradedReasons[0], "engine diagnostic redacted")
+	require.Contains(t, public.Warnings[0], "engine diagnostic redacted")
+}
+
 func TestPlanIntentPairUnsupportedProducesNormalCopyRecord(t *testing.T) {
 	intent := Intent{
 		TransferID:                 "restore-run-primary",
@@ -182,6 +316,48 @@ func TestRecordFromPlanAndRuntimeMergesRuntimeFallbackReasons(t *testing.T) {
 	require.NotEqual(t, runtime.PerformanceClass, string(record.PerformanceClass))
 	require.Equal(t, []string{"runtime optimized clone failed", "fallback copy completed"}, record.DegradedReasons)
 	require.Equal(t, []string{"destination capability warning"}, record.Warnings)
+}
+
+func TestRecordFromPlanAndRuntimeKeepsRuntimeDiagnosticEvidenceInternal(t *testing.T) {
+	intent := Intent{
+		TransferID:                 "save-primary",
+		Operation:                  "save",
+		Phase:                      "materialization",
+		Primary:                    true,
+		ResultKind:                 ResultKindFinal,
+		PermissionScope:            PermissionScopeExecution,
+		SourceRole:                 "workspace_content",
+		SourcePath:                 "/workspace/project",
+		DestinationRole:            "save_point_staging",
+		MaterializationDestination: "/repo/.jvs/tmp/save/payload",
+		CapabilityProbePath:        "/repo/.jvs/tmp",
+		PublishedDestination:       "/repo/.jvs/snapshots/one/payload",
+		RequestedEngine:            engine.EngineAuto,
+	}
+	plan := &engine.TransferPlan{
+		RequestedEngine:   engine.EngineAuto,
+		TransferEngine:    model.EngineJuiceFSClone,
+		EffectiveEngine:   model.EngineJuiceFSClone,
+		OptimizedTransfer: true,
+	}
+	runtime := engine.NewCloneResult(model.EngineJuiceFSClone)
+	runtime.AddDegradation("juicefs-clone-context: stderr: failed on /repo/.jvs/snapshots/one/payload", model.EngineCopy)
+
+	record := RecordFromPlanAndRuntime(intent, plan, runtime)
+
+	require.Len(t, record.DegradedReasons, 1)
+	require.Contains(t, record.DegradedReasons[0], "stderr:")
+	require.Contains(t, record.DegradedReasons[0], "/repo/.jvs/snapshots/one/payload")
+
+	internalPayload, err := json.Marshal(Data{Transfers: []Record{record}})
+	require.NoError(t, err)
+	require.Contains(t, string(internalPayload), "stderr:")
+	require.Contains(t, string(internalPayload), "/repo/.jvs/snapshots/one/payload")
+
+	publicPayload, err := json.Marshal(PublicData{Transfers: []PublicRecord{PublicRecordFromRecord(record)}})
+	require.NoError(t, err)
+	require.NotContains(t, string(publicPayload), "stderr:")
+	require.NotContains(t, string(publicPayload), ".jvs")
 }
 
 func TestRecordFromPlanAndRuntimeKeepsConcretePlanWhenRuntimeReportsRequestedAuto(t *testing.T) {

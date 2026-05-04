@@ -157,14 +157,14 @@ func TestRepoCloneExternalControlSourceToExternalControlTargetReportsFolderJSON(
 	assert.NotEqual(t, data["source_repo_id"], data["target_repo_id"])
 	transfers := requireRepoCloneTransferMaps(t, data, 2)
 	assertRepoCloneTransferMap(t, transfers[0], "repo-clone-save-points", "save_point_storage_copy", "save_point_storage", "target_save_point_storage", "final", "execution")
-	assert.Equal(t, filepath.Join(sourceControl, ".jvs"), transfers[0]["source_path"])
-	assert.Equal(t, filepath.Join(targetControl, ".jvs"), transfers[0]["published_destination"])
-	assert.NotContains(t, filepath.ToSlash(transfers[0]["materialization_destination"].(string)), filepath.ToSlash(targetPayload))
+	assert.Equal(t, "control_data", transfers[0]["source_path"])
+	assert.Equal(t, "control_data", transfers[0]["published_destination"])
+	assert.Equal(t, "temporary_folder", transfers[0]["materialization_destination"])
 	assertRepoCloneTransferMap(t, transfers[1], "repo-clone-main-workspace", "main_workspace_materialization", "source_main_current_state", "target_main_workspace", "final", "execution")
 	assert.Equal(t, sourcePayload, transfers[1]["source_path"])
 	assert.Equal(t, targetPayload, transfers[1]["published_destination"])
 	assert.Equal(t, filepath.Dir(targetPayload), transfers[1]["capability_probe_path"])
-	assert.NotContains(t, filepath.ToSlash(transfers[1]["materialization_destination"].(string)), filepath.ToSlash(targetControl))
+	assert.Equal(t, "temporary_folder", transfers[1]["materialization_destination"])
 	assertFileContent(t, filepath.Join(targetPayload, "app.txt"), "source v1")
 	assert.NoDirExists(t, filepath.Join(targetPayload, ".jvs"))
 	assert.FileExists(t, filepath.Join(targetControl, ".jvs", "repo_id"))
@@ -332,7 +332,7 @@ func TestRepoCloneSeparatedErrorsUseStableCodes(t *testing.T) {
 				return root, root
 			},
 			mode:        "main",
-			code:        errclass.ErrControlPayloadOverlap.Code,
+			code:        "E_CONTROL_WORKSPACE_OVERLAP",
 			wantMessage: "workspace folder",
 		},
 		{
@@ -342,7 +342,7 @@ func TestRepoCloneSeparatedErrorsUseStableCodes(t *testing.T) {
 				return controlRoot, filepath.Join(controlRoot, "target-folder")
 			},
 			mode:        "main",
-			code:        errclass.ErrPayloadInsideControl.Code,
+			code:        "E_WORKSPACE_INSIDE_CONTROL",
 			wantMessage: "target folder",
 		},
 		{
@@ -371,6 +371,7 @@ func TestRepoCloneSeparatedErrorsUseStableCodes(t *testing.T) {
 			assert.False(t, env.OK)
 			require.NotNil(t, env.Error)
 			assert.Equal(t, tc.code, env.Error.Code)
+			assert.NotContains(t, env.Error.Code, "PAYLOAD")
 			assert.JSONEq(t, `null`, string(env.Data))
 			if tc.wantMessage != "" {
 				assert.NotContains(t, env.Error.Message, "payload root")

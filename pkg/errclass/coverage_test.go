@@ -86,7 +86,7 @@ func TestJVSError_WithMessagef(t *testing.T) {
 }
 
 func TestJVSError_WithMessagef_VariousFormats(t *testing.T) {
-	baseErr := errclass.ErrGCPlanMismatch
+	baseErr := errclass.ErrCleanupPlanMismatch
 
 	tests := []struct {
 		name     string
@@ -102,9 +102,9 @@ func TestJVSError_WithMessagef_VariousFormats(t *testing.T) {
 		},
 		{
 			name:     "multiple strings",
-			format:   "%s: %d snapshots affected",
+			format:   "%s: %d save points affected",
 			args:     []any{"plan1", 42},
-			expected: "plan1: 42 snapshots affected",
+			expected: "plan1: 42 save points affected",
 		},
 		{
 			name:     "integer only",
@@ -136,7 +136,7 @@ func TestJVSError_WithMessagef_VariousFormats(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			err := baseErr.WithMessagef(tt.format, tt.args...)
 			assert.Equal(t, tt.expected, err.Message)
-			assert.Equal(t, "E_GC_PLAN_MISMATCH", err.Code)
+			assert.Equal(t, "E_CLEANUP_PLAN_MISMATCH", err.Code)
 		})
 	}
 }
@@ -147,10 +147,10 @@ func TestJVSError_WithMessagef_PreservesCode(t *testing.T) {
 		errclass.ErrNameInvalid,
 		errclass.ErrPathEscape,
 		errclass.ErrDescriptorCorrupt,
-		errclass.ErrPayloadHashMismatch,
+		errclass.ErrSavePointHashMismatch,
 		errclass.ErrLineageBroken,
-		errclass.ErrPartialSnapshot,
-		errclass.ErrGCPlanMismatch,
+		errclass.ErrPartialSavePoint,
+		errclass.ErrCleanupPlanMismatch,
 		errclass.ErrFormatUnsupported,
 		errclass.ErrAuditChainBroken,
 	}
@@ -159,10 +159,10 @@ func TestJVSError_WithMessagef_PreservesCode(t *testing.T) {
 		"E_NAME_INVALID",
 		"E_PATH_ESCAPE",
 		"E_DESCRIPTOR_CORRUPT",
-		"E_PAYLOAD_HASH_MISMATCH",
+		"E_SAVE_POINT_HASH_MISMATCH",
 		"E_LINEAGE_BROKEN",
-		"E_PARTIAL_SNAPSHOT",
-		"E_GC_PLAN_MISMATCH",
+		"E_PARTIAL_SAVE_POINT",
+		"E_CLEANUP_PLAN_MISMATCH",
 		"E_FORMAT_UNSUPPORTED",
 		"E_AUDIT_CHAIN_BROKEN",
 	}
@@ -178,22 +178,22 @@ func TestJVSError_WithMessagef_PreservesCode(t *testing.T) {
 
 func TestJVSError_WithMessagef_WithNilArgs(t *testing.T) {
 	// WithMessagef with no args (just format string)
-	baseErr := errclass.ErrPayloadHashMismatch
+	baseErr := errclass.ErrSavePointHashMismatch
 	err := baseErr.WithMessagef("no args test")
 
-	assert.Equal(t, "E_PAYLOAD_HASH_MISMATCH", err.Code)
+	assert.Equal(t, "E_SAVE_POINT_HASH_MISMATCH", err.Code)
 	assert.Equal(t, "no args test", err.Message)
 }
 
 func TestJVSError_WithMessagef_IntFormatting(t *testing.T) {
 	baseErr := errclass.ErrLineageBroken
 
-	err := baseErr.WithMessagef("broken at snapshot %d of chain", 5)
-	assert.Equal(t, "broken at snapshot 5 of chain", err.Message)
+	err := baseErr.WithMessagef("broken at save point %d of chain", 5)
+	assert.Equal(t, "broken at save point 5 of chain", err.Message)
 
 	// Test multiple ints
-	err = baseErr.WithMessagef("snapshots %d and %d are broken", 1, 2)
-	assert.Equal(t, "snapshots 1 and 2 are broken", err.Message)
+	err = baseErr.WithMessagef("save points %d and %d are broken", 1, 2)
+	assert.Equal(t, "save points 1 and 2 are broken", err.Message)
 }
 
 func TestJVSError_WithMessagef_FloatFormatting(t *testing.T) {
@@ -204,7 +204,7 @@ func TestJVSError_WithMessagef_FloatFormatting(t *testing.T) {
 }
 
 func TestJVSError_WithMessagef_BoolFormatting(t *testing.T) {
-	baseErr := errclass.ErrGCPlanMismatch
+	baseErr := errclass.ErrCleanupPlanMismatch
 
 	err := baseErr.WithMessagef("allow prune: %v, dry run: %v", true, false)
 	assert.Equal(t, "allow prune: true, dry run: false", err.Message)
@@ -304,19 +304,19 @@ func TestJVSError_Error_CombinesCodeAndMessage(t *testing.T) {
 
 func TestJVSError_WithMessage_Chaining(t *testing.T) {
 	// Test that WithMessage can be chained multiple times
-	baseErr := errclass.ErrGCPlanMismatch
+	baseErr := errclass.ErrCleanupPlanMismatch
 
 	err1 := baseErr.WithMessage("first message")
 	err2 := err1.WithMessage("second message")
 	err3 := err2.WithMessagef("third message: %s", "detail")
 
-	assert.Equal(t, "E_GC_PLAN_MISMATCH", err1.Code)
+	assert.Equal(t, "E_CLEANUP_PLAN_MISMATCH", err1.Code)
 	assert.Equal(t, "first message", err1.Message)
 
-	assert.Equal(t, "E_GC_PLAN_MISMATCH", err2.Code)
+	assert.Equal(t, "E_CLEANUP_PLAN_MISMATCH", err2.Code)
 	assert.Equal(t, "second message", err2.Message)
 
-	assert.Equal(t, "E_GC_PLAN_MISMATCH", err3.Code)
+	assert.Equal(t, "E_CLEANUP_PLAN_MISMATCH", err3.Code)
 	assert.Equal(t, "third message: detail", err3.Message)
 }
 
@@ -349,13 +349,13 @@ func TestJVSError_Is_MultipleTargets(t *testing.T) {
 
 func TestJVSError_Is_Wrapping(t *testing.T) {
 	// Test Is behavior when wrapping/wrapped by other errors
-	jvsErr := errclass.ErrPayloadHashMismatch.WithMessage("hash mismatch")
+	jvsErr := errclass.ErrSavePointHashMismatch.WithMessage("hash mismatch")
 
 	// Wrap in standard error
 	wrapped := fmt.Errorf("wrapped: %w", jvsErr)
 
 	// errors.Is should unwrap and match
-	assert.True(t, errors.Is(wrapped, errclass.ErrPayloadHashMismatch))
+	assert.True(t, errors.Is(wrapped, errclass.ErrSavePointHashMismatch))
 	assert.True(t, errors.Is(wrapped, jvsErr))
 }
 
@@ -371,7 +371,7 @@ func TestJVSError_As(t *testing.T) {
 
 func TestJVSError_WithMessagef_NewInstance(t *testing.T) {
 	// Ensure WithMessagef always returns a new instance
-	baseErr := errclass.ErrPartialSnapshot
+	baseErr := errclass.ErrPartialSavePoint
 
 	err1 := baseErr.WithMessagef("test %s", "1")
 	err2 := baseErr.WithMessagef("test %s", "2")
@@ -389,10 +389,10 @@ func TestAllErrorClasses_HaveValidFormat(t *testing.T) {
 		errclass.ErrNameInvalid.Code,
 		errclass.ErrPathEscape.Code,
 		errclass.ErrDescriptorCorrupt.Code,
-		errclass.ErrPayloadHashMismatch.Code,
+		errclass.ErrSavePointHashMismatch.Code,
 		errclass.ErrLineageBroken.Code,
-		errclass.ErrPartialSnapshot.Code,
-		errclass.ErrGCPlanMismatch.Code,
+		errclass.ErrPartialSavePoint.Code,
+		errclass.ErrCleanupPlanMismatch.Code,
 		errclass.ErrFormatUnsupported.Code,
 		errclass.ErrAuditChainBroken.Code,
 	}
