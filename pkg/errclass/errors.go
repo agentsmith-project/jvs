@@ -74,7 +74,8 @@ var (
 	ErrSourceDirty                      = &JVSError{Code: "E_SOURCE_DIRTY"}
 	ErrAtomicPublishBlocked             = &JVSError{Code: "E_ATOMIC_PUBLISH_BLOCKED"}
 	ErrImportedHistoryProtectionMissing = &JVSError{Code: "E_IMPORTED_HISTORY_PROTECTION_MISSING"}
-	ErrSeparatedLifecycleUnsupported    = &JVSError{Code: "E_SEPARATED_LIFECYCLE_UNSUPPORTED"}
+	ErrExternalLifecycleUnsupported     = &JVSError{Code: "E_EXTERNAL_LIFECYCLE_UNSUPPORTED"}
+	ErrSeparatedLifecycleUnsupported    = ErrExternalLifecycleUnsupported
 	ErrActiveOperationBlocking          = &JVSError{Code: "E_ACTIVE_OPERATION_BLOCKING"}
 	ErrRecoveryBlocking                 = &JVSError{Code: "E_RECOVERY_BLOCKING"}
 )

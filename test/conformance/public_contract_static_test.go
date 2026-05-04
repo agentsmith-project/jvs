@@ -410,6 +410,162 @@ func TestDocs_RepoCloneDocumentsOrdinaryAndExternalTargetContracts(t *testing.T)
 	}
 }
 
+func TestDocs_RepoCloneRollbackDocumentsQuarantineSafety(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		doc      string
+		heading  string
+		required []string
+	}{
+		{
+			name:    "cli spec",
+			doc:     "docs/02_CLI_SPEC.md",
+			heading: "## Repo Clone",
+			required: []string{
+				"source project is unchanged",
+				"target must not be an active JVS repo",
+				"target folder or target control data root may remain at the target path or be moved to a hidden quarantine",
+				"in either case, inspect/remove manually",
+				"If a path is moved to quarantine",
+				"target folder was quarantined at ...; inspect and remove it manually",
+				"target control root was quarantined at ...; inspect and remove it manually",
+				"Preexisting empty target directories are restored to empty",
+			},
+		},
+		{
+			name:    "user command reference",
+			doc:     "docs/user/commands.md",
+			heading: "### `jvs repo clone <target-folder> [--save-points all|main] [--dry-run]`",
+			required: []string{
+				"source project is unchanged",
+				"target is not an active JVS repo",
+				"target folder or target control data root may remain at the target path or be moved to a hidden quarantine",
+				"in either case, inspect/remove manually",
+				"If it moves a path to quarantine",
+				"target folder was quarantined at ...; inspect and remove it manually",
+				"target control root was quarantined at ...; inspect and remove it manually",
+			},
+		},
+		{
+			name:    "user safety",
+			doc:     "docs/user/safety.md",
+			heading: "## Repo Clone, Move, Rename, And Detach",
+			required: []string{
+				"target is not an active JVS repo",
+				"target folder or target control data root may remain at the target path or be moved to a hidden quarantine",
+				"in either case, inspect/remove manually",
+				"If JVS moves a path to quarantine",
+				"target folder was quarantined at ...; inspect and remove it manually",
+				"target control root was quarantined at ...; inspect and remove it manually",
+			},
+		},
+		{
+			name:    "repo clone design record",
+			doc:     "docs/24_REPO_CLONE_PRODUCT_PLAN.md",
+			heading: "## Atomicity And Retry",
+			required: []string{
+				"source unchanged",
+				"target 不得成为 active JVS repo",
+				"target folder or target control data root may remain at the target path or be moved to a hidden quarantine",
+				"in either case, inspect/remove manually",
+				"只有 move to quarantine 成功后",
+				"target folder was quarantined at ...; inspect and remove it manually",
+				"target control root was quarantined at ...; inspect and remove it manually",
+				"preexisting empty target dir",
+			},
+		},
+		{
+			name:    "external control root handoff",
+			doc:     "docs/26_EXTERNAL_CONTROL_METADATA_PRODUCT_PLAN.md",
+			heading: "## Repo Clone 和 Template Source Workflow 合同",
+			required: []string{
+				"source unchanged",
+				"target 不作为 active JVS repo",
+				"target folder or target control data root may remain at the target path or be moved to a hidden quarantine",
+				"in either case, inspect/remove manually",
+				"只有 moved to quarantine 后",
+				"target folder was quarantined at ...; inspect and remove it manually",
+				"target control root was quarantined at ...; inspect and remove it manually",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := readRepoFile(t, tc.doc)
+			section := strings.Join(strings.Fields(markdownSectionByHeading(t, tc.doc, body, tc.heading)), " ")
+			for _, required := range tc.required {
+				requireReleaseReadinessText(t, "repo clone rollback quarantine contract", section, required)
+			}
+		})
+	}
+}
+
+func TestDocs_UserSafetyPagesCoverHighImpactCommandMap(t *testing.T) {
+	for _, tc := range []struct {
+		doc      string
+		required []string
+	}{
+		{
+			doc: "docs/user/safety.md",
+			required: []string{
+				"jvs workspace new <folder> --from <save>",
+				"jvs workspace rename <old> <new>",
+				"jvs workspace move --run <workspace-move-plan-id>",
+				"jvs workspace delete --run <workspace-delete-plan-id>",
+				"jvs repo clone <target-folder> --dry-run",
+				"jvs repo clone <target-folder>",
+				"jvs repo move --run <repo-move-plan-id>",
+				"jvs repo rename --run <repo-rename-plan-id>",
+				"jvs repo detach --run <repo-detach-plan-id>",
+				"jvs recovery resume <recovery-plan>",
+				"jvs recovery rollback <recovery-plan>",
+				"jvs cleanup run --plan-id <cleanup-plan-id>",
+				"archives JVS control data",
+			},
+		},
+		{
+			doc: "docs/user/faq.md",
+			required: []string{
+				"jvs workspace new <folder> --from <save>",
+				"jvs workspace rename <old> <new>",
+				"jvs workspace move experiment ../experiment-archive",
+				"jvs workspace move --run <workspace-move-plan-id>",
+				"jvs repo clone ../project-copy --dry-run",
+				"jvs repo clone <target-folder>",
+				"jvs repo move --run <repo-move-plan-id>",
+				"jvs repo rename --run <repo-rename-plan-id>",
+				"jvs repo detach --run <repo-detach-plan-id>",
+				"jvs recovery resume <recovery-plan>",
+				"jvs recovery rollback <recovery-plan>",
+				"Clone dry-run is a check only",
+			},
+		},
+		{
+			doc: "docs/user/best-practices.md",
+			required: []string{
+				"Restore, workspace move, workspace deletion, repo move, repo rename, repo detach, and cleanup are preview-first",
+				"jvs workspace move experiment ../experiment-archive",
+				"jvs workspace move --run <workspace-move-plan-id>",
+				"jvs repo clone <target-folder> --dry-run",
+				"jvs repo clone <target-folder>",
+				"jvs repo move --run <repo-move-plan-id>",
+				"jvs repo rename --run <repo-rename-plan-id>",
+				"jvs repo detach --run <repo-detach-plan-id>",
+				"jvs workspace new <folder> --from <save>",
+				"jvs workspace rename <old> <new>",
+				"jvs recovery resume <recovery-plan>",
+				"jvs recovery rollback <recovery-plan>",
+			},
+		},
+	} {
+		t.Run(tc.doc, func(t *testing.T) {
+			body := strings.Join(strings.Fields(readRepoFile(t, tc.doc)), " ")
+			for _, required := range tc.required {
+				requireReleaseReadinessText(t, "user safety command map", body, required)
+			}
+		})
+	}
+}
+
 func TestDocs_ReleaseFacingDocsAvoidMainSubfolderModel(t *testing.T) {
 	for _, doc := range []string{
 		"docs/02_CLI_SPEC.md",
@@ -499,7 +655,7 @@ func TestDocs_ConformancePlanDocumentsExternalControlRootCoverage(t *testing.T) 
 		"`--save-points all` fail closed",
 		"E_IMPORTED_HISTORY_PROTECTION_MISSING",
 		"Lifecycle currently fail-closed external contract",
-		"E_SEPARATED_LIFECYCLE_UNSUPPORTED",
+		"E_EXTERNAL_LIFECYCLE_UNSUPPORTED",
 	} {
 		requireReleaseReadinessText(t, "external control root conformance plan", normalizedSection, required)
 	}
@@ -4779,6 +4935,7 @@ func publicDocForbiddenTerms() []string {
 		"jvs checkpoint list --tag",
 		"jvs checkpoint list --grep",
 		"jvs inspect",
+		"split-root",
 	}
 	terms = append(terms, legacyPublicContractFragments()...)
 	return terms

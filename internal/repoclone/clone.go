@@ -2,7 +2,11 @@
 package repoclone
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -27,6 +31,7 @@ import (
 	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/agentsmith-project/jvs/pkg/fsutil"
 	"github.com/agentsmith-project/jvs/pkg/model"
+	"github.com/agentsmith-project/jvs/pkg/uuidutil"
 )
 
 type SavePointsMode string
@@ -113,11 +118,16 @@ type transferPlans struct {
 }
 
 type separatedPublishedRoot struct {
-	targetRoot    string
-	targetExisted bool
-	role          string
-	publishedInfo os.FileInfo
+	targetRoot       string
+	targetExisted    bool
+	role             string
+	publishedInfo    os.FileInfo
+	rollbackEvidence string
 }
+
+var separatedCloneRollbackBeforeRemoveHook func(targetRoot string) error
+var separatedCloneRollbackBeforeFinalCleanupHook func(quarantineRoot string) error
+var separatedCloneRenameNoReplaceAndSync = fsutil.RenameNoReplaceAndSync
 
 // Clone plans or executes a local JVS project clone.
 func Clone(options Options) (*Result, error) {
@@ -234,11 +244,11 @@ func normalizeCloneTarget(options Options) (target, controlRoot, payloadRoot str
 	}
 	if strings.TrimSpace(options.TargetPath) != "" {
 		if strings.TrimSpace(options.TargetPayloadRoot) != "" {
-			return "", "", "", false, false, false, errclass.ErrUsage.WithMessage("repo clone target folder cannot be combined with --target-payload-root")
+			return "", "", "", false, false, false, errclass.ErrUsage.WithMessage("repo clone target folder cannot be combined with the compatibility target folder alias")
 		}
 	}
 	if strings.TrimSpace(options.TargetControlRoot) == "" {
-		return "", "", "", false, false, false, errclass.ErrUsage.WithMessage("--target-payload-root requires --target-control-root")
+		return "", "", "", false, false, false, errclass.ErrUsage.WithMessage("external-control clone requires --target-control-root")
 	}
 	targetPayloadRoot := options.TargetPath
 	if strings.TrimSpace(targetPayloadRoot) == "" {
@@ -872,7 +882,7 @@ func (p *preparedClone) executeSeparated() (*Result, error) {
 
 	targetRepo, err := repo.InitSeparatedControl(stagingControl, stagingPayload, "main")
 	if err != nil {
-		return nil, fmt.Errorf("initialize separated target staging repo: %w", err)
+		return nil, fmt.Errorf("initialize external control root target staging repo: %w", err)
 	}
 
 	intents := p.transferIntents(stagingControl, stagingPayload, mainBoundary, transfer.ResultKindFinal, transfer.PermissionScopeExecution)
@@ -921,21 +931,36 @@ func (p *preparedClone) executeSeparated() (*Result, error) {
 	if _, err := validateSeparatedCloneTargetRoots(p.targetControlRoot, p.targetPayloadRoot); err != nil {
 		return nil, atomicPublishBlockedError(err)
 	}
-	publishedPayload, err := publishSeparatedCloneRoot(stagingPayload, p.targetPayloadRoot, p.targetPayloadExisted, "payload")
+	publishedPayload, err := publishSeparatedCloneRoot(stagingPayload, p.targetPayloadRoot, p.targetPayloadExisted, "payload", true)
 	if err != nil {
+		if publishedPayload != nil {
+			if rollbackErr := rollbackSeparatedPublishedRoot(publishedPayload); rollbackErr != nil {
+				return nil, atomicPublishBlockedError(fmt.Errorf("%w; rollback target folder: %v", err, rollbackErr))
+			}
+		}
 		return nil, atomicPublishBlockedError(err)
 	}
 	if p.options.Hooks.AfterSeparatedPayloadPublish != nil {
 		if err := p.options.Hooks.AfterSeparatedPayloadPublish(p.targetPayloadRoot, p.targetPayloadRoot); err != nil {
 			if rollbackErr := rollbackSeparatedPublishedRoot(publishedPayload); rollbackErr != nil {
-				return nil, atomicPublishBlockedError(fmt.Errorf("after separated payload publish hook: %w; rollback target folder: %v", err, rollbackErr))
+				return nil, atomicPublishBlockedError(fmt.Errorf("after external control root target folder publish hook: %w; rollback target folder: %v", err, rollbackErr))
 			}
-			return nil, atomicPublishBlockedError(fmt.Errorf("after separated payload publish hook: %w", err))
+			return nil, atomicPublishBlockedError(fmt.Errorf("after external control root target folder publish hook: %w", err))
 		}
 	}
-	if _, err := publishSeparatedCloneRoot(stagingControl, p.targetControlRoot, p.targetControlExisted, "control"); err != nil {
+	publishedControl, err := publishSeparatedCloneRoot(stagingControl, p.targetControlRoot, p.targetControlExisted, "control", true)
+	if err != nil {
+		var rollbackMessages []string
+		if publishedControl != nil {
+			if rollbackErr := quarantineSeparatedPublishedRoot(publishedControl); rollbackErr != nil {
+				rollbackMessages = append(rollbackMessages, fmt.Sprintf("rollback target control root: %v", rollbackErr))
+			}
+		}
 		if rollbackErr := rollbackSeparatedPublishedRoot(publishedPayload); rollbackErr != nil {
-			return nil, atomicPublishBlockedError(fmt.Errorf("%w; rollback target folder: %v", err, rollbackErr))
+			rollbackMessages = append(rollbackMessages, fmt.Sprintf("rollback target folder: %v", rollbackErr))
+		}
+		if len(rollbackMessages) > 0 {
+			return nil, atomicPublishBlockedError(fmt.Errorf("%w; %s", err, strings.Join(rollbackMessages, "; ")))
 		}
 		return nil, atomicPublishBlockedError(err)
 	}
@@ -1047,13 +1072,20 @@ func validateSeparatedCloneMaterializedPayloadBoundary(source *repo.Repo, payloa
 	})
 }
 
-func publishSeparatedCloneRoot(stagingRoot, targetRoot string, targetExisted bool, role string) (*separatedPublishedRoot, error) {
+func publishSeparatedCloneRoot(stagingRoot, targetRoot string, targetExisted bool, role string, protectRollback bool) (*separatedPublishedRoot, error) {
 	stagingInfo, err := os.Lstat(stagingRoot)
 	if err != nil {
 		return nil, fmt.Errorf("stat staging %s root before publish: %w", role, err)
 	}
 	if stagingInfo.Mode()&os.ModeSymlink != 0 || !stagingInfo.IsDir() {
 		return nil, fmt.Errorf("staging %s root is not a safe directory: %s", role, stagingRoot)
+	}
+	rollbackEvidence := ""
+	if protectRollback {
+		rollbackEvidence, err = separatedCloneRootEvidence(stagingRoot)
+		if err != nil {
+			return nil, fmt.Errorf("inspect staging %s root before publish: %w", role, err)
+		}
 	}
 	if targetExisted {
 		if existed, err := validateSeparatedCloneTargetEmptyOrMissing(targetRoot, "target "+role+" root"); err != nil {
@@ -1065,7 +1097,10 @@ func publishSeparatedCloneRoot(stagingRoot, targetRoot string, targetExisted boo
 			return nil, fmt.Errorf("remove empty target %s root before publish: %w", role, err)
 		}
 	}
-	if err := fsutil.RenameNoReplaceAndSync(stagingRoot, targetRoot); err != nil {
+	if err := separatedCloneRenameNoReplaceAndSync(stagingRoot, targetRoot); err != nil {
+		if published := separatedPublishedRootAfterCommitUncertain(err, stagingInfo, targetRoot, targetExisted, role, rollbackEvidence); published != nil {
+			return published, fmt.Errorf("publish target %s root: %w", role, err)
+		}
 		if targetExisted {
 			_ = restoreEmptySeparatedTargetRoot(targetRoot, role)
 		}
@@ -1079,39 +1114,193 @@ func publishSeparatedCloneRoot(stagingRoot, targetRoot string, targetExisted boo
 		return nil, fmt.Errorf("published target %s root changed before identity capture: %s", role, targetRoot)
 	}
 	return &separatedPublishedRoot{
-		targetRoot:    targetRoot,
-		targetExisted: targetExisted,
-		role:          role,
-		publishedInfo: stagingInfo,
+		targetRoot:       targetRoot,
+		targetExisted:    targetExisted,
+		role:             role,
+		publishedInfo:    stagingInfo,
+		rollbackEvidence: rollbackEvidence,
 	}, nil
+}
+
+func separatedPublishedRootAfterCommitUncertain(err error, stagingInfo os.FileInfo, targetRoot string, targetExisted bool, role, rollbackEvidence string) *separatedPublishedRoot {
+	if !fsutil.IsCommitUncertain(err) {
+		return nil
+	}
+	targetInfo, statErr := os.Lstat(targetRoot)
+	if statErr != nil {
+		return nil
+	}
+	if targetInfo.Mode()&os.ModeSymlink != 0 || !targetInfo.IsDir() || !os.SameFile(stagingInfo, targetInfo) {
+		return nil
+	}
+	return &separatedPublishedRoot{
+		targetRoot:       targetRoot,
+		targetExisted:    targetExisted,
+		role:             role,
+		publishedInfo:    stagingInfo,
+		rollbackEvidence: rollbackEvidence,
+	}
 }
 
 func rollbackSeparatedPublishedRoot(published *separatedPublishedRoot) error {
 	if published == nil {
 		return nil
 	}
-	targetInfo, err := os.Lstat(published.targetRoot)
-	if err != nil {
-		if os.IsNotExist(err) {
+	targetLabel := separatedPublishedRootPublicLabel(published.role)
+	if err := validateSeparatedPublishedRootForRollback(published, published.targetRoot, targetLabel); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
 			if published.targetExisted {
 				return restoreEmptySeparatedTargetRoot(published.targetRoot, published.role)
 			}
 			return nil
 		}
-		return fmt.Errorf("stat published target %s root before rollback: %w", published.role, err)
+		return err
 	}
-	if targetInfo.Mode()&os.ModeSymlink != 0 || !targetInfo.IsDir() || !os.SameFile(published.publishedInfo, targetInfo) {
-		return fmt.Errorf("target %s root changed after publish; refusing to remove: %s", published.role, published.targetRoot)
-	}
-	if err := os.RemoveAll(published.targetRoot); err != nil {
-		return fmt.Errorf("remove published target %s root: %w", published.role, err)
-	}
-	if published.targetExisted {
-		if err := restoreEmptySeparatedTargetRoot(published.targetRoot, published.role); err != nil {
+	if separatedCloneRollbackBeforeRemoveHook != nil {
+		if err := separatedCloneRollbackBeforeRemoveHook(published.targetRoot); err != nil {
 			return err
 		}
 	}
-	return fsutil.FsyncDir(filepath.Dir(published.targetRoot))
+
+	quarantineRoot, err := separatedCloneRollbackQuarantineRoot(published.targetRoot)
+	if err != nil {
+		return fmt.Errorf("prepare rollback quarantine for target %s: %w", targetLabel, err)
+	}
+	if err := fsutil.RenameNoReplaceAndSync(published.targetRoot, quarantineRoot); err != nil {
+		if os.IsNotExist(err) {
+			if published.targetExisted {
+				return restoreEmptySeparatedTargetRoot(published.targetRoot, published.role)
+			}
+		}
+		return fmt.Errorf("target %s changed after publish; refusing to remove: %s", targetLabel, published.targetRoot)
+	}
+
+	if err := validateSeparatedPublishedRootForRollback(published, quarantineRoot, targetLabel); err != nil {
+		return restoreSeparatedRollbackQuarantine(quarantineRoot, published.targetRoot, targetLabel, err)
+	}
+	if separatedCloneRollbackBeforeFinalCleanupHook != nil {
+		if err := separatedCloneRollbackBeforeFinalCleanupHook(quarantineRoot); err != nil {
+			return err
+		}
+	}
+	if err := validateSeparatedPublishedRootForRollback(published, quarantineRoot, targetLabel); err != nil {
+		return finishSeparatedRollbackQuarantine(
+			published,
+			quarantineRoot,
+			targetLabel,
+			fmt.Errorf("%w; target %s was quarantined at %s; inspect and remove it manually", err, targetLabel, quarantineRoot),
+		)
+	}
+	return finishSeparatedRollbackQuarantine(
+		published,
+		quarantineRoot,
+		targetLabel,
+		fmt.Errorf("target %s was quarantined at %s; inspect and remove it manually", targetLabel, quarantineRoot),
+	)
+}
+
+func finishSeparatedRollbackQuarantine(published *separatedPublishedRoot, quarantineRoot, targetLabel string, cause error) error {
+	if published.targetExisted {
+		if err := restoreEmptySeparatedTargetRoot(published.targetRoot, published.role); err != nil {
+			return fmt.Errorf("%w; restore target %s: %v", cause, targetLabel, err)
+		}
+	}
+	if err := fsutil.FsyncDir(filepath.Dir(published.targetRoot)); err != nil {
+		return fmt.Errorf("%w; fsync rollback quarantine parent: %v", cause, err)
+	}
+	return cause
+}
+
+func quarantineSeparatedPublishedRoot(published *separatedPublishedRoot) error {
+	if published == nil {
+		return nil
+	}
+	targetLabel := separatedPublishedRootPublicLabel(published.role)
+	if err := validateSeparatedPublishedRootIdentityForRollback(published, published.targetRoot, targetLabel); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if published.targetExisted {
+				return restoreEmptySeparatedTargetRoot(published.targetRoot, published.role)
+			}
+			return nil
+		}
+		return err
+	}
+	quarantineRoot, err := separatedCloneRollbackQuarantineRoot(published.targetRoot)
+	if err != nil {
+		return fmt.Errorf("prepare rollback quarantine for target %s: %w", targetLabel, err)
+	}
+	if err := fsutil.RenameNoReplaceAndSync(published.targetRoot, quarantineRoot); err != nil {
+		if os.IsNotExist(err) {
+			if published.targetExisted {
+				return restoreEmptySeparatedTargetRoot(published.targetRoot, published.role)
+			}
+		}
+		return fmt.Errorf("target %s changed after publish; refusing to remove: %s", targetLabel, published.targetRoot)
+	}
+
+	cause := fmt.Errorf("target %s was quarantined at %s; inspect and remove it manually", targetLabel, quarantineRoot)
+	if err := validateSeparatedPublishedRootForRollback(published, quarantineRoot, targetLabel); err != nil {
+		cause = fmt.Errorf("%w; %v", err, cause)
+	}
+	return finishSeparatedRollbackQuarantine(published, quarantineRoot, targetLabel, cause)
+}
+
+func validateSeparatedPublishedRootForRollback(published *separatedPublishedRoot, root, targetLabel string) error {
+	if err := validateSeparatedPublishedRootIdentityForRollback(published, root, targetLabel); err != nil {
+		return err
+	}
+	if published.rollbackEvidence != "" {
+		currentEvidence, err := separatedCloneRootEvidence(root)
+		if err != nil {
+			return fmt.Errorf("target %s changed after publish; refusing to remove: inspect tree: %w", targetLabel, err)
+		}
+		if currentEvidence != published.rollbackEvidence {
+			return fmt.Errorf("target %s changed after publish; refusing to remove: %s", targetLabel, published.targetRoot)
+		}
+	}
+	return nil
+}
+
+func validateSeparatedPublishedRootIdentityForRollback(published *separatedPublishedRoot, root, targetLabel string) error {
+	targetInfo, err := os.Lstat(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return os.ErrNotExist
+		}
+		return fmt.Errorf("stat published target %s before rollback: %w", targetLabel, err)
+	}
+	if targetInfo.Mode()&os.ModeSymlink != 0 || !targetInfo.IsDir() || !os.SameFile(published.publishedInfo, targetInfo) {
+		return fmt.Errorf("target %s changed after publish; refusing to remove: %s", targetLabel, published.targetRoot)
+	}
+	return nil
+}
+
+func separatedCloneRollbackQuarantineRoot(targetRoot string) (string, error) {
+	parent := filepath.Dir(targetRoot)
+	base := filepath.Base(targetRoot)
+	for range 16 {
+		candidate := filepath.Join(parent, "."+base+".rollback-"+uuidutil.NewV4()[:8])
+		if _, err := os.Lstat(candidate); os.IsNotExist(err) {
+			return candidate, nil
+		} else if err != nil {
+			return "", fmt.Errorf("stat rollback quarantine: %w", err)
+		}
+	}
+	return "", fmt.Errorf("allocate rollback quarantine path")
+}
+
+func restoreSeparatedRollbackQuarantine(quarantineRoot, targetRoot, targetLabel string, cause error) error {
+	if err := fsutil.RenameNoReplaceAndSync(quarantineRoot, targetRoot); err != nil {
+		return fmt.Errorf("%w; preserve changed target %s: %v", cause, targetLabel, err)
+	}
+	return cause
+}
+
+func separatedPublishedRootPublicLabel(role string) string {
+	if role == "payload" {
+		return "folder"
+	}
+	return role + " root"
 }
 
 func restoreEmptySeparatedTargetRoot(targetRoot, role string) error {
@@ -1119,6 +1308,67 @@ func restoreEmptySeparatedTargetRoot(targetRoot, role string) error {
 		return fmt.Errorf("restore empty target %s root: %w", role, err)
 	}
 	return fsutil.FsyncDir(filepath.Dir(targetRoot))
+}
+
+func separatedCloneRootEvidence(root string) (string, error) {
+	hash := sha256.New()
+	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return fmt.Errorf("relative path: %w", err)
+		}
+		rel = filepath.ToSlash(rel)
+		info, err := entry.Info()
+		if err != nil {
+			return fmt.Errorf("stat %s: %w", rel, err)
+		}
+		mode := info.Mode()
+		switch {
+		case mode.IsDir():
+			fmt.Fprintf(hash, "dir\x00%s\x00%o\x00", rel, mode.Perm())
+		case mode&os.ModeSymlink != 0:
+			target, err := os.Readlink(path)
+			if err != nil {
+				return fmt.Errorf("readlink %s: %w", rel, err)
+			}
+			fmt.Fprintf(hash, "symlink\x00%s\x00%o\x00%s\x00", rel, mode.Perm(), target)
+		case mode.IsRegular():
+			fmt.Fprintf(hash, "file\x00%s\x00%o\x00%d\x00", rel, mode.Perm(), info.Size())
+			if err := writeRegularFileEvidence(hash, path, rel, info); err != nil {
+				return err
+			}
+			hash.Write([]byte{0})
+		default:
+			fmt.Fprintf(hash, "other\x00%s\x00%o\x00%d\x00", rel, mode, info.Size())
+		}
+		return nil
+	}); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func writeRegularFileEvidence(dst io.Writer, path, rel string, expected os.FileInfo) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", rel, err)
+	}
+	defer file.Close()
+
+	current, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat opened file %s: %w", rel, err)
+	}
+	if !os.SameFile(expected, current) {
+		return fmt.Errorf("file changed while reading evidence: %s", rel)
+	}
+	if _, err := io.Copy(dst, file); err != nil {
+		return fmt.Errorf("read %s: %w", rel, err)
+	}
+	return nil
 }
 
 func atomicPublishBlockedError(err error) error {
@@ -1440,7 +1690,7 @@ func checkSeparatedDoctorStrict(controlRoot string) error {
 			return fmt.Errorf("%s: %s", check.Name, check.Message)
 		}
 	}
-	return fmt.Errorf("separated repository is unhealthy")
+	return fmt.Errorf("external control root repository is unhealthy")
 }
 
 func workspaceDirty(repoRoot, workspaceName string) (bool, error) {

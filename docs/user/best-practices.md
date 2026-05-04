@@ -16,8 +16,14 @@ Placeholders in the examples mean:
 | Placeholder | Meaning |
 | --- | --- |
 | `<save>` | A save point ID from `jvs save` or `jvs history` |
+| `<target-folder>` | The new folder path you want JVS to create |
 | `<restore-plan-id>` | The plan ID from the restore preview you just reviewed |
+| `<workspace-move-plan-id>` | The plan ID from the workspace move preview you just reviewed |
 | `<workspace-delete-plan-id>` | The plan ID from the workspace delete preview you just reviewed |
+| `<repo-move-plan-id>` | The plan ID from the repo move preview you just reviewed |
+| `<repo-rename-plan-id>` | The plan ID from the repo rename preview you just reviewed |
+| `<repo-detach-plan-id>` | The plan ID from the repo detach preview you just reviewed |
+| `<recovery-plan>` | The recovery plan name printed by `jvs recovery status` |
 | `<cleanup-plan-id>` | The plan ID from the cleanup preview you just reviewed |
 | `<view-path>` | The read-only path printed by `jvs view` |
 | `<view-id>` | The view ID printed by `jvs view` |
@@ -229,24 +235,44 @@ Choose `--save-first` when you might want today's work later. Choose
 
 ## Keep Preview And Run Together
 
-Restore, workspace deletion, and cleanup are preview-first. The first command
-shows a plan. The second command runs that same plan.
+Restore, workspace move, workspace deletion, repo move, repo rename, repo
+detach, and cleanup are preview-first. The first command shows a plan. The
+second command runs that same plan.
 
 Do not mix plan IDs between operations:
 
 | Preview | Matching run |
 | --- | --- |
 | `jvs restore <save>` | `jvs restore --run <restore-plan-id>` |
+| `jvs workspace move experiment ../experiment-archive` | `jvs workspace move --run <workspace-move-plan-id>` |
 | `jvs workspace delete experiment` | `jvs workspace delete --run <workspace-delete-plan-id>` |
+| `jvs repo move ../project-on-ssd` | `jvs repo move --run <repo-move-plan-id>` |
+| `jvs repo rename project-review` | `jvs repo rename --run <repo-rename-plan-id>` |
+| `jvs repo detach` | `jvs repo detach --run <repo-detach-plan-id>` |
 | `jvs cleanup preview` | `jvs cleanup run --plan-id <cleanup-plan-id>` |
 
 Use the `Run:` line printed by the preview you just reviewed. If you preview
 again, use the newer plan ID.
 
+`jvs repo clone <target-folder> --dry-run` is also a review step, but it is not a
+plan you run by ID. It checks the clone without creating the target folder. Run
+`jvs repo clone <target-folder>` only when you are ready for JVS to create a new
+local project folder.
+
+`jvs workspace new <folder> --from <save>` creates a new real folder, and
+`jvs workspace rename <old> <new>` changes the JVS workspace name immediately.
+Check the target folder or name before pressing Enter.
+
+When a restore was interrupted, start with `jvs recovery status`.
+`jvs recovery resume <recovery-plan>` and
+`jvs recovery rollback <recovery-plan>` may change files while finishing or
+rolling back that interrupted restore.
+
 What to check before running:
 
 - the folder path is the folder you intended
 - the workspace name is the workspace you intended
+- the project folder is the project you intended
 - the save point or cleanup storage matches your goal
 - the listed file impact is acceptable
 

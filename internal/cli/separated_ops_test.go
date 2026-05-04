@@ -321,6 +321,9 @@ func TestSeparatedControlSaveAndCleanupBlockCorruptRestorePlan(t *testing.T) {
 			env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrRecoveryBlocking.Code)
 			assert.Contains(t, env.Error.Message, "restore plans")
 			assert.Contains(t, env.Error.Message, "not valid JSON")
+			assert.Contains(t, env.Error.Message, "external control root")
+			assert.NotContains(t, env.Error.Message, "separated")
+			assert.NotContains(t, env.Error.Message, "payload")
 		})
 	}
 }

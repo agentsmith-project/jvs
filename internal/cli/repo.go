@@ -245,10 +245,10 @@ func validateRepoCloneArgs(cmd *cobra.Command, args []string) error {
 			return errclass.ErrUsage.WithMessage("repo clone accepts exactly one target folder")
 		}
 		if strings.TrimSpace(repoCloneTargetControlRoot) == "" {
-			return errclass.ErrUsage.WithMessage("--target-payload-root requires --target-control-root")
+			return errclass.ErrUsage.WithMessage("external-control clone requires --target-control-root")
 		}
 		if len(args) == 1 && strings.TrimSpace(repoCloneTargetPayloadRoot) != "" {
-			return errclass.ErrUsage.WithMessage("repo clone target folder cannot be combined with --target-payload-root")
+			return errclass.ErrUsage.WithMessage("repo clone target folder cannot be combined with the compatibility target folder alias")
 		}
 		if len(args) == 0 && strings.TrimSpace(repoCloneTargetPayloadRoot) == "" {
 			return errclass.ErrUsage.WithMessage("repo clone with --target-control-root requires a target folder")
@@ -324,7 +324,7 @@ func rejectSeparatedLifecycleRunTarget(command string) error {
 }
 
 func separatedLifecycleUnsupportedError(command string) error {
-	return errclass.ErrSeparatedLifecycleUnsupported.
+	return errclass.ErrExternalLifecycleUnsupported.
 		WithMessagef("%s is not supported when control data is outside the folder yet. No files changed.", command).
 		WithHint("Repo and workspace lifecycle commands are disabled for external control roots until control data and folder lifecycle semantics are redesigned.")
 }

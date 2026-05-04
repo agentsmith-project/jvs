@@ -42,33 +42,71 @@ No. Restore copies files from a save point into the workspace. History
 is kept. A later save creates a new save point in the project history graph, and
 the workspace points at that new save point.
 
-## Which Commands Only Preview?
+## Which Commands Only Read?
+
+These commands are for inspection. They do not edit workspace files or move
+folders:
+
+```bash
+jvs status
+jvs history
+jvs history --path src/config.yaml
+jvs view <save> src/config.yaml
+jvs workspace list
+jvs workspace path [name]
+jvs doctor
+jvs doctor --strict
+```
+
+`jvs view` opens a read-only view path. Use `jvs view close <view-id>` when you
+are finished.
+
+## Which Commands Only Preview Or Check?
 
 These commands are safe review steps:
 
 ```bash
 jvs restore <save>
 jvs restore <save> --path src/config.yaml
+jvs workspace move experiment ../experiment-archive
 jvs workspace delete experiment
+jvs repo clone ../project-copy --dry-run
+jvs repo move ../project-on-ssd
+jvs repo rename project-review
+jvs repo detach
 jvs cleanup preview
 ```
 
 Seeing a plan, `No files were changed`, or a printed `Run:` command means JVS
-has not made the destructive change yet.
+has not made the destructive change yet. Clone dry-run is a check only: it does
+not create the target project folder.
 
-## Which Commands Actually Change Files Or Remove Folders?
+## Which Commands Actually Change Files, Folders, Or Control Data?
 
-These commands run a reviewed plan:
+These commands are the important moments:
 
 ```bash
+jvs init [folder]
+jvs save -m "message"
+jvs workspace new <folder> --from <save>
+jvs workspace rename <old> <new>
+jvs repo clone <target-folder>
 jvs restore --run <restore-plan-id>
+jvs workspace move --run <workspace-move-plan-id>
 jvs workspace delete --run <workspace-delete-plan-id>
+jvs repo move --run <repo-move-plan-id>
+jvs repo rename --run <repo-rename-plan-id>
+jvs repo detach --run <repo-detach-plan-id>
+jvs recovery resume <recovery-plan>
+jvs recovery rollback <recovery-plan>
 jvs cleanup run --plan-id <cleanup-plan-id>
 ```
 
-`restore --run` changes workspace files named by the plan. `workspace delete
---run` deletes the selected workspace folder. `cleanup run` deletes only save
-point storage listed by a cleanup plan.
+`workspace new` and `repo clone` create new folders. `workspace rename` changes
+the JVS workspace name, not the real folder path. Move, delete, rename, detach,
+restore, and cleanup runs should use the plan ID from the preview you just
+reviewed. Recovery resume or rollback may change files while finishing an
+interrupted restore.
 
 ## Why Does Restore Stop When I Have Unsaved Changes?
 

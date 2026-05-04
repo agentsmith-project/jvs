@@ -195,7 +195,7 @@ func validateSeparatedRecoveryStatusPlan(repoRoot string, plan *recovery.Plan, s
 	}
 	if _, err := recovery.RecognizeCurrentState(repoRoot, plan); err != nil {
 		return errclass.ErrRecoveryBlocking.
-			WithMessagef("recovery plan %s current folder evidence does not match the active separated binding: %v", plan.PlanID, recoveryVocabulary(err.Error())).
+			WithMessagef("recovery plan %s current workspace folder evidence does not match the active external control root binding: %v", plan.PlanID, recoveryVocabulary(err.Error())).
 			WithHint(separatedSelectorHint(separated.ControlRoot, separated.Workspace, "recovery status "+plan.PlanID))
 	}
 	return nil
@@ -819,7 +819,7 @@ func firstActiveRecoveryPlan(repoRoot, workspaceName string) (string, error) {
 
 func separatedRecoveryMutationInspectError(separated *repo.SeparatedContext, operation, state string, err error) error {
 	return errclass.ErrRecoveryBlocking.
-		WithMessagef("cannot %s while separated recovery state cannot be inspected: %s: %v", operation, state, recoveryVocabulary(err.Error())).
+		WithMessagef("cannot %s while external control root recovery state cannot be inspected: %s: %v", operation, state, recoveryVocabulary(err.Error())).
 		WithHint(separatedSelectorHint(separated.ControlRoot, separated.Workspace, "doctor --strict --json"))
 }
 
@@ -1032,13 +1032,17 @@ func recoveryError(err error) error {
 	if err == nil {
 		return nil
 	}
-	message := recoveryVocabulary(err.Error())
 	var jvsErr *errclass.JVSError
+	if errors.As(err, &jvsErr) {
+		message := recoveryVocabulary(jvsErr.Message)
+		if strings.TrimSpace(message) == "" {
+			message = recoveryVocabulary(err.Error())
+		}
+		return &errclass.JVSError{Code: jvsErr.Code, Message: message, Hint: recoveryVocabulary(jvsErr.Hint)}
+	}
+	message := recoveryVocabulary(err.Error())
 	if strings.Contains(message, "no files were changed") || strings.Contains(message, "No files were changed") {
 		return fmt.Errorf("%s", message)
-	}
-	if errors.As(err, &jvsErr) {
-		return &errclass.JVSError{Code: jvsErr.Code, Message: message, Hint: recoveryVocabulary(jvsErr.Hint)}
 	}
 	return fmt.Errorf("%s", message)
 }

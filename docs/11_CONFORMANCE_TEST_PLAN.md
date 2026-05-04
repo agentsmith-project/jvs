@@ -127,7 +127,7 @@ UX.
   protection is available for external control root clone.
 - Lifecycle currently fail-closed external contract coverage runs
   repo/workspace lifecycle commands against an external control root and
-  requires `E_SEPARATED_LIFECYCLE_UNSUPPORTED` with no file changes.
+  requires `E_EXTERNAL_LIFECYCLE_UNSUPPORTED` with no file changes.
 
 ### Cleanup Layering
 

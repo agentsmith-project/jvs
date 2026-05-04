@@ -467,12 +467,12 @@ func requireSeparatedControlAuthoritativeJSON(t *testing.T, stdout, stderr, cont
 	t.Helper()
 	env := requirePureJSONEnvelope(t, stdout, stderr, true)
 	if env.RepoRoot == nil || *env.RepoRoot != controlRoot {
-		t.Fatalf("separated JSON repo_root = %#v, want %q\n%s", env.RepoRoot, controlRoot, stdout)
+		t.Fatalf("external control root JSON repo_root = %#v, want %q\n%s", env.RepoRoot, controlRoot, stdout)
 	}
 
 	var data map[string]any
 	if err := json.Unmarshal(env.Data, &data); err != nil {
-		t.Fatalf("decode separated JSON data object: %v\n%s", err, stdout)
+		t.Fatalf("decode external control root JSON data object: %v\n%s", err, stdout)
 	}
 	requireSeparatedControlAuthoritativeData(t, data, controlRoot, workspaceFolder, workspace)
 	return data

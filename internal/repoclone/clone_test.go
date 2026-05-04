@@ -515,6 +515,39 @@ func TestSeparatedCloneControlPublishFailureDoesNotRemoveReplacedPayload(t *test
 	assert.NoDirExists(t, filepath.Join(targetControl, ".jvs"))
 }
 
+func TestSeparatedCloneControlPublishFailureRollbackDoesNotRemoveExternallyModifiedPayload(t *testing.T) {
+	sourceControl, sourcePayload := setupSeparatedCloneSourceRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("main v1"), 0644))
+	_ = createCloneSavePoint(t, sourceControl, "main", "main baseline")
+
+	targetBase := t.TempDir()
+	targetControl := filepath.Join(targetBase, "target-control")
+	targetPayload := filepath.Join(targetBase, "target-payload")
+	_, err := repoclone.Clone(repoclone.Options{
+		SourceRepoRoot:    sourceControl,
+		TargetControlRoot: targetControl,
+		TargetPayloadRoot: targetPayload,
+		SavePointsMode:    repoclone.SavePointsModeMain,
+		RequestedEngine:   model.EngineCopy,
+		Hooks: repoclone.Hooks{
+			AfterSeparatedPayloadPublish: func(publishedPayloadRoot, targetPayloadRoot string) error {
+				require.Equal(t, targetPayload, targetPayloadRoot)
+				require.DirExists(t, publishedPayloadRoot)
+				require.NoError(t, os.WriteFile(filepath.Join(targetPayload, "external.txt"), []byte("external write"), 0644))
+				require.NoError(t, os.MkdirAll(targetControl, 0755))
+				return os.WriteFile(filepath.Join(targetControl, "block-control-publish.txt"), []byte("block"), 0644)
+			},
+		},
+	})
+
+	assertJVSErrorCode(t, err, errclass.ErrAtomicPublishBlocked.Code)
+	assert.ErrorContains(t, err, "rollback target folder")
+	assert.ErrorContains(t, err, "target folder changed after publish; refusing to remove")
+	assertFileContent(t, filepath.Join(targetPayload, "external.txt"), "external write")
+	assertFileContent(t, filepath.Join(targetPayload, "app.txt"), "main v1")
+	assert.NoDirExists(t, filepath.Join(targetControl, ".jvs"))
+}
+
 func TestSeparatedCloneMaterializesMainFromSavedStateWhenSourceMutatesAfterPrepare(t *testing.T) {
 	sourceControl, sourcePayload := setupSeparatedCloneSourceRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("saved state"), 0644))

@@ -88,13 +88,13 @@ Advanced platform workflows can place control data outside the folder with
 
 func runSeparatedInit(args []string) error {
 	if len(args) > 0 && strings.TrimSpace(initPayloadRoot) != "" {
-		return errclass.ErrUsage.WithMessage("init folder cannot be combined with --payload-root")
+		return errclass.ErrUsage.WithMessage("init accepts one workspace folder; provide it either as the folder argument or via the compatibility alias, not both")
 	}
 	if targetRepoPath != "" {
 		return errclass.ErrUsage.WithMessage("--control-root cannot be combined with --repo")
 	}
 	if targetControlRoot == "" {
-		return errclass.ErrUsage.WithMessage("--payload-root requires --control-root")
+		return errclass.ErrUsage.WithMessage("external-control init requires --control-root")
 	}
 
 	folder := "."
@@ -161,7 +161,7 @@ func runSeparatedInit(args []string) error {
 	for _, warning := range capabilities.Warnings {
 		fmt.Printf("Warning: %s\n", warning)
 	}
-	fmt.Println("Next: jvs --control-root " + ctx.ControlRoot + " --workspace " + ctx.Workspace + " save -m \"baseline\"")
+	fmt.Println("Next: jvs --control-root " + cleanHintPath(ctx.ControlRoot) + " --workspace " + ctx.Workspace + " save -m \"baseline\"")
 	return nil
 }
 

@@ -337,9 +337,9 @@ func cleanHintPath(path string) string {
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return filepath.Clean(path)
+		return shellQuoteArg(filepath.Clean(path))
 	}
-	return filepath.Clean(abs)
+	return shellQuoteArg(filepath.Clean(abs))
 }
 
 func canonicalizeRepoRoot(r *repo.Repo) error {

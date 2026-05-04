@@ -48,7 +48,7 @@ func TestStorySeparatedOpsPayloadBoundaryAndAuthoritativeJSON(t *testing.T) {
 		"--workspace", "main",
 		"workspace", "new", newWorkspaceTarget, "--from", first, "--name", "feature",
 	)
-	requireSeparatedControlJSONError(t, stdout, stderr, code, "E_SEPARATED_LIFECYCLE_UNSUPPORTED")
+	requireSeparatedControlJSONError(t, stdout, stderr, code, "E_EXTERNAL_LIFECYCLE_UNSUPPORTED")
 	requireAbsolutePathMissing(t, newWorkspaceTarget)
 
 	view := separatedJSON(t, base, controlRoot, "main", "view", first)
@@ -202,7 +202,7 @@ func TestStorySeparatedOpsLifecycleCommandsFailClosedWithoutMutatingRoots(t *tes
 
 			stdout, stderr, code := runJVS(t, base, tc.args(base, controlRoot, payloadRoot, savePointID)...)
 
-			env := requireSeparatedControlJSONError(t, stdout, stderr, code, "E_SEPARATED_LIFECYCLE_UNSUPPORTED")
+			env := requireSeparatedControlJSONError(t, stdout, stderr, code, "E_EXTERNAL_LIFECYCLE_UNSUPPORTED")
 			if env.RepoRoot == nil || *env.RepoRoot != controlRoot {
 				t.Fatalf("unsupported lifecycle repo_root = %#v, want %q\n%s", env.RepoRoot, controlRoot, stdout)
 			}

@@ -343,14 +343,29 @@ clone 必须按 atomic publish 设计。
 - 如果最终目标在发布前被别人创建，clone 失败，不覆盖。
 - `<target-folder>` 必须位于 source project/workspaces 外部，否则无法保证 source unchanged。
 - 失败时 source unchanged。
-- 失败时 final target 不应是可识别半成品 repo。
-- staging cleanup 失败也不能让 final target 看起来像成功 repo；下次重试应能清楚处理遗留 staging。
+- 失败时 target 不得成为 active JVS repo。
+- 如果 rollback 不能安全移除已发布的 target folder 或 target control data root，
+  target folder or target control data root may remain at the target path or be
+  moved to a hidden quarantine；in either case, inspect/remove manually，避免误删
+  晚到外部写入。
+- 只有 move to quarantine 成功后，才提示
+  `target folder was quarantined at ...; inspect and remove it manually` 或
+  `target control root was quarantined at ...; inspect and remove it manually`。
+- preexisting empty target dir 应恢复为空目录。
+- staging 或 quarantine cleanup 失败也不能让 final target 看起来像成功 repo；
+  下次重试应能清楚处理遗留 staging/quarantine。
 
 错误恢复心智：
 
 ```text
-Clone failed before publish. Source was not changed. Target was not created.
-You can fix the problem and run the command again.
+Clone failed. Source was not changed. Target is not an active JVS repo.
+If rollback could not safely remove the target folder or target control data
+root, the target folder or target control data root may remain at the target
+path or be moved to a hidden quarantine; in either case, inspect/remove
+manually.
+If a target path was moved to quarantine:
+target folder was quarantined at ...; inspect and remove it manually.
+target control root was quarantined at ...; inspect and remove it manually.
 ```
 
 ## Safety And Error 文案
@@ -578,7 +593,7 @@ target folder/control data，也不生成真实 target repo identity。Dry-run J
 | Transfer JSON | `--json` 成功 | `data.transfers[]` 至少含 save point storage copy 和 main workspace materialization，`operation=repo_clone` |
 | Human copy method | fast/normal/fallback fake 场景 | human 显示 `Copy method: fast copy` 或 `normal copy`，必要时显示 `Why` |
 | Capacity fallback | fast candidate 但 normal fallback 空间不足 | 写入前失败；目标不发布 |
-| Atomic publish failure | staging 后 final target 被创建 | no-replace rename 失败；source unchanged；final target 不是半成品 repo |
+| Atomic publish failure | staging 后 final target 被创建，或 target folder publish 后 control publish 失败 | source unchanged；target 不是 active JVS repo；无法安全移除 target folder 或 target control data root 时，target folder or target control data root may remain at the target path or be moved to a hidden quarantine；in either case, inspect/remove manually；只有 moved to quarantine 后才提示 `target folder was quarantined at ...; inspect and remove it manually` 或 `target control root was quarantined at ...; inspect and remove it manually` |
 | Imported protection | `--save-points all` 后 cleanup preview | imported save points 被 durable reason 保护 |
 | Missing protection blocks all | build 未实现 imported protection | `--save-points all` 失败，提示用 `--save-points main` 或升级 |
 | Cleanup revalidation | all clone 后 protection 变化 | cleanup run 失败并要求 fresh preview |

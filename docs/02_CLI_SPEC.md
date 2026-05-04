@@ -96,8 +96,8 @@ second product model.
   `Control data: C`, while `Folder` remains the workspace folder.
 - JSON `status` uses `data.control_root` and omits `data.repo` for external
   control roots. Ordinary `.jvs/` status keeps `data.repo`.
-- The folder argument is the workspace folder; legacy split-root flags are not
-  the primary entry for this workflow.
+- The folder argument is the workspace folder; `--control-root C --workspace
+  main` is the explicit selector for this workflow.
 - `--repo` is not an external control root selector; it remains an advanced
   target assertion for ordinary project paths.
 - External control root doctor supports `doctor --strict --json` only, for
@@ -200,6 +200,14 @@ Rules:
   clone history metadata for cleanup protection.
 - `--save-points main` copies the source `main` history/provenance closure.
 - `--dry-run` plans only; it must not create the target or write probe files.
+- On failure, the source project is unchanged and the target must not be an
+  active JVS repo. If rollback cannot safely remove a published target folder or
+  target control data root, the target folder or target control data root may
+  remain at the target path or be moved to a hidden quarantine; in either case,
+  inspect/remove manually. If a path is moved to quarantine, JVS tells the user
+  `target folder was quarantined at ...; inspect and remove it manually` or
+  `target control root was quarantined at ...; inspect and remove it manually`.
+  Preexisting empty target directories are restored to empty when possible.
 
 Human output must show:
 

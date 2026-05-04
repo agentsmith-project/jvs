@@ -25,7 +25,7 @@ func TestSeparatedControlStableCodes(t *testing.T) {
 		"E_SOURCE_DIRTY":                        errclass.ErrSourceDirty,
 		"E_ATOMIC_PUBLISH_BLOCKED":              errclass.ErrAtomicPublishBlocked,
 		"E_IMPORTED_HISTORY_PROTECTION_MISSING": errclass.ErrImportedHistoryProtectionMissing,
-		"E_SEPARATED_LIFECYCLE_UNSUPPORTED":     errclass.ErrSeparatedLifecycleUnsupported,
+		"E_EXTERNAL_LIFECYCLE_UNSUPPORTED":      errclass.ErrExternalLifecycleUnsupported,
 		"E_ACTIVE_OPERATION_BLOCKING":           errclass.ErrActiveOperationBlocking,
 		"E_RECOVERY_BLOCKING":                   errclass.ErrRecoveryBlocking,
 	}

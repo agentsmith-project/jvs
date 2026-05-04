@@ -351,6 +351,13 @@ Behavior:
   including earlier save points that history depends on.
 - `--dry-run` checks what would happen and prints the plan, but does not create
   the target folder or any files.
+- If clone fails, the source project is unchanged and the target is not an
+  active JVS repo. If JVS cannot safely remove a published target folder or
+  target control data root, the target folder or target control data root may
+  remain at the target path or be moved to a hidden quarantine; in either case,
+  inspect/remove manually. If it moves a path to quarantine, it prints
+  `target folder was quarantined at ...; inspect and remove it manually` or
+  `target control root was quarantined at ...; inspect and remove it manually`.
 
 External control root clone has a different target-shape rule: the target
 workspace folder and target control root may be missing or empty, but non-empty

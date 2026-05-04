@@ -175,6 +175,26 @@ func TestSeparatedControlInitHumanUsesFolderAndControlDataLanguage(t *testing.T)
 	assert.NotContains(t, stdout, "Control root")
 }
 
+func TestSeparatedControlInitHumanNextCommandQuotesControlRootSelector(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	emptyBin := filepath.Join(base, "empty-bin")
+	require.NoError(t, os.Mkdir(emptyBin, 0755))
+	t.Setenv("PATH", emptyBin)
+	controlRoot := filepath.Join(base, "control root's; qa")
+	folder := filepath.Join(base, "workspace folder's; qa")
+
+	stdout, err := executeCommand(createTestRootCmd(),
+		"init",
+		folder,
+		"--control-root", controlRoot,
+		"--workspace", "main",
+	)
+	require.NoError(t, err, stdout)
+
+	assert.Contains(t, stdout, "Next: jvs --control-root "+shellQuoteArg(controlRoot)+" --workspace main save -m \"baseline\"")
+	assert.NotContains(t, stdout, "--control-root "+controlRoot+" --workspace")
+}
+
 func TestSeparatedControlInitWithoutFolderUsesCurrentDirectory(t *testing.T) {
 	base := setupSeparatedControlCLICWD(t)
 	controlRoot := filepath.Join(t.TempDir(), "control")
@@ -340,6 +360,23 @@ func TestSeparatedControlMissingWorkspaceHintIncludesFullSelectorShape(t *testin
 	assertSeparatedSelectorHint(t, env, controlRoot, "status")
 }
 
+func TestSeparatedControlMissingWorkspaceHintQuotesControlRootSelector(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control root's; qa")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+
+	stdout, stderr, exitCode := runContractSubprocess(t, base,
+		"--json",
+		"--control-root", controlRoot,
+		"status",
+	)
+
+	env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrExplicitTargetRequired.Code)
+	assertSeparatedSelectorHint(t, env, controlRoot, "status")
+	assert.NotContains(t, env.Error.Hint, "--control-root "+controlRoot+" --workspace")
+}
+
 func TestSeparatedControlRuntimeSelectorRejectsNonMainWorkspace(t *testing.T) {
 	base := setupSeparatedControlCLICWD(t)
 	controlRoot := filepath.Join(base, "control")
@@ -492,10 +529,40 @@ func TestSeparatedControlRecoveryStatusRejectsPlanPayloadBindingDrift(t *testing
 
 			env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrPathBoundaryEscape.Code)
 			assert.NotContains(t, env.Error.Message, "payload root")
+			assert.NotContains(t, env.Error.Message, "separated")
 			assert.Contains(t, env.Error.Message, "workspace folder")
 			assert.Contains(t, env.Error.Message, "control data")
 		})
 	}
+}
+
+func TestSeparatedControlRecoveryStatusEvidenceMismatchUsesPublicWords(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+	seedSeparatedControlRecoveryPlanFixture(t, base, controlRoot, payloadRoot)
+	manager := recovery.NewManager(controlRoot)
+	plan, err := manager.Load("RP-separated-active")
+	require.NoError(t, err)
+	plan.PlanID = "RP-external-active"
+	plan.RecoveryEvidence = "stale-folder-evidence"
+	plan.Backup.Path = payloadRoot + ".restore-backup-stale"
+	plan.RecommendedNextCommand = "jvs recovery status RP-external-active"
+	require.NoError(t, manager.Write(plan))
+
+	stdout, stderr, exitCode := runContractSubprocess(t, base,
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"recovery", "status", "RP-external-active",
+	)
+
+	env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrRecoveryBlocking.Code)
+	assert.Contains(t, env.Error.Message, "external control root")
+	assert.Contains(t, env.Error.Message, "workspace folder")
+	assert.NotContains(t, env.Error.Message, "separated")
+	assert.NotContains(t, env.Error.Message, "payload")
 }
 
 func TestSeparatedControlInitJSONRejectsHiddenPayloadAliasMisuse(t *testing.T) {
@@ -522,6 +589,8 @@ func TestSeparatedControlInitJSONRejectsHiddenPayloadAliasMisuse(t *testing.T) {
 			assert.False(t, env.OK)
 			require.NotNil(t, env.Error)
 			assert.Equal(t, "E_USAGE", env.Error.Code)
+			assert.NotContains(t, env.Error.Message, "payload")
+			assert.NotContains(t, env.Error.Message, "separated")
 			assert.JSONEq(t, `null`, string(env.Data))
 		})
 	}
@@ -942,7 +1011,7 @@ func requireSeparatedControlCLIJSONError(t *testing.T, stdout, stderr string, ex
 	env := decodeContractEnvelope(t, stdout)
 	assert.False(t, env.OK, stdout)
 	require.NotNil(t, env.Error)
-	assert.Equal(t, wantCode, env.Error.Code)
+	assert.Equal(t, wantCode, env.Error.Code, "message=%s hint=%s", env.Error.Message, env.Error.Hint)
 	assert.JSONEq(t, `null`, string(env.Data))
 	return env
 }
@@ -950,7 +1019,7 @@ func requireSeparatedControlCLIJSONError(t *testing.T, stdout, stderr string, ex
 func assertSeparatedSelectorHint(t *testing.T, env contractEnvelope, controlRoot, command string) {
 	t.Helper()
 	require.NotNil(t, env.Error)
-	assert.Contains(t, env.Error.Hint, "--control-root "+controlRoot)
+	assert.Contains(t, env.Error.Hint, "--control-root "+shellQuoteArg(controlRoot))
 	assert.Contains(t, env.Error.Hint, "--workspace main")
 	assert.Contains(t, env.Error.Hint, command)
 }

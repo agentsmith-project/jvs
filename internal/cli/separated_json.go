@@ -76,14 +76,14 @@ func jsonObjectMap(data any) (map[string]any, error) {
 	default:
 		raw, err := json.Marshal(data)
 		if err != nil {
-			return nil, fmt.Errorf("encode separated JSON data: %w", err)
+			return nil, fmt.Errorf("encode external control root JSON data: %w", err)
 		}
 		var out map[string]any
 		if err := json.Unmarshal(raw, &out); err != nil {
-			return nil, fmt.Errorf("decode separated JSON data object: %w", err)
+			return nil, fmt.Errorf("decode external control root JSON data object: %w", err)
 		}
 		if out == nil {
-			return nil, fmt.Errorf("separated JSON data must be an object")
+			return nil, fmt.Errorf("external control root JSON data must be an object")
 		}
 		return out, nil
 	}
