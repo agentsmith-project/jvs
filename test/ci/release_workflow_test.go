@@ -110,7 +110,7 @@ func TestReleaseGateRunsReleaseBinarySmokeAgainstReleaseArtifact(t *testing.T) {
 		`JVS_BINARY_UNDER_TEST="$(CURDIR)/bin/jvs-linux-amd64"`,
 		"go test -tags conformance",
 		"-count=1",
-		"-run '^TestStorySeparatedRestore'",
+		"-run '^TestStorySeparated(Restore|Clone)'",
 		"./test/conformance/...",
 	} {
 		if !commandsContain(smokeCommands, want) {

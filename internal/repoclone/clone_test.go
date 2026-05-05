@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -750,6 +751,84 @@ func TestSeparatedCloneSourceCleanSavePointDriftBeforePublishFailsSourceDirty(t 
 	assert.NoDirExists(t, filepath.Join(targetControl, ".jvs"))
 }
 
+func TestSeparatedCloneRejectsSourceStateIntroducedBeforePublish(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(t *testing.T, controlRoot, payloadRoot string, source model.SnapshotID)
+		code   string
+		want   string
+	}{
+		{
+			name: "cleanup plan",
+			mutate: func(t *testing.T, controlRoot, payloadRoot string, source model.SnapshotID) {
+				t.Helper()
+				require.NoError(t, os.WriteFile(filepath.Join(controlRoot, ".jvs", "gc", "cleanup-plan.json"), []byte("{}\n"), 0644))
+			},
+			code: errclass.ErrActiveOperationBlocking.Code,
+			want: "source cleanup plan cleanup-plan.json is pending",
+		},
+		{
+			name: "active recovery",
+			mutate: func(t *testing.T, controlRoot, payloadRoot string, source model.SnapshotID) {
+				t.Helper()
+				writeSeparatedCloneActiveRecovery(t, controlRoot, payloadRoot, source)
+			},
+			code: errclass.ErrRecoveryBlocking.Code,
+			want: "source recovery plan RP-before-publish is active",
+		},
+		{
+			name: "malformed restore plan",
+			mutate: func(t *testing.T, controlRoot, payloadRoot string, source model.SnapshotID) {
+				t.Helper()
+				require.NoError(t, os.WriteFile(filepath.Join(controlRoot, ".jvs", "restore-plans", "corrupt-pending.json"), []byte("{not-json\n"), 0644))
+			},
+			code: errclass.ErrRecoveryBlocking.Code,
+			want: "restore plan corrupt-pending",
+		},
+		{
+			name: "malformed recovery plan",
+			mutate: func(t *testing.T, controlRoot, payloadRoot string, source model.SnapshotID) {
+				t.Helper()
+				require.NoError(t, os.WriteFile(filepath.Join(controlRoot, ".jvs", "recovery-plans", "RP-corrupt.json"), []byte("{not-json\n"), 0644))
+			},
+			code: errclass.ErrRecoveryBlocking.Code,
+			want: "recovery state cannot be inspected safely",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sourceControl, sourcePayload := setupSeparatedCloneSourceRepo(t)
+			require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("main v1"), 0644))
+			baseline := createCloneSavePoint(t, sourceControl, "main", "main baseline")
+
+			targetBase := t.TempDir()
+			targetControl := filepath.Join(targetBase, "target-control")
+			targetPayload := filepath.Join(targetBase, "target-payload")
+			_, err := repoclone.Clone(repoclone.Options{
+				SourceRepoRoot:    sourceControl,
+				TargetControlRoot: targetControl,
+				TargetPayloadRoot: targetPayload,
+				SavePointsMode:    repoclone.SavePointsModeMain,
+				RequestedEngine:   model.EngineCopy,
+				Hooks: repoclone.Hooks{
+					BeforePublish: func(stagingRoot, targetRoot string) error {
+						require.DirExists(t, stagingRoot)
+						require.Equal(t, targetControl, targetRoot)
+						tc.mutate(t, sourceControl, sourcePayload, baseline)
+						return nil
+					},
+				},
+			})
+
+			assertJVSErrorCode(t, err, tc.code)
+			assert.Contains(t, strings.ToLower(err.Error()), strings.ToLower(tc.want))
+			assert.NotContains(t, err.Error(), ".jvs/restore-plans")
+			assert.NotContains(t, err.Error(), ".jvs/recovery-plans")
+			assert.NoFileExists(t, filepath.Join(targetPayload, "app.txt"))
+			assert.NoDirExists(t, filepath.Join(targetControl, ".jvs"))
+		})
+	}
+}
+
 func TestCloneMainCreatesNewRepoWithOnlyMainWorkspaceAndMaterializedRoot(t *testing.T) {
 	source := setupCloneSourceRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(source, "app.txt"), []byte("main v1"), 0644))
@@ -1292,6 +1371,32 @@ func writeSeparatedCloneResolvedRecovery(t *testing.T, controlRoot string, resto
 		RecommendedNextCommand: "jvs recovery status RP-" + restorePlan.PlanID,
 	}
 	require.NoError(t, recovery.NewManager(controlRoot).Write(resolved))
+}
+
+func writeSeparatedCloneActiveRecovery(t *testing.T, controlRoot, payloadRoot string, source model.SnapshotID) {
+	t.Helper()
+
+	r, err := repo.OpenControlRoot(controlRoot)
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	active := &recovery.Plan{
+		SchemaVersion:          recovery.SchemaVersion,
+		RepoID:                 r.RepoID,
+		PlanID:                 "RP-before-publish",
+		Status:                 recovery.StatusActive,
+		Operation:              recovery.OperationRestore,
+		RestorePlanID:          "restore-preview",
+		Workspace:              "main",
+		Folder:                 payloadRoot,
+		SourceSavePoint:        source,
+		CreatedAt:              now,
+		UpdatedAt:              now,
+		PreWorktreeState:       recovery.WorktreeState{Name: "main", RealPath: payloadRoot},
+		Backup:                 recovery.Backup{Path: filepath.Join(filepath.Dir(payloadRoot), "restore-backup"), Scope: recovery.BackupScopeWhole, State: recovery.BackupStatePending},
+		Phase:                  recovery.PhasePending,
+		RecommendedNextCommand: "jvs recovery status RP-before-publish",
+	}
+	require.NoError(t, recovery.NewManager(controlRoot).Write(active))
 }
 
 func cloneSeparatedSourceForError(t *testing.T, sourceControl string) error {

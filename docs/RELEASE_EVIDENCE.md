@@ -28,6 +28,169 @@ Evidence classes:
 
 Raw logs and `coverage.out` are not stored here.
 
+## v0.4.8 - 2026-05-05
+
+### Release identity
+
+- Evidence class: GA candidate readiness
+- Candidate target tag: `v0.4.8`
+- Candidate state: not final, not tagged, and not published; this entry is
+  pending final tag creation and publication through the normal CI release
+  flow.
+- Changelog heading date: `2026-05-05`
+- Release identity: main-branch GA candidate readiness for the next published
+  save point public-contract release after `v0.4.7`.
+- Baseline: external control root restore-run stable closed loop, recovery
+  status/doctor/clone state interpretation consistency, global malformed guard
+  for recovery resume and rollback, separated clone source recovery recheck
+  before target publication, malformed external restore state user story E2E,
+  and release-binary-smoke coverage for restore and clone stories.
+- Source archive boundary: no immutable `v0.4.8` tag source archive exists yet.
+  When the pending final tag is created, the source archive will be the
+  immutable source archive and will record readiness from tag time.
+- publication final evidence: pending. The future GitHub Release page and
+  post-release main ledger will record workflow run, release state, artifacts,
+  checksum validation, signing identity, smoke, and coverage facts after the
+  release exists.
+- Candidate release URL target:
+  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.8`
+- Scope: release readiness for external control root restore-run completion
+  leaving recovery status clear and doctor strict healthy; recovery status,
+  doctor, and clone sharing the same recovery state interpretation; recovery
+  resume and rollback stopping behind a global malformed guard; separated clone
+  revalidating source recovery before target publication; malformed external
+  restore state user story E2E for status, doctor, and clone; and
+  release-binary-smoke running restore and clone stories from the release-built
+  Linux artifact.
+
+### Release gate summary
+
+Candidate release gate command:
+`env -u NO_COLOR CI=true GITHUB_ACTIONS=true TERM=xterm-256color make release-gate`
+
+The table records required checks for the pending final tag. This candidate
+entry records readiness expectations only; final results are intentionally left
+to CI and the post-release evidence ledger.
+
+| Check | Command or target | Candidate readiness evidence |
+| --- | --- | --- |
+| Release gate | `make release-gate` | Required before final publication; pending final run |
+| Story e2e gate | `make story-e2e` plus `TestStoryE2EGate_CoversRegularUserStories` | Candidate user-story aggregation coverage; pending final conformance run |
+| Docs contract | `make docs-contract` | Required by release-gate suite; pending final run |
+| CI contract | `make ci-contract` | Required by release-gate suite; pending final run |
+| Race tests | `make test-race` | Required by release-gate suite; pending final run |
+| Coverage | `make test-cover` | Required with threshold enforcement; pending final run |
+| Lint | `make lint` | Required by release-gate suite; pending final run |
+| Build | `make build` | Required by release-gate suite; pending final run |
+| Release cross-build | `make release-build` | Required before artifact publication; pending final run |
+| Release binary smoke | `make release-binary-smoke` using `^TestStorySeparated(Restore|Clone)` | Candidate restore and clone stories against the release-built artifact; pending final run |
+| Conformance | `make conformance` | Required by release-gate suite; pending final run |
+| Library facade | `make library` | Required by release-gate suite; pending final run |
+| Regression | `make regression` | Required by release-gate suite; pending final run |
+| Fuzz ordinary tests | `make fuzz-tests` | Required by release-gate suite; pending final run |
+| Fuzz smoke | `make fuzz` | Required by release-gate suite; pending final run |
+
+### Coverage
+
+- Coverage total: pending final `make test-cover` evidence.
+- Coverage threshold: `60.0%`
+- Evidence command: `make test-cover`
+- Evidence source: pending final `make release-gate` output.
+
+### Representative repo evidence
+
+- Representative repo evidence source: pending final `make release-gate`,
+  including conformance and regression targets.
+- Representative repo readiness: release-gate coverage is expected to cover
+  save point history, strict doctor, integrity checks, restore preview/run and
+  recovery behavior, runtime repair path, external control root restore-run
+  stable closed loop, recovery status/doctor/clone state interpretation,
+  recovery resume and rollback malformed guards, separated clone source
+  recovery recheck before target publication, malformed external restore state
+  user story E2E, and release-binary smoke restore and clone stories before
+  publication.
+- External control root restore-run readiness:
+  `TestStorySeparatedRestoreRunStableStateDoctorStrictAndClone` is expected to
+  cover restore preview/run through a stable closed loop where recovery status
+  clears, source doctor strict reports healthy, and separated clone can proceed
+  from the restored source.
+- Recovery status, doctor, and clone consistency readiness:
+  `TestStorySeparatedRestoreStalePreviewRecoveryCommandCleanupAndCloneConsistency`
+  is expected to cover stale restore state reporting, doctor strict unhealthy
+  evidence, clone blocking with the same recommended cleanup command, cleanup
+  through the published command, and successful clone after cleanup.
+- Malformed external restore state user story E2E readiness:
+  `TestStorySeparatedRestoreMalformedStateBlocksRecoveryDoctorAndCloneWithoutControlPlaneLeak`
+  is expected to cover recovery status failing closed, doctor strict reporting
+  the recovery_state check, clone blocking, clean-CWD selector hints, and public
+  error text for malformed external restore state.
+- Resume/rollback malformed guard readiness:
+  `TestSeparatedRecoveryResumeRollbackRejectMalformedGlobalStateBeforeMutation`
+  is expected to cover `jvs recovery resume` and `jvs recovery rollback`
+  rejecting malformed restore or recovery state before mutation and pointing to
+  `doctor --strict --json`.
+- Separated clone source recovery recheck readiness:
+  `TestSeparatedCloneRejectsSourceStateIntroducedBeforePublish` is expected to
+  cover separated clone revalidating source recovery before target publication
+  and blocking if active or malformed source recovery appears after staging.
+- Release binary smoke readiness: `make release-binary-smoke` is expected to
+  run `^TestStorySeparated(Restore|Clone)` with `JVS_BINARY_UNDER_TEST`
+  pointing at the release-built Linux artifact, so restore and clone stories
+  exercise the binary that would be published.
+- Doctor command: `jvs doctor --strict`
+- Migration repair command for copied repos:
+  `jvs doctor --strict --repair-runtime`
+- Restore drill, lifecycle recovery drill, runtime repair evidence,
+  malformed-state guard coverage, separated clone source recovery recheck,
+  story-e2e gate coverage, and release-binary restore/clone smoke: pending
+  final release-gate conformance, regression, and release-binary-smoke
+  coverage.
+
+### GA docs evidence
+
+- GA docs readiness scope: `docs/99_CHANGELOG.md`, this ledger, conformance
+  story coverage, and CI contract coverage define the candidate readiness
+  contract for `v0.4.8`.
+- Changelog scope: external control root restore-run stable closed loop,
+  recovery status/doctor/clone state interpretation consistency, global
+  malformed guard for recovery resume and rollback, separated clone source
+  recovery recheck before target publication, malformed external restore state
+  user story E2E, and release-binary-smoke coverage for restore and clone
+  stories.
+- Runtime-state migration boundary: non-portable JVS runtime state remains
+  destination-local and must be rebuilt at the destination with
+  `jvs doctor --strict --repair-runtime`.
+
+### Artifact and signing evidence
+
+- Artifact workflow: pending tag-gated `.github/workflows/ci.yml` release job.
+- Release gate includes `make release-build`, matching the release job's five
+  platform binaries: Linux x86_64, Linux ARM64, macOS x86_64, macOS ARM64, and
+  Windows x86_64.
+- Release gate also includes `make release-binary-smoke`, which runs the
+  release-built Linux artifact against `^TestStorySeparated(Restore|Clone)`.
+- Expected artifact set after final publication: five platform binaries, five
+  matching binary `.bundle` files, `SHA256SUMS`, and `SHA256SUMS.bundle`; this
+  candidate entry is not published and records no final asset result.
+- Signing workflow expectation: final artifacts are signed by the tag-gated
+  release workflow using Sigstore/cosign v3 bundle files.
+- Signing command family:
+  `cosign sign-blob --yes --bundle=<artifact>.bundle <artifact>`
+- Pre-upload verification expectation: the release job must run `test -s` for
+  every artifact, `sha256sum --check --strict SHA256SUMS`, and
+  `cosign verify-blob <artifact> --bundle <artifact>.bundle` with the release
+  workflow certificate identity and OIDC issuer.
+- Certificate identity rule:
+  `https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@<workflow-ref>`
+- OIDC issuer: `https://token.actions.githubusercontent.com`
+
+### Runbook references
+
+- Restore recovery, strict doctor, and cleanup semantics:
+  `docs/13_OPERATION_RUNBOOK.md`
+- Migration and backup: `docs/18_MIGRATION_AND_BACKUP.md`
+- Artifact signing and checksum validation: `docs/SIGNING.md`
+
 ## v0.4.7 - 2026-05-05
 
 ### Release identity

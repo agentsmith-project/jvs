@@ -292,6 +292,9 @@ func runRecoveryRollback(repoRoot, planID string, separated *repo.SeparatedConte
 		if err != nil {
 			return err
 		}
+		if err := enforceSeparatedRecoveryActionGlobalStateGuard(repoRoot, separated, "recovery rollback", plan); err != nil {
+			return err
+		}
 		if err := enforceSeparatedRecoveryActionBindingGuard(repoRoot, separated, "recovery rollback", plan); err != nil {
 			return err
 		}
@@ -397,6 +400,9 @@ func runRecoveryResume(repoRoot, planID string, separated *repo.SeparatedContext
 		mgr := recovery.NewManager(repoRoot)
 		plan, err := mgr.Load(planID)
 		if err != nil {
+			return err
+		}
+		if err := enforceSeparatedRecoveryActionGlobalStateGuard(repoRoot, separated, "recovery resume", plan); err != nil {
 			return err
 		}
 		if err := enforceSeparatedRecoveryActionBindingGuard(repoRoot, separated, "recovery resume", plan); err != nil {
@@ -519,6 +525,37 @@ func enforceSeparatedRecoveryActionBindingGuard(repoRoot string, separated *repo
 		return err
 	}
 	return separatedRecoveryMutationStateError(separated, operation, state)
+}
+
+func enforceSeparatedRecoveryActionGlobalStateGuard(repoRoot string, separated *repo.SeparatedContext, operation string, plan *recovery.Plan) error {
+	if separated == nil || plan == nil {
+		return nil
+	}
+	state, err := recoverystate.Inspect(repoRoot, separated.Workspace, separated)
+	if err != nil {
+		return separatedRecoveryMutationInspectError(separated, operation, "recovery state", err)
+	}
+	if !state.Blocking() {
+		return nil
+	}
+	if state.Kind == recoverystate.KindActiveRecovery && state.RecoveryPlanID == plan.PlanID && plan.Status == recovery.StatusActive {
+		return nil
+	}
+	switch state.Kind {
+	case recoverystate.KindPendingRestorePreview:
+		return separatedRecoveryMutationBlockingError(separated, operation, "restore plan", state.PlanID, "pending", state.NextCommand)
+	case recoverystate.KindStaleRestorePreview:
+		return separatedRecoveryMutationBlockingError(separated, operation, "restore plan", state.PlanID, "stale", state.NextCommand)
+	case recoverystate.KindActiveRecovery:
+		return separatedRecoveryMutationBlockingError(separated, operation, "recovery plan", state.RecoveryPlanID, "active", state.NextCommand)
+	case recoverystate.KindMalformedBlocking:
+		if err := separatedRecoveryStateBoundaryError(separated, state); err != nil {
+			return err
+		}
+		return separatedRecoveryMutationStateError(separated, operation, state)
+	default:
+		return nil
+	}
 }
 
 func publicRecoveryResultAfterResume(repoRoot string, plan *recovery.Plan) (publicRecoveryActionResult, error) {

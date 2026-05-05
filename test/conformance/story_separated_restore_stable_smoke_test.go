@@ -286,6 +286,82 @@ func TestStorySeparatedRestoreStalePreviewRecoveryCommandCleanupAndCloneConsiste
 	requireSeparatedRestoreSmokeControlMarkers(t, fixture.sourceControl)
 }
 
+func TestStorySeparatedRestoreMalformedStateBlocksRecoveryDoctorAndCloneWithoutControlPlaneLeak(t *testing.T) {
+	fixture := setupSeparatedRestoreSmokeTwoSavePointFixture(t)
+
+	preview, _ := separatedRestoreSmokeJSON(t, fixture.cleanCWD, fixture.sourceControl, fixture.sourcePayload, "main", "restore", fixture.v1)
+	planID, _ := preview["plan_id"].(string)
+	if preview["mode"] != "preview" || preview["source_save_point"] != fixture.v1 || planID == "" {
+		t.Fatalf("restore preview should create a real pending plan for v1: %#v", preview)
+	}
+	createFiles(t, filepath.Join(fixture.sourceControl, ".jvs", "restore-plans"), map[string]string{
+		"zzzz-corrupt.json": "{not-json\n",
+	})
+
+	wantDoctorCommand := "jvs --control-root " + fixture.sourceControl + " --workspace main doctor --strict --json"
+	statusOut, statusErr, statusCode := runJVS(t, fixture.cleanCWD,
+		"--json",
+		"--control-root", fixture.sourceControl,
+		"--workspace", "main",
+		"recovery", "status",
+	)
+	statusEnv := requireSeparatedControlJSONError(t, statusOut, statusErr, statusCode, "E_RECOVERY_BLOCKING")
+	if !strings.Contains(statusEnv.Error.Message, "Restore plan zzzz-corrupt") || !strings.Contains(statusEnv.Error.Message, "not valid JSON") {
+		t.Fatalf("recovery status should fail closed on malformed restore state: %#v", statusEnv.Error)
+	}
+	if !strings.Contains(statusEnv.Error.Hint, wantDoctorCommand) {
+		t.Fatalf("recovery status hint should use full clean-CWD selector %q: %#v", wantDoctorCommand, statusEnv.Error)
+	}
+	requireSeparatedRestoreMalformedNoControlLeak(t, statusOut, statusErr)
+
+	doctorOut, doctorErr, doctorCode := runJVS(t, fixture.cleanCWD,
+		"--json",
+		"--control-root", fixture.sourceControl,
+		"--workspace", "main",
+		"doctor", "--strict",
+	)
+	if doctorCode != 1 {
+		t.Fatalf("doctor strict should exit unhealthy with code 1, got %d\nstdout=%s\nstderr=%s", doctorCode, doctorOut, doctorErr)
+	}
+	doctorEnv := requirePureJSONEnvelope(t, doctorOut, doctorErr, true)
+	if doctorEnv.RepoRoot == nil || *doctorEnv.RepoRoot != fixture.sourceControl {
+		t.Fatalf("doctor repo_root = %#v, want %q\n%s", doctorEnv.RepoRoot, fixture.sourceControl, doctorOut)
+	}
+	doctor := decodeContractDataMap(t, doctorOut)
+	requireSeparatedControlDoctorData(t, doctor, fixture.sourceControl, fixture.sourcePayload, "main")
+	if doctor["healthy"] != false {
+		t.Fatalf("doctor strict should report malformed restore state unhealthy: %#v", doctor)
+	}
+	recoveryCheck := requireSeparatedRestoreMalformedDoctorCheck(t, doctor)
+	if recoveryCheck["recommended_next_command"] != wantDoctorCommand {
+		t.Fatalf("doctor recovery_state recommended command = %#v, want %q in %#v", recoveryCheck["recommended_next_command"], wantDoctorCommand, recoveryCheck)
+	}
+	requireSeparatedRestoreMalformedNoControlLeak(t, doctorOut, doctorErr)
+
+	targetControl := filepath.Join(fixture.base, "malformed-target-control")
+	targetPayload := filepath.Join(fixture.base, "malformed-target-payload")
+	cloneOut, cloneErr, cloneCode := runJVS(t, fixture.cleanCWD,
+		"--json",
+		"--control-root", fixture.sourceControl,
+		"--workspace", "main",
+		"repo", "clone",
+		targetPayload,
+		"--target-control-root", targetControl,
+		"--save-points", "main",
+	)
+	cloneEnv := requireSeparatedControlJSONError(t, cloneOut, cloneErr, cloneCode, "E_RECOVERY_BLOCKING")
+	if !strings.Contains(cloneEnv.Error.Message, "restore plan zzzz-corrupt") {
+		t.Fatalf("clone should block on malformed restore state: %#v", cloneEnv.Error)
+	}
+	if !strings.Contains(cloneEnv.Error.Hint, wantDoctorCommand) {
+		t.Fatalf("clone hint should use full clean-CWD selector %q: %#v", wantDoctorCommand, cloneEnv.Error)
+	}
+	requireSeparatedRestoreMalformedNoControlLeak(t, cloneOut, cloneErr)
+	requireAbsolutePathAbsent(t, targetControl)
+	requireAbsolutePathAbsent(t, targetPayload)
+	requireSeparatedRestoreSmokePayloadHasNoControlMetadata(t, fixture.sourcePayload)
+}
+
 type separatedRestoreSmokeTwoSavePointFixture struct {
 	base          string
 	cleanCWD      string
@@ -613,6 +689,49 @@ func requireSeparatedRestoreSmokeDoctorCheck(t *testing.T, doctorData map[string
 		return
 	}
 	t.Fatalf("doctor checks missing %s: %#v", name, checks)
+}
+
+func requireSeparatedRestoreMalformedDoctorCheck(t *testing.T, doctorData map[string]any) map[string]any {
+	t.Helper()
+	checks, ok := doctorData["checks"].([]any)
+	if !ok {
+		t.Fatalf("doctor checks should be an array: %#v", doctorData["checks"])
+	}
+	for _, raw := range checks {
+		check, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("doctor check should be an object: %#v", raw)
+		}
+		if check["name"] != "recovery_state" {
+			continue
+		}
+		if check["status"] != "failed" || check["error_code"] != "E_RECOVERY_BLOCKING" {
+			t.Fatalf("doctor recovery_state check = %#v, want failed E_RECOVERY_BLOCKING", check)
+		}
+		message, _ := check["message"].(string)
+		if !strings.Contains(message, "Restore plan zzzz-corrupt") || !strings.Contains(message, "not valid JSON") {
+			t.Fatalf("doctor recovery_state message should explain malformed restore state: %#v", check)
+		}
+		return check
+	}
+	t.Fatalf("doctor checks missing recovery_state: %#v", checks)
+	return nil
+}
+
+func requireSeparatedRestoreMalformedNoControlLeak(t *testing.T, outputs ...string) {
+	t.Helper()
+	combined := strings.Join(outputs, "\n")
+	for _, forbidden := range []string{
+		".jvs/restore-plans",
+		".jvs/recovery-plans",
+		"payload_root",
+		"source_payload_root",
+		"target_payload_root",
+	} {
+		if strings.Contains(combined, forbidden) {
+			t.Fatalf("public output exposes control-plane detail %q:\n%s", forbidden, combined)
+		}
+	}
 }
 
 func runSeparatedRestoreSmokePublishedCommand(t *testing.T, cwd, command string) (stdout, stderr string, exitCode int) {

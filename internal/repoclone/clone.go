@@ -1134,6 +1134,9 @@ func (p *preparedClone) validateSeparatedSourceBeforeTargetPublish() error {
 			WithMessagef("Cannot clone: source main workspace cannot be revalidated before publish: %v", err).
 			WithHint("Run doctor --strict for the source control root, then retry.")
 	}
+	if err := rejectSeparatedSourceActiveOperation(p.source, currentMain); err != nil {
+		return err
+	}
 	if err := validateSeparatedCloneSourceMainSavePointStable(p.sourceMain, currentMain); err != nil {
 		return err
 	}

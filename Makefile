@@ -31,7 +31,7 @@ release-build:
 
 release-binary-smoke: release-build
 	@test -x "$(CURDIR)/bin/jvs-linux-amd64"
-	PATH="$(CURDIR)/bin:$$PATH" JVS_BINARY_UNDER_TEST="$(CURDIR)/bin/jvs-linux-amd64" go test -tags conformance -count=1 -v -run '^TestStorySeparatedRestore' ./test/conformance/...
+	PATH="$(CURDIR)/bin:$$PATH" JVS_BINARY_UNDER_TEST="$(CURDIR)/bin/jvs-linux-amd64" go test -tags conformance -count=1 -v -run '^TestStorySeparated(Restore|Clone)' ./test/conformance/...
 
 tools:
 	@set -eu; \

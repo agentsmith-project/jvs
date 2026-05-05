@@ -3591,11 +3591,6 @@ func TestDocs_ReleaseEvidenceV047FinalReleaseRecordsPublishedRelease(t *testing.
 	const runURL = "https://github.com/agentsmith-project/jvs/actions/runs/25355112705"
 	const releaseURL = "https://github.com/agentsmith-project/jvs/releases/tag/v0.4.7"
 
-	latestHeading := latestChangelogHeading(t)
-	if latestHeading != heading {
-		t.Fatalf("latest changelog entry must be the v0.4.7 final GA release heading %q, got %q", heading, latestHeading)
-	}
-
 	changelog := readRepoFile(t, "docs/99_CHANGELOG.md")
 	if !strings.Contains(changelog, previousHeading) {
 		t.Fatalf("changelog must retain the historical v0.4.6 GA candidate heading %q", previousHeading)
@@ -3735,6 +3730,107 @@ func TestDocs_ReleaseEvidenceV047FinalReleaseRecordsPublishedRelease(t *testing.
 		"pending final",
 	} {
 		requireReleaseReadinessAbsentText(t, "v0.4.7 final release evidence", entry, forbidden)
+	}
+}
+
+func TestDocs_ReleaseEvidenceV048CandidateReadinessRecordsScope(t *testing.T) {
+	const heading = "## v0.4.8 - 2026-05-05"
+	const evidenceLink = "RELEASE_EVIDENCE.md#v048---2026-05-05"
+	const previousFinalHeading = "## v0.4.7 - 2026-05-05"
+	const releaseURL = "https://github.com/agentsmith-project/jvs/releases/tag/v0.4.8"
+
+	latestHeading := latestChangelogHeading(t)
+	if latestHeading != heading {
+		t.Fatalf("latest changelog entry must be the v0.4.8 GA candidate/readiness heading %q, got %q", heading, latestHeading)
+	}
+
+	changelog := readRepoFile(t, "docs/99_CHANGELOG.md")
+	if !strings.Contains(changelog, previousFinalHeading) {
+		t.Fatalf("changelog must retain the historical v0.4.7 final GA release heading %q", previousFinalHeading)
+	}
+	ledger := readRepoFile(t, "docs/RELEASE_EVIDENCE.md")
+	if !strings.Contains(ledger, previousFinalHeading) {
+		t.Fatalf("release evidence ledger must retain the historical v0.4.7 final GA release heading %q", previousFinalHeading)
+	}
+	requireFinalTaggedReleaseEvidence(t, previousFinalHeading, releaseEvidenceEntry(t, ledger, previousFinalHeading))
+
+	changelogEntry := changelogEntry(t, changelog, heading)
+	for _, required := range []string{
+		"GA candidate/readiness",
+		evidenceLink,
+		"not final",
+		"not tagged",
+		"not published",
+		"external control root restore-run",
+		"stable closed loop",
+		"recovery status, doctor, and clone",
+		"state interpretation",
+		"recovery resume",
+		"recovery rollback",
+		"global malformed guard",
+		"separated clone",
+		"source recovery",
+		"before target publication",
+		"malformed external restore state user story E2E",
+		"release-binary-smoke",
+		"`^TestStorySeparated(Restore|Clone)`",
+		"`jvs doctor --strict --repair-runtime`",
+		releaseURL,
+	} {
+		requireReleaseReadinessText(t, "v0.4.8 changelog candidate entry", changelogEntry, required)
+	}
+	for _, forbidden := range []string{
+		"Final tag `v0.4.8`",
+		"Tag workflow run",
+		"Status: PASS",
+		"RELEASE GATE PASSED",
+		"Asset count:",
+		"Published at:",
+		"GitHub release list shows `v0.4.8` as Latest",
+	} {
+		requireReleaseReadinessAbsentText(t, "v0.4.8 changelog candidate entry", changelogEntry, forbidden)
+	}
+
+	entry := releaseEvidenceEntry(t, ledger, heading)
+	requireCandidateReleaseEvidence(t, heading, entry)
+	for _, required := range []string{
+		"Candidate target tag: `v0.4.8`",
+		"Changelog heading date: `2026-05-05`",
+		"external control root restore-run",
+		"stable closed loop",
+		"recovery status, doctor, and clone",
+		"state interpretation",
+		"global malformed guard",
+		"separated clone",
+		"source recovery",
+		"before target publication",
+		"malformed external restore state user story E2E",
+		"`TestStorySeparatedRestoreRunStableStateDoctorStrictAndClone`",
+		"`TestStorySeparatedRestoreStalePreviewRecoveryCommandCleanupAndCloneConsistency`",
+		"`TestStorySeparatedRestoreMalformedStateBlocksRecoveryDoctorAndCloneWithoutControlPlaneLeak`",
+		"`TestSeparatedRecoveryResumeRollbackRejectMalformedGlobalStateBeforeMutation`",
+		"`TestSeparatedCloneRejectsSourceStateIntroducedBeforePublish`",
+		"`make release-binary-smoke`",
+		"`^TestStorySeparated(Restore|Clone)`",
+		"Release binary smoke",
+		"restore and clone stories",
+		"Expected artifact set after final publication",
+		"https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@<workflow-ref>",
+		"https://token.actions.githubusercontent.com",
+		releaseURL,
+	} {
+		requireReleaseReadinessText(t, "v0.4.8 candidate release evidence", entry, required)
+	}
+	for _, forbidden := range []string{
+		"- Tag: `v0.4.8`",
+		"Final tagged commit:",
+		"Status: PASS",
+		"RELEASE GATE PASSED",
+		"Published artifact count:",
+		"Tag workflow run:",
+		"Published at:",
+	} {
+		requireReleaseReadinessAbsentText(t, "v0.4.8 candidate release evidence", entry, forbidden)
 	}
 }
 

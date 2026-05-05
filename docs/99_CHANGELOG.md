@@ -5,6 +5,132 @@ as active reader content for the published GA line. The active product
 vocabulary is folder, workspace, save point, save, history, view, restore,
 recovery plan, doctor, and cleanup.
 
+## v0.4.8 - 2026-05-05
+
+### Highlights
+
+- This is a `v0.4.8` GA candidate/readiness entry for the next save point
+  public-contract release. It is not final, not tagged, and not published.
+- External control root restore-run coverage now closes the stable closed loop
+  after a run: recovery status clears, `jvs doctor --strict` reports healthy,
+  and a follow-on separated clone starts from an inspected source recovery
+  state.
+- Recovery status, doctor, and clone now share the same recovery
+  state interpretation for external control roots, including aligned
+  `recommended_next_command` guidance for pending, stale, and malformed restore
+  states.
+- `jvs recovery resume` and `jvs recovery rollback` now use a global malformed
+  guard before mutation, fail closed when restore or recovery state cannot be
+  inspected safely, and point users toward `doctor --strict --json`.
+- Separated clone rechecks source recovery before target publication, so a
+  source recovery change or malformed source state introduced after staging
+  blocks publication instead of publishing from stale readiness.
+- A malformed external restore state user story E2E now covers recovery status,
+  doctor strict, clone blocking, clean-CWD selector hints, and public error
+  wording without exposing control data locations.
+- `release-binary-smoke` now runs the release-built Linux artifact through both
+  restore and clone stories with `^TestStorySeparated(Restore|Clone)`.
+- Release-facing identity remains `github.com/agentsmith-project/jvs`; release
+  URLs use the canonical GitHub project, for example
+  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.0`.
+
+### Breaking changes
+
+- None for the stable v0 public CLI contract.
+
+### Known limitations
+
+- v0 does not include remote push/pull.
+- v0 does not include in-JVS signing commands.
+- v0 does not include public partial-save contracts.
+- v0 does not include compression contracts.
+- v0 does not include merge/rebase.
+- v0 does not include complex retention policy flags.
+- v0 does not yet include a first-class user-facing portability or backup
+  workflow.
+- Strict integrity checks can be I/O intensive on large workspaces.
+- Descriptor signing and in-JVS trust policy remain outside the stable v0
+  repository format.
+
+### Risk labels
+
+- `integrity`: descriptor checksum and content hash detect independent
+  corruption; coordinated descriptor-plus-checksum rewrite remains a v0
+  residual risk.
+- `migration`: non-portable JVS runtime state is destination-local and must be
+  rebuilt at the fresh destination with
+  `jvs doctor --strict --repair-runtime`.
+- `recovery`: interrupted restore and recovery state is expected to fail closed
+  across recovery status, doctor, clone, resume, and rollback before another
+  mutating operation continues in the same repo or workspace.
+- `usability`: release readiness now depends on aligned recovery guidance for
+  external control roots, malformed-state user story E2E coverage, and
+  release-binary smoke coverage for restore and clone stories.
+
+### Migration notes
+
+- Existing repositories do not need an on-disk migration for `v0.4.8`;
+  `.jvs/format_version` remains a repository layout version; it is not the application release version.
+- This candidate records readiness for external control root restore-run stable
+  closure, recovery status/doctor/clone consistency, global malformed guards
+  for recovery resume and rollback, separated clone source recovery rechecks
+  before target publication, malformed external restore state user story E2E,
+  and release-binary smoke coverage for restore and clone stories.
+- Before relying on the final `v0.4.8` release, run `jvs doctor --strict` on a
+  representative repo and run the release gate from the evidence ledger.
+- For physical backup or storage migration, start with a fresh destination, run
+  an offline whole-folder copy, run
+  `jvs doctor --strict --repair-runtime` at the destination, then run a fresh
+  cleanup preview before any cleanup run.
+- Do not treat non-portable JVS runtime state as authoritative during physical
+  backup or storage migration; rebuild it at the destination before resuming
+  JVS writes.
+- User-facing portability and backup workflow remains a documented product gap,
+  not a new v0 CLI promise.
+- Run the restore drill from `docs/13_OPERATION_RUNBOOK.md`, including
+  preview/run and recovery status/resume/rollback coverage.
+
+### Release evidence
+
+- See the [release evidence ledger](RELEASE_EVIDENCE.md#v048---2026-05-05)
+  for the `v0.4.8` GA candidate/readiness record.
+- Candidate state: not final, not tagged, and not published; this entry is
+  pending final tag creation and publication through the normal CI release
+  flow.
+- Source archive boundary: no immutable `v0.4.8` tag source archive exists yet.
+  When the pending final tag is created, the source archive will be the
+  immutable source archive and will record readiness from tag time.
+- Tag source archive evidence class: pending until tag creation; the intended
+  tag source archive evidence class is `GA candidate readiness`.
+- publication final evidence: pending. The future GitHub Release page and
+  post-release main ledger will record workflow run, release state, artifacts,
+  checksum validation, signing identity, smoke, and coverage facts after the
+  release exists.
+- Candidate release URL target:
+  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.8`
+- Candidate gate scope: `make release-gate`, `make docs-contract`,
+  `make ci-contract`, and `make release-binary-smoke` must cover the
+  external-control-root restore-run closure, recovery status/doctor/clone
+  consistency, malformed-state guards, separated clone source recovery recheck,
+  malformed external restore state story, and restore plus clone release-binary
+  smoke.
+
+### Release artifacts
+
+- Artifact workflow: pending tag-gated `.github/workflows/ci.yml` release job.
+- Release gate includes `make release-build` and `make release-binary-smoke`.
+- Expected artifact set after final publication: five platform binaries, five
+  matching binary `.bundle` files, `SHA256SUMS`, and `SHA256SUMS.bundle`; this
+  candidate entry records no final asset result.
+- Release-binary smoke readiness: `JVS_BINARY_UNDER_TEST` points at the
+  release-built `jvs-linux-amd64` artifact while conformance runs
+  `^TestStorySeparated(Restore|Clone)` against restore and clone stories.
+- Signing workflow expectation: final artifacts are signed by the tag-gated
+  release workflow using Sigstore/cosign v3 bundle files.
+- Certificate identity rule:
+  `https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@<workflow-ref>`
+- OIDC issuer: `https://token.actions.githubusercontent.com`
+
 ## v0.4.7 - 2026-05-05
 
 ### Highlights

@@ -717,6 +717,59 @@ func TestSeparatedRecoveryResumeRollbackRejectPlansOutsideSelectedBindingBeforeM
 	}
 }
 
+func TestSeparatedRecoveryResumeRollbackRejectMalformedGlobalStateBeforeMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		seed func(t *testing.T, controlRoot string)
+		want []string
+	}{
+		{
+			name: "malformed restore plan",
+			seed: func(t *testing.T, controlRoot string) {
+				t.Helper()
+				require.NoError(t, os.WriteFile(filepath.Join(controlRoot, ".jvs", "restore-plans", "corrupt-pending.json"), []byte("{not-json\n"), 0644))
+			},
+			want: []string{"Restore plan corrupt-pending", "not valid JSON"},
+		},
+		{
+			name: "malformed recovery plan",
+			seed: func(t *testing.T, controlRoot string) {
+				t.Helper()
+				require.NoError(t, os.WriteFile(filepath.Join(controlRoot, ".jvs", "recovery-plans", "RP-corrupt.json"), []byte("{not-json\n"), 0644))
+			},
+			want: []string{"Recovery state cannot be inspected safely", "recovery plan \"RP-corrupt\"", "not valid JSON"},
+		},
+	} {
+		for _, action := range []string{"resume", "rollback"} {
+			t.Run(tc.name+" "+action, func(t *testing.T) {
+				base, controlRoot, payloadRoot, planID := setupSeparatedRecoveryActionBindingFixture(t, recovery.StatusActive, nil)
+				tc.seed(t, controlRoot)
+				pinsBefore := documentedPinCount(t, controlRoot)
+
+				stdout, stderr, exitCode := runContractSubprocess(t, base,
+					"--json",
+					"--control-root", controlRoot,
+					"--workspace", "main",
+					"recovery", action, planID,
+				)
+
+				env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrRecoveryBlocking.Code)
+				for _, want := range tc.want {
+					assert.Contains(t, env.Error.Message, want)
+				}
+				assert.Contains(t, env.Error.Hint, "doctor --strict --json")
+				assert.NotContains(t, env.Error.Message, ".jvs/restore-plans")
+				assert.NotContains(t, env.Error.Message, ".jvs/recovery-plans")
+				assert.Equal(t, "interrupted\n", separatedOpsReadFile(t, filepath.Join(payloadRoot, "app.txt")))
+				plan, err := recovery.NewManager(controlRoot).Load(planID)
+				require.NoError(t, err)
+				assert.Equal(t, recovery.StatusActive, plan.Status)
+				assert.Equal(t, pinsBefore, documentedPinCount(t, controlRoot))
+			})
+		}
+	}
+}
+
 func writeRecoveryStatusSeparatedActivePlan(t *testing.T, controlRoot, recoveryPlanID string, restorePlan *restoreplan.Plan) {
 	t.Helper()
 
