@@ -24,6 +24,24 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	if binary := os.Getenv("JVS_BINARY_UNDER_TEST"); binary != "" {
+		if !filepath.IsAbs(binary) {
+			fmt.Fprintf(os.Stderr, "JVS_BINARY_UNDER_TEST must be an absolute path, got %q\n", binary)
+			os.Exit(1)
+		}
+		info, err := os.Stat(binary)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "stat JVS_BINARY_UNDER_TEST %s: %v\n", binary, err)
+			os.Exit(1)
+		}
+		if info.IsDir() {
+			fmt.Fprintf(os.Stderr, "JVS_BINARY_UNDER_TEST %s is a directory, want executable file\n", binary)
+			os.Exit(1)
+		}
+		jvsBinary = binary
+		os.Exit(m.Run())
+	}
+
 	binDir, err := os.MkdirTemp("", "jvs-conformance-bin-")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create conformance bin dir: %v\n", err)

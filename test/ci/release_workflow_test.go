@@ -92,6 +92,41 @@ func TestReleaseBuildBinariesUseMakefileTarget(t *testing.T) {
 	}
 }
 
+func TestReleaseGateRunsReleaseBinarySmokeAgainstReleaseArtifact(t *testing.T) {
+	root := repoRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	makefile := string(data)
+
+	smokeDeps := makeTargetDeps(t, makefile, "release-binary-smoke")
+	if !stringSliceContains(smokeDeps, "release-build") {
+		t.Fatalf("release-binary-smoke target dependencies %v must include release-build", smokeDeps)
+	}
+
+	smokeCommands := makeTargetCommands(makefile, "release-binary-smoke")
+	for _, want := range []string{
+		`JVS_BINARY_UNDER_TEST="$(CURDIR)/bin/jvs-linux-amd64"`,
+		"go test -tags conformance",
+		"-count=1",
+		"-run '^TestStorySeparatedRestore'",
+		"./test/conformance/...",
+	} {
+		if !commandsContain(smokeCommands, want) {
+			t.Fatalf("release-binary-smoke commands %v must contain %q", smokeCommands, want)
+		}
+	}
+	if commandsContain(smokeCommands, "go build") {
+		t.Fatalf("release-binary-smoke must execute the release artifact instead of building source again: %v", smokeCommands)
+	}
+
+	releaseGateDeps := makeTargetDeps(t, makefile, "release-gate")
+	if !stringSliceContains(releaseGateDeps, "release-binary-smoke") {
+		t.Fatalf("release-gate target dependencies %v must include release-binary-smoke", releaseGateDeps)
+	}
+}
+
 func TestManualReleaseBindsToTagRef(t *testing.T) {
 	root := repoRoot(t)
 	workflow := readWorkflow(t, root)
@@ -737,7 +772,7 @@ func TestMakefileReleaseGateRunsCIContract(t *testing.T) {
 
 	releaseGateLine := makeTargetLine(t, makefile, "release-gate")
 	deps := strings.Fields(strings.TrimSpace(strings.TrimPrefix(releaseGateLine, "release-gate:")))
-	for _, want := range []string{"tools", "ci-contract", "test-race", "test-cover", "lint", "build", "conformance", "library", "regression", "fuzz"} {
+	for _, want := range []string{"tools", "ci-contract", "test-race", "test-cover", "lint", "build", "release-build", "conformance", "release-binary-smoke", "library", "regression", "fuzz"} {
 		if !stringSliceContains(deps, want) {
 			t.Fatalf("release-gate target dependencies %v must include %s", deps, want)
 		}

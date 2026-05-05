@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/agentsmith-project/jvs/internal/recovery"
+	"github.com/agentsmith-project/jvs/internal/recoverystate"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/restore"
 	"github.com/agentsmith-project/jvs/internal/restoreplan"
@@ -42,6 +43,7 @@ Use --path without a save point to list candidate save points for that path.
 Examples:
   jvs restore 1771589abc
   jvs restore --run <plan-id>
+  jvs restore discard <plan-id>
   jvs restore --path src/config.json
   jvs restore 1771589abc --path src/config.json
   jvs restore 1771589abc --save-first
@@ -109,7 +111,7 @@ Examples:
 		result := publicRestorePreviewFromPlan(plan)
 		if decisionReason != "" {
 			result.DecisionReason = decisionReason
-			result.NextCommands = restoreDecisionNextCommands(targetID, "")
+			result.NextCommands = restoreDecisionNextCommands(targetID, "", ctx.Separated)
 		}
 		if jsonOutput {
 			return outputJSONWithSeparatedControl(result, ctx.Separated, separatedDoctorStrictNotRun)
@@ -117,6 +119,22 @@ Examples:
 
 		printRestorePreviewResult(result)
 		return nil
+	},
+}
+
+var restoreDiscardCmd = &cobra.Command{
+	Use:   "discard <restore-plan-id>",
+	Short: "Discard a restore preview plan",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx, err := resolveWorkspaceScoped()
+		if err != nil {
+			return err
+		}
+		if err := validateAndRefreshSeparatedPayloadBoundary(ctx); err != nil {
+			return restorePointError(err)
+		}
+		return runRestoreDiscardPlan(ctx.Repo.Root, ctx.Workspace, args[0], ctx.Separated)
 	},
 }
 
@@ -196,6 +214,19 @@ type publicRestorePathCandidatesResult struct {
 	Candidates   []publicHistoryPathCandidate `json:"candidates"`
 	NextCommands []string                     `json:"next_commands"`
 	FilesChanged bool                         `json:"files_changed"`
+}
+
+type publicRestoreDiscardResult struct {
+	Mode              string `json:"mode"`
+	PlanID            string `json:"plan_id"`
+	Folder            string `json:"folder"`
+	Workspace         string `json:"workspace"`
+	SourceSavePoint   string `json:"source_save_point"`
+	Path              string `json:"path,omitempty"`
+	PlanDiscarded     bool   `json:"plan_discarded"`
+	FilesChanged      bool   `json:"files_changed"`
+	HistoryChanged    bool   `json:"history_changed"`
+	RecommendedStatus string `json:"recommended_status_command,omitempty"`
 }
 
 type publicRestorePathResult struct {
@@ -287,6 +318,59 @@ func runRestorePlan(repoRoot, workspaceName, planID string, separated *repo.Sepa
 	return outputRestoreRunResult(result, separated)
 }
 
+func runRestoreDiscardPlan(repoRoot, workspaceName, planID string, separated *repo.SeparatedContext) error {
+	result, err := executeRestoreDiscardPlan(repoRoot, workspaceName, planID, separated)
+	if err != nil {
+		return restorePointError(err)
+	}
+	if jsonOutput {
+		return outputJSONWithSeparatedControl(result, separated, separatedDoctorStrictNotRun)
+	}
+	printRestoreDiscardResult(result)
+	return nil
+}
+
+func executeRestoreDiscardPlan(repoRoot, workspaceName, planID string, separated *repo.SeparatedContext) (publicRestoreDiscardResult, error) {
+	var result publicRestoreDiscardResult
+	err := repo.WithMutationLock(repoRoot, "restore discard", func() error {
+		plan, err := restoreplan.Load(repoRoot, planID)
+		if err != nil {
+			return err
+		}
+		if err := validateSeparatedPayloadSymlinkBoundaryForRestorePlan(separated, plan); err != nil {
+			return err
+		}
+		if err := enforceSeparatedRestoreDiscardMutationGuard(repoRoot, workspaceName, separated, planID); err != nil {
+			return err
+		}
+		activeRecovery, err := recovery.NewManager(repoRoot).ActiveForWorkspace(workspaceName)
+		if err != nil {
+			return err
+		}
+		if len(activeRecovery) > 0 {
+			return activeRecoveryBlocksRestoreError(activeRecovery[0])
+		}
+		discarded, err := restoreplan.Discard(repoRoot, workspaceName, planID)
+		if err != nil {
+			return err
+		}
+		result = publicRestoreDiscardResult{
+			Mode:              "discard",
+			PlanID:            discarded.PlanID,
+			Folder:            discarded.Folder,
+			Workspace:         discarded.Workspace,
+			SourceSavePoint:   string(discarded.SourceSavePoint),
+			Path:              discarded.Path,
+			PlanDiscarded:     true,
+			FilesChanged:      false,
+			HistoryChanged:    false,
+			RecommendedStatus: selectedJVSCommand(separated, "recovery status"),
+		}
+		return nil
+	})
+	return result, err
+}
+
 func executeRestorePlanRun(repoRoot, workspaceName, planID string, separated *repo.SeparatedContext) (restoreRunResult, error) {
 	result := restoreRunResult{Scope: restoreplan.ScopeWhole}
 	err := repo.WithMutationLock(repoRoot, "restore run", func() error {
@@ -299,6 +383,9 @@ func executeRestorePlanRun(repoRoot, workspaceName, planID string, separated *re
 		}
 		if !plan.IsRunnable() {
 			return fmt.Errorf("restore preview requires a safety decision; rerun preview with --save-first or --discard-unsaved. No files were changed.")
+		}
+		if err := enforceSeparatedRestoreRunMutationGuard(repoRoot, workspaceName, separated, planID); err != nil {
+			return err
 		}
 		result.Scope = plan.EffectiveScope()
 		if result.Scope == restoreplan.ScopePath {
@@ -318,6 +405,46 @@ func executeRestorePlanRun(repoRoot, workspaceName, planID string, separated *re
 	return result, err
 }
 
+func enforceSeparatedRestoreRunMutationGuard(repoRoot, workspaceName string, separated *repo.SeparatedContext, planID string) error {
+	return enforceSeparatedRestoreMutationGuard(repoRoot, workspaceName, separated, "restore --run", planID, func(state recoverystate.State) bool {
+		return state.Kind == recoverystate.KindPendingRestorePreview && state.PlanID == planID
+	})
+}
+
+func enforceSeparatedRestoreDiscardMutationGuard(repoRoot, workspaceName string, separated *repo.SeparatedContext, planID string) error {
+	return enforceSeparatedRestoreMutationGuard(repoRoot, workspaceName, separated, "restore discard", planID, func(state recoverystate.State) bool {
+		switch state.Kind {
+		case recoverystate.KindPendingRestorePreview, recoverystate.KindStaleRestorePreview:
+			return state.PlanID == planID
+		default:
+			return false
+		}
+	})
+}
+
+func enforceSeparatedRestoreMutationGuard(repoRoot, workspaceName string, separated *repo.SeparatedContext, operation, planID string, allow func(recoverystate.State) bool) error {
+	if separated == nil {
+		return nil
+	}
+	state, err := recoverystate.Inspect(repoRoot, workspaceName, separated)
+	if err != nil {
+		return separatedRecoveryMutationInspectError(separated, operation, "recovery state", err)
+	}
+	if !state.Blocking() || allow(state) {
+		return nil
+	}
+	switch state.Kind {
+	case recoverystate.KindPendingRestorePreview, recoverystate.KindStaleRestorePreview:
+		return separatedRecoveryMutationBlockingError(separated, operation, "restore plan", state.PlanID, state.NextCommand)
+	case recoverystate.KindActiveRecovery:
+		return separatedRecoveryMutationBlockingError(separated, operation, "recovery plan", state.RecoveryPlanID, state.NextCommand)
+	case recoverystate.KindMalformedBlocking:
+		return separatedRecoveryMutationStateError(separated, operation, state)
+	default:
+		return nil
+	}
+}
+
 func validateSeparatedPayloadSymlinkBoundaryForRestorePlan(separated *repo.SeparatedContext, plan *restoreplan.Plan) error {
 	if separated == nil || plan == nil {
 		return nil
@@ -332,7 +459,9 @@ func restoreExpectedSeparatedContext(separated *repo.SeparatedContext) restorepl
 	}
 	return restoreplan.ExpectedSeparatedContext{
 		RepoID:      separated.Repo.RepoID,
+		ControlRoot: separated.ControlRoot,
 		PayloadRoot: separated.PayloadRoot,
+		Workspace:   separated.Workspace,
 	}
 }
 
@@ -546,7 +675,7 @@ func runRestorePath(cmd *cobra.Command, args []string, ctx *cliDiscoveryContext)
 		if err != nil {
 			return restorePathError(err, restorePath)
 		}
-		result, err := restorePathCandidates(repoRoot, workspaceName, path)
+		result, err := restorePathCandidates(repoRoot, workspaceName, path, ctx.Separated)
 		if err != nil {
 			return restorePathError(err, path)
 		}
@@ -612,7 +741,7 @@ func runRestorePath(cmd *cobra.Command, args []string, ctx *cliDiscoveryContext)
 	result := publicRestorePreviewFromPlan(plan)
 	if decisionReason != "" {
 		result.DecisionReason = decisionReason
-		result.NextCommands = restoreDecisionNextCommands(targetID, path)
+		result.NextCommands = restoreDecisionNextCommands(targetID, path, ctx.Separated)
 	}
 	if jsonOutput {
 		return outputJSONWithSeparatedControl(result, ctx.Separated, separatedDoctorStrictNotRun)
@@ -699,7 +828,7 @@ func normalizeRestorePathFlag(repoRoot, workspaceName, raw string) (string, erro
 	return path, nil
 }
 
-func restorePathCandidates(repoRoot, workspaceName, path string) (publicRestorePathCandidatesResult, error) {
+func restorePathCandidates(repoRoot, workspaceName, path string, separated *repo.SeparatedContext) (publicRestorePathCandidatesResult, error) {
 	historyResult, err := findHistoryPathCandidates(repoRoot, workspaceName, path)
 	if err != nil {
 		return publicRestorePathCandidatesResult{}, err
@@ -710,41 +839,56 @@ func restorePathCandidates(repoRoot, workspaceName, path string) (publicRestoreP
 		Workspace:    historyResult.Workspace,
 		Path:         historyResult.Path,
 		Candidates:   historyResult.Candidates,
-		NextCommands: restorePathNextCommands(path, historyResult.Candidates),
+		NextCommands: restorePathNextCommands(path, historyResult.Candidates, separated),
 		FilesChanged: false,
 	}, nil
 }
 
-func restorePathNextCommands(path string, candidates []publicHistoryPathCandidate) []string {
+func restorePathNextCommands(path string, candidates []publicHistoryPathCandidate, separated *repo.SeparatedContext) []string {
 	if len(candidates) == 0 {
 		return []string{}
 	}
-	return []string{genericRestorePathCommand(path)}
+	return []string{genericRestorePathCommand(path, separated)}
 }
 
-func restoreDecisionNextCommands(sourceID model.SnapshotID, path string) []string {
+func restoreDecisionNextCommands(sourceID model.SnapshotID, path string, separated *repo.SeparatedContext) []string {
 	return []string{
-		restoreDecisionCommand(sourceID, path, "--save-first"),
-		restoreDecisionCommand(sourceID, path, "--discard-unsaved"),
+		restoreDecisionCommand(sourceID, path, "--save-first", separated),
+		restoreDecisionCommand(sourceID, path, "--discard-unsaved", separated),
 	}
 }
 
-func restoreDecisionCommand(sourceID model.SnapshotID, path, option string) string {
+func restoreDecisionCommand(sourceID model.SnapshotID, path, option string, separated *repo.SeparatedContext) string {
 	source := shellQuoteArg(string(sourceID))
 	if path == "" {
-		return fmt.Sprintf("jvs restore %s %s", source, option)
+		return fmt.Sprintf("%s restore %s %s", selectedJVSCommandPrefix(separated), source, option)
 	}
 	if strings.HasPrefix(path, "-") {
-		return fmt.Sprintf("jvs restore %s --path=%s %s", source, shellQuoteArg(path), option)
+		return fmt.Sprintf("%s restore %s --path=%s %s", selectedJVSCommandPrefix(separated), source, shellQuoteArg(path), option)
 	}
-	return fmt.Sprintf("jvs restore %s --path %s %s", source, shellQuoteArg(path), option)
+	return fmt.Sprintf("%s restore %s --path %s %s", selectedJVSCommandPrefix(separated), source, shellQuoteArg(path), option)
 }
 
-func genericRestorePathCommand(path string) string {
+func genericRestorePathCommand(path string, separated *repo.SeparatedContext) string {
 	if strings.HasPrefix(path, "-") {
-		return fmt.Sprintf("jvs restore <save> --path=%s", shellQuoteArg(path))
+		return fmt.Sprintf("%s restore <save> --path=%s", selectedJVSCommandPrefix(separated), shellQuoteArg(path))
 	}
-	return fmt.Sprintf("jvs restore <save> --path %s", shellQuoteArg(path))
+	return fmt.Sprintf("%s restore <save> --path %s", selectedJVSCommandPrefix(separated), shellQuoteArg(path))
+}
+
+func selectedJVSCommand(separated *repo.SeparatedContext, command string) string {
+	return selectedJVSCommandPrefix(separated) + " " + strings.TrimSpace(command)
+}
+
+func selectedJVSCommandPrefix(separated *repo.SeparatedContext) string {
+	if separated == nil {
+		return "jvs"
+	}
+	workspace := strings.TrimSpace(separated.Workspace)
+	if workspace == "" {
+		workspace = "main"
+	}
+	return "jvs --control-root " + shellQuoteArg(separated.ControlRoot) + " --workspace " + shellQuoteArg(workspace)
 }
 
 func publicRestorePathStatus(repoRoot, workspaceName, path string, sourceID model.SnapshotID) (publicRestorePathResult, error) {
@@ -886,12 +1030,26 @@ func printRestorePathCandidates(result publicRestorePathCandidatesResult) {
 	fmt.Println("Choose a save point ID, then run:")
 	commands := result.NextCommands
 	if len(commands) == 0 {
-		commands = []string{genericRestorePathCommand(result.Path)}
+		commands = []string{genericRestorePathCommand(result.Path, nil)}
 	}
 	for _, command := range commands {
 		fmt.Printf("  %s\n", command)
 	}
 	fmt.Println("No files were changed.")
+}
+
+func printRestoreDiscardResult(result publicRestoreDiscardResult) {
+	fmt.Println("Restore preview discarded.")
+	fmt.Printf("Plan: %s\n", result.PlanID)
+	fmt.Printf("Folder: %s\n", result.Folder)
+	fmt.Printf("Workspace: %s\n", result.Workspace)
+	if result.Path != "" {
+		fmt.Printf("Path: %s\n", result.Path)
+	}
+	fmt.Println("No files were changed.")
+	if result.RecommendedStatus != "" {
+		fmt.Printf("Recommended next command: %s\n", result.RecommendedStatus)
+	}
 }
 
 func printRestorePathResult(result publicRestorePathResult) {
@@ -1130,5 +1288,6 @@ func init() {
 	restoreCmd.Flags().BoolVar(&restoreIncludeWorking, "save-first", false, "create a save point for unsaved changes before restore")
 	restoreCmd.Flags().StringVar(&restorePath, "path", "", "restore only this workspace-relative path")
 	restoreCmd.Flags().StringVar(&restoreRunPlanID, "run", "", "execute a restore preview plan")
+	restoreCmd.AddCommand(restoreDiscardCmd)
 	rootCmd.AddCommand(restoreCmd)
 }

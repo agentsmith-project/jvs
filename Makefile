@@ -16,7 +16,7 @@ override RELEASE_FUZZ_ALL_TARGETS = $(call release_fuzz_checked_shell,set -eu; t
 override RELEASE_FUZZ_TARGETS = $(filter-out $(RELEASE_FUZZ_EXCLUDE_TARGETS),$(RELEASE_FUZZ_ALL_TARGETS))
 STORY_E2E_RUN_PATTERN := ^(TestStoryE2EGate_|TestStoryLocal_|TestStoryJSON_|TestStory_PublicTransferJSON|TestStoryRepoClone|TestStorySeparated)
 
-.PHONY: build test library fuzz-tests tools lint conformance regression contract-check docs-contract ci-contract verify security sec fuzz fuzz-list test-race test-cover test-all integration release-build release-gate story-local story-json story-e2e story-juicefs-local release-gate-juicefs clean
+.PHONY: build test library fuzz-tests tools lint conformance regression contract-check docs-contract ci-contract verify security sec fuzz fuzz-list test-race test-cover test-all integration release-build release-binary-smoke release-gate story-local story-json story-e2e story-juicefs-local release-gate-juicefs clean
 
 build:
 	go build -o bin/jvs ./cmd/jvs
@@ -28,6 +28,10 @@ release-build:
 	GOOS=darwin GOARCH=amd64 go build -o bin/jvs-darwin-amd64 ./cmd/jvs
 	GOOS=darwin GOARCH=arm64 go build -o bin/jvs-darwin-arm64 ./cmd/jvs
 	GOOS=windows GOARCH=amd64 go build -o bin/jvs-windows-amd64.exe ./cmd/jvs
+
+release-binary-smoke: release-build
+	@test -x "$(CURDIR)/bin/jvs-linux-amd64"
+	PATH="$(CURDIR)/bin:$$PATH" JVS_BINARY_UNDER_TEST="$(CURDIR)/bin/jvs-linux-amd64" go test -tags conformance -count=1 -v -run '^TestStorySeparatedRestore' ./test/conformance/...
 
 tools:
 	@set -eu; \
@@ -178,7 +182,7 @@ test-all: test conformance regression fuzz
 
 integration: build conformance
 
-release-gate: tools docs-contract ci-contract test-race test-cover lint build release-build conformance library regression fuzz-tests fuzz
+release-gate: tools docs-contract ci-contract test-race test-cover lint build release-build conformance release-binary-smoke library regression fuzz-tests fuzz
 	@echo "RELEASE GATE PASSED"
 
 clean:

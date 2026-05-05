@@ -6,11 +6,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/agentsmith-project/jvs/internal/engine"
+	"github.com/agentsmith-project/jvs/internal/recovery"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/restoreplan"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
+	"github.com/agentsmith-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -329,6 +332,81 @@ func TestSeparatedControlSaveAndCleanupBlockCorruptRestorePlan(t *testing.T) {
 	}
 }
 
+func TestSeparatedControlSaveAndCleanupIgnoreResolvedRestoreResidue(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+	planID := seedSeparatedControlResolvedRestoreResidue(t, controlRoot, payloadRoot)
+
+	saveOut, err := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"save", "-m", "after resolved restore residue",
+	)
+	require.NoError(t, err, saveOut)
+
+	cleanupOut, err := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"cleanup", "preview",
+	)
+	require.NoError(t, err, cleanupOut)
+	assert.FileExists(t, filepath.Join(controlRoot, ".jvs", "restore-plans", planID+".json"))
+}
+
+func seedSeparatedControlResolvedRestoreResidue(t *testing.T, controlRoot, payloadRoot string) string {
+	t.Helper()
+
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("source\n"), 0644))
+	sourceID := saveSeparatedControlPoint(t, controlRoot, "source")
+	plan, err := restoreplan.Create(controlRoot, "main", model.SnapshotID(sourceID), model.EngineCopy, restoreplan.Options{})
+	require.NoError(t, err)
+
+	r, err := repo.OpenControlRoot(controlRoot)
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	resolved := &recovery.Plan{
+		SchemaVersion:          recovery.SchemaVersion,
+		RepoID:                 r.RepoID,
+		PlanID:                 "RP-" + plan.PlanID,
+		Status:                 recovery.StatusResolved,
+		Operation:              recovery.OperationRestore,
+		RestorePlanID:          plan.PlanID,
+		Workspace:              plan.Workspace,
+		Folder:                 plan.Folder,
+		SourceSavePoint:        plan.SourceSavePoint,
+		CreatedAt:              now,
+		UpdatedAt:              now,
+		ResolvedAt:             &now,
+		PreWorktreeState:       recovery.WorktreeState{Name: plan.Workspace, RealPath: plan.Folder},
+		Backup:                 recovery.Backup{Path: filepath.Join(filepath.Dir(plan.Folder), "restore-backup"), Scope: recovery.BackupScopeWhole, State: recovery.BackupStateRolledBack},
+		Phase:                  recovery.PhaseRestoreApplied,
+		RecommendedNextCommand: "jvs recovery status RP-" + plan.PlanID,
+	}
+	require.NoError(t, recovery.NewManager(controlRoot).Write(resolved))
+	return plan.PlanID
+}
+
+func saveSeparatedControlPoint(t *testing.T, controlRoot, message string) string {
+	t.Helper()
+
+	stdout, err := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"save", "-m", message,
+	)
+	require.NoError(t, err, stdout)
+	_, data := decodeSeparatedControlDataMap(t, stdout)
+	savePointID, ok := data["save_point_id"].(string)
+	require.True(t, ok, "save_point_id should be a string: %#v", data["save_point_id"])
+	require.NotEmpty(t, savePointID)
+	return savePointID
+}
+
 func TestSeparatedControlSaveAndCleanupBlockStaleRestorePlanEvidence(t *testing.T) {
 	base := setupSeparatedControlCLICWD(t)
 	controlRoot := filepath.Join(base, "control")
@@ -399,6 +477,237 @@ func TestSeparatedControlSaveAndCleanupBlockStaleRestorePlanEvidence(t *testing.
 			assert.Equal(t, "v3 unsaved\n", separatedOpsReadFile(t, filepath.Join(payloadRoot, "app.txt")))
 		})
 	}
+}
+
+func TestSeparatedControlRestoreDiscardClearsStalePreviewFromCleanCWD(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control root")
+	payloadRoot := filepath.Join(base, "payload")
+	cleanCWD := filepath.Join(base, "clean-cwd")
+	require.NoError(t, os.MkdirAll(cleanCWD, 0755))
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("source\n"), 0644))
+	sourceID := saveSeparatedControlPoint(t, controlRoot, "source")
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("current\n"), 0644))
+	_ = saveSeparatedControlPoint(t, controlRoot, "current")
+
+	previewOut, err := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"restore", sourceID,
+		"--discard-unsaved",
+	)
+	require.NoError(t, err, previewOut)
+	_, preview := decodeSeparatedControlDataMap(t, previewOut)
+	planID, _ := preview["plan_id"].(string)
+	require.NotEmpty(t, planID)
+	require.Equal(t, "jvs --control-root "+shellQuoteArg(controlRoot)+" --workspace main restore --run "+planID, preview["run_command"])
+	require.FileExists(t, filepath.Join(controlRoot, ".jvs", "restore-plans", planID+".json"))
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("stale local work\n"), 0644))
+
+	stdout, stderr, exitCode := runContractSubprocess(t, cleanCWD,
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"restore", "discard", planID,
+	)
+	require.Equal(t, 0, exitCode, "restore discard failed\nstdout=%s\nstderr=%s", stdout, stderr)
+	env, data := decodeSeparatedControlDataMap(t, stdout)
+	require.True(t, env.OK, stdout)
+	assert.Equal(t, "restore discard", env.Command)
+	assert.Equal(t, "discard", data["mode"])
+	assert.Equal(t, planID, data["plan_id"])
+	assert.Equal(t, payloadRoot, data["folder"])
+	assert.Equal(t, "main", data["workspace"])
+	assert.Equal(t, true, data["plan_discarded"])
+	assert.Equal(t, false, data["files_changed"])
+	require.NoFileExists(t, filepath.Join(controlRoot, ".jvs", "restore-plans", planID+".json"))
+	assert.Equal(t, "stale local work\n", separatedOpsReadFile(t, filepath.Join(payloadRoot, "app.txt")))
+
+	saveOut, err := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"save", "-m", "after discard",
+	)
+	require.NoError(t, err, saveOut)
+}
+
+func TestSeparatedControlRestoreRunAndDiscardBlockActiveRecoveryIdentityMismatch(t *testing.T) {
+	t.Run("restore run", func(t *testing.T) {
+		base := setupSeparatedControlCLICWD(t)
+		controlRoot := filepath.Join(base, "control")
+		payloadRoot := filepath.Join(base, "payload")
+		initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+		require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("source\n"), 0644))
+		sourceID := saveSeparatedControlPoint(t, controlRoot, "source")
+		require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("current\n"), 0644))
+		_ = saveSeparatedControlPoint(t, controlRoot, "current")
+
+		previewOut, err := executeCommand(createTestRootCmd(),
+			"--json",
+			"--control-root", controlRoot,
+			"--workspace", "main",
+			"restore", sourceID,
+		)
+		require.NoError(t, err, previewOut)
+		_, preview := decodeSeparatedControlDataMap(t, previewOut)
+		planID, _ := preview["plan_id"].(string)
+		require.NotEmpty(t, planID)
+		seedSeparatedControlMismatchedActiveRecoveryPlan(t, base, controlRoot, payloadRoot, model.SnapshotID(sourceID))
+
+		stdout, stderr, exitCode := runContractSubprocess(t, base,
+			"--json",
+			"--control-root", controlRoot,
+			"--workspace", "main",
+			"restore", "--run", planID,
+		)
+
+		env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrRecoveryBlocking.Code)
+		assert.Contains(t, env.Error.Message, "Recovery plan RP-separated-identity-mismatch cannot be inspected safely")
+		assert.Contains(t, env.Error.Hint, "doctor --strict --json")
+		assert.Equal(t, "current\n", separatedOpsReadFile(t, filepath.Join(payloadRoot, "app.txt")))
+		assert.FileExists(t, filepath.Join(controlRoot, ".jvs", "restore-plans", planID+".json"))
+	})
+
+	t.Run("restore discard", func(t *testing.T) {
+		base := setupSeparatedControlCLICWD(t)
+		controlRoot := filepath.Join(base, "control")
+		payloadRoot := filepath.Join(base, "payload")
+		initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+		require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("source\n"), 0644))
+		sourceID := saveSeparatedControlPoint(t, controlRoot, "source")
+		require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("current\n"), 0644))
+		_ = saveSeparatedControlPoint(t, controlRoot, "current")
+
+		previewOut, err := executeCommand(createTestRootCmd(),
+			"--json",
+			"--control-root", controlRoot,
+			"--workspace", "main",
+			"restore", sourceID,
+			"--discard-unsaved",
+		)
+		require.NoError(t, err, previewOut)
+		_, preview := decodeSeparatedControlDataMap(t, previewOut)
+		planID, _ := preview["plan_id"].(string)
+		require.NotEmpty(t, planID)
+		require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("stale local work\n"), 0644))
+		seedSeparatedControlMismatchedActiveRecoveryPlan(t, base, controlRoot, payloadRoot, model.SnapshotID(sourceID))
+
+		stdout, stderr, exitCode := runContractSubprocess(t, base,
+			"--json",
+			"--control-root", controlRoot,
+			"--workspace", "main",
+			"restore", "discard", planID,
+		)
+
+		env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrRecoveryBlocking.Code)
+		assert.Contains(t, env.Error.Message, "Recovery plan RP-separated-identity-mismatch cannot be inspected safely")
+		assert.Contains(t, env.Error.Hint, "doctor --strict --json")
+		assert.Equal(t, "stale local work\n", separatedOpsReadFile(t, filepath.Join(payloadRoot, "app.txt")))
+		assert.FileExists(t, filepath.Join(controlRoot, ".jvs", "restore-plans", planID+".json"))
+	})
+}
+
+func TestSeparatedControlMutationGuardNamesUnsafeRestorePlansDirectory(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("content\n"), 0644))
+	restorePlansDir := filepath.Join(controlRoot, ".jvs", "restore-plans")
+	require.NoError(t, os.RemoveAll(restorePlansDir))
+	require.NoError(t, os.WriteFile(restorePlansDir, []byte("not a directory\n"), 0644))
+
+	stdout, stderr, exitCode := runContractSubprocess(t, base,
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"save", "-m", "blocked",
+	)
+
+	env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrRecoveryBlocking.Code)
+	assert.Contains(t, env.Error.Message, "restore plans")
+	assert.NotContains(t, env.Error.Message, "recovery plans: Restore plans directory")
+	assert.NotContains(t, env.Error.Message, ".jvs/restore-plans")
+	assert.Contains(t, env.Error.Hint, "doctor --strict --json")
+}
+
+func seedSeparatedControlMismatchedActiveRecoveryPlan(t *testing.T, base, controlRoot, payloadRoot string, sourceID model.SnapshotID) {
+	t.Helper()
+
+	r, err := repo.OpenControlRoot(controlRoot)
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	plan := &recovery.Plan{
+		SchemaVersion:          recovery.SchemaVersion,
+		RepoID:                 r.RepoID,
+		PlanID:                 "RP-separated-identity-mismatch",
+		Status:                 recovery.StatusActive,
+		Operation:              recovery.OperationRestore,
+		RestorePlanID:          "restore-preview",
+		Workspace:              "feature",
+		Folder:                 payloadRoot,
+		SourceSavePoint:        sourceID,
+		CreatedAt:              now,
+		UpdatedAt:              now,
+		PreWorktreeState:       recovery.WorktreeState{Name: "main", RealPath: payloadRoot},
+		Backup:                 recovery.Backup{Path: filepath.Join(base, "backup"), Scope: recovery.BackupScopeWhole, State: recovery.BackupStatePending},
+		Phase:                  recovery.PhasePending,
+		RecommendedNextCommand: "jvs recovery status RP-separated-identity-mismatch",
+	}
+	require.NoError(t, recovery.NewManager(controlRoot).Write(plan))
+}
+
+func TestSeparatedControlRestoreDecisionNextCommandsIncludeExplicitSelector(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control root")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("source\n"), 0644))
+	sourceID := saveSeparatedControlPoint(t, controlRoot, "source")
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("unsaved\n"), 0644))
+
+	stdout, err := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"restore", sourceID,
+	)
+	require.NoError(t, err, stdout)
+	_, data := decodeSeparatedControlDataMap(t, stdout)
+	nextCommands, ok := data["next_commands"].([]any)
+	require.True(t, ok, "next_commands should be present for decision preview: %#v", data)
+	prefix := "jvs --control-root " + shellQuoteArg(controlRoot) + " --workspace main restore " + sourceID
+	assert.Contains(t, nextCommands, prefix+" --save-first")
+	assert.Contains(t, nextCommands, prefix+" --discard-unsaved")
+	assert.NotContains(t, nextCommands, "jvs restore "+sourceID+" --save-first")
+	assert.NotContains(t, nextCommands, "jvs restore "+sourceID+" --discard-unsaved")
+}
+
+func TestSeparatedControlRestorePathCandidateNextCommandIncludesExplicitSelector(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control root")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "notes.md"), []byte("v1\n"), 0644))
+	_ = saveSeparatedControlPoint(t, controlRoot, "notes present")
+	require.NoError(t, os.Remove(filepath.Join(payloadRoot, "notes.md")))
+	_ = saveSeparatedControlPoint(t, controlRoot, "notes removed")
+
+	stdout, err := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"restore", "--path", "notes.md",
+	)
+	require.NoError(t, err, stdout)
+	_, data := decodeSeparatedControlDataMap(t, stdout)
+	nextCommands, ok := data["next_commands"].([]any)
+	require.True(t, ok, "next_commands should be present for path candidates: %#v", data)
+	assert.Contains(t, nextCommands, "jvs --control-root "+shellQuoteArg(controlRoot)+" --workspace main restore <save> --path notes.md")
+	assert.NotContains(t, nextCommands, "jvs restore <save> --path notes.md")
 }
 
 func TestSeparatedControlSaveSymlinkEscapeFailsClosedWithStableCode(t *testing.T) {

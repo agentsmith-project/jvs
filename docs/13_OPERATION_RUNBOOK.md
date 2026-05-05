@@ -31,14 +31,40 @@ The external control root doctor entry is `doctor --strict --json` only.
 external control roots. Use strict JSON diagnostics to decide whether to
 resume recovery, roll back recovery, restore missing roots, or escalate.
 
-Pending restore/recovery state blocks mutation. Resolve it before starting
-save, restore run, cleanup run, clone publish, or lifecycle commands:
+Pending restore previews and active or malformed recovery state block mutation
+before save, cleanup run, clone publish, and lifecycle commands. Pending
+restore previews close through `restore --run <plan-id>` after operator review:
+
+```bash
+jvs --control-root C --workspace main restore --run <plan-id>
+```
+
+Stale restore previews close through `restore discard <restore-plan-id>`:
+
+```bash
+jvs --control-root C --workspace main restore discard <restore-plan-id>
+```
+
+Active recovery plans close through `recovery status`, `recovery resume`, or
+`recovery rollback`:
 
 ```bash
 jvs --control-root C --workspace main recovery status
 jvs --control-root C --workspace main recovery resume <recovery-plan>
 jvs --control-root C --workspace main recovery rollback <recovery-plan>
 ```
+
+Do not treat a pending or stale restore preview as an active recovery plan.
+Successful `restore --run` leaves no active recovery, and completed plan
+residue is non-blocking for `recovery status`, `doctor --strict --json`, and
+`repo clone`. Do not read or delete private control data files to decide
+whether a workspace is usable; use the public commands above and the strict
+doctor report.
+
+Malformed restore state is diagnosed through public `recovery status` and
+`doctor --strict --json` output. Do not ask callers to remove private control
+files; preserve the diagnostics and escalate if strict doctor cannot classify
+the state.
 
 An external workspace locator is for human discovery only. It can help a person
 find the intended control root and workspace name, but it is not runtime
@@ -111,9 +137,15 @@ variants fail closed.
 7. Record the plan ID, final command, and outcome in the operations log.
 
 Do not start another restore in that workspace while an active recovery plan
-exists. Do not start any other mutation in that workspace while pending
-restore/recovery state exists. Active recovery plans protect referenced source
-save points from cleanup until resolved.
+exists. Do not start any other mutation in that workspace while pending restore
+preview or active recovery state exists. A pending preview closes through
+`jvs restore --run <plan-id>`; active recovery uses `jvs recovery status`,
+`resume`, or `rollback`. Active recovery plans protect referenced source save
+points from cleanup until resolved.
+
+After a successful `jvs restore --run`, `jvs recovery status` should have no
+active recovery to resolve. Any retained completed plan record is JVS-owned
+control data and should not be removed by platform scripts.
 
 ## Restore Drill
 
@@ -125,7 +157,7 @@ Run this drill for release qualification and after backup/migration changes.
    jvs restore <older-save>
    ```
 3. Confirm the output says preview only, no files changed, history will not
-   change, and includes `Run: jvs restore --run <plan-id>`.
+   change, and includes the restore run command for the selected workspace.
 4. Run the plan:
    ```bash
    jvs restore --run <plan-id>
@@ -140,7 +172,8 @@ Run this drill for release qualification and after backup/migration changes.
 7. Confirm `jvs status` records restored path provenance.
 8. Simulate an interrupted restore in a controlled test environment or use a
    stored failure fixture; prove `jvs recovery status`, `resume`, and
-   `rollback` close the loop.
+   `rollback` close the active recovery loop. A normal pending preview is
+   closed by `jvs restore --run <plan-id>`.
 
 ## Migration Runbook
 

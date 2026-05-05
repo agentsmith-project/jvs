@@ -109,6 +109,14 @@ second product model.
   `jvs --json --control-root C --workspace main doctor --strict`.
   `--repair-runtime` is rejected for this selector and is not an external
   control root repair path.
+- For external control roots, successful restore run leaves no active recovery.
+  Completed restore plan residue is non-blocking for `jvs recovery status`,
+  `jvs doctor --strict`, and `jvs repo clone`. Pending, active, or malformed
+  restore/recovery state must be reported through `jvs recovery status`,
+  `jvs doctor --strict`, or the blocked command's public diagnostics.
+- Any public `run_command`, `next_commands`, or `recommended_next_command`
+  emitted while targeting an external control root must be copyable from a
+  clean current directory and include `--control-root C --workspace main`.
 - External control root repo clone uses a main-only target folder plus target
   control root:
   `jvs --control-root C --workspace main repo clone <target-folder> --target-control-root TC --save-points main`.
@@ -641,12 +649,43 @@ Required preview JSON `data` fields:
 - `files_changed: false`
 - `run_command`
 
-### `jvs restore --run <plan-id> [--json]`
+For external control roots, `run_command` and any `next_commands` are full
+commands that include `--control-root C --workspace main`.
+
+### `jvs restore --run <restore-plan-id> [--json]`
 
 Execute a previously created restore preview plan. Run must reload the plan and
 revalidate the expected target state before writing files. Runtime options are
 fixed by the preview plan; changing `--save-first`, `--discard-unsaved`, or
 `--path` requires a new preview.
+
+On success, a successful restore run leaves no active recovery and completed
+restore plan residue is non-blocking. Only pending, stale, active, or malformed
+restore/recovery state blocks mutation or clone publish; `jvs recovery status`,
+`jvs doctor --strict`, and a blocked `jvs repo clone` must report a public
+diagnostic entry instead of requiring callers to inspect control data files.
+External `jvs recovery status --json` uses `restore_state` for pending or
+stale restore preview diagnostics, including `pending_restore_preview`,
+`stale_restore_preview`, and `blocking` semantics.
+
+### `jvs restore discard <restore-plan-id>` [--json]
+
+Discard a restore preview plan without changing managed files or workspace
+history. This is the public cleanup entry for a stale restore preview, including
+external control root previews whose workspace folder changed after preview.
+Callers must not remove private control data files directly.
+
+Required JSON `data` fields:
+
+- `mode: "discard"`
+- `plan_id`
+- `folder`
+- `workspace`
+- `source_save_point`
+- `path` for path restore plans
+- `plan_discarded: true`
+- `files_changed: false`
+- `history_changed: false`
 
 Required run JSON fields for whole-workspace restore:
 
@@ -692,6 +731,39 @@ Required run JSON fields for path restore:
 List active recovery plans or show one plan. A recovery plan records the
 restore plan, workspace, folder, source save point, optional path, last error,
 backup availability, and recommended next command.
+
+Successful restore run leaves no active recovery. Completed restore plan
+residue is non-blocking and is not an active recovery plan.
+
+For external control roots, status JSON may include `data.restore_state`
+(`restore_state`) when a
+restore preview state is relevant and no active recovery detail is requested.
+The object fields are:
+
+- `state`
+- `blocking`
+- `plan_id`
+- `recovery_plan_id`
+- `message`
+- `recommended_next_command`
+
+Stable `restore_state.state` enum values and blocking semantics:
+
+- `stable`: non-blocking; normally omitted.
+- `pending_restore_preview`: blocking; the preview is still runnable and the
+  recommended next command is `restore --run <restore-plan-id>`.
+- `stale_restore_preview`: blocking; the workspace folder changed after
+  preview and the recommended next command is
+  `restore discard <restore-plan-id>`.
+- `active_recovery`: blocking; surfaced through `plans[]` or recovery detail,
+  with `recovery status`, `recovery resume`, or `recovery rollback` as the next
+  public commands.
+- `completed_restore_residue`: non-blocking; normally omitted.
+- `malformed_blocking`: blocking; `recovery status` fails closed with public
+  diagnostics and points to `doctor --strict --json`.
+
+For external control roots, `recommended_next_command` must include
+`--control-root C --workspace main`.
 
 ### `jvs recovery resume <recovery-plan> [--json]`
 

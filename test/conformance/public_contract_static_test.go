@@ -902,7 +902,8 @@ func TestDocs_OperatorDocsDocumentExternalControlRoot(t *testing.T) {
 		"doctor --strict --json",
 		"`--repair-runtime`",
 		"fail closed",
-		"Pending restore/recovery state blocks mutation",
+		"Pending restore previews close through `restore --run <plan-id>`",
+		"Active recovery plans close through `recovery status`, `recovery resume`, or `recovery rollback`",
 		"external workspace locator",
 		"human discovery",
 		"not runtime authority",
@@ -928,6 +929,57 @@ func TestDocs_OperatorDocsDocumentExternalControlRoot(t *testing.T) {
 		"Restore to the same control data location",
 	} {
 		requireReleaseReadinessText(t, "external control root migration boundary", normalizedMigration, required)
+	}
+}
+
+func TestDocs_ExternalControlRootRestoreRecoveryPublicContract(t *testing.T) {
+	cliDoc := "docs/02_CLI_SPEC.md"
+	cliBody := readRepoFile(t, cliDoc)
+	restoreSection := strings.Join(strings.Fields(markdownSectionByHeading(t, cliDoc, cliBody, "## Restore")), " ")
+	for _, required := range []string{
+		"successful restore run leaves no active recovery",
+		"completed restore plan residue is non-blocking",
+		"Only pending, stale, active, or malformed restore/recovery state blocks",
+		"`jvs restore discard <restore-plan-id>`",
+		"`restore_state`",
+		"`pending_restore_preview`",
+		"`stale_restore_preview`",
+		"`blocking`",
+		"`jvs recovery status`",
+		"`jvs doctor --strict`",
+		"`jvs repo clone`",
+	} {
+		requireReleaseReadinessText(t, "restore recovery public contract", restoreSection, required)
+	}
+
+	runbookDoc := "docs/13_OPERATION_RUNBOOK.md"
+	runbookBody := readRepoFile(t, runbookDoc)
+	operatorSection := strings.Join(strings.Fields(markdownSectionByHeading(t, runbookDoc, runbookBody, "## External Control Root Operator Entry")), " ")
+	for _, required := range []string{
+		"Pending restore previews close through `restore --run <plan-id>`",
+		"Stale restore previews close through `restore discard <restore-plan-id>`",
+		"Active recovery plans close through `recovery status`, `recovery resume`, or `recovery rollback`",
+		"Malformed restore state is diagnosed through public `recovery status` and `doctor --strict --json` output",
+		"Successful `restore --run` leaves no active recovery",
+		"completed plan residue is non-blocking",
+		"Do not read or delete private control data files",
+		"`recovery status`",
+		"`doctor --strict --json`",
+		"`repo clone`",
+	} {
+		requireReleaseReadinessText(t, "external control root restore recovery runbook", operatorSection, required)
+	}
+
+	handoffDoc := "docs/26_EXTERNAL_CONTROL_METADATA_PRODUCT_PLAN.md"
+	handoffBody := readRepoFile(t, handoffDoc)
+	normalizedHandoff := strings.Join(strings.Fields(handoffBody), " ")
+	for _, required := range []string{
+		"successful restore run leaves no active recovery",
+		"completed restore plan residue is non-blocking",
+		"pending、stale、active 或 malformed restore/recovery state",
+		"restore discard <restore-plan-id>",
+	} {
+		requireReleaseReadinessText(t, "external control root restore recovery handoff", normalizedHandoff, required)
 	}
 }
 

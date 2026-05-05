@@ -3,14 +3,13 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/agentsmith-project/jvs/internal/recovery"
+	"github.com/agentsmith-project/jvs/internal/recoverystate"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/restore"
 	"github.com/agentsmith-project/jvs/internal/restoreplan"
@@ -125,8 +124,18 @@ type publicRecoveryPlan struct {
 }
 
 type publicRecoveryStatusList struct {
-	Mode  string               `json:"mode"`
-	Plans []publicRecoveryPlan `json:"plans"`
+	Mode         string               `json:"mode"`
+	Plans        []publicRecoveryPlan `json:"plans"`
+	RestoreState *publicRecoveryState `json:"restore_state,omitempty"`
+}
+
+type publicRecoveryState struct {
+	State                  string `json:"state"`
+	Blocking               bool   `json:"blocking"`
+	PlanID                 string `json:"plan_id,omitempty"`
+	RecoveryPlanID         string `json:"recovery_plan_id,omitempty"`
+	Message                string `json:"message,omitempty"`
+	RecommendedNextCommand string `json:"recommended_next_command,omitempty"`
 }
 
 type publicRecoveryActionResult struct {
@@ -152,9 +161,24 @@ type publicRecoveryActionResult struct {
 func recoveryStatusList(repoRoot string, separated *repo.SeparatedContext) (publicRecoveryStatusList, error) {
 	plans, err := recovery.NewManager(repoRoot).List()
 	if err != nil {
+		if separated != nil {
+			return publicRecoveryStatusList{}, separatedRecoveryStateStatusInspectError(separated, err)
+		}
 		return publicRecoveryStatusList{}, err
 	}
 	result := publicRecoveryStatusList{Mode: "status", Plans: []publicRecoveryPlan{}}
+	if separated != nil {
+		state, err := recoverystate.Inspect(repoRoot, separated.Workspace, separated)
+		if err != nil {
+			return publicRecoveryStatusList{}, err
+		}
+		if state.Kind == recoverystate.KindMalformedBlocking {
+			return publicRecoveryStatusList{}, separatedRecoveryStateStatusError(separated, state)
+		}
+		if state.Kind == recoverystate.KindPendingRestorePreview || state.Kind == recoverystate.KindStaleRestorePreview {
+			result.RestoreState = publicRecoveryStateFromState(state, separated)
+		}
+	}
 	for _, plan := range plans {
 		if plan.Status != recovery.StatusActive {
 			continue
@@ -162,7 +186,7 @@ func recoveryStatusList(repoRoot string, separated *repo.SeparatedContext) (publ
 		if err := validateSeparatedRecoveryStatusPlan(repoRoot, &plan, separated); err != nil {
 			return publicRecoveryStatusList{}, err
 		}
-		result.Plans = append(result.Plans, publicRecoveryPlanFromPlan(repoRoot, &plan))
+		result.Plans = append(result.Plans, publicRecoveryPlanFromPlan(repoRoot, &plan, separated))
 	}
 	return result, nil
 }
@@ -175,7 +199,7 @@ func recoveryStatusDetail(repoRoot, planID string, separated *repo.SeparatedCont
 	if err := validateSeparatedRecoveryStatusPlan(repoRoot, plan, separated); err != nil {
 		return publicRecoveryPlan{}, err
 	}
-	return publicRecoveryPlanFromPlan(repoRoot, plan), nil
+	return publicRecoveryPlanFromPlan(repoRoot, plan, separated), nil
 }
 
 func validateSeparatedRecoveryStatusPlan(repoRoot string, plan *recovery.Plan, separated *repo.SeparatedContext) error {
@@ -201,7 +225,7 @@ func validateSeparatedRecoveryStatusPlan(repoRoot string, plan *recovery.Plan, s
 	return nil
 }
 
-func publicRecoveryPlanFromPlan(repoRoot string, plan *recovery.Plan) publicRecoveryPlan {
+func publicRecoveryPlanFromPlan(repoRoot string, plan *recovery.Plan, separated *repo.SeparatedContext) publicRecoveryPlan {
 	var resolvedAt *string
 	if plan.ResolvedAt != nil {
 		value := plan.ResolvedAt.Format(time.RFC3339)
@@ -217,7 +241,7 @@ func publicRecoveryPlanFromPlan(repoRoot string, plan *recovery.Plan) publicReco
 		Workspace:              plan.Workspace,
 		SourceSavePoint:        string(plan.SourceSavePoint),
 		Path:                   plan.Path,
-		RecommendedNextCommand: publicRecoveryRecommendedNextCommand(repoRoot, plan, backupStatus),
+		RecommendedNextCommand: publicRecoveryRecommendedNextCommand(repoRoot, plan, backupStatus, separated),
 		LastError:              recoveryVocabulary(plan.LastError),
 		BackupAvailable:        backupStatus.Available,
 		ResolvedAt:             resolvedAt,
@@ -225,7 +249,7 @@ func publicRecoveryPlanFromPlan(repoRoot string, plan *recovery.Plan) publicReco
 	}
 }
 
-func publicRecoveryRecommendedNextCommand(repoRoot string, plan *recovery.Plan, backupStatus recoveryBackupSafetyStatus) string {
+func publicRecoveryRecommendedNextCommand(repoRoot string, plan *recovery.Plan, backupStatus recoveryBackupSafetyStatus, separated *repo.SeparatedContext) string {
 	if plan == nil || plan.Status != recovery.StatusActive {
 		return ""
 	}
@@ -237,10 +261,10 @@ func publicRecoveryRecommendedNextCommand(repoRoot string, plan *recovery.Plan, 
 		return ""
 	}
 	if backupStatus.Available {
-		return "jvs recovery resume " + plan.PlanID
+		return selectedJVSCommand(separated, "recovery resume "+plan.PlanID)
 	}
 	if backupStatus.Missing && recovery.BackupMissingIsSafe(plan) && state.State == recovery.RecognizedPreMutation {
-		return "jvs recovery rollback " + plan.PlanID
+		return selectedJVSCommand(separated, "recovery rollback "+plan.PlanID)
 	}
 	return ""
 }
@@ -713,140 +737,87 @@ func enforceSeparatedRecoveryMutationGuard(repoRoot, workspaceName string, separ
 	if separated == nil {
 		return nil
 	}
-	restorePlanID, err := firstPendingSeparatedRestorePlan(repoRoot, workspaceName, separated)
+	state, err := recoverystate.Inspect(repoRoot, workspaceName, separated)
 	if err != nil {
-		return separatedRecoveryMutationInspectError(separated, operation, "restore plans", err)
+		return separatedRecoveryMutationInspectError(separated, operation, "recovery state", err)
 	}
-	if restorePlanID != "" {
-		return separatedRecoveryMutationBlockingError(separated, operation, "restore plan", restorePlanID, "restore --run "+restorePlanID)
+	if !state.Blocking() {
+		return nil
 	}
-
-	recoveryPlanID, err := firstActiveRecoveryPlan(repoRoot, workspaceName)
-	if err != nil {
-		return separatedRecoveryMutationInspectError(separated, operation, "recovery plans", err)
-	}
-	if recoveryPlanID != "" {
-		return separatedRecoveryMutationBlockingError(separated, operation, "recovery plan", recoveryPlanID, "recovery status "+recoveryPlanID)
+	switch state.Kind {
+	case recoverystate.KindPendingRestorePreview, recoverystate.KindStaleRestorePreview:
+		return separatedRecoveryMutationBlockingError(separated, operation, "restore plan", state.PlanID, state.NextCommand)
+	case recoverystate.KindActiveRecovery:
+		return separatedRecoveryMutationBlockingError(separated, operation, "recovery plan", state.RecoveryPlanID, state.NextCommand)
+	case recoverystate.KindMalformedBlocking:
+		return separatedRecoveryMutationStateError(separated, operation, state)
 	}
 	return nil
 }
 
-func firstPendingSeparatedRestorePlan(repoRoot, workspaceName string, separated *repo.SeparatedContext) (string, error) {
-	restorePlansDir := filepath.Join(repoRoot, repo.JVSDirName, "restore-plans")
-	entries, err := os.ReadDir(restorePlansDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", err
+func publicRecoveryStateFromState(state recoverystate.State, separated *repo.SeparatedContext) *publicRecoveryState {
+	result := &publicRecoveryState{
+		State:          string(state.Kind),
+		Blocking:       state.Blocking(),
+		PlanID:         state.PlanID,
+		RecoveryPlanID: state.RecoveryPlanID,
+		Message:        recoveryVocabulary(state.Message),
 	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.Type()&os.ModeSymlink != 0 {
-			return "", fmt.Errorf("restore plan entry %s is a symlink", name)
-		}
-		if entry.IsDir() {
-			return "", fmt.Errorf("restore plan entry %s is a directory", name)
-		}
-		if !strings.HasSuffix(name, ".json") {
-			continue
-		}
-		planID := strings.TrimSuffix(name, ".json")
-		plan, err := restoreplan.Load(repoRoot, planID)
-		if err != nil {
-			return "", fmt.Errorf("restore plan %s cannot be loaded: %w", planID, err)
-		}
-		if !plan.IsRunnable() {
-			continue
-		}
-		if err := validateSeparatedPayloadSymlinkBoundaryForRestorePlan(separated, plan); err != nil {
-			return "", err
-		}
-		pending, err := restorePlanTargetStillPending(repoRoot, workspaceName, plan)
-		if err != nil {
-			return "", err
-		}
-		if pending {
-			return plan.PlanID, nil
-		}
+	if command := state.RecommendedJVSCommandFor(separated); command != "" {
+		result.RecommendedNextCommand = command
 	}
-	return "", nil
-}
-
-func restorePlanTargetStillPending(repoRoot, workspaceName string, plan *restoreplan.Plan) (bool, error) {
-	var err error
-	switch plan.EffectiveScope() {
-	case restoreplan.ScopeWhole:
-		err = restoreplan.ValidateTarget(repoRoot, workspaceName, plan)
-	case restoreplan.ScopePath:
-		err = restoreplan.ValidatePathTarget(repoRoot, workspaceName, plan)
-	default:
-		return false, fmt.Errorf("restore plan scope is not supported")
-	}
-	if err == nil {
-		return true, nil
-	}
-	if strings.Contains(err.Error(), "folder changed since preview") {
-		completed, completionErr := restorePlanCompletedByResolvedRecoveryPlan(repoRoot, plan)
-		if completionErr != nil {
-			return false, completionErr
-		}
-		if completed {
-			return false, nil
-		}
-		return true, nil
-	}
-	return false, err
-}
-
-func restorePlanCompletedByResolvedRecoveryPlan(repoRoot string, restorePlan *restoreplan.Plan) (bool, error) {
-	if restorePlan == nil || strings.TrimSpace(restorePlan.PlanID) == "" {
-		return false, nil
-	}
-	plans, err := recovery.NewManager(repoRoot).List()
-	if err != nil {
-		return false, err
-	}
-	for _, plan := range plans {
-		if resolvedRecoveryMatchesRestorePlan(plan, restorePlan) {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-func resolvedRecoveryMatchesRestorePlan(plan recovery.Plan, restorePlan *restoreplan.Plan) bool {
-	if restorePlan == nil || plan.Status != recovery.StatusResolved || plan.RestorePlanID != restorePlan.PlanID {
-		return false
-	}
-	if plan.Workspace != restorePlan.Workspace || plan.Folder != restorePlan.Folder || plan.SourceSavePoint != restorePlan.SourceSavePoint || plan.Path != restorePlan.Path {
-		return false
-	}
-	switch restorePlan.EffectiveScope() {
-	case restoreplan.ScopeWhole:
-		return plan.Operation == recovery.OperationRestore
-	case restoreplan.ScopePath:
-		return plan.Operation == recovery.OperationRestorePath
-	default:
-		return false
-	}
-}
-
-func firstActiveRecoveryPlan(repoRoot, workspaceName string) (string, error) {
-	plans, err := recovery.NewManager(repoRoot).ActiveForWorkspace(workspaceName)
-	if err != nil {
-		return "", err
-	}
-	if len(plans) == 0 {
-		return "", nil
-	}
-	return plans[0].PlanID, nil
+	return result
 }
 
 func separatedRecoveryMutationInspectError(separated *repo.SeparatedContext, operation, state string, err error) error {
 	return errclass.ErrRecoveryBlocking.
 		WithMessagef("cannot %s while external control root recovery state cannot be inspected: %s: %v", operation, state, recoveryVocabulary(err.Error())).
 		WithHint(separatedSelectorHint(separated.ControlRoot, separated.Workspace, "doctor --strict --json"))
+}
+
+func separatedRecoveryMutationStateError(separated *repo.SeparatedContext, operation string, state recoverystate.State) error {
+	return errclass.ErrRecoveryBlocking.
+		WithMessagef("cannot %s while external control root recovery state cannot be inspected: %s: %s", operation, recoveryStateCollection(state), recoveryVocabulary(state.Message)).
+		WithHint(separatedSelectorHint(separated.ControlRoot, separated.Workspace, state.NextCommand))
+}
+
+func separatedRecoveryStateStatusError(separated *repo.SeparatedContext, state recoverystate.State) error {
+	if err := separatedRecoveryStateBoundaryError(separated, state); err != nil {
+		return err
+	}
+	return errclass.ErrRecoveryBlocking.
+		WithMessage(recoveryVocabulary(state.Message)).
+		WithHint(separatedSelectorHint(separated.ControlRoot, separated.Workspace, state.NextCommand))
+}
+
+func separatedRecoveryStateBoundaryError(separated *repo.SeparatedContext, state recoverystate.State) error {
+	var jvsErr *errclass.JVSError
+	if !errors.As(state.Cause, &jvsErr) || jvsErr.Code != errclass.ErrPathBoundaryEscape.Code {
+		return nil
+	}
+	message := strings.TrimSpace(jvsErr.Message)
+	if message == "" {
+		message = state.Cause.Error()
+	}
+	return errclass.ErrPathBoundaryEscape.
+		WithMessage(recoveryVocabulary(message)).
+		WithHint(separatedSelectorHint(separated.ControlRoot, separated.Workspace, "doctor --strict --json"))
+}
+
+func separatedRecoveryStateStatusInspectError(separated *repo.SeparatedContext, err error) error {
+	return errclass.ErrRecoveryBlocking.
+		WithMessagef("Recovery state cannot be inspected safely: %s.", recoveryVocabulary(err.Error())).
+		WithHint(separatedSelectorHint(separated.ControlRoot, separated.Workspace, "doctor --strict --json"))
+}
+
+func recoveryStateCollection(state recoverystate.State) string {
+	if state.Collection != "" {
+		return state.Collection
+	}
+	if state.PlanID != "" {
+		return "restore plans"
+	}
+	return "recovery plans"
 }
 
 func separatedRecoveryMutationBlockingError(separated *repo.SeparatedContext, operation, kind, planID, nextCommand string) error {
@@ -877,6 +848,17 @@ func recoveryBackupStatus(repoRoot string, plan *recovery.Plan) recoveryBackupSa
 
 func printRecoveryStatusList(result publicRecoveryStatusList) {
 	if len(result.Plans) == 0 {
+		if result.RestoreState != nil && result.RestoreState.Blocking {
+			fmt.Println("Pending restore state:")
+			fmt.Printf("  Status: %s\n", result.RestoreState.State)
+			if result.RestoreState.PlanID != "" {
+				fmt.Printf("  Restore plan: %s\n", result.RestoreState.PlanID)
+			}
+			if result.RestoreState.RecommendedNextCommand != "" {
+				fmt.Printf("  Recommended next command: %s\n", result.RestoreState.RecommendedNextCommand)
+			}
+			return
+		}
 		fmt.Println("No active recovery plans.")
 		return
 	}
@@ -1075,6 +1057,20 @@ func recoveryError(err error) error {
 
 func recoveryVocabulary(value string) string {
 	replacer := strings.NewReplacer(
+		"workspace registry", "control data",
+		"Workspace registry", "Control data",
+		"registry has", "control data records",
+		"Registry has", "Control data records",
+		"payload root", "workspace folder",
+		"payload boundary", "workspace boundary",
+		"payload symlink", "workspace folder symlink",
+		"payload", "workspace folder",
+		".jvs/restore-plans", "restore plans",
+		".jvs/recovery-plans", "recovery plans",
+		".jvs", "control data",
+		"control leaf", "control data entry",
+		"control directory", "control data directory",
+		"control path", "control data path",
 		"checkpoints", "save points",
 		"checkpoint", "save point",
 		"snapshots", "save points",

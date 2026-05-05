@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/agentsmith-project/jvs/internal/lifecycle"
-	"github.com/agentsmith-project/jvs/internal/recovery"
+	"github.com/agentsmith-project/jvs/internal/recoverystate"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/agentsmith-project/jvs/pkg/fsutil"
@@ -17,10 +17,11 @@ import (
 )
 
 type StrictCheck struct {
-	Name      string  `json:"name"`
-	Status    string  `json:"status"`
-	ErrorCode *string `json:"error_code"`
-	Message   string  `json:"message"`
+	Name                   string  `json:"name"`
+	Status                 string  `json:"status"`
+	ErrorCode              *string `json:"error_code"`
+	Message                string  `json:"message"`
+	RecommendedNextCommand string  `json:"recommended_next_command,omitempty"`
 }
 
 type SeparatedStrictResult struct {
@@ -91,7 +92,7 @@ func CheckSeparatedStrict(req repo.SeparatedContextRequest) (*SeparatedStrictRes
 	checkSeparatedPathBoundary(result, ctx.Repo, ctx.Workspace, ctx.PayloadRoot)
 	checkSeparatedPermissions(result, ctx.Repo.Root, ctx.PayloadRoot)
 	checkSeparatedActiveOperation(result, ctx.Repo.Root)
-	checkSeparatedRecoveryState(result, ctx.Repo.Root)
+	checkSeparatedRecoveryState(result, ctx)
 
 	if !separatedStrictChecksHealthy(result.Checks) {
 		result.Healthy = false
@@ -462,60 +463,28 @@ func separatedCleanupPlanState(controlRoot string) (string, error) {
 	return "", nil
 }
 
-func checkSeparatedRecoveryState(result *SeparatedStrictResult, controlRoot string) {
-	if message, err := separatedRestorePlanState(controlRoot); err != nil {
-		failSeparatedCheck(result, separatedCheckRecoveryState, errclass.ErrRecoveryBlocking.Code, fmt.Sprintf("Cannot inspect restore plans: %v", err))
-		return
-	} else if message != "" {
-		failSeparatedCheck(result, separatedCheckRecoveryState, errclass.ErrRecoveryBlocking.Code, message)
-		return
+func checkSeparatedRecoveryState(result *SeparatedStrictResult, ctx *separatedDoctorContext) {
+	separated := &repo.SeparatedContext{
+		Repo:        ctx.Repo,
+		ControlRoot: ctx.Repo.Root,
+		PayloadRoot: ctx.PayloadRoot,
+		Workspace:   ctx.Workspace,
 	}
-	if message, err := separatedRecoveryPlanState(controlRoot); err != nil {
-		failSeparatedCheck(result, separatedCheckRecoveryState, errclass.ErrRecoveryBlocking.Code, fmt.Sprintf("Cannot inspect recovery plans: %v", err))
-		return
-	} else if message != "" {
-		failSeparatedCheck(result, separatedCheckRecoveryState, errclass.ErrRecoveryBlocking.Code, message)
-	}
-}
-
-func separatedRestorePlanState(controlRoot string) (string, error) {
-	restorePlansDir := filepath.Join(controlRoot, repo.JVSDirName, "restore-plans")
-	entries, err := os.ReadDir(restorePlansDir)
+	state, err := recoverystate.Inspect(ctx.Repo.Root, ctx.Workspace, separated)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", err
+		failSeparatedCheck(result, separatedCheckRecoveryState, errclass.ErrRecoveryBlocking.Code, fmt.Sprintf("Cannot inspect recovery state: %v", err))
+		return
 	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Sprintf("Restore plan entry %s is a symlink.", name), nil
-		}
-		if entry.IsDir() {
-			return fmt.Sprintf("Restore plan entry %s is a directory.", name), nil
-		}
-		if strings.HasSuffix(name, ".json") {
-			return fmt.Sprintf("Restore plan %s is pending.", strings.TrimSuffix(name, ".json")), nil
-		}
+	if state.Blocking() {
+		failSeparatedCheckWithRecommended(result, separatedCheckRecoveryState, errclass.ErrRecoveryBlocking.Code, state.Message, state.RecommendedJVSCommandFor(separated))
 	}
-	return "", nil
-}
-
-func separatedRecoveryPlanState(controlRoot string) (string, error) {
-	plans, err := recovery.NewManager(controlRoot).List()
-	if err != nil {
-		return "", err
-	}
-	for _, plan := range plans {
-		if plan.Status == recovery.StatusActive {
-			return fmt.Sprintf("Recovery plan %s is active.", plan.PlanID), nil
-		}
-	}
-	return "", nil
 }
 
 func failSeparatedCheck(result *SeparatedStrictResult, name, code, message string) {
+	failSeparatedCheckWithRecommended(result, name, code, message, "")
+}
+
+func failSeparatedCheckWithRecommended(result *SeparatedStrictResult, name, code, message, recommendedNextCommand string) {
 	for i := range result.Checks {
 		if result.Checks[i].Name != name {
 			continue
@@ -523,13 +492,15 @@ func failSeparatedCheck(result *SeparatedStrictResult, name, code, message strin
 		result.Checks[i].Status = "failed"
 		result.Checks[i].ErrorCode = stringPtr(code)
 		result.Checks[i].Message = message
+		result.Checks[i].RecommendedNextCommand = recommendedNextCommand
 		return
 	}
 	result.Checks = append(result.Checks, StrictCheck{
-		Name:      name,
-		Status:    "failed",
-		ErrorCode: stringPtr(code),
-		Message:   message,
+		Name:                   name,
+		Status:                 "failed",
+		ErrorCode:              stringPtr(code),
+		Message:                message,
+		RecommendedNextCommand: recommendedNextCommand,
 	})
 }
 

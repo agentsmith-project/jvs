@@ -14,8 +14,10 @@ import (
 	"github.com/agentsmith-project/jvs/internal/engine"
 	"github.com/agentsmith-project/jvs/internal/integrity"
 	"github.com/agentsmith-project/jvs/internal/lifecycle"
+	"github.com/agentsmith-project/jvs/internal/recovery"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/repoclone"
+	"github.com/agentsmith-project/jvs/internal/restoreplan"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/internal/transfer"
 	"github.com/agentsmith-project/jvs/internal/worktree"
@@ -350,9 +352,52 @@ func TestSeparatedCloneRejectsActiveSourceStateBeforeTargetWrites(t *testing.T) 
 			code: errclass.ErrRecoveryBlocking.Code,
 		},
 		{
+			name: "restore plans directory symlink",
+			setup: func(t *testing.T, controlRoot string) {
+				plansDir := filepath.Join(controlRoot, ".jvs", "restore-plans")
+				require.NoError(t, os.RemoveAll(plansDir))
+				outsideDir := filepath.Join(filepath.Dir(controlRoot), "outside-restore-plans")
+				require.NoError(t, os.MkdirAll(outsideDir, 0755))
+				if err := os.Symlink(outsideDir, plansDir); err != nil {
+					t.Skipf("symlinks not supported: %v", err)
+				}
+			},
+			code: errclass.ErrRecoveryBlocking.Code,
+		},
+		{
 			name: "recovery plan",
 			setup: func(t *testing.T, controlRoot string) {
 				require.NoError(t, os.WriteFile(filepath.Join(controlRoot, ".jvs", "recovery-plans", "RP-active.json"), []byte("{}\n"), 0644))
+			},
+			code: errclass.ErrRecoveryBlocking.Code,
+		},
+		{
+			name: "active recovery identity mismatch",
+			setup: func(t *testing.T, controlRoot string) {
+				cfg, err := repo.LoadWorktreeConfig(controlRoot, "main")
+				require.NoError(t, err)
+				source := createCloneSavePoint(t, controlRoot, "main", "recovery source")
+				r, err := repo.OpenControlRoot(controlRoot)
+				require.NoError(t, err)
+				now := time.Now().UTC()
+				plan := &recovery.Plan{
+					SchemaVersion:          recovery.SchemaVersion,
+					RepoID:                 r.RepoID,
+					PlanID:                 "RP-identity-mismatch",
+					Status:                 recovery.StatusActive,
+					Operation:              recovery.OperationRestore,
+					RestorePlanID:          "restore-preview",
+					Workspace:              "feature",
+					Folder:                 cfg.RealPath,
+					SourceSavePoint:        source,
+					CreatedAt:              now,
+					UpdatedAt:              now,
+					PreWorktreeState:       recovery.WorktreeState{Name: "main", RealPath: cfg.RealPath},
+					Backup:                 recovery.Backup{Path: filepath.Join(filepath.Dir(cfg.RealPath), "backup"), Scope: recovery.BackupScopeWhole, State: recovery.BackupStatePending},
+					Phase:                  recovery.PhasePending,
+					RecommendedNextCommand: "jvs recovery status RP-identity-mismatch",
+				}
+				require.NoError(t, recovery.NewManager(controlRoot).Write(plan))
 			},
 			code: errclass.ErrRecoveryBlocking.Code,
 		},
@@ -379,6 +424,60 @@ func TestSeparatedCloneRejectsActiveSourceStateBeforeTargetWrites(t *testing.T) 
 			assert.NoFileExists(t, filepath.Join(targetPayload, "app.txt"))
 		})
 	}
+}
+
+func TestSeparatedCloneAllowsCompletedRestoreResidue(t *testing.T) {
+	sourceControl, sourcePayload := setupSeparatedCloneSourceRepo(t)
+	plan := createSeparatedCloneRestorePreview(t, sourceControl, sourcePayload, "source\n")
+	writeSeparatedCloneResolvedRecovery(t, sourceControl, plan)
+
+	targetBase := t.TempDir()
+	targetControl := filepath.Join(targetBase, "target-control")
+	targetPayload := filepath.Join(targetBase, "target-payload")
+	result, err := repoclone.Clone(repoclone.Options{
+		SourceRepoRoot:    sourceControl,
+		TargetControlRoot: targetControl,
+		TargetPayloadRoot: targetPayload,
+		SavePointsMode:    repoclone.SavePointsModeMain,
+		RequestedEngine:   model.EngineCopy,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "repo_clone", result.Operation)
+	assertFileContent(t, filepath.Join(targetPayload, "app.txt"), "source\n")
+	assert.NoDirExists(t, filepath.Join(targetPayload, ".jvs"))
+}
+
+func TestSeparatedCloneRestorePlanDiagnosticsUsePublicCommands(t *testing.T) {
+	t.Run("pending preview", func(t *testing.T) {
+		sourceControl, sourcePayload := setupSeparatedCloneSourceRepo(t)
+		plan := createSeparatedCloneRestorePreview(t, sourceControl, sourcePayload, "source\n")
+		require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("current\n"), 0644))
+		_ = createCloneSavePoint(t, sourceControl, "main", "current")
+
+		err := cloneSeparatedSourceForError(t, sourceControl)
+
+		assertJVSErrorCode(t, err, errclass.ErrRecoveryBlocking.Code)
+		assert.Contains(t, err.Error(), "restore plan "+plan.PlanID)
+		assert.NotContains(t, err.Error(), "restore --run "+plan.PlanID)
+		assertJVSErrorHintContains(t, err, "restore --run "+plan.PlanID)
+		assert.NotContains(t, err.Error(), ".jvs/restore-plans")
+	})
+
+	t.Run("malformed preview", func(t *testing.T) {
+		sourceControl, sourcePayload := setupSeparatedCloneSourceRepo(t)
+		require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("source\n"), 0644))
+		_ = createCloneSavePoint(t, sourceControl, "main", "source")
+		require.NoError(t, os.WriteFile(filepath.Join(sourceControl, ".jvs", "restore-plans", "corrupt-pending.json"), []byte("{not-json\n"), 0644))
+
+		err := cloneSeparatedSourceForError(t, sourceControl)
+
+		assertJVSErrorCode(t, err, errclass.ErrRecoveryBlocking.Code)
+		assert.Contains(t, err.Error(), "restore plan corrupt-pending")
+		assert.Contains(t, err.Error(), "not valid JSON")
+		assert.NotContains(t, err.Error(), "doctor --strict --json")
+		assertJVSErrorHintContains(t, err, "doctor --strict --json")
+		assert.NotContains(t, err.Error(), ".jvs/restore-plans")
+	})
 }
 
 func TestSeparatedCloneRejectsSourcePayloadSymlinkEscapeBeforeTargetWrites(t *testing.T) {
@@ -1140,6 +1239,57 @@ func setupSeparatedCloneSourceRepo(t *testing.T) (string, string) {
 	return controlRoot, payloadRoot
 }
 
+func createSeparatedCloneRestorePreview(t *testing.T, controlRoot, payloadRoot, content string) *restoreplan.Plan {
+	t.Helper()
+
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte(content), 0644))
+	source := createCloneSavePoint(t, controlRoot, "main", "source")
+	plan, err := restoreplan.Create(controlRoot, "main", source, model.EngineCopy, restoreplan.Options{})
+	require.NoError(t, err)
+	return plan
+}
+
+func writeSeparatedCloneResolvedRecovery(t *testing.T, controlRoot string, restorePlan *restoreplan.Plan) {
+	t.Helper()
+
+	r, err := repo.OpenControlRoot(controlRoot)
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	resolved := &recovery.Plan{
+		SchemaVersion:          recovery.SchemaVersion,
+		RepoID:                 r.RepoID,
+		PlanID:                 "RP-" + restorePlan.PlanID,
+		Status:                 recovery.StatusResolved,
+		Operation:              recovery.OperationRestore,
+		RestorePlanID:          restorePlan.PlanID,
+		Workspace:              restorePlan.Workspace,
+		Folder:                 restorePlan.Folder,
+		SourceSavePoint:        restorePlan.SourceSavePoint,
+		CreatedAt:              now,
+		UpdatedAt:              now,
+		ResolvedAt:             &now,
+		PreWorktreeState:       recovery.WorktreeState{Name: restorePlan.Workspace, RealPath: restorePlan.Folder},
+		Backup:                 recovery.Backup{Path: filepath.Join(filepath.Dir(restorePlan.Folder), "restore-backup"), Scope: recovery.BackupScopeWhole, State: recovery.BackupStateRolledBack},
+		Phase:                  recovery.PhaseRestoreApplied,
+		RecommendedNextCommand: "jvs recovery status RP-" + restorePlan.PlanID,
+	}
+	require.NoError(t, recovery.NewManager(controlRoot).Write(resolved))
+}
+
+func cloneSeparatedSourceForError(t *testing.T, sourceControl string) error {
+	t.Helper()
+
+	targetBase := t.TempDir()
+	_, err := repoclone.Clone(repoclone.Options{
+		SourceRepoRoot:    sourceControl,
+		TargetControlRoot: filepath.Join(targetBase, "target-control"),
+		TargetPayloadRoot: filepath.Join(targetBase, "target-payload"),
+		SavePointsMode:    repoclone.SavePointsModeMain,
+		RequestedEngine:   model.EngineCopy,
+	})
+	return err
+}
+
 func seedSeparatedCloneRuntimeSentinels(t *testing.T, controlRoot string) {
 	t.Helper()
 
@@ -1201,6 +1351,15 @@ func assertJVSErrorCode(t *testing.T, err error, code string) {
 	var jvsErr *errclass.JVSError
 	require.True(t, errors.As(err, &jvsErr), "expected JVS error, got %T: %v", err, err)
 	assert.Equal(t, code, jvsErr.Code)
+}
+
+func assertJVSErrorHintContains(t *testing.T, err error, want string) {
+	t.Helper()
+
+	require.Error(t, err)
+	var jvsErr *errclass.JVSError
+	require.True(t, errors.As(err, &jvsErr), "expected JVS error, got %T: %v", err, err)
+	assert.Contains(t, jvsErr.Hint, want)
 }
 
 func assertNoCloneStaging(t *testing.T, dir string) {

@@ -17,6 +17,7 @@ import (
 	"github.com/agentsmith-project/jvs/internal/lifecycle"
 	"github.com/agentsmith-project/jvs/internal/recovery"
 	"github.com/agentsmith-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/internal/restoreplan"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/internal/worktree"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
@@ -240,14 +241,20 @@ func assertWorktreeInvalidSnapshotIDFinding(t *testing.T, result *doctor.Result,
 func assertSeparatedStrictCheckFailed(t *testing.T, result *doctor.SeparatedStrictResult, name, code string) doctor.StrictCheck {
 	t.Helper()
 
+	check := separatedStrictCheckByName(t, result, name)
+	require.Equal(t, "failed", check.Status, "check %q should fail in %#v", name, result.Checks)
+	require.NotNil(t, check.ErrorCode, "check %q should include an error code", name)
+	assert.Equal(t, code, *check.ErrorCode)
+	return check
+}
+
+func separatedStrictCheckByName(t *testing.T, result *doctor.SeparatedStrictResult, name string) doctor.StrictCheck {
+	t.Helper()
+
 	for _, check := range result.Checks {
-		if check.Name != name {
-			continue
+		if check.Name == name {
+			return check
 		}
-		require.Equal(t, "failed", check.Status, "check %q should fail in %#v", name, result.Checks)
-		require.NotNil(t, check.ErrorCode, "check %q should include an error code", name)
-		assert.Equal(t, code, *check.ErrorCode)
-		return check
 	}
 	t.Fatalf("missing separated strict check %q in %#v", name, result.Checks)
 	return doctor.StrictCheck{}
@@ -352,12 +359,11 @@ func TestSeparatedStrictDoctorFailureCheckGoldens(t *testing.T) {
 			code:  errclass.ErrRecoveryBlocking.Code,
 			seed: func(t *testing.T, base, controlRoot, payloadRoot string) string {
 				t.Helper()
-				restorePlan := filepath.Join(controlRoot, ".jvs", "restore-plans", "restore-pending.json")
-				require.NoError(t, os.WriteFile(restorePlan, []byte("{}\n"), 0644))
-				return restorePlan
+				plan := createSeparatedDoctorRestorePreview(t, controlRoot, payloadRoot, "source\n", "current\n")
+				return plan.PlanID
 			},
 			wantMessage: func(controlRoot, payloadRoot, seeded string) string {
-				return "Restore plan restore-pending is pending."
+				return "Restore plan " + seeded + " is pending."
 			},
 		},
 		{
@@ -407,6 +413,81 @@ func TestSeparatedStrictDoctorPathBoundaryFailsOnPayloadSymlinkEscape(t *testing
 	assert.NotContains(t, message, "payload")
 	if !strings.Contains(message, "workspace folder") && !strings.Contains(message, "control data") {
 		t.Fatalf("path_boundary public diagnostic must use workspace/control-data wording, got %q", check.Message)
+	}
+}
+
+func TestSeparatedStrictDoctorIgnoresCompletedRestoreResidue(t *testing.T) {
+	_, controlRoot, payloadRoot := setupSeparatedDoctorTestRepo(t)
+	plan := createSeparatedDoctorRestorePreview(t, controlRoot, payloadRoot, "source\n", "current\n")
+	writeSeparatedDoctorResolvedRecovery(t, controlRoot, plan)
+
+	result, err := doctor.CheckSeparatedStrict(repo.SeparatedContextRequest{ControlRoot: controlRoot, Workspace: "main"})
+	require.NoError(t, err)
+	assert.True(t, result.Healthy)
+	assert.Equal(t, "passed", result.DoctorStrict)
+	check := separatedStrictCheckByName(t, result, "recovery_state")
+	assert.Equal(t, "passed", check.Status)
+	assert.Nil(t, check.ErrorCode)
+	assert.Equal(t, "No recovery state blocks this command.", check.Message)
+}
+
+func TestSeparatedStrictDoctorActiveRecoveryTakesPriorityOverRestoreResidue(t *testing.T) {
+	_, controlRoot, payloadRoot := setupSeparatedDoctorTestRepo(t)
+	plan := createSeparatedDoctorRestorePreview(t, controlRoot, payloadRoot, "source\n", "current\n")
+	recoveryPlanID := "RP-" + plan.PlanID
+	writeSeparatedDoctorRecovery(t, controlRoot, recoveryPlanID, recovery.StatusActive, plan)
+
+	result, err := doctor.CheckSeparatedStrict(repo.SeparatedContextRequest{ControlRoot: controlRoot, Workspace: "main"})
+	require.NoError(t, err)
+
+	check := assertSeparatedStrictCheckFailed(t, result, "recovery_state", errclass.ErrRecoveryBlocking.Code)
+	assert.Contains(t, check.Message, "Recovery plan "+recoveryPlanID+" is active")
+	assert.NotContains(t, check.Message, "jvs recovery status "+recoveryPlanID)
+	assert.Contains(t, check.RecommendedNextCommand, "recovery status "+recoveryPlanID)
+	assert.NotContains(t, check.Message, "restore --run")
+}
+
+func TestSeparatedStrictDoctorRestorePlanBlockingDiagnostics(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		seed func(t *testing.T, controlRoot string)
+		want []string
+	}{
+		{
+			name: "malformed",
+			seed: func(t *testing.T, controlRoot string) {
+				t.Helper()
+				require.NoError(t, os.WriteFile(filepath.Join(controlRoot, ".jvs", "restore-plans", "corrupt-pending.json"), []byte("{not-json\n"), 0644))
+			},
+			want: []string{"Restore plan corrupt-pending cannot be inspected safely", "not valid JSON"},
+		},
+		{
+			name: "symlink",
+			seed: func(t *testing.T, controlRoot string) {
+				t.Helper()
+				target := filepath.Join(controlRoot, ".jvs", "restore-plans", "restore-target.json")
+				require.NoError(t, os.WriteFile(target, []byte("{}\n"), 0644))
+				if err := os.Symlink(target, filepath.Join(controlRoot, ".jvs", "restore-plans", "restore-link.json")); err != nil {
+					t.Skipf("symlinks not supported: %v", err)
+				}
+			},
+			want: []string{"Restore plan entry restore-link.json is unsafe", "symlink"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, controlRoot, _ := setupSeparatedDoctorTestRepo(t)
+			tc.seed(t, controlRoot)
+
+			result, err := doctor.CheckSeparatedStrict(repo.SeparatedContextRequest{ControlRoot: controlRoot, Workspace: "main"})
+			require.NoError(t, err)
+			check := assertSeparatedStrictCheckFailed(t, result, "recovery_state", errclass.ErrRecoveryBlocking.Code)
+			for _, want := range tc.want {
+				assert.Contains(t, check.Message, want)
+			}
+			assert.Contains(t, check.RecommendedNextCommand, "doctor --strict --json")
+			assert.NotContains(t, check.Message, ".jvs/restore-plans")
+			assert.NotContains(t, strings.ToLower(check.Message), "payload")
+		})
 	}
 }
 
@@ -468,6 +549,19 @@ func TestSeparatedStrictDoctorRecoveryStateFixturesFail(t *testing.T) {
 			},
 		},
 		{
+			name: "restore plans directory symlink",
+			seed: func(t *testing.T, base, controlRoot, payloadRoot string) {
+				t.Helper()
+				plansDir := filepath.Join(controlRoot, ".jvs", "restore-plans")
+				require.NoError(t, os.RemoveAll(plansDir))
+				outsideDir := filepath.Join(base, "outside-restore-plans")
+				require.NoError(t, os.MkdirAll(outsideDir, 0755))
+				if err := os.Symlink(outsideDir, plansDir); err != nil {
+					t.Skipf("symlinks not supported: %v", err)
+				}
+			},
+		},
+		{
 			name: "active recovery plan",
 			seed: func(t *testing.T, base, controlRoot, payloadRoot string) {
 				t.Helper()
@@ -494,6 +588,34 @@ func TestSeparatedStrictDoctorRecoveryStateFixturesFail(t *testing.T) {
 				require.NoError(t, recovery.NewManager(controlRoot).Write(plan))
 			},
 		},
+		{
+			name: "active recovery identity mismatch",
+			seed: func(t *testing.T, base, controlRoot, payloadRoot string) {
+				t.Helper()
+				r, err := repo.OpenControlRoot(controlRoot)
+				require.NoError(t, err)
+				source := createStatefulDoctorSavePoint(t, controlRoot, payloadRoot)
+				now := time.Now().UTC()
+				plan := &recovery.Plan{
+					SchemaVersion:          recovery.SchemaVersion,
+					RepoID:                 r.RepoID,
+					PlanID:                 "RP-separated-identity-mismatch",
+					Status:                 recovery.StatusActive,
+					Operation:              recovery.OperationRestore,
+					RestorePlanID:          "restore-preview",
+					Workspace:              "feature",
+					Folder:                 payloadRoot,
+					SourceSavePoint:        source,
+					CreatedAt:              now,
+					UpdatedAt:              now,
+					PreWorktreeState:       recovery.WorktreeState{Name: "main", RealPath: payloadRoot},
+					Backup:                 recovery.Backup{Path: filepath.Join(base, "backup"), Scope: recovery.BackupScopeWhole, State: recovery.BackupStatePending},
+					Phase:                  recovery.PhasePending,
+					RecommendedNextCommand: "jvs recovery status RP-separated-identity-mismatch",
+				}
+				require.NoError(t, recovery.NewManager(controlRoot).Write(plan))
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			base, controlRoot, payloadRoot := setupSeparatedDoctorTestRepo(t)
@@ -506,6 +628,64 @@ func TestSeparatedStrictDoctorRecoveryStateFixturesFail(t *testing.T) {
 			assertSeparatedStrictCheckFailed(t, result, "recovery_state", errclass.ErrRecoveryBlocking.Code)
 		})
 	}
+}
+
+func createStatefulDoctorSavePoint(t *testing.T, controlRoot, payloadRoot string) model.SnapshotID {
+	t.Helper()
+
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("source\n"), 0644))
+	desc, err := snapshot.NewCreator(controlRoot, model.EngineCopy).CreateSavePoint("main", "source", nil)
+	require.NoError(t, err)
+	return desc.SnapshotID
+}
+
+func createSeparatedDoctorRestorePreview(t *testing.T, controlRoot, payloadRoot, sourceContent, currentContent string) *restoreplan.Plan {
+	t.Helper()
+
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte(sourceContent), 0644))
+	source, err := snapshot.NewCreator(controlRoot, model.EngineCopy).CreateSavePoint("main", "source", nil)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte(currentContent), 0644))
+	_, err = snapshot.NewCreator(controlRoot, model.EngineCopy).CreateSavePoint("main", "current", nil)
+	require.NoError(t, err)
+	plan, err := restoreplan.Create(controlRoot, "main", source.SnapshotID, model.EngineCopy, restoreplan.Options{})
+	require.NoError(t, err)
+	return plan
+}
+
+func writeSeparatedDoctorResolvedRecovery(t *testing.T, controlRoot string, restorePlan *restoreplan.Plan) {
+	t.Helper()
+
+	writeSeparatedDoctorRecovery(t, controlRoot, "RP-"+restorePlan.PlanID, recovery.StatusResolved, restorePlan)
+}
+
+func writeSeparatedDoctorRecovery(t *testing.T, controlRoot, recoveryPlanID string, status recovery.Status, restorePlan *restoreplan.Plan) {
+	t.Helper()
+
+	r, err := repo.OpenControlRoot(controlRoot)
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	resolved := &recovery.Plan{
+		SchemaVersion:          recovery.SchemaVersion,
+		RepoID:                 r.RepoID,
+		PlanID:                 recoveryPlanID,
+		Status:                 status,
+		Operation:              recovery.OperationRestore,
+		RestorePlanID:          restorePlan.PlanID,
+		Workspace:              restorePlan.Workspace,
+		Folder:                 restorePlan.Folder,
+		SourceSavePoint:        restorePlan.SourceSavePoint,
+		CreatedAt:              now,
+		UpdatedAt:              now,
+		PreWorktreeState:       recovery.WorktreeState{Name: restorePlan.Workspace, RealPath: restorePlan.Folder},
+		Backup:                 recovery.Backup{Path: filepath.Join(filepath.Dir(restorePlan.Folder), "restore-backup"), Scope: recovery.BackupScopeWhole, State: recovery.BackupStateRolledBack},
+		Phase:                  recovery.PhaseRestoreApplied,
+		RecommendedNextCommand: "jvs recovery status " + recoveryPlanID,
+	}
+	if status == recovery.StatusResolved {
+		resolved.ResolvedAt = &now
+	}
+	require.NoError(t, recovery.NewManager(controlRoot).Write(resolved))
 }
 
 func setMainWorktreeSnapshots(t *testing.T, repoPath string, head, latest model.SnapshotID) {

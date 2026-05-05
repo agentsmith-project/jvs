@@ -22,7 +22,7 @@ import (
 	"github.com/agentsmith-project/jvs/internal/engine"
 	"github.com/agentsmith-project/jvs/internal/integrity"
 	"github.com/agentsmith-project/jvs/internal/lifecycle"
-	"github.com/agentsmith-project/jvs/internal/recovery"
+	"github.com/agentsmith-project/jvs/internal/recoverystate"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/internal/snapshotpayload"
@@ -210,7 +210,7 @@ func prepare(options Options) (*preparedClone, error) {
 		if err := validateSeparatedCloneSourcePayloadBoundary(source, mainCfg); err != nil {
 			return nil, err
 		}
-		if err := rejectSeparatedSourceActiveOperation(source.Root); err != nil {
+		if err := rejectSeparatedSourceActiveOperation(source, mainCfg); err != nil {
 			return nil, err
 		}
 	}
@@ -570,7 +570,8 @@ func rejectDirtySourceWorkspaces(repoRoot string, workspaces []*model.WorktreeCo
 	return nil
 }
 
-func rejectSeparatedSourceActiveOperation(repoRoot string) error {
+func rejectSeparatedSourceActiveOperation(source *repo.Repo, mainCfg *model.WorktreeConfig) error {
+	repoRoot := source.Root
 	inspection, err := repo.InspectMutationLock(repoRoot)
 	if err != nil {
 		return errclass.ErrActiveOperationBlocking.
@@ -611,29 +612,70 @@ func rejectSeparatedSourceActiveOperation(repoRoot string) error {
 			WithMessagef("Cannot clone: source cleanup plan %s is pending.", entry).
 			WithHint("Run or remove the pending source cleanup plan before cloning.")
 	}
-	if entry, err := firstActiveControlEntry(filepath.Join(repoRoot, repo.JVSDirName, "restore-plans"), nil); err != nil {
-		return errclass.ErrRecoveryBlocking.
-			WithMessagef("Cannot clone: source restore plans cannot be inspected: %v", err).
-			WithHint("Run doctor --strict for the source control root before cloning.")
-	} else if entry != "" {
-		return errclass.ErrRecoveryBlocking.
-			WithMessagef("Cannot clone: source restore plan %s is pending.", entry).
-			WithHint("Run or remove the pending source restore plan before cloning.")
+	separated := &repo.SeparatedContext{
+		Repo:        source,
+		ControlRoot: source.Root,
+		PayloadRoot: mainCfg.RealPath,
+		Workspace:   "main",
 	}
-	recoveryPlans, err := recovery.NewManager(repoRoot).List()
+	state, err := recoverystate.Inspect(repoRoot, "main", separated)
 	if err != nil {
 		return errclass.ErrRecoveryBlocking.
 			WithMessagef("Cannot clone: source recovery state cannot be inspected: %v", err).
 			WithHint("Run recovery status or doctor --strict for the source control root before cloning.")
 	}
-	for _, plan := range recoveryPlans {
-		if plan.Status == recovery.StatusActive {
-			return errclass.ErrRecoveryBlocking.
-				WithMessagef("Cannot clone: source recovery plan %s is active.", plan.PlanID).
-				WithHint("Resolve or roll back the source recovery plan before cloning.")
-		}
+	if state.Blocking() {
+		return errclass.ErrRecoveryBlocking.
+			WithMessagef("Cannot clone: source %s", lowerFirstForClone(strings.TrimSuffix(state.Message, "."))).
+			WithHint(separatedSourceRecoveryHint(repoRoot, state))
 	}
 	return nil
+}
+
+func lowerFirstForClone(value string) string {
+	if value == "" {
+		return value
+	}
+	return strings.ToLower(value[:1]) + value[1:]
+}
+
+func separatedSourceRecoveryHint(repoRoot string, state recoverystate.State) string {
+	command := state.NextCommand
+	if strings.TrimSpace(command) == "" {
+		command = "doctor --strict --json"
+	}
+	return "Run jvs --control-root " + shellQuoteArg(repoRoot) + " --workspace main " + command + " for the source control root before cloning."
+}
+
+func shellQuoteArg(arg string) string {
+	if arg == "" {
+		return "''"
+	}
+	for _, r := range arg {
+		if isShellSafeRune(r) {
+			continue
+		}
+		return "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
+	}
+	return arg
+}
+
+func isShellSafeRune(r rune) bool {
+	if r >= 'a' && r <= 'z' {
+		return true
+	}
+	if r >= 'A' && r <= 'Z' {
+		return true
+	}
+	if r >= '0' && r <= '9' {
+		return true
+	}
+	switch r {
+	case '_', '-', '.', '/', ':', '@', '%', '+', '=':
+		return true
+	default:
+		return false
+	}
 }
 
 func firstActiveControlEntry(dir string, include func(os.DirEntry) bool) (string, error) {

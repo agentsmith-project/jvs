@@ -47,7 +47,9 @@ type Options struct {
 
 type ExpectedSeparatedContext struct {
 	RepoID      string
+	ControlRoot string
 	PayloadRoot string
+	Workspace   string
 }
 
 type ChangeSummary struct {
@@ -122,7 +124,7 @@ func CreateWithExpectedSeparatedContext(repoRoot, workspaceName string, sourceID
 	if err != nil {
 		return nil, err
 	}
-	makePlanRunnable(plan)
+	makePlanRunnable(plan, expected)
 	if err := validateExpectedSeparatedContext(repoRoot, workspaceName, expected); err != nil {
 		return nil, err
 	}
@@ -228,7 +230,7 @@ func CreatePathWithExpectedSeparatedContext(repoRoot, workspaceName string, sour
 	if err != nil {
 		return nil, err
 	}
-	makePlanRunnable(plan)
+	makePlanRunnable(plan, expected)
 	if err := validateExpectedSeparatedContext(repoRoot, workspaceName, expected); err != nil {
 		return nil, err
 	}
@@ -331,10 +333,22 @@ func buildPathPreviewPlan(repoRoot, workspaceName string, sourceID model.Snapsho
 	return plan, nil
 }
 
-func makePlanRunnable(plan *Plan) {
+func makePlanRunnable(plan *Plan, expected ExpectedSeparatedContext) {
 	planID := uuidutil.NewV4()
 	plan.PlanID = planID
-	plan.RunCommand = "jvs restore --run " + planID
+	plan.RunCommand = restoreRunCommand(planID, expected)
+}
+
+func restoreRunCommand(planID string, expected ExpectedSeparatedContext) string {
+	prefix := "jvs"
+	if strings.TrimSpace(expected.ControlRoot) != "" {
+		workspace := strings.TrimSpace(expected.Workspace)
+		if workspace == "" {
+			workspace = "main"
+		}
+		prefix += " --control-root " + shellQuoteArg(expected.ControlRoot) + " --workspace " + shellQuoteArg(workspace)
+	}
+	return prefix + " restore --run " + planID
 }
 
 func Write(repoRoot string, plan *Plan) error {
@@ -388,6 +402,30 @@ func Load(repoRoot, planID string) (*Plan, error) {
 		return nil, fmt.Errorf("restore plan %q belongs to a different repository", planID)
 	}
 	return &plan, nil
+}
+
+func Discard(repoRoot, workspaceName, planID string) (*Plan, error) {
+	plan, err := Load(repoRoot, planID)
+	if err != nil {
+		return nil, err
+	}
+	if plan.Workspace != workspaceName {
+		return nil, fmt.Errorf("restore plan %q belongs to workspace %q, not %q", planID, plan.Workspace, workspaceName)
+	}
+	if !plan.IsRunnable() {
+		return nil, fmt.Errorf("restore plan %q is not a runnable restore preview", planID)
+	}
+	path, err := repo.RestorePlanPathForRead(repoRoot, planID)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("restore plan %q not found", planID)
+		}
+		return nil, fmt.Errorf("discard restore plan %q: %w", planID, err)
+	}
+	return plan, nil
 }
 
 func ValidateTarget(repoRoot, workspaceName string, plan *Plan) error {
@@ -1130,6 +1168,10 @@ func changedSincePreviewError() error {
 	return fmt.Errorf("folder changed since preview; run preview again. No files were changed.")
 }
 
+func IsChangedSincePreview(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "folder changed since preview")
+}
+
 func sourceNotRestorableError(cause error) error {
 	return fmt.Errorf("source save point is not restorable: %v. No files were changed.", cause)
 }
@@ -1143,16 +1185,58 @@ func currentRepoID(repoRoot string) (string, error) {
 }
 
 func validateExpectedSeparatedContext(repoRoot, workspaceName string, expected ExpectedSeparatedContext) error {
-	if strings.TrimSpace(expected.RepoID) == "" && strings.TrimSpace(expected.PayloadRoot) == "" {
+	if strings.TrimSpace(expected.RepoID) == "" &&
+		strings.TrimSpace(expected.ControlRoot) == "" &&
+		strings.TrimSpace(expected.PayloadRoot) == "" &&
+		strings.TrimSpace(expected.Workspace) == "" {
 		return nil
 	}
+	controlRoot := strings.TrimSpace(expected.ControlRoot)
+	if controlRoot == "" {
+		controlRoot = repoRoot
+	}
+	workspace := strings.TrimSpace(expected.Workspace)
+	if workspace == "" {
+		workspace = workspaceName
+	}
 	_, err := repo.RevalidateSeparatedContext(repo.SeparatedContextRevalidationRequest{
-		ControlRoot:         repoRoot,
-		Workspace:           workspaceName,
+		ControlRoot:         controlRoot,
+		Workspace:           workspace,
 		ExpectedRepoID:      expected.RepoID,
 		ExpectedPayloadRoot: expected.PayloadRoot,
 	})
 	return err
+}
+
+func shellQuoteArg(arg string) string {
+	if arg == "" {
+		return "''"
+	}
+	for _, r := range arg {
+		if isShellSafeRune(r) {
+			continue
+		}
+		return "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
+	}
+	return arg
+}
+
+func isShellSafeRune(r rune) bool {
+	if r >= 'a' && r <= 'z' {
+		return true
+	}
+	if r >= 'A' && r <= 'Z' {
+		return true
+	}
+	if r >= '0' && r <= '9' {
+		return true
+	}
+	switch r {
+	case '_', '-', '.', '/', ':', '@', '%', '+', '=':
+		return true
+	default:
+		return false
+	}
 }
 
 func snapshotIDPtrOrNil(id model.SnapshotID) *model.SnapshotID {
