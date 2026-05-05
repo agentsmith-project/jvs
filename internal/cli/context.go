@@ -25,14 +25,6 @@ type cliDiscoveryContext struct {
 	Separated *repo.SeparatedContext
 }
 
-func discoverRequiredRepo() (*repo.Repo, error) {
-	ctx, err := resolveRepoScoped()
-	if err != nil {
-		return nil, err
-	}
-	return ctx.Repo, nil
-}
-
 func discoverRequiredRepoForDoctor() (*repo.Repo, error) {
 	ctx, err := resolveDoctorScoped()
 	if err != nil {

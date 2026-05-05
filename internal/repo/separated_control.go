@@ -472,13 +472,15 @@ func validateSeparatedRegisteredPayloadRoot(controlRoot, payloadRoot string) err
 
 func rejectPayloadLocatorPresent(payloadRoot string) error {
 	locatorPath := filepath.Join(payloadRoot, JVSDirName)
-	if _, err := os.Lstat(locatorPath); err == nil {
+	_, err := os.Lstat(locatorPath)
+	switch {
+	case err == nil:
 		return errclass.ErrWorkspaceControlMarkerPresent.WithMessagef("payload root contains root-level %s path: %s", JVSDirName, locatorPath)
-	} else if os.IsNotExist(err) {
+	case os.IsNotExist(err):
 		return nil
-	} else if errors.Is(err, os.ErrPermission) {
+	case errors.Is(err, os.ErrPermission):
 		return errclass.ErrPermissionDenied.WithMessagef("stat payload locator: %v", err)
-	} else {
+	default:
 		return fmt.Errorf("stat payload locator: %w", err)
 	}
 }

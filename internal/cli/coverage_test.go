@@ -194,7 +194,7 @@ func TestPersistentPreRunTests(t *testing.T) {
 	})
 }
 
-// TestContextFunctionsOutsideRepo tests repo discovery helpers outside a repo.
+// TestContextFunctionsOutsideRepo tests repo discovery context outside a repo.
 func TestContextFunctionsOutsideRepo(t *testing.T) {
 	originalWd, err := os.Getwd()
 	require.NoError(t, err)
@@ -206,8 +206,8 @@ func TestContextFunctionsOutsideRepo(t *testing.T) {
 	// Change to a directory that's not a JVS repo
 	assert.NoError(t, os.Chdir(dir))
 
-	t.Run("discoverRequiredRepo outside repo returns error", func(t *testing.T) {
-		_, err := discoverRequiredRepo()
+	t.Run("resolveRepoScoped outside repo returns error", func(t *testing.T) {
+		_, err := resolveRepoScoped()
 		assert.Error(t, err)
 	})
 

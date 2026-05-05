@@ -118,6 +118,16 @@ type transferPlans struct {
 	mainPlan   *engine.TransferPlan
 }
 
+type separatedCloneStagingRoots struct {
+	controlRoot string
+	payloadRoot string
+}
+
+func (s separatedCloneStagingRoots) cleanup() {
+	_ = os.RemoveAll(s.controlRoot)
+	_ = os.RemoveAll(s.payloadRoot)
+}
+
 type separatedPublishedRoot struct {
 	targetRoot       string
 	targetExisted    bool
@@ -867,119 +877,28 @@ func (p *preparedClone) executeEmbedded() (*Result, error) {
 }
 
 func (p *preparedClone) executeSeparated() (*Result, error) {
-	for _, parent := range []string{filepath.Dir(p.targetControlRoot), filepath.Dir(p.targetPayloadRoot)} {
-		if _, err := os.Stat(parent); err != nil {
-			return nil, fmt.Errorf("stat target parent: %w", err)
-		}
-	}
-	mainBoundary, err := repo.WorktreeManagedPayloadBoundary(p.source.Root, "main")
+	mainBoundary, err := p.preflightSeparatedClone()
 	if err != nil {
-		return nil, fmt.Errorf("source main workspace path: %w", err)
-	}
-	if err := p.checkCapacity(mainBoundary); err != nil {
 		return nil, err
 	}
 
-	stagingControl, err := os.MkdirTemp(filepath.Dir(p.targetControlRoot), "."+filepath.Base(p.targetControlRoot)+".clone-control-staging-")
+	staging, err := p.createSeparatedCloneStagingRoots()
 	if err != nil {
-		return nil, fmt.Errorf("create clone control staging: %w", err)
-	}
-	stagingPayload, err := os.MkdirTemp(filepath.Dir(p.targetPayloadRoot), "."+filepath.Base(p.targetPayloadRoot)+".clone-payload-staging-")
-	if err != nil {
-		_ = os.RemoveAll(stagingControl)
-		return nil, fmt.Errorf("create clone payload staging: %w", err)
+		return nil, err
 	}
 	published := false
 	defer func() {
 		if !published {
-			_ = os.RemoveAll(stagingControl)
-			_ = os.RemoveAll(stagingPayload)
+			staging.cleanup()
 		}
 	}()
 
-	targetRepo, err := repo.InitSeparatedControl(stagingControl, stagingPayload, "main")
-	if err != nil {
-		return nil, fmt.Errorf("initialize external control root target staging repo: %w", err)
-	}
-
-	intents := p.transferIntents(stagingControl, stagingPayload, mainBoundary, transfer.ResultKindFinal, transfer.PermissionScopeExecution)
-	plans, records, err := p.planTransfers(intents)
+	targetRepo, records, err := p.populateSeparatedCloneStaging(staging, mainBoundary)
 	if err != nil {
 		return nil, err
 	}
-	if err := p.validateSeparatedSourceBeforeTargetPublish(); err != nil {
+	if err := p.publishSeparatedCloneStaging(staging); err != nil {
 		return nil, err
-	}
-
-	if err := p.copySavePointStorage(stagingControl, plans.savePlan, intents.saveIntent, &records[0]); err != nil {
-		return nil, err
-	}
-	mainSourceBoundary, cleanupMainSource, err := p.materializeMainWorkspaceForSeparatedClone(mainBoundary)
-	if err != nil {
-		return nil, err
-	}
-	defer cleanupMainSource()
-	if err := validateSeparatedCloneMaterializedPayloadBoundary(p.source, mainSourceBoundary.Root); err != nil {
-		return nil, err
-	}
-	if err := p.copyMainWorkspace(mainSourceBoundary, stagingPayload, plans.mainPlan, intents.mainIntent, &records[1]); err != nil {
-		return nil, err
-	}
-	if err := writeTargetMainConfig(stagingControl, p.sourceMain, stagingPayload); err != nil {
-		return nil, err
-	}
-	if err := validateCopiedSavePoints(stagingControl, p.savePoints); err != nil {
-		return nil, err
-	}
-	if err := checkSeparatedDoctorStrict(stagingControl); err != nil {
-		return nil, fmt.Errorf("doctor strict before publish: %w", err)
-	}
-	if err := writeTargetMainConfig(stagingControl, p.sourceMain, p.targetPayloadRoot); err != nil {
-		return nil, err
-	}
-	if p.options.Hooks.BeforePublish != nil {
-		if err := p.options.Hooks.BeforePublish(stagingControl, p.targetControlRoot); err != nil {
-			return nil, fmt.Errorf("before publish hook: %w", err)
-		}
-	}
-	if err := p.validateSeparatedSourceBeforeTargetPublish(); err != nil {
-		return nil, err
-	}
-	if _, err := validateSeparatedCloneTargetRoots(p.targetControlRoot, p.targetPayloadRoot); err != nil {
-		return nil, atomicPublishBlockedError(err)
-	}
-	publishedPayload, err := publishSeparatedCloneRoot(stagingPayload, p.targetPayloadRoot, p.targetPayloadExisted, "payload", true)
-	if err != nil {
-		if publishedPayload != nil {
-			if rollbackErr := rollbackSeparatedPublishedRoot(publishedPayload); rollbackErr != nil {
-				return nil, atomicPublishBlockedError(fmt.Errorf("%w; rollback target folder: %v", err, rollbackErr))
-			}
-		}
-		return nil, atomicPublishBlockedError(err)
-	}
-	if p.options.Hooks.AfterSeparatedPayloadPublish != nil {
-		if err := p.options.Hooks.AfterSeparatedPayloadPublish(p.targetPayloadRoot, p.targetPayloadRoot); err != nil {
-			if rollbackErr := rollbackSeparatedPublishedRoot(publishedPayload); rollbackErr != nil {
-				return nil, atomicPublishBlockedError(fmt.Errorf("after external control root target folder publish hook: %w; rollback target folder: %v", err, rollbackErr))
-			}
-			return nil, atomicPublishBlockedError(fmt.Errorf("after external control root target folder publish hook: %w", err))
-		}
-	}
-	publishedControl, err := publishSeparatedCloneRoot(stagingControl, p.targetControlRoot, p.targetControlExisted, "control", true)
-	if err != nil {
-		var rollbackMessages []string
-		if publishedControl != nil {
-			if rollbackErr := quarantineSeparatedPublishedRoot(publishedControl); rollbackErr != nil {
-				rollbackMessages = append(rollbackMessages, fmt.Sprintf("rollback target control root: %v", rollbackErr))
-			}
-		}
-		if rollbackErr := rollbackSeparatedPublishedRoot(publishedPayload); rollbackErr != nil {
-			rollbackMessages = append(rollbackMessages, fmt.Sprintf("rollback target folder: %v", rollbackErr))
-		}
-		if len(rollbackMessages) > 0 {
-			return nil, atomicPublishBlockedError(fmt.Errorf("%w; %s", err, strings.Join(rollbackMessages, "; ")))
-		}
-		return nil, atomicPublishBlockedError(err)
 	}
 	published = true
 
@@ -992,6 +911,161 @@ func (p *preparedClone) executeSeparated() (*Result, error) {
 	result.DoctorStrict = "passed"
 	result.Transfers = records
 	return result, nil
+}
+
+func (p *preparedClone) preflightSeparatedClone() (repo.WorktreePayloadBoundary, error) {
+	for _, parent := range []string{filepath.Dir(p.targetControlRoot), filepath.Dir(p.targetPayloadRoot)} {
+		if _, err := os.Stat(parent); err != nil {
+			return repo.WorktreePayloadBoundary{}, fmt.Errorf("stat target parent: %w", err)
+		}
+	}
+	mainBoundary, err := repo.WorktreeManagedPayloadBoundary(p.source.Root, "main")
+	if err != nil {
+		return repo.WorktreePayloadBoundary{}, fmt.Errorf("source main workspace path: %w", err)
+	}
+	if err := p.checkCapacity(mainBoundary); err != nil {
+		return repo.WorktreePayloadBoundary{}, err
+	}
+	return mainBoundary, nil
+}
+
+func (p *preparedClone) createSeparatedCloneStagingRoots() (separatedCloneStagingRoots, error) {
+	stagingControl, err := os.MkdirTemp(filepath.Dir(p.targetControlRoot), "."+filepath.Base(p.targetControlRoot)+".clone-control-staging-")
+	if err != nil {
+		return separatedCloneStagingRoots{}, fmt.Errorf("create clone control staging: %w", err)
+	}
+	stagingPayload, err := os.MkdirTemp(filepath.Dir(p.targetPayloadRoot), "."+filepath.Base(p.targetPayloadRoot)+".clone-payload-staging-")
+	if err != nil {
+		_ = os.RemoveAll(stagingControl)
+		return separatedCloneStagingRoots{}, fmt.Errorf("create clone payload staging: %w", err)
+	}
+	return separatedCloneStagingRoots{controlRoot: stagingControl, payloadRoot: stagingPayload}, nil
+}
+
+func (p *preparedClone) populateSeparatedCloneStaging(staging separatedCloneStagingRoots, mainBoundary repo.WorktreePayloadBoundary) (*repo.Repo, []transfer.Record, error) {
+	targetRepo, err := repo.InitSeparatedControl(staging.controlRoot, staging.payloadRoot, "main")
+	if err != nil {
+		return nil, nil, fmt.Errorf("initialize external control root target staging repo: %w", err)
+	}
+
+	intents := p.transferIntents(staging.controlRoot, staging.payloadRoot, mainBoundary, transfer.ResultKindFinal, transfer.PermissionScopeExecution)
+	plans, records, err := p.planTransfers(intents)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := p.validateSeparatedSourceBeforeTargetPublish(); err != nil {
+		return nil, nil, err
+	}
+
+	if err := p.copySavePointStorage(staging.controlRoot, plans.savePlan, intents.saveIntent, &records[0]); err != nil {
+		return nil, nil, err
+	}
+	mainSourceBoundary, cleanupMainSource, err := p.materializeMainWorkspaceForSeparatedClone(mainBoundary)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer cleanupMainSource()
+	if err := validateSeparatedCloneMaterializedPayloadBoundary(p.source, mainSourceBoundary.Root); err != nil {
+		return nil, nil, err
+	}
+	if err := p.copyMainWorkspace(mainSourceBoundary, staging.payloadRoot, plans.mainPlan, intents.mainIntent, &records[1]); err != nil {
+		return nil, nil, err
+	}
+	if err := writeTargetMainConfig(staging.controlRoot, p.sourceMain, staging.payloadRoot); err != nil {
+		return nil, nil, err
+	}
+	if err := validateCopiedSavePoints(staging.controlRoot, p.savePoints); err != nil {
+		return nil, nil, err
+	}
+	if err := checkSeparatedDoctorStrict(staging.controlRoot); err != nil {
+		return nil, nil, fmt.Errorf("doctor strict before publish: %w", err)
+	}
+	if err := writeTargetMainConfig(staging.controlRoot, p.sourceMain, p.targetPayloadRoot); err != nil {
+		return nil, nil, err
+	}
+	if p.options.Hooks.BeforePublish != nil {
+		if err := p.options.Hooks.BeforePublish(staging.controlRoot, p.targetControlRoot); err != nil {
+			return nil, nil, fmt.Errorf("before publish hook: %w", err)
+		}
+	}
+	return targetRepo, records, nil
+}
+
+func (p *preparedClone) publishSeparatedCloneStaging(staging separatedCloneStagingRoots) error {
+	if err := p.validateSeparatedSourceBeforeTargetPublish(); err != nil {
+		return err
+	}
+	if _, err := validateSeparatedCloneTargetRoots(p.targetControlRoot, p.targetPayloadRoot); err != nil {
+		return atomicPublishBlockedError(err)
+	}
+
+	publishedPayload, err := p.publishSeparatedPayloadRoot(staging.payloadRoot)
+	if err != nil {
+		return err
+	}
+	if err := p.publishSeparatedControlRoot(staging.controlRoot, publishedPayload); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p *preparedClone) publishSeparatedPayloadRoot(stagingPayload string) (*separatedPublishedRoot, error) {
+	publishedPayload, err := publishSeparatedCloneRoot(stagingPayload, p.targetPayloadRoot, p.targetPayloadExisted, "payload", true)
+	if err != nil {
+		return nil, rollbackSeparatedPayloadPublishFailure(publishedPayload, err)
+	}
+
+	if err := p.runAfterSeparatedPayloadPublishHook(publishedPayload); err != nil {
+		return nil, err
+	}
+	return publishedPayload, nil
+}
+
+func rollbackSeparatedPayloadPublishFailure(publishedPayload *separatedPublishedRoot, err error) error {
+	if publishedPayload != nil {
+		if rollbackErr := rollbackSeparatedPublishedRoot(publishedPayload); rollbackErr != nil {
+			return atomicPublishBlockedError(fmt.Errorf("%w; rollback target folder: %v", err, rollbackErr))
+		}
+	}
+	return atomicPublishBlockedError(err)
+}
+
+func (p *preparedClone) runAfterSeparatedPayloadPublishHook(publishedPayload *separatedPublishedRoot) error {
+	if p.options.Hooks.AfterSeparatedPayloadPublish == nil {
+		return nil
+	}
+	err := p.options.Hooks.AfterSeparatedPayloadPublish(p.targetPayloadRoot, p.targetPayloadRoot)
+	if err == nil {
+		return nil
+	}
+	if rollbackErr := rollbackSeparatedPublishedRoot(publishedPayload); rollbackErr != nil {
+		return atomicPublishBlockedError(fmt.Errorf("after external control root target folder publish hook: %w; rollback target folder: %v", err, rollbackErr))
+	}
+	return atomicPublishBlockedError(fmt.Errorf("after external control root target folder publish hook: %w", err))
+}
+
+func (p *preparedClone) publishSeparatedControlRoot(stagingControl string, publishedPayload *separatedPublishedRoot) error {
+	publishedControl, err := publishSeparatedCloneRoot(stagingControl, p.targetControlRoot, p.targetControlExisted, "control", true)
+	if err != nil {
+		return rollbackSeparatedCloneAfterControlPublishFailure(err, publishedControl, publishedPayload)
+	}
+	return nil
+}
+
+func rollbackSeparatedCloneAfterControlPublishFailure(err error, publishedControl, publishedPayload *separatedPublishedRoot) error {
+	var rollbackMessages []string
+	if publishedControl != nil {
+		if rollbackErr := quarantineSeparatedPublishedRoot(publishedControl); rollbackErr != nil {
+			rollbackMessages = append(rollbackMessages, fmt.Sprintf("rollback target control root: %v", rollbackErr))
+		}
+	}
+	if rollbackErr := rollbackSeparatedPublishedRoot(publishedPayload); rollbackErr != nil {
+		rollbackMessages = append(rollbackMessages, fmt.Sprintf("rollback target folder: %v", rollbackErr))
+	}
+	if len(rollbackMessages) > 0 {
+		return atomicPublishBlockedError(fmt.Errorf("%w; %s", err, strings.Join(rollbackMessages, "; ")))
+	}
+	return atomicPublishBlockedError(err)
 }
 
 func (p *preparedClone) materializeMainWorkspaceForSeparatedClone(liveBoundary repo.WorktreePayloadBoundary) (repo.WorktreePayloadBoundary, func(), error) {

@@ -179,7 +179,9 @@ func checkSeparatedRootOverlap(result *SeparatedStrictResult, controlRoot, paylo
 
 func checkSeparatedWorkspaceControlMarker(result *SeparatedStrictResult, payloadRoot string) {
 	locatorPath := filepath.Join(payloadRoot, repo.JVSDirName)
-	if _, err := os.Lstat(locatorPath); err == nil {
+	_, err := os.Lstat(locatorPath)
+	switch {
+	case err == nil:
 		failSeparatedCheck(
 			result,
 			separatedCheckWorkspaceControlMarker,
@@ -187,13 +189,14 @@ func checkSeparatedWorkspaceControlMarker(result *SeparatedStrictResult, payload
 			fmt.Sprintf("Workspace folder contains root-level %s control data marker: %s", repo.JVSDirName, locatorPath),
 		)
 		return
-	} else if os.IsNotExist(err) {
+	case os.IsNotExist(err):
 		return
-	} else if errors.Is(err, os.ErrPermission) {
+	case errors.Is(err, os.ErrPermission):
 		failSeparatedCheck(result, separatedCheckPermissions, errclass.ErrPermissionDenied.Code, fmt.Sprintf("Cannot inspect workspace folder control data marker: %v", err))
 		return
-	} else {
+	default:
 		failSeparatedCheck(result, separatedCheckWorkspaceControlMarker, errclass.ErrWorkspaceControlMarkerPresent.Code, fmt.Sprintf("Cannot inspect workspace folder control data marker: %v", err))
+		return
 	}
 }
 
@@ -411,17 +414,19 @@ func separatedIntentState(controlRoot string) (string, error) {
 		}
 		return "", err
 	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Sprintf("Operation intent entry %s is a symlink.", name), nil
-		}
-		if entry.IsDir() {
-			return fmt.Sprintf("Operation intent entry %s is a directory.", name), nil
-		}
+	if len(entries) == 0 {
+		return "", nil
+	}
+	entry := entries[0]
+	name := entry.Name()
+	switch {
+	case entry.Type()&os.ModeSymlink != 0:
+		return fmt.Sprintf("Operation intent entry %s is a symlink.", name), nil
+	case entry.IsDir():
+		return fmt.Sprintf("Operation intent entry %s is a directory.", name), nil
+	default:
 		return fmt.Sprintf("Operation intent %s is present.", name), nil
 	}
-	return "", nil
 }
 
 func separatedCleanupPlanState(controlRoot string) (string, error) {
