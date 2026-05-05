@@ -491,6 +491,21 @@ func TestSeparatedStrictDoctorRestorePlanBlockingDiagnostics(t *testing.T) {
 	}
 }
 
+func TestSeparatedStrictDoctorPrioritizesMalformedRestorePlanOverPendingPreview(t *testing.T) {
+	_, controlRoot, payloadRoot := setupSeparatedDoctorTestRepo(t)
+	plan := createSeparatedDoctorRestorePreview(t, controlRoot, payloadRoot, "source\n", "current\n")
+	require.NoError(t, os.WriteFile(filepath.Join(controlRoot, ".jvs", "restore-plans", "zzzz-corrupt.json"), []byte("{not-json\n"), 0644))
+
+	result, err := doctor.CheckSeparatedStrict(repo.SeparatedContextRequest{ControlRoot: controlRoot, Workspace: "main"})
+	require.NoError(t, err)
+
+	check := assertSeparatedStrictCheckFailed(t, result, "recovery_state", errclass.ErrRecoveryBlocking.Code)
+	assert.Contains(t, check.Message, "Restore plan zzzz-corrupt cannot be inspected safely")
+	assert.Contains(t, check.Message, "not valid JSON")
+	assert.NotContains(t, check.Message, "Restore plan "+plan.PlanID+" is pending")
+	assert.Contains(t, check.RecommendedNextCommand, "doctor --strict --json")
+}
+
 func TestSeparatedStrictDoctorActiveOperationFixturesFail(t *testing.T) {
 	for _, tc := range []struct {
 		name string

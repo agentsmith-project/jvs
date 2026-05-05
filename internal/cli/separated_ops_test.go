@@ -734,6 +734,135 @@ func TestSeparatedControlRestorePathPreviewBlocksActiveRecoveryBeforePlanWrite(t
 	assert.Equal(t, "current\n", separatedOpsReadFile(t, filepath.Join(payloadRoot, "app.txt")))
 }
 
+func TestSeparatedControlRestoreDecisionPreviewUsesRecoveryGuardBeforePlanOrPin(t *testing.T) {
+	for _, shape := range []struct {
+		name        string
+		args        func(sourceID string) []string
+		seedPending func(t *testing.T, controlRoot string, sourceID model.SnapshotID)
+	}{
+		{
+			name: "whole",
+			args: func(sourceID string) []string {
+				return []string{"restore", sourceID}
+			},
+			seedPending: func(t *testing.T, controlRoot string, sourceID model.SnapshotID) {
+				t.Helper()
+				_, err := restoreplan.Create(controlRoot, "main", sourceID, model.EngineCopy, restoreplan.Options{DiscardUnsaved: true})
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "path",
+			args: func(sourceID string) []string {
+				return []string{"restore", sourceID, "--path", "app.txt"}
+			},
+			seedPending: func(t *testing.T, controlRoot string, sourceID model.SnapshotID) {
+				t.Helper()
+				_, err := restoreplan.CreatePath(controlRoot, "main", sourceID, "app.txt", model.EngineCopy, restoreplan.Options{DiscardUnsaved: true})
+				require.NoError(t, err)
+			},
+		},
+	} {
+		for _, blocker := range []struct {
+			name string
+			seed func(t *testing.T, base, controlRoot, payloadRoot, sourceID string)
+			want []string
+		}{
+			{
+				name: "pending restore plan",
+				seed: func(t *testing.T, base, controlRoot, payloadRoot, sourceID string) {
+					t.Helper()
+					shape.seedPending(t, controlRoot, model.SnapshotID(sourceID))
+				},
+				want: []string{"restore plan", "pending"},
+			},
+			{
+				name: "active recovery plan",
+				seed: func(t *testing.T, base, controlRoot, payloadRoot, sourceID string) {
+					t.Helper()
+					seedSeparatedControlRecoveryPlanFixture(t, base, controlRoot, payloadRoot)
+				},
+				want: []string{"recovery plan", "active"},
+			},
+			{
+				name: "malformed restore state",
+				seed: func(t *testing.T, base, controlRoot, payloadRoot, sourceID string) {
+					t.Helper()
+					require.NoError(t, os.WriteFile(filepath.Join(controlRoot, ".jvs", "restore-plans", "zzzz-corrupt.json"), []byte("{not-json\n"), 0644))
+				},
+				want: []string{"Restore plan zzzz-corrupt", "not valid JSON"},
+			},
+		} {
+			t.Run(shape.name+" "+blocker.name, func(t *testing.T) {
+				base := setupSeparatedControlCLICWD(t)
+				controlRoot := filepath.Join(base, "control")
+				payloadRoot := filepath.Join(base, "payload")
+				initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+				require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("source\n"), 0644))
+				sourceID := saveSeparatedControlPoint(t, controlRoot, "source")
+				require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("dirty local work\n"), 0644))
+				blocker.seed(t, base, controlRoot, payloadRoot, sourceID)
+				plansBefore := restorePlanFileCount(t, controlRoot)
+				pinsDir := filepath.Join(controlRoot, ".jvs", "gc", "pins")
+				pinDirExistedBefore := separatedOpsDirExists(t, pinsDir)
+				pinsBefore := documentedPinCount(t, controlRoot)
+
+				args := []string{"--json", "--control-root", controlRoot, "--workspace", "main"}
+				args = append(args, shape.args(sourceID)...)
+				stdout, stderr, exitCode := runContractSubprocess(t, base, args...)
+
+				env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrRecoveryBlocking.Code)
+				for _, want := range blocker.want {
+					assert.Contains(t, env.Error.Message, want)
+				}
+				assert.Equal(t, plansBefore, restorePlanFileCount(t, controlRoot))
+				assert.Equal(t, pinsBefore, documentedPinCount(t, controlRoot))
+				assert.Equal(t, pinDirExistedBefore, separatedOpsDirExists(t, pinsDir), "blocked decision preview must not create the source protection directory")
+				assert.Equal(t, "dirty local work\n", separatedOpsReadFile(t, filepath.Join(payloadRoot, "app.txt")))
+			})
+		}
+	}
+}
+
+func TestSeparatedControlRestoreRunPrioritizesMalformedPlanOverAllowedPendingPreview(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("source\n"), 0644))
+	sourceID := saveSeparatedControlPoint(t, controlRoot, "source")
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("current\n"), 0644))
+	_ = saveSeparatedControlPoint(t, controlRoot, "current")
+
+	previewOut, err := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"restore", sourceID,
+		"--discard-unsaved",
+	)
+	require.NoError(t, err, previewOut)
+	_, preview := decodeSeparatedControlDataMap(t, previewOut)
+	planID, _ := preview["plan_id"].(string)
+	require.NotEmpty(t, planID)
+	require.NoError(t, os.WriteFile(filepath.Join(controlRoot, ".jvs", "restore-plans", "zzzz-corrupt.json"), []byte("{not-json\n"), 0644))
+	plansBefore := restorePlanFileCount(t, controlRoot)
+
+	stdout, stderr, exitCode := runContractSubprocess(t, base,
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"restore", "--run", planID,
+	)
+
+	env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrRecoveryBlocking.Code)
+	assert.Contains(t, env.Error.Message, "Restore plan zzzz-corrupt")
+	assert.Contains(t, env.Error.Message, "not valid JSON")
+	assert.Contains(t, env.Error.Hint, "doctor --strict --json")
+	assert.Equal(t, plansBefore, restorePlanFileCount(t, controlRoot))
+	assert.Equal(t, "current\n", separatedOpsReadFile(t, filepath.Join(payloadRoot, "app.txt")))
+}
+
 func seedSeparatedControlMismatchedActiveRecoveryPlan(t *testing.T, base, controlRoot, payloadRoot string, sourceID model.SnapshotID) {
 	t.Helper()
 
@@ -1296,6 +1425,16 @@ func separatedOpsReadDirNames(t *testing.T, path string) []string {
 		names = append(names, entry.Name())
 	}
 	return names
+}
+
+func separatedOpsDirExists(t *testing.T, path string) bool {
+	t.Helper()
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return false
+	}
+	require.NoError(t, err)
+	return info.IsDir()
 }
 
 func decodeSeparatedOpsEnvelopeData(t *testing.T, stdout string) (contractEnvelope, map[string]any) {

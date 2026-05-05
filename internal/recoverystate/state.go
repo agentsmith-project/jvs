@@ -96,19 +96,22 @@ func Inspect(repoRoot, workspaceName string, separated *repo.SeparatedContext) (
 }
 
 func inspectActiveRecoveryPlans(repoRoot, workspaceName string, separated *repo.SeparatedContext, recoveryPlans []recovery.Plan) State {
+	var active State
 	for _, plan := range recoveryPlans {
-		if plan.Status != recovery.StatusActive {
-			continue
-		}
 		if state := ClassifyRecoveryPlanBinding(repoRoot, workspaceName, separated, &plan); state.Kind != "" {
 			return state
+		}
+		if plan.Status != recovery.StatusActive {
+			continue
 		}
 		if separated == nil && workspaceName != "" && plan.Workspace != workspaceName {
 			continue
 		}
-		return activeRecoveryState(plan.PlanID)
+		if active.Kind == "" {
+			active = activeRecoveryState(plan.PlanID)
+		}
 	}
-	return State{}
+	return active
 }
 
 func inspectRestorePlans(repoRoot, workspaceName string, separated *repo.SeparatedContext, recoveryPlans []recovery.Plan) (State, error) {
@@ -124,6 +127,7 @@ func inspectRestorePlans(repoRoot, workspaceName string, separated *repo.Separat
 	}
 
 	var completed State
+	var blocking State
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.Type()&os.ModeSymlink != 0 {
@@ -165,10 +169,17 @@ func inspectRestorePlans(repoRoot, workspaceName string, separated *repo.Separat
 		}
 		switch targetKind {
 		case KindPendingRestorePreview:
-			return pendingRestoreState(plan.PlanID), nil
+			if blocking.Kind == "" {
+				blocking = pendingRestoreState(plan.PlanID)
+			}
 		case KindStaleRestorePreview:
-			return staleRestoreState(plan.PlanID), nil
+			if blocking.Kind == "" {
+				blocking = staleRestoreState(plan.PlanID)
+			}
 		}
+	}
+	if blocking.Kind != "" {
+		return blocking, nil
 	}
 	if completed.Kind != "" {
 		return completed, nil

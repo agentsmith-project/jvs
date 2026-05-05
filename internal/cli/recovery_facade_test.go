@@ -392,6 +392,32 @@ func TestRecoveryStatusJSONErrorsOnMalformedSeparatedRestorePlan(t *testing.T) {
 	assert.NotContains(t, env.Error.Message, ".jvs/restore-plans")
 }
 
+func TestRecoveryStatusJSONPrioritizesMalformedRestorePlanOverPendingPreview(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("source\n"), 0644))
+	sourceID := saveSeparatedControlPoint(t, controlRoot, "source")
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("current\n"), 0644))
+	plan, err := restoreplan.Create(controlRoot, "main", model.SnapshotID(sourceID), model.EngineCopy, restoreplan.Options{DiscardUnsaved: true})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(controlRoot, ".jvs", "restore-plans", "zzzz-corrupt.json"), []byte("{not-json\n"), 0644))
+
+	stdout, stderr, exitCode := runContractSubprocess(t, base,
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"recovery", "status",
+	)
+
+	env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrRecoveryBlocking.Code)
+	assert.Contains(t, env.Error.Message, "Restore plan zzzz-corrupt")
+	assert.Contains(t, env.Error.Message, "not valid JSON")
+	assert.NotContains(t, env.Error.Message, "Restore plan "+plan.PlanID+" is pending")
+	assert.Contains(t, env.Error.Hint, "doctor --strict --json")
+}
+
 func TestRecoveryStatusJSONErrorsOnMalformedSeparatedRecoveryState(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -635,6 +661,59 @@ func TestRecoveryStatusDetailJSONRejectsResolvedPlanOutsideSelectedSeparatedBind
 			assert.Contains(t, env.Error.Hint, "doctor --strict --json")
 			assert.NotContains(t, stdout, `"workspace":"feature"`)
 		})
+	}
+}
+
+func TestSeparatedRecoveryResumeRollbackRejectPlansOutsideSelectedBindingBeforeMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status recovery.Status
+		edit   func(plan *recovery.Plan, base, payloadRoot string)
+		want   []string
+	}{
+		{
+			name:   "active pre worktree mismatch",
+			status: recovery.StatusActive,
+			edit: func(plan *recovery.Plan, base, payloadRoot string) {
+				plan.PreWorktreeState.Name = "feature"
+			},
+			want: []string{"workspace name identity mismatch", "feature", "main"},
+		},
+		{
+			name:   "resolved workspace mismatch",
+			status: recovery.StatusResolved,
+			edit: func(plan *recovery.Plan, base, payloadRoot string) {
+				plan.Workspace = "feature"
+				plan.PreWorktreeState.Name = "feature"
+			},
+			want: []string{"workspace identity mismatch", "feature", "main"},
+		},
+	} {
+		for _, action := range []string{"resume", "rollback"} {
+			t.Run(tc.name+" "+action, func(t *testing.T) {
+				base, controlRoot, payloadRoot, planID := setupSeparatedRecoveryActionBindingFixture(t, tc.status, tc.edit)
+				pinsBefore := documentedPinCount(t, controlRoot)
+
+				stdout, stderr, exitCode := runContractSubprocess(t, base,
+					"--json",
+					"--control-root", controlRoot,
+					"--workspace", "main",
+					"recovery", action, planID,
+				)
+
+				env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrRecoveryBlocking.Code)
+				assert.Contains(t, env.Error.Message, "Recovery plan "+planID+" cannot be inspected safely")
+				for _, want := range tc.want {
+					assert.Contains(t, env.Error.Message, want)
+				}
+				assert.Contains(t, env.Error.Hint, "doctor --strict --json")
+				assert.Equal(t, "interrupted\n", separatedOpsReadFile(t, filepath.Join(payloadRoot, "app.txt")))
+				plan, err := recovery.NewManager(controlRoot).Load(planID)
+				require.NoError(t, err)
+				assert.Equal(t, tc.status, plan.Status)
+				assert.Equal(t, pinsBefore, documentedPinCount(t, controlRoot))
+			})
+		}
 	}
 }
 
@@ -1927,6 +2006,63 @@ func createWholeResumePlanRequiringBackupRestore(t *testing.T, repoRoot, sourceI
 	recordCLIRecoveryBackupPayloadEvidence(t, repoRoot, &plan)
 	require.NoError(t, recovery.NewManager(repoRoot).Write(&plan))
 	return planID
+}
+
+func setupSeparatedRecoveryActionBindingFixture(t *testing.T, status recovery.Status, edit func(*recovery.Plan, string, string)) (base, controlRoot, payloadRoot, planID string) {
+	t.Helper()
+
+	base = setupSeparatedControlCLICWD(t)
+	controlRoot = filepath.Join(base, "control")
+	payloadRoot = filepath.Join(base, "payload")
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("source\n"), 0644))
+	sourceID := saveSeparatedControlPoint(t, controlRoot, "source")
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("original\n"), 0644))
+	_ = saveSeparatedControlPoint(t, controlRoot, "original")
+
+	r, err := repo.OpenControlRoot(controlRoot)
+	require.NoError(t, err)
+	cfg, err := repo.LoadWorktreeConfig(controlRoot, "main")
+	require.NoError(t, err)
+	preEvidence, err := restoreplan.WorkspaceEvidence(controlRoot, "main")
+	require.NoError(t, err)
+	backupPath := payloadRoot + ".restore-backup-binding"
+	require.NoError(t, os.MkdirAll(backupPath, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(backupPath, "app.txt"), []byte("original\n"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("interrupted\n"), 0644))
+	recoveryEvidence, err := restoreplan.WorkspaceEvidence(controlRoot, "main")
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	planID = "RP-binding-" + strings.ReplaceAll(string(status), "_", "-") + "-" + string(model.NewSnapshotID())
+	plan := &recovery.Plan{
+		SchemaVersion:          recovery.SchemaVersion,
+		RepoID:                 r.RepoID,
+		PlanID:                 planID,
+		Status:                 status,
+		Operation:              recovery.OperationRestore,
+		RestorePlanID:          "restore-preview",
+		Workspace:              "main",
+		Folder:                 payloadRoot,
+		SourceSavePoint:        model.SnapshotID(sourceID),
+		CreatedAt:              now,
+		UpdatedAt:              now,
+		PreWorktreeState:       recovery.WorktreeState{Name: cfg.Name, RealPath: cfg.RealPath, BaseSnapshotID: cfg.BaseSnapshotID, HeadSnapshotID: cfg.HeadSnapshotID, LatestSnapshotID: cfg.LatestSnapshotID, PathSources: cfg.PathSources.Clone(), CreatedAt: cfg.CreatedAt},
+		Backup:                 recovery.Backup{Path: backupPath, Scope: recovery.BackupScopeWhole, State: recovery.BackupStateRequired},
+		Phase:                  recovery.PhaseBackupRequired,
+		PreRecoveryEvidence:    preEvidence,
+		RecoveryEvidence:       recoveryEvidence,
+		RecommendedNextCommand: "jvs recovery resume " + planID,
+	}
+	recordCLIRecoveryBackupPayloadEvidence(t, controlRoot, plan)
+	if status == recovery.StatusResolved {
+		plan.ResolvedAt = &now
+	}
+	if edit != nil {
+		edit(plan, base, payloadRoot)
+	}
+	require.NoError(t, recovery.NewManager(controlRoot).Write(plan))
+	return base, controlRoot, payloadRoot, planID
 }
 
 func requireRecoveryTransfers(t *testing.T, data map[string]any, expected int) []any {

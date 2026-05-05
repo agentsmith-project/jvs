@@ -114,6 +114,27 @@ func TestInspectClassifiesPendingRestorePreview(t *testing.T) {
 	assert.NotContains(t, state.Message, "restore --run "+plan.PlanID)
 }
 
+func TestInspectPrioritizesMalformedRestorePlanOverEarlierPendingPreview(t *testing.T) {
+	controlRoot, payloadRoot := setupSeparatedStateRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("source\n"), 0644))
+	source := createStateSavePoint(t, controlRoot, "source")
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("current\n"), 0644))
+	plan, err := restoreplan.Create(controlRoot, "main", source, model.EngineCopy, restoreplan.Options{DiscardUnsaved: true})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(controlRoot, ".jvs", "restore-plans", "zzzz-corrupt.json"), []byte("{not-json\n"), 0644))
+
+	state, err := recoverystate.Inspect(controlRoot, "main", separatedStateContext(t, controlRoot))
+
+	require.NoError(t, err)
+	assert.Equal(t, recoverystate.KindMalformedBlocking, state.Kind)
+	assert.True(t, state.Blocking())
+	assert.Equal(t, "zzzz-corrupt", state.PlanID)
+	assert.Contains(t, state.Message, "Restore plan zzzz-corrupt")
+	assert.Contains(t, state.Message, "not valid JSON")
+	assert.NotContains(t, state.Message, plan.PlanID+" is pending")
+	assert.Equal(t, "doctor --strict --json", state.NextCommand)
+}
+
 func TestInspectClassifiesStaleRestorePreviewWithDiscardCommand(t *testing.T) {
 	controlRoot, payloadRoot := setupSeparatedStateRepo(t)
 	plan := createStateRestorePreview(t, controlRoot, payloadRoot, "source\n")
@@ -183,6 +204,56 @@ func TestInspectClassifiesActiveRecovery(t *testing.T) {
 	assert.Equal(t, "recovery status RP-active", state.NextCommand)
 	assert.NotContains(t, state.Message, "Run: jvs")
 	assert.NotContains(t, state.Message, "recovery status RP-active")
+}
+
+func TestInspectPrioritizesMalformedRecoveryPlanOverEarlierActiveRecovery(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status recovery.Status
+		edit   func(plan *recovery.Plan, base, payloadRoot string)
+		want   []string
+	}{
+		{
+			name:   "active pre worktree mismatch",
+			status: recovery.StatusActive,
+			edit: func(plan *recovery.Plan, base, payloadRoot string) {
+				plan.PreWorktreeState.Name = "feature"
+			},
+			want: []string{"Recovery plan RP-zzzz-malformed cannot be inspected safely", "workspace name", "feature", "main"},
+		},
+		{
+			name:   "resolved pre worktree mismatch",
+			status: recovery.StatusResolved,
+			edit: func(plan *recovery.Plan, base, payloadRoot string) {
+				plan.PreWorktreeState.RealPath = filepath.Join(base, "other-payload")
+			},
+			want: []string{"Recovery plan RP-zzzz-malformed cannot be inspected safely", "workspace root identity mismatch"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			controlRoot, payloadRoot := setupSeparatedStateRepo(t)
+			require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("source\n"), 0644))
+			source := createStateSavePoint(t, controlRoot, "source")
+			writeStateRecovery(t, controlRoot, "RP-aaaa-active", recovery.StatusActive, "restore-preview", source, payloadRoot)
+			malformed := newStateRecoveryPlan(t, controlRoot, "RP-zzzz-malformed", tc.status, "restore-preview", source, payloadRoot)
+			tc.edit(malformed, filepath.Dir(controlRoot), payloadRoot)
+			require.NoError(t, recovery.NewManager(controlRoot).Write(malformed))
+
+			state, err := recoverystate.Inspect(controlRoot, "main", separatedStateContext(t, controlRoot))
+
+			require.NoError(t, err)
+			assert.Equal(t, recoverystate.KindMalformedBlocking, state.Kind)
+			assert.True(t, state.Blocking())
+			assert.Equal(t, "RP-zzzz-malformed", state.RecoveryPlanID)
+			assert.Empty(t, state.PlanID)
+			assert.Equal(t, "doctor --strict --json", state.NextCommand)
+			for _, want := range tc.want {
+				assert.Contains(t, state.Message, want)
+			}
+			assert.NotContains(t, state.Message, "Recovery plan RP-aaaa-active is active")
+			assert.NotContains(t, strings.ToLower(state.Message), "payload")
+		})
+	}
 }
 
 func TestInspectClassifiesActiveRecoveryIdentityMismatchAsMalformed(t *testing.T) {

@@ -292,6 +292,9 @@ func runRecoveryRollback(repoRoot, planID string, separated *repo.SeparatedConte
 		if err != nil {
 			return err
 		}
+		if err := enforceSeparatedRecoveryActionBindingGuard(repoRoot, separated, "recovery rollback", plan); err != nil {
+			return err
+		}
 		if err := validateSeparatedPayloadSymlinkBoundaryForRecoveryPlan(separated, plan); err != nil {
 			return err
 		}
@@ -394,6 +397,9 @@ func runRecoveryResume(repoRoot, planID string, separated *repo.SeparatedContext
 		mgr := recovery.NewManager(repoRoot)
 		plan, err := mgr.Load(planID)
 		if err != nil {
+			return err
+		}
+		if err := enforceSeparatedRecoveryActionBindingGuard(repoRoot, separated, "recovery resume", plan); err != nil {
 			return err
 		}
 		if err := validateSeparatedPayloadSymlinkBoundaryForRecoveryPlan(separated, plan); err != nil {
@@ -499,6 +505,20 @@ func validateSeparatedPayloadSymlinkBoundaryForRecoveryPlan(separated *repo.Sepa
 	}
 	_, err := validateSeparatedPayloadSymlinkBoundaryForExpectedRoot(separated, plan.Folder)
 	return err
+}
+
+func enforceSeparatedRecoveryActionBindingGuard(repoRoot string, separated *repo.SeparatedContext, operation string, plan *recovery.Plan) error {
+	if separated == nil || plan == nil {
+		return nil
+	}
+	state := recoverystate.ClassifyRecoveryPlanBinding(repoRoot, separated.Workspace, separated, plan)
+	if state.Kind != recoverystate.KindMalformedBlocking {
+		return nil
+	}
+	if err := separatedRecoveryStateBoundaryError(separated, state); err != nil {
+		return err
+	}
+	return separatedRecoveryMutationStateError(separated, operation, state)
 }
 
 func publicRecoveryResultAfterResume(repoRoot string, plan *recovery.Plan) (publicRecoveryActionResult, error) {

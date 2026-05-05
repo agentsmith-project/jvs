@@ -481,6 +481,21 @@ func TestSeparatedCloneRestorePlanDiagnosticsUsePublicCommands(t *testing.T) {
 		assertJVSErrorHintContains(t, err, "doctor --strict --json")
 		assert.NotContains(t, err.Error(), ".jvs/restore-plans")
 	})
+
+	t.Run("malformed preview wins over pending preview", func(t *testing.T) {
+		sourceControl, sourcePayload := setupSeparatedCloneSourceRepo(t)
+		plan := createSeparatedCloneRestorePreview(t, sourceControl, sourcePayload, "source\n")
+		require.NoError(t, os.WriteFile(filepath.Join(sourceControl, ".jvs", "restore-plans", "zzzz-corrupt.json"), []byte("{not-json\n"), 0644))
+
+		err := cloneSeparatedSourceForError(t, sourceControl)
+
+		assertJVSErrorCode(t, err, errclass.ErrRecoveryBlocking.Code)
+		assert.Contains(t, err.Error(), "restore plan zzzz-corrupt")
+		assert.Contains(t, err.Error(), "not valid JSON")
+		assert.NotContains(t, err.Error(), "restore plan "+plan.PlanID)
+		assertJVSErrorHintContains(t, err, "doctor --strict --json")
+		assert.NotContains(t, err.Error(), ".jvs/restore-plans")
+	})
 }
 
 func TestSeparatedCloneRejectsSourcePayloadSymlinkEscapeBeforeTargetWrites(t *testing.T) {

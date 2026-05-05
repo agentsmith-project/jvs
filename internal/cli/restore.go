@@ -69,6 +69,12 @@ Examples:
 		if err := validateAndRefreshSeparatedPayloadBoundary(ctx); err != nil {
 			return restorePointError(err)
 		}
+		if restoreDiscardDirty && restoreIncludeWorking {
+			return restorePointError(fmt.Errorf("--discard-unsaved and --save-first cannot be used together"))
+		}
+		if err := enforceSeparatedRestorePreviewMutationGuard(ctx.Repo.Root, ctx.Workspace, ctx.Separated); err != nil {
+			return restorePointError(err)
+		}
 		expectedSeparated := restoreExpectedSeparatedContext(ctx.Separated)
 
 		targetID, err := resolvePublicSavePointID(ctx.Repo.Root, args[0])
@@ -79,9 +85,6 @@ Examples:
 		var plan *restoreplan.Plan
 		var decisionReason string
 		err = withActiveOperationSourcePin(ctx.Repo.Root, targetID, "restore preview", func() error {
-			if restoreDiscardDirty && restoreIncludeWorking {
-				return fmt.Errorf("--discard-unsaved and --save-first cannot be used together")
-			}
 			engineType := requestedTransferEngine(ctx.Repo.Root)
 			if !restoreDiscardDirty && !restoreIncludeWorking {
 				if err := checkRestorePreviewPreDirtyCapacity(ctx.Repo.Root, ctx.Workspace, targetID, ""); err != nil {
@@ -97,9 +100,6 @@ Examples:
 					plan, err = restoreplan.CreateDecisionPreviewWithExpectedSeparatedContext(ctx.Repo.Root, ctx.Workspace, targetID, engineType, expectedSeparated)
 					return err
 				}
-			}
-			if err := enforceSeparatedRestorePreviewMutationGuard(ctx.Repo.Root, ctx.Workspace, ctx.Separated); err != nil {
-				return err
 			}
 			var err error
 			plan, err = restoreplan.CreateWithExpectedSeparatedContext(ctx.Repo.Root, ctx.Workspace, targetID, engineType, restoreplan.Options{
@@ -713,6 +713,9 @@ func runRestorePath(cmd *cobra.Command, args []string, ctx *cliDiscoveryContext)
 	}
 	repoRoot = ctx.Repo.Root
 	workspaceName = ctx.Workspace
+	if err := enforceSeparatedRestorePreviewMutationGuard(repoRoot, workspaceName, ctx.Separated); err != nil {
+		return restorePathError(err, restorePath)
+	}
 	expectedSeparated := restoreExpectedSeparatedContext(ctx.Separated)
 
 	path, err := normalizeRestorePathFlag(repoRoot, workspaceName, restorePath)
@@ -741,9 +744,6 @@ func runRestorePath(cmd *cobra.Command, args []string, ctx *cliDiscoveryContext)
 				plan, err = restoreplan.CreatePathDecisionPreviewWithExpectedSeparatedContext(repoRoot, workspaceName, targetID, path, engineType, expectedSeparated)
 				return err
 			}
-		}
-		if err := enforceSeparatedRestorePreviewMutationGuard(repoRoot, workspaceName, ctx.Separated); err != nil {
-			return err
 		}
 		var err error
 		plan, err = restoreplan.CreatePathWithExpectedSeparatedContext(repoRoot, workspaceName, targetID, path, engineType, restoreplan.Options{
