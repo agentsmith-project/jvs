@@ -3530,14 +3530,18 @@ func TestDocs_V042GAReleaseEvidenceRecordsPublishedRelease(t *testing.T) {
 	}
 }
 
-func TestDocs_ReleaseEvidenceV047GACandidateReadinessRecordsPendingRelease(t *testing.T) {
+func TestDocs_ReleaseEvidenceV047FinalReleaseRecordsPublishedRelease(t *testing.T) {
 	const heading = "## v0.4.7 - 2026-05-05"
 	const evidenceLink = "RELEASE_EVIDENCE.md#v047---2026-05-05"
 	const previousHeading = "## v0.4.6 - 2026-05-03"
+	const commit = "e098b6a1bb10afb815258caa850e1ff187c5cacc"
+	const tagObject = "58f1a7d2881c48c42c3b0ea34dbfef059486ada8"
+	const runURL = "https://github.com/agentsmith-project/jvs/actions/runs/25355112705"
+	const releaseURL = "https://github.com/agentsmith-project/jvs/releases/tag/v0.4.7"
 
 	latestHeading := latestChangelogHeading(t)
 	if latestHeading != heading {
-		t.Fatalf("latest changelog entry must be the v0.4.7 GA candidate heading %q, got %q", heading, latestHeading)
+		t.Fatalf("latest changelog entry must be the v0.4.7 final GA release heading %q, got %q", heading, latestHeading)
 	}
 
 	changelog := readRepoFile(t, "docs/99_CHANGELOG.md")
@@ -3548,16 +3552,45 @@ func TestDocs_ReleaseEvidenceV047GACandidateReadinessRecordsPendingRelease(t *te
 	if !strings.Contains(ledger, previousHeading) {
 		t.Fatalf("release evidence ledger must retain the historical v0.4.6 GA candidate heading %q", previousHeading)
 	}
-
-	changelogEntry := changelogEntry(t, changelog, heading)
+	requireCandidateReleaseEvidence(t, previousHeading, releaseEvidenceEntry(t, ledger, previousHeading))
 	for _, required := range []string{
 		"GA candidate",
-		evidenceLink,
 		"not final",
 		"not tagged",
 		"not published",
-		"pending final tag",
-		"Candidate target tag: `v0.4.7`",
+		"Candidate target tag: `v0.4.6`",
+	} {
+		requireReleaseReadinessText(t, "historical v0.4.6 changelog candidate entry", changelogEntry(t, changelog, previousHeading), required)
+	}
+
+	changelogEntry := changelogEntry(t, changelog, heading)
+	for _, forbidden := range []string{
+		"not final",
+		"not tagged",
+		"not published",
+		"pending final",
+	} {
+		requireReleaseReadinessAbsentText(t, "v0.4.7 changelog final entry", changelogEntry, forbidden)
+	}
+	for _, required := range []string{
+		"final GA release evidence",
+		evidenceLink,
+		"Final tag `v0.4.7` points at commit",
+		commit,
+		"`fix: satisfy release lint gate`",
+		"Annotated tag object `" + tagObject + "`",
+		"`Release v0.4.7`",
+		runURL,
+		releaseURL,
+		"draft=false",
+		"prerelease=false",
+		"Published at: `2026-05-05T02:51:57Z`",
+		"Asset count: `12`",
+		"Tag source archive evidence class: `GA candidate readiness`",
+		"Final evidence location: GitHub Release page and post-release main ledger",
+		"Tag movement: `v0.4.7` was not moved",
+		"GitHub release list shows `v0.4.7` as Latest",
+		"`69.4% >= 60%`",
 		"story-e2e gate",
 		"`make story-e2e`",
 		"every regular `TestStory` user story",
@@ -3570,15 +3603,38 @@ func TestDocs_ReleaseEvidenceV047GACandidateReadinessRecordsPendingRelease(t *te
 		"`warnings`",
 		"pure JSON",
 		"not the application release version",
-		"No final `v0.4.7` release artifacts are published",
+		"sha256sum --check --strict SHA256SUMS",
+		"./jvs-linux-amd64 --help",
+		"https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@refs/tags/v0.4.7",
+		"https://token.actions.githubusercontent.com",
+		"Local cosign verification is not claimed",
 	} {
-		requireReleaseReadinessText(t, "v0.4.7 changelog candidate entry", changelogEntry, required)
+		requireReleaseReadinessText(t, "v0.4.7 changelog final entry", changelogEntry, required)
 	}
-	requireReleaseReadinessText(t, "v0.4.7 changelog candidate entry", changelogEntry, "None for the stable v0 public CLI contract")
+	requireReleaseReadinessText(t, "v0.4.7 changelog final entry", changelogEntry, "None for the stable v0 public CLI contract")
 
 	entry := releaseEvidenceEntry(t, ledger, heading)
-	requireCandidateReleaseEvidence(t, heading, entry)
+	requireFinalTaggedReleaseEvidence(t, heading, entry)
 	for _, required := range []string{
+		"Evidence class: Final release evidence",
+		"Tag: `v0.4.7`",
+		"Final tagged commit: `" + commit + "`",
+		"Commit message: `fix: satisfy release lint gate`",
+		"Tag object: `" + tagObject + "`",
+		"Annotated tag subject: `Release v0.4.7`",
+		"Tagger date: `2026-05-04 19:46:34 -0700`",
+		"Status: PASS",
+		runURL,
+		releaseURL,
+		"draft=false",
+		"prerelease=false",
+		"Published at: `2026-05-05T02:51:57Z`",
+		"Published artifact count: `12`",
+		"GitHub release list shows `v0.4.7` as Latest",
+		"DCO skipped",
+		"SKIPPED in tag workflow run `25355112705`",
+		"Local final release gate result: `RELEASE GATE PASSED`",
+		"`69.4% >= 60%`",
 		"`make story-e2e`",
 		"`TestStory` user stories",
 		"`TestStoryE2EGate_CoversRegularUserStories`",
@@ -3593,22 +3649,40 @@ func TestDocs_ReleaseEvidenceV047GACandidateReadinessRecordsPendingRelease(t *te
 		"pure JSON output",
 		"public `degraded_reasons` and `warnings`",
 		"internal `.jvs`, content storage, and stdout/stderr detail leakage",
+		"sha256sum --check --strict SHA256SUMS",
+		"jvs-linux-amd64 --help",
+		"https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@refs/tags/v0.4.7",
+		"https://token.actions.githubusercontent.com",
+		"Tag source archive evidence class: `GA candidate readiness`",
+		"Final evidence location: GitHub Release page and post-release main ledger",
+		"Tag movement: `v0.4.7` was not moved",
+		"Local signature verification: no local cosign verification is claimed",
 	} {
-		requireReleaseReadinessText(t, "v0.4.7 release evidence story readiness", entry, required)
+		requireReleaseReadinessText(t, "v0.4.7 final release evidence", entry, required)
 	}
-	for _, forbidden := range []struct {
-		name    string
-		pattern *regexp.Regexp
-	}{
-		{name: "PASS status", pattern: releaseEvidenceStatusPassPattern},
-		{name: "release-gate PASS row", pattern: releaseEvidenceGatePassPattern},
-		{name: "published artifact count", pattern: releaseEvidencePublishedArtifactCountPattern},
-		{name: "final tag line", pattern: releaseEvidenceTagPattern},
-		{name: "final tagged commit", pattern: releaseEvidenceCommitPattern},
+	for _, asset := range []string{
+		"jvs-darwin-amd64",
+		"jvs-darwin-amd64.bundle",
+		"jvs-darwin-arm64",
+		"jvs-darwin-arm64.bundle",
+		"jvs-linux-amd64",
+		"jvs-linux-amd64.bundle",
+		"jvs-linux-arm64",
+		"jvs-linux-arm64.bundle",
+		"jvs-windows-amd64.exe",
+		"jvs-windows-amd64.exe.bundle",
+		"SHA256SUMS",
+		"SHA256SUMS.bundle",
 	} {
-		if forbidden.pattern.MatchString(entry) {
-			t.Fatalf("v0.4.7 candidate release evidence must not claim %s before final publication", forbidden.name)
-		}
+		requireReleaseReadinessText(t, "v0.4.7 final release evidence assets", entry, asset)
+	}
+	for _, forbidden := range []string{
+		"not final",
+		"not tagged",
+		"not published",
+		"pending final",
+	} {
+		requireReleaseReadinessAbsentText(t, "v0.4.7 final release evidence", entry, forbidden)
 	}
 }
 

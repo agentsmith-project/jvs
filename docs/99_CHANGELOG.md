@@ -9,9 +9,9 @@ recovery plan, doctor, and cleanup.
 
 ### Highlights
 
-- GA candidate readiness now covers the story-e2e gate as a release-facing
+- The final v0.4.7 GA release covers the story-e2e gate as a release-facing
   aggregation point: `make story-e2e` is checked so every regular `TestStory`
-  user story is selected by the gate before publication.
+  user story is selected by the gate.
 - The ordinary embedded repo clone user story is covered end to end, including
   source repo identity preservation, fresh target repo identity, `main`
   workspace usability after clone, `--save-points all` / `--save-points main`,
@@ -34,9 +34,6 @@ recovery plan, doctor, and cleanup.
 ### Breaking changes
 
 - None for the stable v0 public CLI contract.
-- This main-branch version bump is a GA candidate/readiness record only; it
-  does not create a final tag, publish release artifacts, or change the on-disk
-  repository layout version.
 
 ### Known limitations
 
@@ -69,14 +66,13 @@ recovery plan, doctor, and cleanup.
 
 ### Migration notes
 
-- Existing repositories do not need an on-disk migration for the `v0.4.7`
-  candidate target; `.jvs/format_version` remains a repository layout version,
-  not the application release version.
-- This candidate records story-e2e gate, embedded repo clone, external control
+- Existing repositories do not need an on-disk migration for `v0.4.7`;
+  `.jvs/format_version` remains a repository layout version; it is not the application release version.
+- This release records story-e2e gate, embedded repo clone, external control
   root workspace-cwd selector, and public transfer fallback/degraded JSON
-  readiness for existing v0 repository storage; it does not add a compatibility
+  coverage for existing v0 repository storage; it does not add a compatibility
   mode or change repository storage.
-- After upgrading to this candidate, run `jvs doctor --strict` on a
+- After upgrading to `v0.4.7`, run `jvs doctor --strict` on a
   representative repo before relying on it for release workflows.
 - For physical backup or storage migration, start with a fresh destination, run
   an offline whole-folder copy, run
@@ -93,20 +89,31 @@ recovery plan, doctor, and cleanup.
 ### Release evidence
 
 - See the [release evidence ledger](RELEASE_EVIDENCE.md#v047---2026-05-05)
-  for the `v0.4.7` GA candidate readiness record.
-- Evidence class: GA candidate readiness.
-- Candidate target tag: `v0.4.7`
-- Candidate state: not final, not tagged, and not published; the release is
-  pending final tag creation and publication through the normal CI release
-  flow.
-- Source archive boundary: no immutable `v0.4.7` tag source archive exists yet; when
-  the pending final tag is created, its source archive will record readiness
-  from tag time.
-- publication final evidence remains pending; the future GitHub Release page
-  and post-release main ledger will record workflow run, release state,
-  artifacts, checksums, signing identity, smoke, and coverage facts after the
-  release exists.
-- Readiness scope since `v0.4.6`: story-e2e gate coverage for every regular
+  for the `v0.4.7` final GA release evidence record.
+- Source archive boundary: the `v0.4.7` source archive is the immutable source archive
+  for the release and records readiness from tag time.
+- Tag source archive evidence class: `GA candidate readiness`
+- publication final evidence is recorded on the GitHub Release page and in the
+  post-release main ledger after the release exists.
+- Final evidence location: GitHub Release page and post-release main ledger.
+- Tag movement: `v0.4.7` was not moved; the tag was not moved to add
+  post-publication facts.
+- Final tag `v0.4.7` points at commit
+  `e098b6a1bb10afb815258caa850e1ff187c5cacc`
+  (`fix: satisfy release lint gate`).
+- Annotated tag object `58f1a7d2881c48c42c3b0ea34dbfef059486ada8` has subject
+  `Release v0.4.7` and tagger date `2026-05-04 19:46:34 -0700`.
+- Tag workflow run `25355112705` succeeded:
+  `https://github.com/agentsmith-project/jvs/actions/runs/25355112705`.
+  Passed jobs were Build and Test, Lint, Security Scan, Release Toolchain
+  Smoke, Release Gate, and Release; DCO was skipped.
+- Local final release gate passed with
+  `env -u NO_COLOR CI=true GITHUB_ACTIONS=true TERM=xterm-256color make release-gate`;
+  coverage was `69.4% >= 60%`.
+- Local build checks passed: `make build` and `make release-build`.
+- Release state: `draft=false`, `prerelease=false`.
+- Published at: `2026-05-05T02:51:57Z`.
+- Release scope since `v0.4.6`: story-e2e gate coverage for every regular
   `TestStory` user story, ordinary embedded repo clone user story coverage,
   external control root workspace-cwd explicit selector flow coverage, and
   public transfer fallback/degraded JSON cleanliness for optimized-engine
@@ -114,14 +121,26 @@ recovery plan, doctor, and cleanup.
 
 ### Release artifacts
 
-- No final `v0.4.7` release artifacts are published from this main-branch
-  candidate entry.
-- Artifact plan for the pending final tag remains the standard five platform
-  binaries, matching `.bundle` files, `SHA256SUMS`, and `SHA256SUMS.bundle`.
-- Signing remains outside in-JVS commands and is expected to use the release
-  workflow's Sigstore/cosign v3 bundle flow.
-- Final artifact, checksum, signing, and smoke evidence will be recorded only
-  after CI creates the release from the final tag.
+- Release URL:
+  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.7`
+- GitHub release list shows `v0.4.7` as Latest.
+- Asset count: `12`
+- Published assets: `jvs-darwin-amd64`, `jvs-darwin-amd64.bundle`,
+  `jvs-darwin-arm64`, `jvs-darwin-arm64.bundle`, `jvs-linux-amd64`,
+  `jvs-linux-amd64.bundle`, `jvs-linux-arm64`, `jvs-linux-arm64.bundle`,
+  `jvs-windows-amd64.exe`, `jvs-windows-amd64.exe.bundle`, `SHA256SUMS`, and
+  `SHA256SUMS.bundle`.
+- Published asset validation after release download to
+  `/tmp/jvs-release-v0.4.7`: `sha256sum --check --strict SHA256SUMS` returned
+  OK for all five binaries.
+- Linux binary smoke: after `chmod +x jvs-linux-amd64`,
+  `./jvs-linux-amd64 --help` printed current JVS save point help successfully.
+- Signing identity from release notes:
+  `https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@refs/tags/v0.4.7`
+- OIDC issuer: `https://token.actions.githubusercontent.com`
+- Release job verified artifacts and signatures before upload.
+- Local cosign verification is not claimed in this ledger because local cosign
+  was not installed.
 
 ## v0.4.6 - 2026-05-03
 

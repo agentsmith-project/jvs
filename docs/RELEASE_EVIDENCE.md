@@ -32,110 +32,138 @@ Raw logs and `coverage.out` are not stored here.
 
 ### Release identity
 
-- Evidence class: GA candidate readiness
-- Candidate target tag: `v0.4.7`
-- Candidate state: not final, not tagged, and not published; this entry is
-  pending final tag creation and publication through the normal CI release
-  flow.
+- Evidence class: Final release evidence
+- Status: PASS
+- Tag: `v0.4.7`
+- Final tagged commit: `e098b6a1bb10afb815258caa850e1ff187c5cacc`
+- Commit message: `fix: satisfy release lint gate`
+- Tag object: `58f1a7d2881c48c42c3b0ea34dbfef059486ada8`
+- Annotated tag subject: `Release v0.4.7`
+- Tagger date: `2026-05-04 19:46:34 -0700`
 - Changelog heading date: `2026-05-05`
-- Release identity: main-branch GA candidate readiness for the next published
-  save point public-contract release after `v0.4.6`.
 - Baseline: story-e2e gate coverage for every regular `TestStory` user story,
   ordinary embedded repo clone user story coverage, external control root
   workspace-cwd explicit selector flow coverage, and public transfer
   fallback/degraded JSON cleanliness for optimized-engine fallback reporting.
-- Source archive boundary: no immutable `v0.4.7` tag source archive exists yet.
-  When the pending final tag is created, the source archive will be the
-  immutable source archive and will record readiness from tag time.
-- publication final evidence: pending. The future GitHub Release page and
-  post-release main ledger will record workflow run, release state, artifacts,
-  checksum validation, signing identity, smoke, and coverage facts after the
-  release exists.
-- Candidate release URL target:
+- Source archive boundary: the `v0.4.7` source archive is the immutable source archive
+  for the release and records readiness from tag time.
+- Tag source archive evidence class: `GA candidate readiness`
+- publication final evidence: GitHub Release page and post-release main ledger
+  record the workflow run, release state, assets, checksum validation, signing
+  identity, smoke, and coverage facts created after publication.
+- Final evidence location: GitHub Release page and post-release main ledger.
+- Tag movement: `v0.4.7` was not moved; the tag was not moved to add
+  post-publication facts.
+- CI run link rule:
+  `https://github.com/agentsmith-project/jvs/actions/runs/<run_id>`
+- Canonical release URL rule:
   `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.7`
-- Scope: release readiness for the `make story-e2e` gate selecting all regular
-  `TestStory` user stories, the ordinary embedded repo clone user story,
-  external control root workspace-cwd explicit selector behavior, and public
-  transfer fallback/degraded JSON cleanliness. The covered JSON boundary keeps
-  pure JSON output, public transfer roles, materialization destinations,
+- Canonical release URL example:
+  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.0`
+- Tag workflow run: `25355112705`
+- Tag workflow URL:
+  `https://github.com/agentsmith-project/jvs/actions/runs/25355112705`
+- Tag workflow result: success.
+- Tag workflow jobs passed: Build and Test, Lint, Security Scan, Release
+  Toolchain Smoke, Release Gate, and Release. DCO skipped.
+- Release URL:
+  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.7`
+- Release state: `draft=false`, `prerelease=false`
+- Published at: `2026-05-05T02:51:57Z`
+- Release listing: GitHub release list shows `v0.4.7` as Latest.
+- Scope: final release evidence for the `make story-e2e` gate selecting all
+  regular `TestStory` user stories, the ordinary embedded repo clone user
+  story, external control root workspace-cwd explicit selector behavior, and
+  public transfer fallback/degraded JSON cleanliness. The covered JSON boundary
+  keeps pure JSON output, public transfer roles, materialization destinations,
   published destinations, `degraded_reasons`, and `warnings` clean when
   `juicefs-clone` falls back to `copy`.
 
 ### Release gate summary
 
-Candidate release gate command:
+Local final release gate command:
 `env -u NO_COLOR CI=true GITHUB_ACTIONS=true TERM=xterm-256color make release-gate`
 
-The table records required checks for the pending final tag. This candidate
-entry records readiness expectations only; final results are intentionally left
-to CI and the post-release evidence ledger.
+Local final release gate result: `RELEASE GATE PASSED`.
 
-| Check | Command or target | Candidate readiness evidence |
+The table records the final release-gate evidence source. Rows marked "PASS via
+release-gate suite" were qualified by the local final release gate and, for
+tag-gated publication, by workflow run `25355112705`.
+
+| Check | Command or target | Final evidence |
 | --- | --- | --- |
-| Release gate | `make release-gate` | Required before final publication; pending final run |
-| Story e2e gate | `make story-e2e` plus `TestStoryE2EGate_CoversRegularUserStories` | Candidate user-story aggregation coverage; pending final conformance run |
-| Docs contract | `make docs-contract` | Required by release-gate suite; pending final run |
-| CI contract | `make ci-contract` | Required by release-gate suite; pending final run |
-| Race tests | `make test-race` | Required by release-gate suite; pending final run |
-| Coverage | `make test-cover` | Required with threshold enforcement; pending final run |
-| Lint | `make lint` | Required by release-gate suite; pending final run |
-| Build | `make build` | Required by release-gate suite; pending final run |
-| Release cross-build | `make release-build` | Required before artifact publication; pending final run |
-| Conformance | `make conformance` | Required by release-gate suite; pending final run |
-| Library facade | `make library` | Required by release-gate suite; pending final run |
-| Regression | `make regression` | Required by release-gate suite; pending final run |
-| Fuzz ordinary tests | `make fuzz-tests` | Required by release-gate suite; pending final run |
-| Fuzz smoke | `make fuzz` | Required by release-gate suite; pending final run |
+| Release gate | `make release-gate` | PASS; local result `RELEASE GATE PASSED`; tag workflow Release Gate job passed |
+| Story e2e gate | `make story-e2e` plus `TestStoryE2EGate_CoversRegularUserStories` | PASS via release-gate conformance suite |
+| Docs contract | `make docs-contract` | PASS via release-gate suite |
+| CI contract | `make ci-contract` | PASS via release-gate suite |
+| Race tests | `make test-race` | PASS via release-gate suite |
+| Coverage | `make test-cover` | PASS; `69.4% >= 60%` |
+| Lint | `make lint` | PASS via release-gate suite; tag workflow Lint job passed |
+| Build | `make build` | PASS via release-gate suite; tag workflow Build and Test job passed; local `make build` passed |
+| Release cross-build | `make release-build` | PASS via release-gate suite; local `make release-build` passed; release job published five platform binaries |
+| Conformance | `make conformance` | PASS via release-gate suite |
+| Library facade | `make library` | PASS via release-gate suite |
+| Regression | `make regression` | PASS via release-gate suite |
+| Fuzz ordinary tests | `make fuzz-tests` | PASS via release-gate suite |
+| Fuzz smoke | `make fuzz` | PASS via release-gate suite |
+| Security scan | GitHub Actions Security Scan job | PASS in tag workflow run `25355112705` |
+| Release toolchain smoke | GitHub Actions Release Toolchain Smoke job | PASS in tag workflow run `25355112705` |
+| Release publication | GitHub Actions Release job | PASS in tag workflow run `25355112705` |
+| DCO | GitHub Actions DCO job | SKIPPED in tag workflow run `25355112705` |
 
 ### Coverage
 
-- Coverage total: pending final `make test-cover` evidence.
+- Coverage total: `69.4%`
 - Coverage threshold: `60.0%`
 - Evidence command: `make test-cover`
-- Evidence source: pending final `make release-gate` output.
+- Evidence source: local final `make release-gate` output.
+- Evidence summary: `69.4% >= 60%`.
 
 ### Representative repo evidence
 
-- Representative repo evidence source: pending final `make release-gate`,
-  including conformance and regression targets.
-- Representative repo readiness: release-gate coverage is expected to cover
-  save point history, strict doctor, integrity checks, restore preview/run and
-  recovery behavior, runtime repair path, story-e2e gate coverage, embedded
-  repo clone behavior, external control root workspace-cwd selectors, and
-  transfer fallback/degraded JSON cleanliness before publication.
-- Story e2e readiness: conformance is expected to run
+- Representative repo evidence source: final local `make release-gate`,
+  including conformance and regression targets. This entry does not claim a
+  separate ad hoc external repository beyond the release-gate suite and the
+  recorded downloaded release-asset smoke.
+- Representative repo coverage: release-gate suite coverage for save point
+  history, strict doctor, integrity checks, restore preview/run and recovery
+  behavior, runtime repair path, story-e2e gate coverage, embedded repo clone
+  behavior, external control root workspace-cwd selectors, and transfer
+  fallback/degraded JSON cleanliness.
+- Story e2e evidence: conformance ran
   `TestStoryE2EGate_CoversRegularUserStories`, which dry-runs
   `make story-e2e`, lists regular `TestStory` user stories, and fails if any
   regular user story is missing from the gate pattern.
-- Embedded repo clone readiness:
+- Embedded repo clone evidence:
   `TestStoryRepoCloneEmbeddedProjectKeepsIdentityHistoryAndMainWorkspaceUsable`
-  is expected to cover ordinary embedded repo clone behavior, source repo
-  identity preservation, fresh target repo identity, copied save point choices,
-  target `main` usability, follow-on target saves, source repo isolation, and
-  public clone transfer cleanliness.
-- External control root readiness:
-  `TestStorySeparatedOpsWorkspaceCWDWithExplicitControlRootCoreFlow` is
-  expected to cover external control root workspace-cwd operation with
-  explicit `--control-root` and `--workspace main` selectors across status,
-  save, history, view, view close, restore preview, and restore run while the
-  workspace folder stays free of control data.
-- Public transfer fallback/degraded readiness:
-  `TestStory_PublicTransferJSONDegradedSaveKeepsPublicWarningsClean` is
-  expected to cover `juicefs-clone` requested-engine fallback to `copy`, pure
-  JSON output, public `degraded_reasons` and `warnings`, and absence of
+  covers ordinary embedded repo clone behavior, source repo identity
+  preservation, fresh target repo identity, copied save point choices, target
+  `main` usability, follow-on target saves, source repo isolation, and public
+  clone transfer cleanliness.
+- External control root evidence:
+  `TestStorySeparatedOpsWorkspaceCWDWithExplicitControlRootCoreFlow` covers
+  external control root workspace-cwd operation with explicit `--control-root`
+  and `--workspace main` selectors across status, save, history, view, view
+  close, restore preview, and restore run while the workspace folder stays free
+  of control data.
+- Public transfer fallback/degraded evidence:
+  `TestStory_PublicTransferJSONDegradedSaveKeepsPublicWarningsClean` covers
+  `juicefs-clone` requested-engine fallback to `copy`, pure JSON output,
+  public `degraded_reasons` and `warnings`, and absence of
   internal `.jvs`, content storage, and stdout/stderr detail leakage.
 - Doctor command: `jvs doctor --strict`
+- Doctor result: PASS via release-gate suite.
 - Migration repair command for copied repos:
   `jvs doctor --strict --repair-runtime`
 - Restore drill, lifecycle recovery drill, runtime repair evidence, repo clone
   coverage, story-e2e gate coverage, and transfer fallback/degraded JSON
-  coverage: pending final release-gate conformance and regression coverage.
+  coverage: PASS via release-gate conformance and regression coverage.
 
 ### GA docs evidence
 
 - GA docs readiness scope: `docs/99_CHANGELOG.md`, this ledger, and
   release-facing story, clone, external control root, and transfer evidence
-  define the candidate readiness contract for `v0.4.7`.
+  define the release evidence contract for `v0.4.7`.
 - Changelog scope: story-e2e gate coverage for all regular `TestStory` user
   stories, ordinary embedded repo clone user story coverage, external control
   root workspace-cwd explicit selector flow coverage, and public transfer
@@ -150,24 +178,44 @@ to CI and the post-release evidence ledger.
 
 ### Artifact and signing evidence
 
-- Artifact workflow: pending tag-gated `.github/workflows/ci.yml` release job.
+- Artifact workflow: `.github/workflows/ci.yml` release job in tag workflow run
+  `25355112705`.
 - Release gate includes `make release-build`, matching the release job's five
   platform binaries: Linux x86_64, Linux ARM64, macOS x86_64, macOS ARM64, and
   Windows x86_64.
-- Expected artifact set after final publication: five platform binaries, five
-  matching binary `.bundle` files, `SHA256SUMS`, and `SHA256SUMS.bundle`; this
-  candidate entry is not published and records no final asset result.
-- Signing workflow expectation: final artifacts are signed by the tag-gated
-  release workflow using Sigstore/cosign v3 bundle files.
+- Published artifact count: `12`
+- Published artifacts:
+  `jvs-darwin-amd64`,
+  `jvs-darwin-amd64.bundle`,
+  `jvs-darwin-arm64`,
+  `jvs-darwin-arm64.bundle`,
+  `jvs-linux-amd64`,
+  `jvs-linux-amd64.bundle`,
+  `jvs-linux-arm64`,
+  `jvs-linux-arm64.bundle`,
+  `jvs-windows-amd64.exe`,
+  `jvs-windows-amd64.exe.bundle`,
+  `SHA256SUMS`,
+  and `SHA256SUMS.bundle`.
+- Published asset validation: after release download to
+  `/tmp/jvs-release-v0.4.7`, `sha256sum --check --strict SHA256SUMS` returned
+  OK for all five binaries.
+- Linux binary smoke: after `chmod +x jvs-linux-amd64`,
+  `./jvs-linux-amd64 --help` printed current JVS save point help successfully.
+- Signing workflow: final artifacts include five platform binaries, five
+  matching binary `.bundle` files, `SHA256SUMS`, and `SHA256SUMS.bundle`
+  produced by the tag-gated release workflow.
 - Signing command family:
   `cosign sign-blob --yes --bundle=<artifact>.bundle <artifact>`
-- Pre-upload verification expectation: the release job must run `test -s` for
-  every artifact, `sha256sum --check --strict SHA256SUMS`, and
-  `cosign verify-blob <artifact> --bundle <artifact>.bundle` with the release
-  workflow certificate identity and OIDC issuer.
+- Pre-upload verification: the release job verified artifacts and signatures
+  before upload with the release workflow certificate identity and OIDC issuer.
 - Certificate identity rule:
   `https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@<workflow-ref>`
+- Certificate identity used:
+  `https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@refs/tags/v0.4.7`
 - OIDC issuer: `https://token.actions.githubusercontent.com`
+- Local signature verification: no local cosign verification is claimed in
+  this ledger because local cosign was not installed.
 
 ### Runbook references
 
