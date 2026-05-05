@@ -3636,7 +3636,7 @@ func TestDocs_ReleaseEvidenceV047FinalReleaseRecordsPublishedRelease(t *testing.
 		"Tag source archive evidence class: `GA candidate readiness`",
 		"Final evidence location: GitHub Release page and post-release main ledger",
 		"Tag movement: `v0.4.7` was not moved",
-		"GitHub release list shows `v0.4.7` as Latest",
+		"At publication, GitHub release list showed `v0.4.7` as Latest",
 		"`69.4% >= 60%`",
 		"story-e2e gate",
 		"`make story-e2e`",
@@ -3677,7 +3677,7 @@ func TestDocs_ReleaseEvidenceV047FinalReleaseRecordsPublishedRelease(t *testing.
 		"prerelease=false",
 		"Published at: `2026-05-05T02:51:57Z`",
 		"Published artifact count: `12`",
-		"GitHub release list shows `v0.4.7` as Latest",
+		"At publication, GitHub release list showed `v0.4.7` as Latest",
 		"DCO skipped",
 		"SKIPPED in tag workflow run `25355112705`",
 		"Local final release gate result: `RELEASE GATE PASSED`",
@@ -3733,15 +3733,18 @@ func TestDocs_ReleaseEvidenceV047FinalReleaseRecordsPublishedRelease(t *testing.
 	}
 }
 
-func TestDocs_ReleaseEvidenceV048CandidateReadinessRecordsScope(t *testing.T) {
+func TestDocs_ReleaseEvidenceV048FinalReleaseRecordsPublishedRelease(t *testing.T) {
 	const heading = "## v0.4.8 - 2026-05-05"
 	const evidenceLink = "RELEASE_EVIDENCE.md#v048---2026-05-05"
 	const previousFinalHeading = "## v0.4.7 - 2026-05-05"
+	const commit = "589c4d7ccaf20813f02b9d8017a9909b701be8b9"
+	const tagObject = "c00188b4fde18d704c0c349e4d1ab59e9555feac"
+	const runURL = "https://github.com/agentsmith-project/jvs/actions/runs/25369519260"
 	const releaseURL = "https://github.com/agentsmith-project/jvs/releases/tag/v0.4.8"
 
 	latestHeading := latestChangelogHeading(t)
 	if latestHeading != heading {
-		t.Fatalf("latest changelog entry must be the v0.4.8 GA candidate/readiness heading %q, got %q", heading, latestHeading)
+		t.Fatalf("latest changelog entry must be the v0.4.8 final GA release heading %q, got %q", heading, latestHeading)
 	}
 
 	changelog := readRepoFile(t, "docs/99_CHANGELOG.md")
@@ -3755,55 +3758,84 @@ func TestDocs_ReleaseEvidenceV048CandidateReadinessRecordsScope(t *testing.T) {
 	requireFinalTaggedReleaseEvidence(t, previousFinalHeading, releaseEvidenceEntry(t, ledger, previousFinalHeading))
 
 	changelogEntry := changelogEntry(t, changelog, heading)
-	for _, required := range []string{
-		"GA candidate/readiness",
-		evidenceLink,
+	for _, forbidden := range []string{
 		"not final",
 		"not tagged",
 		"not published",
-		"external control root restore-run",
-		"stable closed loop",
-		"recovery status, doctor, and clone",
-		"state interpretation",
-		"recovery resume",
-		"recovery rollback",
-		"global malformed guard",
-		"separated clone",
-		"source recovery",
-		"before target publication",
+		"pending final",
+	} {
+		requireReleaseReadinessAbsentText(t, "v0.4.8 changelog final entry", changelogEntry, forbidden)
+	}
+	for _, required := range []string{
+		"final GA release evidence",
+		evidenceLink,
+		"Final tag `v0.4.8` points at commit",
+		commit,
+		"`Prepare v0.4.8 release`",
+		"Annotated tag object `" + tagObject + "`",
+		"`Release v0.4.8`",
+		"`2026-05-05 02:51:48 -0700`",
+		runURL,
+		releaseURL,
+		"draft=false",
+		"prerelease=false",
+		"Published at: `2026-05-05T09:57:16Z`",
+		"Asset count: `12`",
+		"Tag source archive evidence class: `GA candidate readiness`",
+		"Final evidence location: GitHub Release page and post-release main ledger",
+		"Tag movement: `v0.4.8` was not moved",
+		"GitHub release list shows `v0.4.8` as Latest",
+		"`RELEASE GATE PASSED`",
+		"`69.2% >= 60%`",
+		"`make build` and `make release-build`",
+		"external control root restore-run stable closed loop",
+		"recovery status/doctor/clone state interpretation consistency",
+		"global malformed guard for recovery resume/rollback",
+		"separated clone source recovery recheck before target publication",
 		"malformed external restore state user story E2E",
-		"release-binary-smoke",
+		"release-binary-smoke restore+clone coverage",
 		"`^TestStorySeparated(Restore|Clone)`",
 		"`jvs doctor --strict --repair-runtime`",
-		releaseURL,
+		"sha256sum --check --strict SHA256SUMS",
+		"./jvs-linux-amd64 --help",
+		"https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@refs/tags/v0.4.8",
+		"https://token.actions.githubusercontent.com",
+		"Release job verified artifacts and signatures before upload",
+		"Local cosign verification is not claimed",
 	} {
-		requireReleaseReadinessText(t, "v0.4.8 changelog candidate entry", changelogEntry, required)
+		requireReleaseReadinessText(t, "v0.4.8 changelog final entry", changelogEntry, required)
 	}
-	for _, forbidden := range []string{
-		"Final tag `v0.4.8`",
-		"Tag workflow run",
-		"Status: PASS",
-		"RELEASE GATE PASSED",
-		"Asset count:",
-		"Published at:",
-		"GitHub release list shows `v0.4.8` as Latest",
-	} {
-		requireReleaseReadinessAbsentText(t, "v0.4.8 changelog candidate entry", changelogEntry, forbidden)
-	}
+	requireReleaseReadinessText(t, "v0.4.8 changelog final entry", changelogEntry, "None for the stable v0 public CLI contract")
 
 	entry := releaseEvidenceEntry(t, ledger, heading)
-	requireCandidateReleaseEvidence(t, heading, entry)
+	requireFinalTaggedReleaseEvidence(t, heading, entry)
 	for _, required := range []string{
-		"Candidate target tag: `v0.4.8`",
+		"Evidence class: Final release evidence",
+		"Tag: `v0.4.8`",
+		"Final tagged commit: `" + commit + "`",
+		"Commit message: `Prepare v0.4.8 release`",
+		"Tag object: `" + tagObject + "`",
+		"Annotated tag subject: `Release v0.4.8`",
+		"Tagger date: `2026-05-05 02:51:48 -0700`",
+		"Status: PASS",
 		"Changelog heading date: `2026-05-05`",
-		"external control root restore-run",
-		"stable closed loop",
-		"recovery status, doctor, and clone",
-		"state interpretation",
-		"global malformed guard",
-		"separated clone",
-		"source recovery",
-		"before target publication",
+		runURL,
+		releaseURL,
+		"draft=false",
+		"prerelease=false",
+		"Published at: `2026-05-05T09:57:16Z`",
+		"Published artifact count: `12`",
+		"GitHub release list shows `v0.4.8` as Latest",
+		"DCO skipped",
+		"SKIPPED in tag workflow run `25369519260`",
+		"Local final release gate result: `RELEASE GATE PASSED`",
+		"`69.2% >= 60%`",
+		"`make build` passed",
+		"`make release-build` passed",
+		"external control root restore-run stable closed loop",
+		"recovery status/doctor/clone state interpretation consistency",
+		"global malformed guard for recovery resume and rollback",
+		"separated clone source recovery recheck before target publication",
 		"malformed external restore state user story E2E",
 		"`TestStorySeparatedRestoreRunStableStateDoctorStrictAndClone`",
 		"`TestStorySeparatedRestoreStalePreviewRecoveryCommandCleanupAndCloneConsistency`",
@@ -3814,23 +3846,41 @@ func TestDocs_ReleaseEvidenceV048CandidateReadinessRecordsScope(t *testing.T) {
 		"`^TestStorySeparated(Restore|Clone)`",
 		"Release binary smoke",
 		"restore and clone stories",
-		"Expected artifact set after final publication",
-		"https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@<workflow-ref>",
+		"sha256sum --check --strict SHA256SUMS",
+		"jvs-linux-amd64 --help",
+		"https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@refs/tags/v0.4.8",
 		"https://token.actions.githubusercontent.com",
-		releaseURL,
+		"Tag source archive evidence class: `GA candidate readiness`",
+		"Final evidence location: GitHub Release page and post-release main ledger",
+		"Tag movement: `v0.4.8` was not moved",
+		"Release job verified artifacts and signatures before upload",
+		"Local signature verification: no local cosign verification is claimed",
 	} {
-		requireReleaseReadinessText(t, "v0.4.8 candidate release evidence", entry, required)
+		requireReleaseReadinessText(t, "v0.4.8 final release evidence", entry, required)
+	}
+	for _, asset := range []string{
+		"jvs-darwin-amd64",
+		"jvs-darwin-amd64.bundle",
+		"jvs-darwin-arm64",
+		"jvs-darwin-arm64.bundle",
+		"jvs-linux-amd64",
+		"jvs-linux-amd64.bundle",
+		"jvs-linux-arm64",
+		"jvs-linux-arm64.bundle",
+		"jvs-windows-amd64.exe",
+		"jvs-windows-amd64.exe.bundle",
+		"SHA256SUMS",
+		"SHA256SUMS.bundle",
+	} {
+		requireReleaseReadinessText(t, "v0.4.8 final release evidence assets", entry, asset)
 	}
 	for _, forbidden := range []string{
-		"- Tag: `v0.4.8`",
-		"Final tagged commit:",
-		"Status: PASS",
-		"RELEASE GATE PASSED",
-		"Published artifact count:",
-		"Tag workflow run:",
-		"Published at:",
+		"not final",
+		"not tagged",
+		"not published",
+		"pending final",
 	} {
-		requireReleaseReadinessAbsentText(t, "v0.4.8 candidate release evidence", entry, forbidden)
+		requireReleaseReadinessAbsentText(t, "v0.4.8 final release evidence", entry, forbidden)
 	}
 }
 
