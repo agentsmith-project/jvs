@@ -28,6 +28,154 @@ Evidence classes:
 
 Raw logs and `coverage.out` are not stored here.
 
+## v0.4.7 - 2026-05-05
+
+### Release identity
+
+- Evidence class: GA candidate readiness
+- Candidate target tag: `v0.4.7`
+- Candidate state: not final, not tagged, and not published; this entry is
+  pending final tag creation and publication through the normal CI release
+  flow.
+- Changelog heading date: `2026-05-05`
+- Release identity: main-branch GA candidate readiness for the next published
+  save point public-contract release after `v0.4.6`.
+- Baseline: story-e2e gate coverage for every regular `TestStory` user story,
+  ordinary embedded repo clone user story coverage, external control root
+  workspace-cwd explicit selector flow coverage, and public transfer
+  fallback/degraded JSON cleanliness for optimized-engine fallback reporting.
+- Source archive boundary: no immutable `v0.4.7` tag source archive exists yet.
+  When the pending final tag is created, the source archive will be the
+  immutable source archive and will record readiness from tag time.
+- publication final evidence: pending. The future GitHub Release page and
+  post-release main ledger will record workflow run, release state, artifacts,
+  checksum validation, signing identity, smoke, and coverage facts after the
+  release exists.
+- Candidate release URL target:
+  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.7`
+- Scope: release readiness for the `make story-e2e` gate selecting all regular
+  `TestStory` user stories, the ordinary embedded repo clone user story,
+  external control root workspace-cwd explicit selector behavior, and public
+  transfer fallback/degraded JSON cleanliness. The covered JSON boundary keeps
+  pure JSON output, public transfer roles, materialization destinations,
+  published destinations, `degraded_reasons`, and `warnings` clean when
+  `juicefs-clone` falls back to `copy`.
+
+### Release gate summary
+
+Candidate release gate command:
+`env -u NO_COLOR CI=true GITHUB_ACTIONS=true TERM=xterm-256color make release-gate`
+
+The table records required checks for the pending final tag. This candidate
+entry records readiness expectations only; final results are intentionally left
+to CI and the post-release evidence ledger.
+
+| Check | Command or target | Candidate readiness evidence |
+| --- | --- | --- |
+| Release gate | `make release-gate` | Required before final publication; pending final run |
+| Story e2e gate | `make story-e2e` plus `TestStoryE2EGate_CoversRegularUserStories` | Candidate user-story aggregation coverage; pending final conformance run |
+| Docs contract | `make docs-contract` | Required by release-gate suite; pending final run |
+| CI contract | `make ci-contract` | Required by release-gate suite; pending final run |
+| Race tests | `make test-race` | Required by release-gate suite; pending final run |
+| Coverage | `make test-cover` | Required with threshold enforcement; pending final run |
+| Lint | `make lint` | Required by release-gate suite; pending final run |
+| Build | `make build` | Required by release-gate suite; pending final run |
+| Release cross-build | `make release-build` | Required before artifact publication; pending final run |
+| Conformance | `make conformance` | Required by release-gate suite; pending final run |
+| Library facade | `make library` | Required by release-gate suite; pending final run |
+| Regression | `make regression` | Required by release-gate suite; pending final run |
+| Fuzz ordinary tests | `make fuzz-tests` | Required by release-gate suite; pending final run |
+| Fuzz smoke | `make fuzz` | Required by release-gate suite; pending final run |
+
+### Coverage
+
+- Coverage total: pending final `make test-cover` evidence.
+- Coverage threshold: `60.0%`
+- Evidence command: `make test-cover`
+- Evidence source: pending final `make release-gate` output.
+
+### Representative repo evidence
+
+- Representative repo evidence source: pending final `make release-gate`,
+  including conformance and regression targets.
+- Representative repo readiness: release-gate coverage is expected to cover
+  save point history, strict doctor, integrity checks, restore preview/run and
+  recovery behavior, runtime repair path, story-e2e gate coverage, embedded
+  repo clone behavior, external control root workspace-cwd selectors, and
+  transfer fallback/degraded JSON cleanliness before publication.
+- Story e2e readiness: conformance is expected to run
+  `TestStoryE2EGate_CoversRegularUserStories`, which dry-runs
+  `make story-e2e`, lists regular `TestStory` user stories, and fails if any
+  regular user story is missing from the gate pattern.
+- Embedded repo clone readiness:
+  `TestStoryRepoCloneEmbeddedProjectKeepsIdentityHistoryAndMainWorkspaceUsable`
+  is expected to cover ordinary embedded repo clone behavior, source repo
+  identity preservation, fresh target repo identity, copied save point choices,
+  target `main` usability, follow-on target saves, source repo isolation, and
+  public clone transfer cleanliness.
+- External control root readiness:
+  `TestStorySeparatedOpsWorkspaceCWDWithExplicitControlRootCoreFlow` is
+  expected to cover external control root workspace-cwd operation with
+  explicit `--control-root` and `--workspace main` selectors across status,
+  save, history, view, view close, restore preview, and restore run while the
+  workspace folder stays free of control data.
+- Public transfer fallback/degraded readiness:
+  `TestStory_PublicTransferJSONDegradedSaveKeepsPublicWarningsClean` is
+  expected to cover `juicefs-clone` requested-engine fallback to `copy`, pure
+  JSON output, public `degraded_reasons` and `warnings`, and absence of
+  internal `.jvs`, content storage, and stdout/stderr detail leakage.
+- Doctor command: `jvs doctor --strict`
+- Migration repair command for copied repos:
+  `jvs doctor --strict --repair-runtime`
+- Restore drill, lifecycle recovery drill, runtime repair evidence, repo clone
+  coverage, story-e2e gate coverage, and transfer fallback/degraded JSON
+  coverage: pending final release-gate conformance and regression coverage.
+
+### GA docs evidence
+
+- GA docs readiness scope: `docs/99_CHANGELOG.md`, this ledger, and
+  release-facing story, clone, external control root, and transfer evidence
+  define the candidate readiness contract for `v0.4.7`.
+- Changelog scope: story-e2e gate coverage for all regular `TestStory` user
+  stories, ordinary embedded repo clone user story coverage, external control
+  root workspace-cwd explicit selector flow coverage, and public transfer
+  fallback/degraded JSON cleanliness.
+- Public JSON cleanliness evidence: fallback/degraded transfer reporting keeps
+  public transfer roles, materialization destinations, published destinations,
+  `degraded_reasons`, and `warnings` in the JSON contract without exposing
+  internal `.jvs`, content storage, or stdout/stderr details.
+- Runtime-state migration boundary: non-portable JVS runtime state remains
+  destination-local and must be rebuilt at the destination with
+  `jvs doctor --strict --repair-runtime`.
+
+### Artifact and signing evidence
+
+- Artifact workflow: pending tag-gated `.github/workflows/ci.yml` release job.
+- Release gate includes `make release-build`, matching the release job's five
+  platform binaries: Linux x86_64, Linux ARM64, macOS x86_64, macOS ARM64, and
+  Windows x86_64.
+- Expected artifact set after final publication: five platform binaries, five
+  matching binary `.bundle` files, `SHA256SUMS`, and `SHA256SUMS.bundle`; this
+  candidate entry is not published and records no final asset result.
+- Signing workflow expectation: final artifacts are signed by the tag-gated
+  release workflow using Sigstore/cosign v3 bundle files.
+- Signing command family:
+  `cosign sign-blob --yes --bundle=<artifact>.bundle <artifact>`
+- Pre-upload verification expectation: the release job must run `test -s` for
+  every artifact, `sha256sum --check --strict SHA256SUMS`, and
+  `cosign verify-blob <artifact> --bundle <artifact>.bundle` with the release
+  workflow certificate identity and OIDC issuer.
+- Certificate identity rule:
+  `https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@<workflow-ref>`
+- OIDC issuer: `https://token.actions.githubusercontent.com`
+
+### Runbook references
+
+- Restore recovery, strict doctor, and cleanup semantics:
+  `docs/13_OPERATION_RUNBOOK.md`
+- Migration and backup: `docs/18_MIGRATION_AND_BACKUP.md`
+- Artifact signing and checksum validation: `docs/SIGNING.md`
+
 ## v0.4.6 - 2026-05-03
 
 ### Release identity

@@ -99,6 +99,94 @@ func TestStorySeparatedOpsPayloadBoundaryAndAuthoritativeJSON(t *testing.T) {
 	requireSeparatedStoryControlFiles(t, controlRoot)
 }
 
+func TestStorySeparatedOpsWorkspaceCWDWithExplicitControlRootCoreFlow(t *testing.T) {
+	base := t.TempDir()
+	controlRoot := filepath.Join(base, "platform-control")
+	workspaceRoot := filepath.Join(base, "agent-workspace")
+	initSeparatedControlRepo(t, base, controlRoot, workspaceRoot, "main")
+	requireSeparatedStoryWorkspaceHasNoControlPlane(t, workspaceRoot)
+
+	createFiles(t, workspaceRoot, map[string]string{
+		"README.md":  "workspace owned content\n",
+		"src/app.js": "console.log('v1')\n",
+	})
+
+	statusBefore := separatedJSON(t, workspaceRoot, controlRoot, "main", "status")
+	requireSeparatedControlAuthoritativeData(t, statusBefore, controlRoot, workspaceRoot, "main")
+	requireSeparatedStoryWorkspaceHasNoControlPlane(t, workspaceRoot)
+
+	firstSave := separatedJSON(t, workspaceRoot, controlRoot, "main", "save", "-m", "workspace cwd baseline")
+	requireSeparatedControlAuthoritativeData(t, firstSave, controlRoot, workspaceRoot, "main")
+	firstID, _ := firstSave["save_point_id"].(string)
+	if firstID == "" {
+		t.Fatalf("workspace cwd save missing save_point_id: %#v", firstSave)
+	}
+	requireSeparatedStoryTransferSource(t, firstSave, controlRoot, workspaceRoot)
+	requireSeparatedStoryWorkspaceHasNoControlPlane(t, workspaceRoot)
+
+	history := separatedJSON(t, workspaceRoot, controlRoot, "main", "history")
+	requireSeparatedControlAuthoritativeData(t, history, controlRoot, workspaceRoot, "main")
+	if got := savePointIDsFromHistory(t, history); !sameStringSlice(got, []string{firstID}) {
+		t.Fatalf("workspace cwd history IDs = %v, want [%s]", got, firstID)
+	}
+	requireSeparatedStoryWorkspaceHasNoControlPlane(t, workspaceRoot)
+
+	view := separatedJSON(t, workspaceRoot, controlRoot, "main", "view", firstID)
+	requireSeparatedControlAuthoritativeData(t, view, controlRoot, workspaceRoot, "main")
+	viewPath, _ := view["view_path"].(string)
+	if viewPath == "" {
+		t.Fatalf("workspace cwd view missing view_path: %#v", view)
+	}
+	if got := readAbsoluteFile(t, filepath.Join(viewPath, "src", "app.js")); got != "console.log('v1')\n" {
+		t.Fatalf("workspace cwd view content = %q", got)
+	}
+	requireSeparatedStoryWorkspaceHasNoControlPlane(t, workspaceRoot)
+
+	viewClose := separatedJSON(t, workspaceRoot, controlRoot, "main", "view", "close", view["view_id"].(string))
+	requireSeparatedControlAuthoritativeData(t, viewClose, controlRoot, workspaceRoot, "main")
+	requireSeparatedStoryWorkspaceHasNoControlPlane(t, workspaceRoot)
+
+	createFiles(t, workspaceRoot, map[string]string{
+		"src/app.js":         "console.log('v2')\n",
+		"build/generated.js": "generated\n",
+	})
+	secondSave := separatedJSON(t, workspaceRoot, controlRoot, "main", "save", "-m", "workspace cwd update")
+	requireSeparatedControlAuthoritativeData(t, secondSave, controlRoot, workspaceRoot, "main")
+	secondID, _ := secondSave["save_point_id"].(string)
+	if secondID == "" {
+		t.Fatalf("workspace cwd second save missing save_point_id: %#v", secondSave)
+	}
+	requireSeparatedStoryWorkspaceHasNoControlPlane(t, workspaceRoot)
+
+	restorePreview := separatedJSON(t, workspaceRoot, controlRoot, "main", "restore", firstID)
+	requireSeparatedControlAuthoritativeData(t, restorePreview, controlRoot, workspaceRoot, "main")
+	planID, _ := restorePreview["plan_id"].(string)
+	if planID == "" {
+		t.Fatalf("workspace cwd restore preview missing plan_id: %#v", restorePreview)
+	}
+	if got := readAbsoluteFile(t, filepath.Join(workspaceRoot, "src", "app.js")); got != "console.log('v2')\n" {
+		t.Fatalf("workspace cwd restore preview mutated content: %q", got)
+	}
+	requireSeparatedStoryWorkspaceHasNoControlPlane(t, workspaceRoot)
+
+	restoreRun := separatedJSON(t, workspaceRoot, controlRoot, "main", "restore", "--run", planID)
+	requireSeparatedControlAuthoritativeData(t, restoreRun, controlRoot, workspaceRoot, "main")
+	if got := readAbsoluteFile(t, filepath.Join(workspaceRoot, "src", "app.js")); got != "console.log('v1')\n" {
+		t.Fatalf("workspace cwd restore did not restore first save: %q", got)
+	}
+	requireAbsolutePathMissing(t, filepath.Join(workspaceRoot, "build", "generated.js"))
+	requireSeparatedStoryWorkspaceHasNoControlPlane(t, workspaceRoot)
+
+	statusAfterRestore := separatedJSON(t, workspaceRoot, controlRoot, "main", "status")
+	requireSeparatedControlAuthoritativeData(t, statusAfterRestore, controlRoot, workspaceRoot, "main")
+	if statusAfterRestore["content_source"] != firstID ||
+		statusAfterRestore["newest_save_point"] != secondID ||
+		statusAfterRestore["history_head"] != secondID {
+		t.Fatalf("workspace cwd restore status should distinguish content source from history head: %#v", statusAfterRestore)
+	}
+	requireSeparatedStoryWorkspaceHasNoControlPlane(t, workspaceRoot)
+}
+
 func TestStorySeparatedOpsLifecycleCommandsFailClosedWithoutMutatingRoots(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -449,6 +537,11 @@ func requireSeparatedStoryControlFiles(t *testing.T, controlRoot string) {
 	if got := readAbsoluteFile(t, filepath.Join(controlRoot, ".jvs", "runtime", "platform.tmp")); got != "runtime sentinel\n" {
 		t.Fatalf("runtime sentinel mutated: %q", got)
 	}
+}
+
+func requireSeparatedStoryWorkspaceHasNoControlPlane(t *testing.T, workspaceRoot string) {
+	t.Helper()
+	requireAbsolutePathAbsent(t, filepath.Join(workspaceRoot, ".jvs"))
 }
 
 func requireSeparatedStoryTransferSource(t *testing.T, data map[string]any, _ string, payloadRoot string) {

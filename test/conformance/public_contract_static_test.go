@@ -3530,16 +3530,26 @@ func TestDocs_V042GAReleaseEvidenceRecordsPublishedRelease(t *testing.T) {
 	}
 }
 
-func TestDocs_ReleaseEvidenceV046GACandidateReadinessRecordsPendingRelease(t *testing.T) {
-	const heading = "## v0.4.6 - 2026-05-03"
-	const evidenceLink = "RELEASE_EVIDENCE.md#v046---2026-05-03"
+func TestDocs_ReleaseEvidenceV047GACandidateReadinessRecordsPendingRelease(t *testing.T) {
+	const heading = "## v0.4.7 - 2026-05-05"
+	const evidenceLink = "RELEASE_EVIDENCE.md#v047---2026-05-05"
+	const previousHeading = "## v0.4.6 - 2026-05-03"
 
 	latestHeading := latestChangelogHeading(t)
 	if latestHeading != heading {
-		t.Fatalf("latest changelog entry must be the v0.4.6 GA candidate heading %q, got %q", heading, latestHeading)
+		t.Fatalf("latest changelog entry must be the v0.4.7 GA candidate heading %q, got %q", heading, latestHeading)
 	}
 
-	changelogEntry := changelogEntry(t, readRepoFile(t, "docs/99_CHANGELOG.md"), heading)
+	changelog := readRepoFile(t, "docs/99_CHANGELOG.md")
+	if !strings.Contains(changelog, previousHeading) {
+		t.Fatalf("changelog must retain the historical v0.4.6 GA candidate heading %q", previousHeading)
+	}
+	ledger := readRepoFile(t, "docs/RELEASE_EVIDENCE.md")
+	if !strings.Contains(ledger, previousHeading) {
+		t.Fatalf("release evidence ledger must retain the historical v0.4.6 GA candidate heading %q", previousHeading)
+	}
+
+	changelogEntry := changelogEntry(t, changelog, heading)
 	for _, required := range []string{
 		"GA candidate",
 		evidenceLink,
@@ -3547,43 +3557,44 @@ func TestDocs_ReleaseEvidenceV046GACandidateReadinessRecordsPendingRelease(t *te
 		"not tagged",
 		"not published",
 		"pending final tag",
-		"Candidate target tag: `v0.4.6`",
-		"repo/workspace lifecycle management",
-		"repo move/rename/detach",
-		"workspace move/rename/delete preview/run",
-		"recovery posture",
-		"external workspace pending lifecycle evidence",
-		"machine-readable `recommended_next_command`",
-		"repo clone workflow",
-		"filesystem-aware transfer planning/implementation",
-		"pre-GA public vocabulary cleanup",
-		"clean break",
-		"no backward-compatible aliases",
-		"`ContentRootHash`",
-		"`content_root_hash`",
-		"`E_SAVE_POINT_*`",
-		"`E_CLEANUP_*`",
-		"transfer JSON public references",
-		"free-text sanitizer",
+		"Candidate target tag: `v0.4.7`",
+		"story-e2e gate",
+		"`make story-e2e`",
+		"every regular `TestStory` user story",
+		"ordinary embedded repo clone user story",
+		"external control root workspace-cwd explicit selector flow",
+		"public transfer fallback/degraded JSON cleanliness",
+		"`juicefs-clone`",
+		"normal `copy` behavior",
+		"`degraded_reasons`",
+		"`warnings`",
+		"pure JSON",
+		"not the application release version",
+		"No final `v0.4.7` release artifacts are published",
 	} {
-		requireReleaseReadinessText(t, "v0.4.6 changelog candidate entry", changelogEntry, required)
+		requireReleaseReadinessText(t, "v0.4.7 changelog candidate entry", changelogEntry, required)
 	}
-	requireReleaseReadinessAbsentText(t, "v0.4.6 changelog candidate entry", changelogEntry, "None for the stable v0 public CLI contract")
+	requireReleaseReadinessText(t, "v0.4.7 changelog candidate entry", changelogEntry, "None for the stable v0 public CLI contract")
 
-	entry := releaseEvidenceEntry(t, readRepoFile(t, "docs/RELEASE_EVIDENCE.md"), heading)
+	entry := releaseEvidenceEntry(t, ledger, heading)
 	requireCandidateReleaseEvidence(t, heading, entry)
 	for _, required := range []string{
-		"pre-GA public vocabulary cleanup",
-		"clean break",
-		"no backward-compatible aliases",
-		"`ContentRootHash`",
-		"`content_root_hash`",
-		"`E_SAVE_POINT_*`",
-		"`E_CLEANUP_*`",
-		"transfer JSON public references",
-		"free-text sanitizer",
+		"`make story-e2e`",
+		"`TestStory` user stories",
+		"`TestStoryE2EGate_CoversRegularUserStories`",
+		"`TestStoryRepoCloneEmbeddedProjectKeepsIdentityHistoryAndMainWorkspaceUsable`",
+		"`TestStorySeparatedOpsWorkspaceCWDWithExplicitControlRootCoreFlow`",
+		"`TestStory_PublicTransferJSONDegradedSaveKeepsPublicWarningsClean`",
+		"ordinary embedded repo clone behavior",
+		"external control root workspace-cwd operation",
+		"explicit `--control-root`",
+		"`--workspace main`",
+		"`juicefs-clone` requested-engine fallback to `copy`",
+		"pure JSON output",
+		"public `degraded_reasons` and `warnings`",
+		"internal `.jvs`, content storage, and stdout/stderr detail leakage",
 	} {
-		requireReleaseReadinessText(t, "v0.4.6 release evidence public vocabulary cleanup", entry, required)
+		requireReleaseReadinessText(t, "v0.4.7 release evidence story readiness", entry, required)
 	}
 	for _, forbidden := range []struct {
 		name    string
@@ -3596,7 +3607,7 @@ func TestDocs_ReleaseEvidenceV046GACandidateReadinessRecordsPendingRelease(t *te
 		{name: "final tagged commit", pattern: releaseEvidenceCommitPattern},
 	} {
 		if forbidden.pattern.MatchString(entry) {
-			t.Fatalf("v0.4.6 candidate release evidence must not claim %s before final publication", forbidden.name)
+			t.Fatalf("v0.4.7 candidate release evidence must not claim %s before final publication", forbidden.name)
 		}
 	}
 }

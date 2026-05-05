@@ -5,6 +5,124 @@ as active reader content for the published GA line. The active product
 vocabulary is folder, workspace, save point, save, history, view, restore,
 recovery plan, doctor, and cleanup.
 
+## v0.4.7 - 2026-05-05
+
+### Highlights
+
+- GA candidate readiness now covers the story-e2e gate as a release-facing
+  aggregation point: `make story-e2e` is checked so every regular `TestStory`
+  user story is selected by the gate before publication.
+- The ordinary embedded repo clone user story is covered end to end, including
+  source repo identity preservation, fresh target repo identity, `main`
+  workspace usability after clone, `--save-points all` / `--save-points main`,
+  follow-on target saves, and source repo isolation.
+- External control root coverage now includes the workspace-cwd explicit
+  selector flow: from the workspace folder, `--control-root` plus
+  `--workspace main` drives status, save, history, view, view close, restore
+  preview, and restore run while control data stays in the control root.
+- Public transfer fallback/degraded JSON cleanliness is covered for the
+  `juicefs-clone` requested-engine path when the optimized engine is
+  unavailable and the command falls back to normal `copy` behavior.
+- Public transfer JSON remains clean in fallback/degraded cases: pure JSON
+  output keeps user-facing `degraded_reasons`, `warnings`, transfer roles,
+  materialization destinations, and published destinations without leaking
+  internal `.jvs`, content storage, or stdout/stderr details.
+- Release-facing identity remains `github.com/agentsmith-project/jvs`; release
+  URLs use the canonical GitHub project, for example
+  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.0`.
+
+### Breaking changes
+
+- None for the stable v0 public CLI contract.
+- This main-branch version bump is a GA candidate/readiness record only; it
+  does not create a final tag, publish release artifacts, or change the on-disk
+  repository layout version.
+
+### Known limitations
+
+- v0 does not include remote push/pull.
+- v0 does not include in-JVS signing commands.
+- v0 does not include public partial-save contracts.
+- v0 does not include compression contracts.
+- v0 does not include merge/rebase.
+- v0 does not include complex retention policy flags.
+- v0 does not yet include a first-class user-facing portability or backup
+  workflow.
+- Strict integrity checks can be I/O intensive on large workspaces.
+- Descriptor signing and in-JVS trust policy remain outside the stable v0
+  repository format.
+
+### Risk labels
+
+- `integrity`: descriptor checksum and content hash detect independent
+  corruption; coordinated descriptor-plus-checksum rewrite remains a v0
+  residual risk.
+- `migration`: non-portable JVS runtime state is destination-local and must be
+  rebuilt at the fresh destination with
+  `jvs doctor --strict --repair-runtime`.
+- `recovery`: interrupted lifecycle operations and restore runs are expected to
+  fail closed and report recovery evidence before another mutating operation
+  continues in the same repo or workspace.
+- `usability`: release readiness now depends on the story-e2e gate selecting
+  every regular `TestStory` user story, plus explicit-selector coverage for
+  external control root workflows and clean fallback/degraded transfer JSON.
+
+### Migration notes
+
+- Existing repositories do not need an on-disk migration for the `v0.4.7`
+  candidate target; `.jvs/format_version` remains a repository layout version,
+  not the application release version.
+- This candidate records story-e2e gate, embedded repo clone, external control
+  root workspace-cwd selector, and public transfer fallback/degraded JSON
+  readiness for existing v0 repository storage; it does not add a compatibility
+  mode or change repository storage.
+- After upgrading to this candidate, run `jvs doctor --strict` on a
+  representative repo before relying on it for release workflows.
+- For physical backup or storage migration, start with a fresh destination, run
+  an offline whole-folder copy, run
+  `jvs doctor --strict --repair-runtime` at the destination, then run a fresh
+  cleanup preview before any cleanup run.
+- Do not treat non-portable JVS runtime state as authoritative during physical
+  backup or storage migration; rebuild it at the destination before resuming
+  JVS writes.
+- User-facing portability and backup workflow remains a documented product gap,
+  not a new v0 CLI promise.
+- Run the restore drill from `docs/13_OPERATION_RUNBOOK.md`, including
+  preview/run and recovery status/resume/rollback coverage.
+
+### Release evidence
+
+- See the [release evidence ledger](RELEASE_EVIDENCE.md#v047---2026-05-05)
+  for the `v0.4.7` GA candidate readiness record.
+- Evidence class: GA candidate readiness.
+- Candidate target tag: `v0.4.7`
+- Candidate state: not final, not tagged, and not published; the release is
+  pending final tag creation and publication through the normal CI release
+  flow.
+- Source archive boundary: no immutable `v0.4.7` tag source archive exists yet; when
+  the pending final tag is created, its source archive will record readiness
+  from tag time.
+- publication final evidence remains pending; the future GitHub Release page
+  and post-release main ledger will record workflow run, release state,
+  artifacts, checksums, signing identity, smoke, and coverage facts after the
+  release exists.
+- Readiness scope since `v0.4.6`: story-e2e gate coverage for every regular
+  `TestStory` user story, ordinary embedded repo clone user story coverage,
+  external control root workspace-cwd explicit selector flow coverage, and
+  public transfer fallback/degraded JSON cleanliness for optimized-engine
+  fallback reporting.
+
+### Release artifacts
+
+- No final `v0.4.7` release artifacts are published from this main-branch
+  candidate entry.
+- Artifact plan for the pending final tag remains the standard five platform
+  binaries, matching `.bundle` files, `SHA256SUMS`, and `SHA256SUMS.bundle`.
+- Signing remains outside in-JVS commands and is expected to use the release
+  workflow's Sigstore/cosign v3 bundle flow.
+- Final artifact, checksum, signing, and smoke evidence will be recorded only
+  after CI creates the release from the final tag.
+
 ## v0.4.6 - 2026-05-03
 
 ### Highlights
