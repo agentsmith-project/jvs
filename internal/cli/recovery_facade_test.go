@@ -308,6 +308,34 @@ func TestRecoveryStatusJSONSurfacesSeparatedStaleRestorePreviewWithDiscard(t *te
 	assert.NotContains(t, statusOut, ".jvs/restore-plans")
 }
 
+func TestRecoveryStatusJSONErrorsOnSeparatedRestorePlanWorkspaceIdentityMismatch(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("source\n"), 0644))
+	sourceID := saveSeparatedControlPoint(t, controlRoot, "source")
+	plan, err := restoreplan.Create(controlRoot, "main", model.SnapshotID(sourceID), model.EngineCopy, restoreplan.Options{})
+	require.NoError(t, err)
+	plan.Workspace = "feature"
+	require.NoError(t, restoreplan.Write(controlRoot, plan))
+
+	stdout, stderr, exitCode := runContractSubprocess(t, base,
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"recovery", "status",
+	)
+
+	env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrRecoveryBlocking.Code)
+	assert.Contains(t, env.Error.Message, "Restore plan "+plan.PlanID+" cannot be inspected safely")
+	assert.Contains(t, env.Error.Message, "workspace identity mismatch")
+	assert.Contains(t, env.Error.Hint, "doctor --strict --json")
+	assert.NotContains(t, env.Error.Message, "stale_restore_preview")
+	assert.NotContains(t, env.Error.Hint, "restore discard")
+	assert.NotContains(t, strings.ToLower(env.Error.Message), "payload")
+}
+
 func TestRecoveryStatusJSONPrioritizesSeparatedActiveRecoveryOverRestoreResidue(t *testing.T) {
 	base := setupSeparatedControlCLICWD(t)
 	controlRoot := filepath.Join(base, "control")
@@ -526,6 +554,88 @@ func TestRecoveryStatusDetailJSONErrorsOnSeparatedActiveRecoveryIdentityMismatch
 	assert.Contains(t, env.Error.Message, "workspace")
 	assert.Contains(t, env.Error.Hint, "doctor --strict --json")
 	assert.NotContains(t, strings.ToLower(env.Error.Message), "payload")
+}
+
+func TestRecoveryStatusDetailJSONRejectsResolvedPlanOutsideSelectedSeparatedBinding(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func(t *testing.T, plan *recovery.Plan, base, payloadRoot string)
+		code string
+		want []string
+	}{
+		{
+			name: "workspace mismatch",
+			edit: func(t *testing.T, plan *recovery.Plan, base, payloadRoot string) {
+				featureRoot := filepath.Join(base, "feature-payload")
+				require.NoError(t, os.MkdirAll(featureRoot, 0755))
+				plan.Workspace = "feature"
+				plan.Folder = featureRoot
+				plan.PreWorktreeState = recovery.WorktreeState{Name: "feature", RealPath: featureRoot}
+			},
+			code: errclass.ErrRecoveryBlocking.Code,
+			want: []string{"workspace identity mismatch", "feature", "main"},
+		},
+		{
+			name: "folder boundary mismatch",
+			edit: func(t *testing.T, plan *recovery.Plan, base, payloadRoot string) {
+				otherRoot := filepath.Join(base, "other-payload")
+				require.NoError(t, os.MkdirAll(otherRoot, 0755))
+				plan.Folder = otherRoot
+				plan.PreWorktreeState = recovery.WorktreeState{Name: "main", RealPath: otherRoot}
+			},
+			code: errclass.ErrPathBoundaryEscape.Code,
+			want: []string{"workspace folder changed", "expected"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := setupSeparatedControlCLICWD(t)
+			controlRoot := filepath.Join(base, "control")
+			payloadRoot := filepath.Join(base, "payload")
+			initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+			require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("source\n"), 0644))
+			sourceID := saveSeparatedControlPoint(t, controlRoot, "source")
+			r, err := repo.OpenControlRoot(controlRoot)
+			require.NoError(t, err)
+			now := time.Now().UTC()
+			plan := &recovery.Plan{
+				SchemaVersion:          recovery.SchemaVersion,
+				RepoID:                 r.RepoID,
+				PlanID:                 "RP-resolved-detail-" + strings.ReplaceAll(tc.name, " ", "-"),
+				Status:                 recovery.StatusResolved,
+				Operation:              recovery.OperationRestore,
+				RestorePlanID:          "restore-preview",
+				Workspace:              "main",
+				Folder:                 payloadRoot,
+				SourceSavePoint:        model.SnapshotID(sourceID),
+				CreatedAt:              now,
+				UpdatedAt:              now,
+				ResolvedAt:             &now,
+				PreWorktreeState:       recovery.WorktreeState{Name: "main", RealPath: payloadRoot},
+				Backup:                 recovery.Backup{Path: filepath.Join(base, "backup"), Scope: recovery.BackupScopeWhole, State: recovery.BackupStateRolledBack},
+				Phase:                  recovery.PhaseRestoreApplied,
+				RecommendedNextCommand: "jvs recovery status",
+			}
+			tc.edit(t, plan, base, payloadRoot)
+			require.NoError(t, recovery.NewManager(controlRoot).Write(plan))
+
+			stdout, stderr, exitCode := runContractSubprocess(t, base,
+				"--json",
+				"--control-root", controlRoot,
+				"--workspace", "main",
+				"recovery", "status", plan.PlanID,
+			)
+
+			env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, tc.code)
+			if tc.code == errclass.ErrRecoveryBlocking.Code {
+				assert.Contains(t, env.Error.Message, "Recovery plan "+plan.PlanID+" cannot be inspected safely")
+			}
+			for _, want := range tc.want {
+				assert.Contains(t, env.Error.Message, want)
+			}
+			assert.Contains(t, env.Error.Hint, "doctor --strict --json")
+			assert.NotContains(t, stdout, `"workspace":"feature"`)
+		})
+	}
 }
 
 func writeRecoveryStatusSeparatedActivePlan(t *testing.T, controlRoot, recoveryPlanID string, restorePlan *restoreplan.Plan) {

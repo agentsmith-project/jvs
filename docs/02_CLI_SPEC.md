@@ -629,7 +629,10 @@ Safety options:
 - `--discard-unsaved` discards unsaved changes for the operation.
 - The two options are mutually exclusive.
 
-Required preview JSON `data` fields:
+Stable restore JSON `data` shapes:
+
+Runnable preview (`jvs restore <save>`, `jvs restore <save> --path <path>`,
+or either form with a safety option when a runnable plan is created):
 
 - `mode: "preview"`
 - `plan_id`
@@ -649,7 +652,41 @@ Required preview JSON `data` fields:
 - `files_changed: false`
 - `run_command`
 
-For external control roots, `run_command` and any `next_commands` are full
+Decision preview (`jvs restore <save>` or `jvs restore <save> --path <path>`
+when unsaved changes require an explicit safety choice before writing a
+runnable plan):
+
+- `mode: "decision_preview"`
+- `scope`
+- `folder`
+- `workspace`
+- `source_save_point`
+- `path` for path restores
+- `decision_reason`
+- `newest_save_point`
+- `history_head`
+- `expected_newest_save_point`
+- `expected_folder_evidence` or `expected_path_evidence`
+- `managed_files`
+- `transfers`
+- `history_changed: false`
+- `files_changed: false`
+- `next_commands`
+- no `run_command`
+
+Path candidates (`jvs restore --path <path>` without a save point):
+
+- `mode: "candidates"`
+- `folder`
+- `workspace`
+- `path`
+- `candidates`
+- `next_commands`
+- `files_changed: false`
+- no `plan_id`
+- no `run_command`
+
+For external control roots, `run_command` and `next_commands` are full
 commands that include `--control-root C --workspace main`.
 
 ### `jvs restore --run <restore-plan-id> [--json]`

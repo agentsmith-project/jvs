@@ -212,7 +212,13 @@ func recoveryStatusDetail(repoRoot, planID string, separated *repo.SeparatedCont
 }
 
 func validateSeparatedRecoveryStatusPlan(repoRoot string, plan *recovery.Plan, separated *repo.SeparatedContext) error {
-	if separated == nil || plan == nil || plan.Status != recovery.StatusActive {
+	if separated == nil || plan == nil {
+		return nil
+	}
+	if state := recoverystate.ClassifyRecoveryPlanBinding(repoRoot, separated.Workspace, separated, plan); state.Kind == recoverystate.KindMalformedBlocking {
+		return separatedRecoveryStateStatusError(separated, state)
+	}
+	if plan.Status != recovery.StatusActive {
 		return nil
 	}
 	if err := validateSeparatedPayloadSymlinkBoundaryForRecoveryPlan(separated, plan); err != nil {

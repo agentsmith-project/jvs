@@ -903,7 +903,7 @@ func TestDocs_OperatorDocsDocumentExternalControlRoot(t *testing.T) {
 		"`--repair-runtime`",
 		"fail closed",
 		"Pending restore previews close through `restore --run <plan-id>`",
-		"Active recovery plans close through `recovery status`, `recovery resume`, or `recovery rollback`",
+		"Inspect active recovery plans with `recovery status`; close them through `recovery resume` or `recovery rollback`",
 		"external workspace locator",
 		"human discovery",
 		"not runtime authority",
@@ -958,7 +958,7 @@ func TestDocs_ExternalControlRootRestoreRecoveryPublicContract(t *testing.T) {
 	for _, required := range []string{
 		"Pending restore previews close through `restore --run <plan-id>`",
 		"Stale restore previews close through `restore discard <restore-plan-id>`",
-		"Active recovery plans close through `recovery status`, `recovery resume`, or `recovery rollback`",
+		"Inspect active recovery plans with `recovery status`; close them through `recovery resume` or `recovery rollback`",
 		"Malformed restore state is diagnosed through public `recovery status` and `doctor --strict --json` output",
 		"Successful `restore --run` leaves no active recovery",
 		"completed plan residue is non-blocking",

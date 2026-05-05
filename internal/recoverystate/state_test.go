@@ -131,6 +131,27 @@ func TestInspectClassifiesStaleRestorePreviewWithDiscardCommand(t *testing.T) {
 	assert.NotContains(t, state.Message, ".jvs/restore-plans")
 }
 
+func TestInspectClassifiesSeparatedRestorePlanWorkspaceIdentityMismatchAsMalformed(t *testing.T) {
+	controlRoot, payloadRoot := setupSeparatedStateRepo(t)
+	plan := createStateRestorePreview(t, controlRoot, payloadRoot, "source\n")
+	plan.Workspace = "feature"
+	require.NoError(t, restoreplan.Write(controlRoot, plan))
+
+	state, err := recoverystate.Inspect(controlRoot, "main", separatedStateContext(t, controlRoot))
+
+	require.NoError(t, err)
+	assert.Equal(t, recoverystate.KindMalformedBlocking, state.Kind)
+	assert.True(t, state.Blocking())
+	assert.Equal(t, plan.PlanID, state.PlanID)
+	assert.Equal(t, "doctor --strict --json", state.NextCommand)
+	assert.Contains(t, state.Message, "Restore plan "+plan.PlanID+" cannot be inspected safely")
+	assert.Contains(t, state.Message, "workspace identity mismatch")
+	assert.Contains(t, state.Message, "feature")
+	assert.Contains(t, state.Message, "main")
+	assert.NotContains(t, state.Message, "stale")
+	assert.NotContains(t, state.NextCommand, "restore discard")
+}
+
 func TestInspectClassifiesRestorePreviewAfterSaveDriftAsStale(t *testing.T) {
 	controlRoot, payloadRoot := setupSeparatedStateRepo(t)
 	plan := createStateRestorePreview(t, controlRoot, payloadRoot, "source\n")

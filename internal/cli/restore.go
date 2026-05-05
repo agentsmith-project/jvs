@@ -98,6 +98,9 @@ Examples:
 					return err
 				}
 			}
+			if err := enforceSeparatedRestorePreviewMutationGuard(ctx.Repo.Root, ctx.Workspace, ctx.Separated); err != nil {
+				return err
+			}
 			var err error
 			plan, err = restoreplan.CreateWithExpectedSeparatedContext(ctx.Repo.Root, ctx.Workspace, targetID, engineType, restoreplan.Options{
 				DiscardUnsaved: restoreDiscardDirty,
@@ -403,6 +406,10 @@ func executeRestorePlanRun(repoRoot, workspaceName, planID string, separated *re
 		})
 	})
 	return result, err
+}
+
+func enforceSeparatedRestorePreviewMutationGuard(repoRoot, workspaceName string, separated *repo.SeparatedContext) error {
+	return enforceSeparatedRecoveryMutationGuard(repoRoot, workspaceName, separated, "restore preview")
 }
 
 func enforceSeparatedRestoreRunMutationGuard(repoRoot, workspaceName string, separated *repo.SeparatedContext, planID string) error {
@@ -734,6 +741,9 @@ func runRestorePath(cmd *cobra.Command, args []string, ctx *cliDiscoveryContext)
 				plan, err = restoreplan.CreatePathDecisionPreviewWithExpectedSeparatedContext(repoRoot, workspaceName, targetID, path, engineType, expectedSeparated)
 				return err
 			}
+		}
+		if err := enforceSeparatedRestorePreviewMutationGuard(repoRoot, workspaceName, ctx.Separated); err != nil {
+			return err
 		}
 		var err error
 		plan, err = restoreplan.CreatePathWithExpectedSeparatedContext(repoRoot, workspaceName, targetID, path, engineType, restoreplan.Options{

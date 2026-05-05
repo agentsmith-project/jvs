@@ -40,21 +40,25 @@ jvs --control-root C --workspace main restore --run <plan-id>
 ```
 
 Stale restore previews close through `restore discard <restore-plan-id>`.
-This includes previews whose workspace folder or saved workspace identity
-changed after preview:
+This applies when the workspace folder content changed after preview while the
+preview plan still belongs to the selected external control root and workspace:
 
 ```bash
 jvs --control-root C --workspace main restore discard <restore-plan-id>
 ```
 
-Active recovery plans close through `recovery status`, `recovery resume`, or
-`recovery rollback`:
+Inspect active recovery plans with `recovery status`; close them through
+`recovery resume` or `recovery rollback`:
 
 ```bash
 jvs --control-root C --workspace main recovery status
 jvs --control-root C --workspace main recovery resume <recovery-plan>
 jvs --control-root C --workspace main recovery rollback <recovery-plan>
 ```
+
+If `recovery status` recommends a different explicit cleanup command, such as
+`restore discard <restore-plan-id>` for a valid stale preview, use that command
+to close the specific blocking state.
 
 Do not treat a pending or stale restore preview as an active recovery plan.
 Successful `restore --run` leaves no active recovery, and completed plan

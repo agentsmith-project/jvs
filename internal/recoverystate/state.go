@@ -100,14 +100,11 @@ func inspectActiveRecoveryPlans(repoRoot, workspaceName string, separated *repo.
 		if plan.Status != recovery.StatusActive {
 			continue
 		}
-		if err := validateSeparatedActiveRecoveryPlanIdentity(workspaceName, separated, &plan); err != nil {
-			return malformedRecoveryPlan(plan.PlanID, err)
+		if state := ClassifyRecoveryPlanBinding(repoRoot, workspaceName, separated, &plan); state.Kind != "" {
+			return state
 		}
-		if workspaceName != "" && plan.Workspace != workspaceName {
+		if separated == nil && workspaceName != "" && plan.Workspace != workspaceName {
 			continue
-		}
-		if err := validateSeparatedRecoveryPlanBoundary(repoRoot, workspaceName, separated, &plan); err != nil {
-			return malformedRecoveryPlan(plan.PlanID, err)
 		}
 		return activeRecoveryState(plan.PlanID)
 	}
@@ -146,6 +143,9 @@ func inspectRestorePlans(repoRoot, workspaceName string, separated *repo.Separat
 		}
 		if !plan.IsRunnable() {
 			continue
+		}
+		if err := validateSeparatedRestorePlanIdentity(workspaceName, separated, plan); err != nil {
+			return malformedRestorePlan(planID, err), nil
 		}
 		if err := validateSeparatedRestorePlanBoundary(repoRoot, workspaceName, separated, plan); err != nil {
 			return malformedRestorePlan(planID, err), nil
@@ -261,6 +261,50 @@ func validateResolvedRecoveryMatchesRestorePlan(plan recovery.Plan, restorePlan 
 		}
 	default:
 		return fmt.Errorf("restore plan scope is not supported")
+	}
+	return nil
+}
+
+// ClassifyRecoveryPlanBinding validates that a recovery plan belongs to the
+// selected external control root/workspace binding before callers expose it.
+func ClassifyRecoveryPlanBinding(repoRoot, workspaceName string, separated *repo.SeparatedContext, plan *recovery.Plan) State {
+	if separated == nil || plan == nil {
+		return State{}
+	}
+	switch plan.Status {
+	case recovery.StatusActive:
+		if err := validateSeparatedActiveRecoveryPlanIdentity(workspaceName, separated, plan); err != nil {
+			return malformedRecoveryPlan(plan.PlanID, err)
+		}
+	case recovery.StatusResolved:
+		if err := validateSeparatedResolvedRecoveryPlanIdentity(workspaceName, separated, plan); err != nil {
+			return malformedRecoveryPlan(plan.PlanID, err)
+		}
+	default:
+		if err := validateSeparatedRecoveryPlanIdentity("recovery", workspaceName, separated, plan); err != nil {
+			return malformedRecoveryPlan(plan.PlanID, err)
+		}
+	}
+	if err := validateSeparatedRecoveryPlanBoundary(repoRoot, workspaceName, separated, plan); err != nil {
+		return malformedRecoveryPlan(plan.PlanID, err)
+	}
+	return State{}
+}
+
+func validateSeparatedRestorePlanIdentity(workspaceName string, separated *repo.SeparatedContext, plan *restoreplan.Plan) error {
+	if separated == nil || plan == nil {
+		return nil
+	}
+	expectedWorkspace := effectiveWorkspace(workspaceName, separated)
+	if expectedWorkspace != "" && plan.Workspace != expectedWorkspace {
+		return fmt.Errorf("restore plan workspace identity mismatch: plan workspace %q, selected workspace %q", plan.Workspace, expectedWorkspace)
+	}
+	if separated.Repo != nil && separated.Repo.RepoID != "" && plan.RepoID != separated.Repo.RepoID {
+		return fmt.Errorf("restore plan repo identity mismatch: plan repo_id %q, selected repo_id %q", plan.RepoID, separated.Repo.RepoID)
+	}
+	expectedFolder := strings.TrimSpace(separated.PayloadRoot)
+	if expectedFolder != "" && filepath.Clean(plan.Folder) != filepath.Clean(expectedFolder) {
+		return fmt.Errorf("restore plan workspace folder identity mismatch: plan workspace folder %q, selected workspace folder %q", plan.Folder, expectedFolder)
 	}
 	return nil
 }
