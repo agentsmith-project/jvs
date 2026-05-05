@@ -686,6 +686,7 @@ Required JSON `data` fields:
 - `plan_discarded: true`
 - `files_changed: false`
 - `history_changed: false`
+- `recommended_next_command`
 
 Required run JSON fields for whole-workspace restore:
 
@@ -738,6 +739,9 @@ residue is non-blocking and is not an active recovery plan.
 For external control roots, status JSON may include `data.restore_state`
 (`restore_state`) when a
 restore preview state is relevant and no active recovery detail is requested.
+Both list and detail status paths must use the shared recovery-state classifier
+before exposing plan details, so malformed external identity or boundary state
+fails closed consistently with `doctor --strict` and `repo clone`.
 The object fields are:
 
 - `state`
@@ -758,7 +762,10 @@ Stable `restore_state.state` enum values and blocking semantics:
 - `active_recovery`: blocking; surfaced through `plans[]` or recovery detail,
   with `recovery status`, `recovery resume`, or `recovery rollback` as the next
   public commands.
-- `completed_restore_residue`: non-blocking; normally omitted.
+- `completed_restore_residue`: non-blocking; normally omitted. External
+  control roots may classify resolved restore residue this way only after the
+  matching resolved recovery plan passes separated identity and boundary
+  checks.
 - `malformed_blocking`: blocking; `recovery status` fails closed with public
   diagnostics and points to `doctor --strict --json`.
 

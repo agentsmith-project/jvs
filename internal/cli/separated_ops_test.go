@@ -474,6 +474,8 @@ func TestSeparatedControlSaveAndCleanupBlockStaleRestorePlanEvidence(t *testing.
 			env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrRecoveryBlocking.Code)
 			assert.Contains(t, env.Error.Message, "restore plan")
 			assert.Contains(t, env.Error.Message, planID)
+			assert.Contains(t, env.Error.Message, "stale")
+			assert.NotContains(t, strings.ToLower(env.Error.Message), "pending")
 			assert.Equal(t, "v3 unsaved\n", separatedOpsReadFile(t, filepath.Join(payloadRoot, "app.txt")))
 		})
 	}
@@ -522,6 +524,8 @@ func TestSeparatedControlRestoreDiscardClearsStalePreviewFromCleanCWD(t *testing
 	assert.Equal(t, "main", data["workspace"])
 	assert.Equal(t, true, data["plan_discarded"])
 	assert.Equal(t, false, data["files_changed"])
+	assert.Equal(t, "jvs --control-root "+shellQuoteArg(controlRoot)+" --workspace main recovery status", data["recommended_next_command"])
+	assert.NotContains(t, data, "recommended_status_command")
 	require.NoFileExists(t, filepath.Join(controlRoot, ".jvs", "restore-plans", planID+".json"))
 	assert.Equal(t, "stale local work\n", separatedOpsReadFile(t, filepath.Join(payloadRoot, "app.txt")))
 

@@ -31,6 +31,51 @@ func TestInspectTreatsMatchingResolvedRestoreResidueAsCompletedBeforeTargetValid
 	assert.Equal(t, plan.PlanID, state.PlanID)
 }
 
+func TestInspectClassifiesForgedResolvedRecoveryResidueAsMalformed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func(plan *recovery.Plan, base, payloadRoot string)
+		want []string
+	}{
+		{
+			name: "pre recovery workspace name",
+			edit: func(plan *recovery.Plan, base, payloadRoot string) {
+				plan.PreWorktreeState.Name = "feature"
+			},
+			want: []string{"Recovery plan RP-", "cannot be inspected safely", "workspace name", "feature", "main"},
+		},
+		{
+			name: "pre recovery workspace root",
+			edit: func(plan *recovery.Plan, base, payloadRoot string) {
+				plan.PreWorktreeState.RealPath = filepath.Join(base, "other-payload")
+			},
+			want: []string{"Recovery plan RP-", "cannot be inspected safely", "workspace root identity mismatch"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			controlRoot, payloadRoot := setupSeparatedStateRepo(t)
+			plan := createStateRestorePreview(t, controlRoot, payloadRoot, "source\n")
+			resolved := newStateRecoveryPlan(t, controlRoot, "RP-"+plan.PlanID, recovery.StatusResolved, plan.PlanID, plan.SourceSavePoint, plan.Folder)
+			tc.edit(resolved, filepath.Dir(controlRoot), payloadRoot)
+			require.NoError(t, recovery.NewManager(controlRoot).Write(resolved))
+
+			state, err := recoverystate.Inspect(controlRoot, "main", separatedStateContext(t, controlRoot))
+
+			require.NoError(t, err)
+			assert.Equal(t, recoverystate.KindMalformedBlocking, state.Kind)
+			assert.True(t, state.Blocking())
+			assert.Equal(t, "RP-"+plan.PlanID, state.RecoveryPlanID)
+			assert.Empty(t, state.PlanID)
+			assert.Equal(t, "doctor --strict --json", state.NextCommand)
+			for _, want := range tc.want {
+				assert.Contains(t, state.Message, want)
+			}
+			assert.NotContains(t, state.Message, "completed")
+			assert.NotContains(t, strings.ToLower(state.Message), "payload")
+		})
+	}
+}
+
 func TestInspectPrioritizesMatchingActiveRecoveryOverRestoreResidue(t *testing.T) {
 	controlRoot, payloadRoot := setupSeparatedStateRepo(t)
 	plan := createStateRestorePreview(t, controlRoot, payloadRoot, "source\n")
@@ -51,9 +96,12 @@ func TestInspectPrioritizesMatchingActiveRecoveryOverRestoreResidue(t *testing.T
 
 func TestInspectClassifiesPendingRestorePreview(t *testing.T) {
 	controlRoot, payloadRoot := setupSeparatedStateRepo(t)
-	plan := createStateRestorePreview(t, controlRoot, payloadRoot, "source\n")
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("source\n"), 0644))
+	source := createStateSavePoint(t, controlRoot, "source")
 	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("current\n"), 0644))
 	createStateSavePoint(t, controlRoot, "current")
+	plan, err := restoreplan.Create(controlRoot, "main", source, model.EngineCopy, restoreplan.Options{})
+	require.NoError(t, err)
 
 	state, err := recoverystate.Inspect(controlRoot, "main", separatedStateContext(t, controlRoot))
 
@@ -81,6 +129,22 @@ func TestInspectClassifiesStaleRestorePreviewWithDiscardCommand(t *testing.T) {
 	assert.NotContains(t, state.Message, "Run: jvs")
 	assert.NotContains(t, state.Message, "restore discard "+plan.PlanID)
 	assert.NotContains(t, state.Message, ".jvs/restore-plans")
+}
+
+func TestInspectClassifiesRestorePreviewAfterSaveDriftAsStale(t *testing.T) {
+	controlRoot, payloadRoot := setupSeparatedStateRepo(t)
+	plan := createStateRestorePreview(t, controlRoot, payloadRoot, "source\n")
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("saved after preview\n"), 0644))
+	createStateSavePoint(t, controlRoot, "saved after preview")
+
+	state, err := recoverystate.Inspect(controlRoot, "main", separatedStateContext(t, controlRoot))
+
+	require.NoError(t, err)
+	assert.Equal(t, recoverystate.KindStaleRestorePreview, state.Kind)
+	assert.True(t, state.Blocking())
+	assert.Equal(t, plan.PlanID, state.PlanID)
+	assert.Equal(t, "restore discard "+plan.PlanID, state.NextCommand)
+	assert.NotContains(t, state.NextCommand, "restore --run")
 }
 
 func TestInspectClassifiesActiveRecovery(t *testing.T) {

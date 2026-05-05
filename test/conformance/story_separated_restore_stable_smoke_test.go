@@ -71,6 +71,34 @@ func TestStorySeparatedRestoreRunStableStateDoctorStrictAndClone(t *testing.T) {
 	requireSeparatedRestoreSmokePayloadUnchanged(t, beforePreview, sourcePayload)
 	requireSeparatedRestoreSmokePayloadHasNoControlMetadata(t, sourcePayload)
 
+	pendingRecovery, _ := separatedRestoreSmokeJSON(t, cleanCWD, sourceControl, sourcePayload, "main", "recovery", "status")
+	requireSeparatedRestoreSmokeNoActiveRecovery(t, pendingRecovery)
+	requireSeparatedRestoreSmokePendingRestoreState(t, pendingRecovery, planID)
+
+	pendingDoctor, _ := separatedRestoreSmokeDoctorJSONAllowExit(t, cleanCWD, sourceControl, sourcePayload, "main", "--strict")
+	if pendingDoctor["healthy"] != false {
+		t.Fatalf("doctor strict should report pending restore preview unhealthy: %#v", pendingDoctor)
+	}
+	requireSeparatedRestoreSmokeDoctorCheck(t, pendingDoctor, "recovery_state", "E_RECOVERY_BLOCKING")
+
+	pendingTargetControl := filepath.Join(base, "pending-target-control")
+	pendingTargetPayload := filepath.Join(base, "pending-target-payload")
+	stdout, stderr, code := runJVS(t, cleanCWD,
+		"--json",
+		"--control-root", sourceControl,
+		"--workspace", "main",
+		"repo", "clone",
+		pendingTargetPayload,
+		"--target-control-root", pendingTargetControl,
+		"--save-points", "main",
+	)
+	env := requireSeparatedControlJSONError(t, stdout, stderr, code, "E_RECOVERY_BLOCKING")
+	if !strings.Contains(env.Error.Message, planID) || !strings.Contains(env.Error.Hint, "restore --run "+planID) {
+		t.Fatalf("clone blocker should name pending restore run command: %#v", env.Error)
+	}
+	requireAbsolutePathAbsent(t, pendingTargetControl)
+	requireAbsolutePathAbsent(t, pendingTargetPayload)
+
 	restoreRun, _ := separatedRestoreSmokeJSON(t, cleanCWD, sourceControl, sourcePayload, "main", "restore", "--run", planID)
 	if restoreRun["mode"] != "run" || restoreRun["restored_save_point"] != v1 || restoreRun["content_source"] != v1 {
 		t.Fatalf("restore run should make v1 the current content source: %#v", restoreRun)

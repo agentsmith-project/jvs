@@ -192,6 +192,15 @@ func recoveryStatusList(repoRoot string, separated *repo.SeparatedContext) (publ
 }
 
 func recoveryStatusDetail(repoRoot, planID string, separated *repo.SeparatedContext) (publicRecoveryPlan, error) {
+	if separated != nil {
+		state, err := recoverystate.Inspect(repoRoot, separated.Workspace, separated)
+		if err != nil {
+			return publicRecoveryPlan{}, err
+		}
+		if state.Kind == recoverystate.KindMalformedBlocking {
+			return publicRecoveryPlan{}, separatedRecoveryStateStatusError(separated, state)
+		}
+	}
 	plan, err := recovery.NewManager(repoRoot).Load(planID)
 	if err != nil {
 		return publicRecoveryPlan{}, err
@@ -415,7 +424,7 @@ func runRecoveryResume(repoRoot, planID string, separated *repo.SeparatedContext
 					}
 				} else {
 					if len(backupRestoreTransfers) > 0 {
-						restoreBackupErr = keepRecoveryPlanActiveAfterBackupRestoreFailure(repoRoot, plan, restoreBackupErr)
+						restoreBackupErr = keepRecoveryPlanActiveAfterBackupRestoreFailure(repoRoot, plan, restoreBackupErr, separated)
 					}
 					return fmt.Errorf("recovery resume cannot return to the saved recovery point safely: %w", restoreBackupErr)
 				}
@@ -457,9 +466,9 @@ func runRecoveryResume(repoRoot, planID string, separated *repo.SeparatedContext
 		appendRecoveryCopyPointTransfers(plan, restoreTransfers)
 		if err != nil {
 			if _, ok := restore.AsIncompleteError(err); ok {
-				return keepRecoveryPlanActiveAfterRestoreFailure(repoRoot, plan, err)
+				return keepRecoveryPlanActiveAfterRestoreFailure(repoRoot, plan, err, separated)
 			}
-			return keepRecoveryPlanActiveAfterNonIncompleteFailure(repoRoot, plan, err)
+			return keepRecoveryPlanActiveAfterNonIncompleteFailure(repoRoot, plan, err, separated)
 		}
 		if err := markRecoveryRestoreApplied(repoRoot, plan); err != nil {
 			return err
@@ -544,7 +553,7 @@ func currentRecoveryEvidence(repoRoot string, plan *recovery.Plan) (string, erro
 	return evidence, nil
 }
 
-func keepRecoveryPlanActiveAfterRestoreFailure(repoRoot string, plan *recovery.Plan, restoreErr error) error {
+func keepRecoveryPlanActiveAfterRestoreFailure(repoRoot string, plan *recovery.Plan, restoreErr error, separated *repo.SeparatedContext) error {
 	lastError := restoreErr.Error()
 	if incomplete, ok := restore.AsIncompleteError(restoreErr); ok {
 		plan.Backup.Path = incomplete.BackupPath
@@ -581,12 +590,12 @@ func keepRecoveryPlanActiveAfterRestoreFailure(repoRoot string, plan *recovery.P
 	plan.LastError = lastError
 	plan.CompletedSteps = []string{"restore attempted", "recovery backup retained"}
 	plan.PendingSteps = []string{"resume restore or rollback"}
-	plan.RecommendedNextCommand = "jvs recovery resume " + plan.PlanID
+	plan.RecommendedNextCommand = selectedJVSCommand(separated, "recovery resume "+plan.PlanID)
 	plan.UpdatedAt = time.Now().UTC()
 	if err := recovery.NewManager(repoRoot).Write(plan); err != nil {
 		return err
 	}
-	return restoreDidNotFinishError(plan)
+	return restoreDidNotFinishError(plan, separated)
 }
 
 func recoveryBackupEntriesFromRestore(entries []restore.PathBackupEntry) []recovery.BackupEntry {
@@ -600,14 +609,14 @@ func recoveryBackupEntriesFromRestore(entries []restore.PathBackupEntry) []recov
 	return out
 }
 
-func keepRecoveryPlanActiveAfterNonIncompleteFailure(repoRoot string, plan *recovery.Plan, restoreErr error) error {
+func keepRecoveryPlanActiveAfterNonIncompleteFailure(repoRoot string, plan *recovery.Plan, restoreErr error, separated *repo.SeparatedContext) error {
 	if evidence, err := currentRecoveryEvidence(repoRoot, plan); err == nil {
 		plan.RecoveryEvidence = evidence
 	}
 	plan.LastError = restoreErr.Error()
 	plan.CompletedSteps = []string{"restore retried", "recovery point retained"}
 	plan.PendingSteps = []string{"resume restore or rollback"}
-	plan.RecommendedNextCommand = "jvs recovery resume " + plan.PlanID
+	plan.RecommendedNextCommand = selectedJVSCommand(separated, "recovery resume "+plan.PlanID)
 	plan.UpdatedAt = time.Now().UTC()
 	if err := recovery.NewManager(repoRoot).Write(plan); err != nil {
 		return err
@@ -615,13 +624,13 @@ func keepRecoveryPlanActiveAfterNonIncompleteFailure(repoRoot string, plan *reco
 	return restoreErr
 }
 
-func keepRecoveryPlanActiveAfterBackupRestoreFailure(repoRoot string, plan *recovery.Plan, restoreErr error) error {
+func keepRecoveryPlanActiveAfterBackupRestoreFailure(repoRoot string, plan *recovery.Plan, restoreErr error, separated *repo.SeparatedContext) error {
 	if evidence, err := currentRecoveryEvidence(repoRoot, plan); err == nil {
 		plan.RecoveryEvidence = evidence
 	}
 	plan.LastError = restoreErr.Error()
 	plan.PendingSteps = []string{"resume restore or rollback"}
-	plan.RecommendedNextCommand = "jvs recovery resume " + plan.PlanID
+	plan.RecommendedNextCommand = selectedJVSCommand(separated, "recovery resume "+plan.PlanID)
 	plan.UpdatedAt = time.Now().UTC()
 	if err := recovery.NewManager(repoRoot).Write(plan); err != nil {
 		return fmt.Errorf("%w (persist active recovery plan: %v)", restoreErr, err)
@@ -709,7 +718,7 @@ func resolveRecoveryPlanAndMaybeRemoveBackup(repoRoot string, mgr *recovery.Mana
 	return true, nil
 }
 
-func restoreDidNotFinishError(plan *recovery.Plan) error {
+func restoreDidNotFinishError(plan *recovery.Plan, separated *repo.SeparatedContext) error {
 	var b strings.Builder
 	if plan.Operation == recovery.OperationRestorePath {
 		b.WriteString("Path restore did not finish safely.\n")
@@ -723,7 +732,7 @@ func restoreDidNotFinishError(plan *recovery.Plan) error {
 		fmt.Fprintf(&b, "Path: %s\n", plan.Path)
 	}
 	b.WriteString("No history was changed after the last confirmed step.\n")
-	fmt.Fprintf(&b, "Run: jvs recovery status %s", plan.PlanID)
+	fmt.Fprintf(&b, "Run: %s", selectedJVSCommand(separated, "recovery status "+plan.PlanID))
 	return fmt.Errorf("%s", b.String())
 }
 
@@ -745,10 +754,12 @@ func enforceSeparatedRecoveryMutationGuard(repoRoot, workspaceName string, separ
 		return nil
 	}
 	switch state.Kind {
-	case recoverystate.KindPendingRestorePreview, recoverystate.KindStaleRestorePreview:
-		return separatedRecoveryMutationBlockingError(separated, operation, "restore plan", state.PlanID, state.NextCommand)
+	case recoverystate.KindPendingRestorePreview:
+		return separatedRecoveryMutationBlockingError(separated, operation, "restore plan", state.PlanID, "pending", state.NextCommand)
+	case recoverystate.KindStaleRestorePreview:
+		return separatedRecoveryMutationBlockingError(separated, operation, "restore plan", state.PlanID, "stale", state.NextCommand)
 	case recoverystate.KindActiveRecovery:
-		return separatedRecoveryMutationBlockingError(separated, operation, "recovery plan", state.RecoveryPlanID, state.NextCommand)
+		return separatedRecoveryMutationBlockingError(separated, operation, "recovery plan", state.RecoveryPlanID, "active", state.NextCommand)
 	case recoverystate.KindMalformedBlocking:
 		return separatedRecoveryMutationStateError(separated, operation, state)
 	}
@@ -820,9 +831,9 @@ func recoveryStateCollection(state recoverystate.State) string {
 	return "recovery plans"
 }
 
-func separatedRecoveryMutationBlockingError(separated *repo.SeparatedContext, operation, kind, planID, nextCommand string) error {
+func separatedRecoveryMutationBlockingError(separated *repo.SeparatedContext, operation, kind, planID, stateLabel, nextCommand string) error {
 	return errclass.ErrRecoveryBlocking.
-		WithMessagef("cannot %s while %s %s is pending", operation, kind, planID).
+		WithMessagef("cannot %s while %s %s is %s", operation, kind, planID, stateLabel).
 		WithHint(separatedSelectorHint(separated.ControlRoot, separated.Workspace, nextCommand))
 }
 

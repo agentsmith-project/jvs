@@ -11,7 +11,6 @@ import (
 	"github.com/agentsmith-project/jvs/internal/recovery"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/restoreplan"
-	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
 type Kind string
@@ -151,7 +150,11 @@ func inspectRestorePlans(repoRoot, workspaceName string, separated *repo.Separat
 		if err := validateSeparatedRestorePlanBoundary(repoRoot, workspaceName, separated, plan); err != nil {
 			return malformedRestorePlan(planID, err), nil
 		}
-		if recoveryPlanID := matchingResolvedRecoveryPlanID(recoveryPlans, plan); recoveryPlanID != "" {
+		recoveryPlanID, malformedResolved := matchingResolvedRecoveryPlanID(repoRoot, workspaceName, separated, recoveryPlans, plan)
+		if malformedResolved.Kind != "" {
+			return malformedResolved, nil
+		}
+		if recoveryPlanID != "" {
 			completed = completedRestoreResidueState(plan.PlanID, recoveryPlanID)
 			continue
 		}
@@ -207,56 +210,59 @@ func restorePlanTargetState(repoRoot, workspaceName string, plan *restoreplan.Pl
 		return KindPendingRestorePreview, nil
 	}
 	if restoreplan.IsChangedSincePreview(err) {
-		if restorePreviewHasUnsavedTargetDrift(repoRoot, workspaceName, plan) {
-			return KindStaleRestorePreview, nil
-		}
-		return KindPendingRestorePreview, nil
+		return KindStaleRestorePreview, nil
 	}
 	return "", err
 }
 
-func restorePreviewHasUnsavedTargetDrift(repoRoot, workspaceName string, plan *restoreplan.Plan) bool {
-	if plan == nil {
-		return false
-	}
-	cfg, err := repo.LoadWorktreeConfig(repoRoot, workspaceName)
-	if err != nil {
-		return false
-	}
-	return sameSnapshotIDPtrValue(plan.ExpectedNewestSavePoint, cfg.LatestSnapshotID)
-}
-
-func sameSnapshotIDPtrValue(expected *model.SnapshotID, current model.SnapshotID) bool {
-	if expected == nil {
-		return current == ""
-	}
-	return *expected == current
-}
-
-func matchingResolvedRecoveryPlanID(plans []recovery.Plan, restorePlan *restoreplan.Plan) string {
+func matchingResolvedRecoveryPlanID(repoRoot, workspaceName string, separated *repo.SeparatedContext, plans []recovery.Plan, restorePlan *restoreplan.Plan) (string, State) {
 	for _, plan := range plans {
-		if resolvedRecoveryMatchesRestorePlan(plan, restorePlan) {
-			return plan.PlanID
+		if restorePlan == nil || plan.Status != recovery.StatusResolved || plan.RestorePlanID != restorePlan.PlanID {
+			continue
 		}
+		if err := validateResolvedRecoveryMatchesRestorePlan(plan, restorePlan); err != nil {
+			return "", malformedRecoveryPlan(plan.PlanID, err)
+		}
+		if err := validateSeparatedResolvedRecoveryPlanIdentity(workspaceName, separated, &plan); err != nil {
+			return "", malformedRecoveryPlan(plan.PlanID, err)
+		}
+		if err := validateSeparatedRecoveryPlanBoundary(repoRoot, workspaceName, separated, &plan); err != nil {
+			return "", malformedRecoveryPlan(plan.PlanID, err)
+		}
+		return plan.PlanID, State{}
 	}
-	return ""
+	return "", State{}
 }
 
-func resolvedRecoveryMatchesRestorePlan(plan recovery.Plan, restorePlan *restoreplan.Plan) bool {
-	if restorePlan == nil || plan.Status != recovery.StatusResolved || plan.RestorePlanID != restorePlan.PlanID {
-		return false
+func validateResolvedRecoveryMatchesRestorePlan(plan recovery.Plan, restorePlan *restoreplan.Plan) error {
+	if restorePlan == nil {
+		return fmt.Errorf("resolved recovery restore plan identity is missing")
 	}
-	if plan.Workspace != restorePlan.Workspace || plan.Folder != restorePlan.Folder || plan.SourceSavePoint != restorePlan.SourceSavePoint || plan.Path != restorePlan.Path {
-		return false
+	if plan.Workspace != restorePlan.Workspace {
+		return fmt.Errorf("resolved recovery workspace identity mismatch: plan workspace %q, restore plan workspace %q", plan.Workspace, restorePlan.Workspace)
+	}
+	if filepath.Clean(plan.Folder) != filepath.Clean(restorePlan.Folder) {
+		return fmt.Errorf("resolved recovery workspace root identity mismatch: recovery workspace folder %q, restore plan workspace folder %q", plan.Folder, restorePlan.Folder)
+	}
+	if plan.SourceSavePoint != restorePlan.SourceSavePoint {
+		return fmt.Errorf("resolved recovery source save point identity mismatch: recovery source %q, restore plan source %q", plan.SourceSavePoint, restorePlan.SourceSavePoint)
+	}
+	if plan.Path != restorePlan.Path {
+		return fmt.Errorf("resolved recovery path identity mismatch: recovery path %q, restore plan path %q", plan.Path, restorePlan.Path)
 	}
 	switch restorePlan.EffectiveScope() {
 	case restoreplan.ScopeWhole:
-		return plan.Operation == recovery.OperationRestore
+		if plan.Operation != recovery.OperationRestore {
+			return fmt.Errorf("resolved recovery operation identity mismatch: recovery operation %q, restore plan scope %q", plan.Operation, restorePlan.EffectiveScope())
+		}
 	case restoreplan.ScopePath:
-		return plan.Operation == recovery.OperationRestorePath
+		if plan.Operation != recovery.OperationRestorePath {
+			return fmt.Errorf("resolved recovery operation identity mismatch: recovery operation %q, restore plan scope %q", plan.Operation, restorePlan.EffectiveScope())
+		}
 	default:
-		return false
+		return fmt.Errorf("restore plan scope is not supported")
 	}
+	return nil
 }
 
 func validateSeparatedRestorePlanBoundary(repoRoot, workspaceName string, separated *repo.SeparatedContext, plan *restoreplan.Plan) error {
@@ -274,27 +280,35 @@ func validateSeparatedRecoveryPlanBoundary(repoRoot, workspaceName string, separ
 }
 
 func validateSeparatedActiveRecoveryPlanIdentity(workspaceName string, separated *repo.SeparatedContext, plan *recovery.Plan) error {
+	return validateSeparatedRecoveryPlanIdentity("active recovery", workspaceName, separated, plan)
+}
+
+func validateSeparatedResolvedRecoveryPlanIdentity(workspaceName string, separated *repo.SeparatedContext, plan *recovery.Plan) error {
+	return validateSeparatedRecoveryPlanIdentity("resolved recovery", workspaceName, separated, plan)
+}
+
+func validateSeparatedRecoveryPlanIdentity(label, workspaceName string, separated *repo.SeparatedContext, plan *recovery.Plan) error {
 	if separated == nil || plan == nil {
 		return nil
 	}
 	expectedWorkspace := effectiveWorkspace(workspaceName, separated)
 	if expectedWorkspace != "" && plan.Workspace != expectedWorkspace {
-		return fmt.Errorf("active recovery workspace identity mismatch: plan workspace %q, selected workspace %q", plan.Workspace, expectedWorkspace)
+		return fmt.Errorf("%s workspace identity mismatch: plan workspace %q, selected workspace %q", label, plan.Workspace, expectedWorkspace)
 	}
 	if separated.Repo != nil && separated.Repo.RepoID != "" && plan.RepoID != separated.Repo.RepoID {
-		return fmt.Errorf("active recovery repo identity mismatch: plan repo_id %q, selected repo_id %q", plan.RepoID, separated.Repo.RepoID)
+		return fmt.Errorf("%s repo identity mismatch: plan repo_id %q, selected repo_id %q", label, plan.RepoID, separated.Repo.RepoID)
 	}
 	if strings.TrimSpace(plan.PreWorktreeState.Name) == "" {
-		return fmt.Errorf("active recovery workspace name identity is missing")
+		return fmt.Errorf("%s workspace name identity is missing", label)
 	}
 	if plan.PreWorktreeState.Name != plan.Workspace {
-		return fmt.Errorf("active recovery workspace name identity mismatch: pre-recovery workspace name %q, plan workspace %q", plan.PreWorktreeState.Name, plan.Workspace)
+		return fmt.Errorf("%s workspace name identity mismatch: pre-recovery workspace name %q, plan workspace %q", label, plan.PreWorktreeState.Name, plan.Workspace)
 	}
 	if strings.TrimSpace(plan.PreWorktreeState.RealPath) == "" {
-		return fmt.Errorf("active recovery workspace root identity is missing")
+		return fmt.Errorf("%s workspace root identity is missing", label)
 	}
 	if filepath.Clean(plan.PreWorktreeState.RealPath) != filepath.Clean(plan.Folder) {
-		return fmt.Errorf("active recovery workspace root identity mismatch: pre-recovery workspace folder %q, plan workspace folder %q", plan.PreWorktreeState.RealPath, plan.Folder)
+		return fmt.Errorf("%s workspace root identity mismatch: pre-recovery workspace folder %q, plan workspace folder %q", label, plan.PreWorktreeState.RealPath, plan.Folder)
 	}
 	return nil
 }

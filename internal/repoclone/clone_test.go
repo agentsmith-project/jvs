@@ -450,11 +450,14 @@ func TestSeparatedCloneAllowsCompletedRestoreResidue(t *testing.T) {
 func TestSeparatedCloneRestorePlanDiagnosticsUsePublicCommands(t *testing.T) {
 	t.Run("pending preview", func(t *testing.T) {
 		sourceControl, sourcePayload := setupSeparatedCloneSourceRepo(t)
-		plan := createSeparatedCloneRestorePreview(t, sourceControl, sourcePayload, "source\n")
+		require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("source\n"), 0644))
+		source := createCloneSavePoint(t, sourceControl, "main", "source")
 		require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("current\n"), 0644))
 		_ = createCloneSavePoint(t, sourceControl, "main", "current")
+		plan, err := restoreplan.Create(sourceControl, "main", source, model.EngineCopy, restoreplan.Options{})
+		require.NoError(t, err)
 
-		err := cloneSeparatedSourceForError(t, sourceControl)
+		err = cloneSeparatedSourceForError(t, sourceControl)
 
 		assertJVSErrorCode(t, err, errclass.ErrRecoveryBlocking.Code)
 		assert.Contains(t, err.Error(), "restore plan "+plan.PlanID)

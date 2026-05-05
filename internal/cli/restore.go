@@ -217,16 +217,16 @@ type publicRestorePathCandidatesResult struct {
 }
 
 type publicRestoreDiscardResult struct {
-	Mode              string `json:"mode"`
-	PlanID            string `json:"plan_id"`
-	Folder            string `json:"folder"`
-	Workspace         string `json:"workspace"`
-	SourceSavePoint   string `json:"source_save_point"`
-	Path              string `json:"path,omitempty"`
-	PlanDiscarded     bool   `json:"plan_discarded"`
-	FilesChanged      bool   `json:"files_changed"`
-	HistoryChanged    bool   `json:"history_changed"`
-	RecommendedStatus string `json:"recommended_status_command,omitempty"`
+	Mode                   string `json:"mode"`
+	PlanID                 string `json:"plan_id"`
+	Folder                 string `json:"folder"`
+	Workspace              string `json:"workspace"`
+	SourceSavePoint        string `json:"source_save_point"`
+	Path                   string `json:"path,omitempty"`
+	PlanDiscarded          bool   `json:"plan_discarded"`
+	FilesChanged           bool   `json:"files_changed"`
+	HistoryChanged         bool   `json:"history_changed"`
+	RecommendedNextCommand string `json:"recommended_next_command,omitempty"`
 }
 
 type publicRestorePathResult struct {
@@ -309,11 +309,11 @@ type restoreApplyOutcome struct {
 func runRestorePlan(repoRoot, workspaceName, planID string, separated *repo.SeparatedContext) error {
 	result, err := executeRestorePlanRun(repoRoot, workspaceName, planID, separated)
 	if err != nil {
-		err = restoreRunErrorWithMutationState(err, result)
+		err = restoreRunErrorWithMutationState(err, result, separated)
 		if result.ProtectedPath != "" {
-			return restorePathErrorWithFilesChanged(err, result.FilesChanged, result.ProtectedPath)
+			return restorePathErrorWithFilesChangedForSeparated(err, result.FilesChanged, separated, result.ProtectedPath)
 		}
-		return restorePointError(err)
+		return restorePointErrorForSeparated(err, separated)
 	}
 	return outputRestoreRunResult(result, separated)
 }
@@ -355,16 +355,16 @@ func executeRestoreDiscardPlan(repoRoot, workspaceName, planID string, separated
 			return err
 		}
 		result = publicRestoreDiscardResult{
-			Mode:              "discard",
-			PlanID:            discarded.PlanID,
-			Folder:            discarded.Folder,
-			Workspace:         discarded.Workspace,
-			SourceSavePoint:   string(discarded.SourceSavePoint),
-			Path:              discarded.Path,
-			PlanDiscarded:     true,
-			FilesChanged:      false,
-			HistoryChanged:    false,
-			RecommendedStatus: selectedJVSCommand(separated, "recovery status"),
+			Mode:                   "discard",
+			PlanID:                 discarded.PlanID,
+			Folder:                 discarded.Folder,
+			Workspace:              discarded.Workspace,
+			SourceSavePoint:        string(discarded.SourceSavePoint),
+			Path:                   discarded.Path,
+			PlanDiscarded:          true,
+			FilesChanged:           false,
+			HistoryChanged:         false,
+			RecommendedNextCommand: selectedJVSCommand(separated, "recovery status"),
 		}
 		return nil
 	})
@@ -399,7 +399,7 @@ func executeRestorePlanRun(repoRoot, workspaceName, planID string, separated *re
 			return activeRecoveryBlocksRestoreError(activeRecovery[0])
 		}
 		return withActiveOperationSourcePin(repoRoot, plan.SourceSavePoint, "restore run", func() error {
-			return runLoadedRestorePlan(repoRoot, workspaceName, plan, &result)
+			return runLoadedRestorePlan(repoRoot, workspaceName, plan, &result, separated)
 		})
 	})
 	return result, err
@@ -434,10 +434,12 @@ func enforceSeparatedRestoreMutationGuard(repoRoot, workspaceName string, separa
 		return nil
 	}
 	switch state.Kind {
-	case recoverystate.KindPendingRestorePreview, recoverystate.KindStaleRestorePreview:
-		return separatedRecoveryMutationBlockingError(separated, operation, "restore plan", state.PlanID, state.NextCommand)
+	case recoverystate.KindPendingRestorePreview:
+		return separatedRecoveryMutationBlockingError(separated, operation, "restore plan", state.PlanID, "pending", state.NextCommand)
+	case recoverystate.KindStaleRestorePreview:
+		return separatedRecoveryMutationBlockingError(separated, operation, "restore plan", state.PlanID, "stale", state.NextCommand)
 	case recoverystate.KindActiveRecovery:
-		return separatedRecoveryMutationBlockingError(separated, operation, "recovery plan", state.RecoveryPlanID, state.NextCommand)
+		return separatedRecoveryMutationBlockingError(separated, operation, "recovery plan", state.RecoveryPlanID, "active", state.NextCommand)
 	case recoverystate.KindMalformedBlocking:
 		return separatedRecoveryMutationStateError(separated, operation, state)
 	default:
@@ -465,7 +467,7 @@ func restoreExpectedSeparatedContext(separated *repo.SeparatedContext) restorepl
 	}
 }
 
-func runLoadedRestorePlan(repoRoot, workspaceName string, plan *restoreplan.Plan, result *restoreRunResult) error {
+func runLoadedRestorePlan(repoRoot, workspaceName string, plan *restoreplan.Plan, result *restoreRunResult, separated *repo.SeparatedContext) error {
 	ops, err := restoreRunOpsForScope(repoRoot, workspaceName, plan, result)
 	if err != nil {
 		return err
@@ -509,7 +511,7 @@ func runLoadedRestorePlan(repoRoot, workspaceName string, plan *restoreplan.Plan
 	}
 	if err != nil {
 		result.FilesChanged = restoreApplyErrorChangedFiles(err)
-		return handleRestoreApplyError(repoRoot, recoveryPlan, err)
+		return handleRestoreApplyError(repoRoot, recoveryPlan, err, separated)
 	}
 	result.FilesChanged = true
 	if err := resolveAppliedRestoreRecovery(repoRoot, recoveryPlan); err != nil {
@@ -606,9 +608,9 @@ func restoreApplyOutcomeFromRestorer(restorer *restore.Restorer) restoreApplyOut
 	return restoreApplyOutcome{Transfer: record, HasTransfer: true}
 }
 
-func handleRestoreApplyError(repoRoot string, recoveryPlan *recovery.Plan, restoreErr error) error {
+func handleRestoreApplyError(repoRoot string, recoveryPlan *recovery.Plan, restoreErr error, separated *repo.SeparatedContext) error {
 	if _, ok := restore.AsIncompleteError(restoreErr); ok {
-		return keepRecoveryPlanActiveAfterRestoreFailure(repoRoot, recoveryPlan, restoreErr)
+		return keepRecoveryPlanActiveAfterRestoreFailure(repoRoot, recoveryPlan, restoreErr, separated)
 	}
 	if resolveErr := recovery.NewManager(repoRoot).MarkResolved(recoveryPlan.PlanID); resolveErr != nil {
 		return fmt.Errorf("%w; additionally failed to resolve recovery plan: %v", restoreErr, resolveErr)
@@ -644,22 +646,27 @@ func restoreApplyErrorChangedFiles(err error) bool {
 }
 
 type restoreRunFilesChangedError struct {
-	err error
+	err                   error
+	recoveryStatusCommand string
 }
 
 func (e *restoreRunFilesChangedError) Error() string {
-	return fmt.Sprintf("%v. Files were changed; run jvs recovery status before continuing", e.err)
+	command := strings.TrimSpace(e.recoveryStatusCommand)
+	if command == "" {
+		command = "jvs recovery status"
+	}
+	return fmt.Sprintf("%v. Files were changed; run %s before continuing", e.err, command)
 }
 
 func (e *restoreRunFilesChangedError) Unwrap() error {
 	return e.err
 }
 
-func restoreRunErrorWithMutationState(err error, result restoreRunResult) error {
+func restoreRunErrorWithMutationState(err error, result restoreRunResult, separated *repo.SeparatedContext) error {
 	if err == nil || !result.FilesChanged {
 		return err
 	}
-	return &restoreRunFilesChangedError{err: err}
+	return &restoreRunFilesChangedError{err: err, recoveryStatusCommand: selectedJVSCommand(separated, "recovery status")}
 }
 
 func runRestorePath(cmd *cobra.Command, args []string, ctx *cliDiscoveryContext) error {
@@ -1047,8 +1054,8 @@ func printRestoreDiscardResult(result publicRestoreDiscardResult) {
 		fmt.Printf("Path: %s\n", result.Path)
 	}
 	fmt.Println("No files were changed.")
-	if result.RecommendedStatus != "" {
-		fmt.Printf("Recommended next command: %s\n", result.RecommendedStatus)
+	if result.RecommendedNextCommand != "" {
+		fmt.Printf("Recommended next command: %s\n", result.RecommendedNextCommand)
 	}
 }
 
@@ -1144,13 +1151,21 @@ func withActiveOperationSourcePin(repoRoot string, sourceID model.SnapshotID, re
 }
 
 func restorePointError(err error) error {
+	return restorePointErrorForSeparated(err, nil)
+}
+
+func restorePointErrorForSeparated(err error, separated *repo.SeparatedContext) error {
 	if err == nil {
 		return nil
 	}
-	message := restorePointVocabulary(err.Error())
+	message := restorePointVocabulary(rewriteBareRecoveryCommandsForSeparated(err.Error(), separated))
 	var jvsErr *errclass.JVSError
 	if errors.As(err, &jvsErr) {
-		return &errclass.JVSError{Code: jvsErr.Code, Message: message, Hint: restorePointVocabulary(jvsErr.Hint)}
+		return &errclass.JVSError{
+			Code:    jvsErr.Code,
+			Message: message,
+			Hint:    restorePointVocabulary(rewriteBareRecoveryCommandsForSeparated(jvsErr.Hint, separated)),
+		}
 	}
 	return fmt.Errorf("%s", message)
 }
@@ -1160,18 +1175,38 @@ func restorePathError(err error, protectedValues ...string) error {
 }
 
 func restorePathErrorWithFilesChanged(err error, filesChanged bool, protectedValues ...string) error {
+	return restorePathErrorWithFilesChangedForSeparated(err, filesChanged, nil, protectedValues...)
+}
+
+func restorePathErrorWithFilesChangedForSeparated(err error, filesChanged bool, separated *repo.SeparatedContext, protectedValues ...string) error {
 	if err == nil {
 		return nil
 	}
-	message := restorePathVocabulary(err.Error(), protectedValues...)
+	message := restorePathVocabulary(rewriteBareRecoveryCommandsForSeparated(err.Error(), separated), protectedValues...)
 	if !filesChanged && !strings.Contains(message, "No files were changed.") {
 		message += ". No files were changed."
 	}
 	var jvsErr *errclass.JVSError
 	if errors.As(err, &jvsErr) {
-		return &errclass.JVSError{Code: jvsErr.Code, Message: message, Hint: restorePathVocabulary(jvsErr.Hint, protectedValues...)}
+		return &errclass.JVSError{
+			Code:    jvsErr.Code,
+			Message: message,
+			Hint:    restorePathVocabulary(rewriteBareRecoveryCommandsForSeparated(jvsErr.Hint, separated), protectedValues...),
+		}
 	}
 	return fmt.Errorf("%s", message)
+}
+
+func rewriteBareRecoveryCommandsForSeparated(value string, separated *repo.SeparatedContext) string {
+	if separated == nil || strings.TrimSpace(value) == "" {
+		return value
+	}
+	replacer := strings.NewReplacer(
+		"jvs recovery status", selectedJVSCommand(separated, "recovery status"),
+		"jvs recovery resume", selectedJVSCommand(separated, "recovery resume"),
+		"jvs recovery rollback", selectedJVSCommand(separated, "recovery rollback"),
+	)
+	return replacer.Replace(value)
 }
 
 func restorePathVocabulary(value string, protectedValues ...string) string {

@@ -39,7 +39,9 @@ restore previews close through `restore --run <plan-id>` after operator review:
 jvs --control-root C --workspace main restore --run <plan-id>
 ```
 
-Stale restore previews close through `restore discard <restore-plan-id>`:
+Stale restore previews close through `restore discard <restore-plan-id>`.
+This includes previews whose workspace folder or saved workspace identity
+changed after preview:
 
 ```bash
 jvs --control-root C --workspace main restore discard <restore-plan-id>
@@ -57,9 +59,16 @@ jvs --control-root C --workspace main recovery rollback <recovery-plan>
 Do not treat a pending or stale restore preview as an active recovery plan.
 Successful `restore --run` leaves no active recovery, and completed plan
 residue is non-blocking for `recovery status`, `doctor --strict --json`, and
-`repo clone`. Do not read or delete private control data files to decide
-whether a workspace is usable; use the public commands above and the strict
-doctor report.
+`repo clone` only when the matching resolved recovery plan still validates
+against the selected external control root, workspace, and workspace folder
+boundary. Forged or damaged resolved recovery records fail closed through the
+same public diagnostics. Do not read or delete private control data files to
+decide whether a workspace is usable; use the public commands above and the
+strict doctor report.
+
+All external-control failure guidance and recommended commands must be safe
+from a clean current working directory. Include `--control-root C --workspace
+main`; do not publish bare `jvs recovery ...` follow-up commands.
 
 Malformed restore state is diagnosed through public `recovery status` and
 `doctor --strict --json` output. Do not ask callers to remove private control

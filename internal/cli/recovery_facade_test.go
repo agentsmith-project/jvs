@@ -91,6 +91,67 @@ func TestWholeRestoreFailureCreatesRecoveryPlanStatusAndProtectsSource(t *testin
 	assertRecoveryOutputOmitsInternalVocabulary(t, err.Error())
 }
 
+func TestSeparatedRestoreFailureGuidanceUsesSelectedCommands(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control root")
+	payloadRoot := filepath.Join(base, "payload")
+	cleanCWD := filepath.Join(base, "clean-cwd")
+	require.NoError(t, os.MkdirAll(cleanCWD, 0755))
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "original.txt"), []byte("original"), 0644))
+	sourceID := saveSeparatedControlPoint(t, controlRoot, "source")
+	require.NoError(t, os.Remove(filepath.Join(payloadRoot, "original.txt")))
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "source.txt"), []byte("source"), 0644))
+	_ = saveSeparatedControlPoint(t, controlRoot, "current")
+
+	previewOut, err := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"restore", sourceID,
+		"--discard-unsaved",
+	)
+	require.NoError(t, err, previewOut)
+	_, preview := decodeSeparatedControlDataMap(t, previewOut)
+	restorePlanID, _ := preview["plan_id"].(string)
+	require.NotEmpty(t, restorePlanID)
+
+	restoreHooks := restore.SetHooksForTest(restore.Hooks{
+		UpdateHead: func(*worktree.Manager, string, model.SnapshotID) error {
+			return errors.New("injected update metadata failure")
+		},
+	})
+	t.Cleanup(restoreHooks)
+
+	stdout, err := executeCommand(createTestRootCmd(),
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"restore", "--run", restorePlanID,
+	)
+	require.Error(t, err)
+	require.Empty(t, stdout)
+	recoveryPlanID := recoveryPlanIDFromText(t, err.Error())
+	selectedStatus := "jvs --control-root " + shellQuoteArg(controlRoot) + " --workspace main recovery status " + recoveryPlanID
+	assert.Contains(t, err.Error(), "Run: "+selectedStatus)
+	assert.NotContains(t, err.Error(), "Run: jvs recovery")
+	assert.NotContains(t, err.Error(), "jvs recovery resume")
+	assert.NotContains(t, err.Error(), "jvs recovery rollback")
+
+	plan, loadErr := recovery.NewManager(controlRoot).Load(recoveryPlanID)
+	require.NoError(t, loadErr)
+	assert.Equal(t, "jvs --control-root "+shellQuoteArg(controlRoot)+" --workspace main recovery resume "+recoveryPlanID, plan.RecommendedNextCommand)
+
+	statusOut, statusErr := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"recovery", "status", recoveryPlanID,
+	)
+	require.NoError(t, statusErr, statusOut)
+	_, data := decodeSeparatedControlDataMap(t, statusOut)
+	assert.Equal(t, "jvs --control-root "+shellQuoteArg(controlRoot)+" --workspace main recovery resume "+recoveryPlanID, data["recommended_next_command"])
+}
+
 func TestRestoreFailurePersistsExecutedValidationSafetyAndPrimaryTransfers(t *testing.T) {
 	repoRoot, sourceID, _ := setupWholeRestoreImpactRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("local edit"), 0644))
@@ -419,6 +480,49 @@ func TestRecoveryStatusJSONErrorsOnSeparatedActiveRecoveryIdentityMismatch(t *te
 
 	env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrRecoveryBlocking.Code)
 	assert.Contains(t, env.Error.Message, "Recovery plan RP-identity-mismatch cannot be inspected safely")
+	assert.Contains(t, env.Error.Message, "workspace")
+	assert.Contains(t, env.Error.Hint, "doctor --strict --json")
+	assert.NotContains(t, strings.ToLower(env.Error.Message), "payload")
+}
+
+func TestRecoveryStatusDetailJSONErrorsOnSeparatedActiveRecoveryIdentityMismatch(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("source\n"), 0644))
+	sourceID := saveSeparatedControlPoint(t, controlRoot, "source")
+	r, err := repo.OpenControlRoot(controlRoot)
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	plan := &recovery.Plan{
+		SchemaVersion:          recovery.SchemaVersion,
+		RepoID:                 r.RepoID,
+		PlanID:                 "RP-detail-identity-mismatch",
+		Status:                 recovery.StatusActive,
+		Operation:              recovery.OperationRestore,
+		RestorePlanID:          "restore-preview",
+		Workspace:              "feature",
+		Folder:                 payloadRoot,
+		SourceSavePoint:        model.SnapshotID(sourceID),
+		CreatedAt:              now,
+		UpdatedAt:              now,
+		PreWorktreeState:       recovery.WorktreeState{Name: "main", RealPath: payloadRoot},
+		Backup:                 recovery.Backup{Path: filepath.Join(base, "backup"), Scope: recovery.BackupScopeWhole, State: recovery.BackupStatePending},
+		Phase:                  recovery.PhasePending,
+		RecommendedNextCommand: "jvs recovery status RP-detail-identity-mismatch",
+	}
+	require.NoError(t, recovery.NewManager(controlRoot).Write(plan))
+
+	stdout, stderr, exitCode := runContractSubprocess(t, base,
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"recovery", "status", "RP-detail-identity-mismatch",
+	)
+
+	env := requireSeparatedControlCLIJSONError(t, stdout, stderr, exitCode, errclass.ErrRecoveryBlocking.Code)
+	assert.Contains(t, env.Error.Message, "Recovery plan RP-detail-identity-mismatch cannot be inspected safely")
 	assert.Contains(t, env.Error.Message, "workspace")
 	assert.Contains(t, env.Error.Hint, "doctor --strict --json")
 	assert.NotContains(t, strings.ToLower(env.Error.Message), "payload")
