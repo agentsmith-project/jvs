@@ -696,6 +696,41 @@ func TestSeparatedControlDoctorStrictJSONIncludesChecks(t *testing.T) {
 	assertSeparatedDoctorChecks(t, data, map[string]string{})
 }
 
+func TestSeparatedControlDoctorStrictJSONRepairRuntimeCleansStaleRepoLock(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+	writeCLIRepoLockOwner(t, controlRoot, staleCLISameHostOwner(t, "crashed external-control mutation"))
+
+	stdout, stderr, exitCode := runContractSubprocess(t, base,
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"doctor",
+		"--strict",
+		"--repair-runtime",
+	)
+	require.Equal(t, 0, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	assert.NoDirExists(t, filepath.Join(controlRoot, ".jvs", "locks", "repo.lock"))
+	assert.NotContains(t, stdout, ".jvs/locks")
+	assert.NotContains(t, stdout, "repo.lock")
+	assert.NotContains(t, stdout, "owner.json")
+
+	env, data := decodeSeparatedControlDataMap(t, stdout)
+	require.NotNil(t, env.RepoRoot)
+	assert.Equal(t, controlRoot, *env.RepoRoot)
+	assertExternalControlDataShape(t, data, controlRoot, payloadRoot, "main")
+	assert.Equal(t, true, data["healthy"])
+	assertSeparatedDoctorChecks(t, data, map[string]string{})
+
+	repair := requireSeparatedDoctorRepair(t, data, "clean_locks")
+	assert.Equal(t, true, repair["success"])
+	assert.Equal(t, float64(1), repair["cleaned"])
+	assert.Equal(t, "cleaned 1 stale repository lock", repair["message"])
+}
+
 func TestSeparatedControlDoctorUnsupportedVariantsFailClosed(t *testing.T) {
 	base := setupSeparatedControlCLICWD(t)
 	controlRoot := filepath.Join(base, "control")
@@ -711,8 +746,8 @@ func TestSeparatedControlDoctorUnsupportedVariantsFailClosed(t *testing.T) {
 			args: []string{"--json", "--control-root", controlRoot, "--workspace", "main", "doctor"},
 		},
 		{
-			name: "repair runtime",
-			args: []string{"--json", "--control-root", controlRoot, "--workspace", "main", "doctor", "--strict", "--repair-runtime"},
+			name: "non strict repair runtime",
+			args: []string{"--json", "--control-root", controlRoot, "--workspace", "main", "doctor", "--repair-runtime"},
 		},
 		{
 			name: "repair list",
@@ -733,6 +768,19 @@ func TestSeparatedControlDoctorUnsupportedVariantsFailClosed(t *testing.T) {
 		"--workspace", "main",
 		"doctor",
 		"--strict",
+	)
+	require.Equal(t, 1, exitCode, "doctor unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stdout))
+	assert.Contains(t, stderr, "doctor --strict --json")
+	assert.Contains(t, stderr, "--control-root "+controlRoot)
+	assert.Contains(t, stderr, "--workspace main")
+
+	stdout, stderr, exitCode = runContractSubprocess(t, base,
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"doctor",
+		"--strict",
+		"--repair-runtime",
 	)
 	require.Equal(t, 1, exitCode, "doctor unexpectedly succeeded: stdout=%s stderr=%s", stdout, stderr)
 	assert.Empty(t, strings.TrimSpace(stdout))
@@ -1086,6 +1134,22 @@ func assertSeparatedDoctorChecks(t *testing.T, data map[string]any, failed map[s
 		assert.Equal(t, "passed", check["status"])
 		assert.Nil(t, check["error_code"])
 	}
+}
+
+func requireSeparatedDoctorRepair(t *testing.T, data map[string]any, action string) map[string]any {
+	t.Helper()
+
+	raw, ok := data["repairs"].([]any)
+	require.True(t, ok, "repairs should be an array: %#v", data["repairs"])
+	for _, item := range raw {
+		repair, ok := item.(map[string]any)
+		require.True(t, ok, "repair should be an object: %#v", item)
+		if repair["action"] == action {
+			return repair
+		}
+	}
+	require.FailNowf(t, "missing repair", "missing repair action %q in %#v", action, raw)
+	return nil
 }
 
 func requireSeparatedControlCLIJSONError(t *testing.T, stdout, stderr string, exitCode int, wantCode string) contractEnvelope {

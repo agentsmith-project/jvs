@@ -25,15 +25,16 @@ type StrictCheck struct {
 }
 
 type SeparatedStrictResult struct {
-	RepoID            string        `json:"repo_id,omitempty"`
-	Workspace         string        `json:"workspace"`
-	ControlRoot       string        `json:"control_root"`
-	Folder            string        `json:"folder"`
-	BoundaryValidated bool          `json:"-"`
-	DoctorStrict      string        `json:"-"`
-	Healthy           bool          `json:"healthy"`
-	Findings          []Finding     `json:"findings"`
-	Checks            []StrictCheck `json:"checks"`
+	RepoID            string         `json:"repo_id,omitempty"`
+	Workspace         string         `json:"workspace"`
+	ControlRoot       string         `json:"control_root"`
+	Folder            string         `json:"folder"`
+	BoundaryValidated bool           `json:"-"`
+	DoctorStrict      string         `json:"-"`
+	Healthy           bool           `json:"healthy"`
+	Findings          []Finding      `json:"findings"`
+	Checks            []StrictCheck  `json:"checks"`
+	Repairs           []RepairResult `json:"repairs,omitempty"`
 }
 
 type separatedDoctorContext struct {
@@ -99,6 +100,43 @@ func CheckSeparatedStrict(req repo.SeparatedContextRequest) (*SeparatedStrictRes
 		result.DoctorStrict = "failed"
 	}
 	return result, nil
+}
+
+func SeparatedRuntimeRepairActionIDs() []string {
+	return []string{RepairCleanLocks}
+}
+
+func RepairSeparatedRuntime(req repo.SeparatedContextRequest) ([]RepairResult, error) {
+	ctx, err := resolveSeparatedDoctorContext(req)
+	if err != nil {
+		return nil, err
+	}
+	repairs, err := NewDoctor(ctx.Repo.Root).Repair(SeparatedRuntimeRepairActionIDs())
+	return sanitizeSeparatedRepairResults(repairs), err
+}
+
+func sanitizeSeparatedRepairResults(repairs []RepairResult) []RepairResult {
+	if repairs == nil {
+		return nil
+	}
+	sanitized := make([]RepairResult, 0, len(repairs))
+	for _, repair := range repairs {
+		if repair.Action == RepairCleanLocks {
+			repair.Message = separatedCleanLocksRepairMessage(repair)
+		}
+		sanitized = append(sanitized, repair)
+	}
+	return sanitized
+}
+
+func separatedCleanLocksRepairMessage(repair RepairResult) string {
+	if repair.Success {
+		if repair.Cleaned == 1 {
+			return "cleaned 1 stale repository lock"
+		}
+		return "cleaned 0 stale repository locks"
+	}
+	return "retained repository lock; strict doctor reports remaining active operation state"
 }
 
 func resolveSeparatedDoctorContext(req repo.SeparatedContextRequest) (*separatedDoctorContext, error) {

@@ -38,8 +38,8 @@ Unavailable:
 - No hand-built merge of an external control root back into a workspace folder.
 - No hot migration, overlay, merge, overwrite, or adoption of non-empty target
   roots.
-- No external control root `doctor --repair-runtime` migration step; external
-  doctor repair variants fail closed.
+- No external control root `doctor --repair-runtime` migration bridge. The
+  only external-control repair path is strict JSON stale runtime lock cleanup.
 - `--save-points all` fails closed for external control root clone until
   imported-history protection is available for that control data location.
 
@@ -124,10 +124,17 @@ remains unhealthy and reports the workspace path binding until the destination
 sibling is present with matching content.
 
 For external control roots, do not use runtime repair as a migration bridge.
-Use the explicit external control root doctor entry instead:
+Use the explicit external control root doctor entry for inspection:
 
 ```bash
 jvs --control-root C --workspace main doctor --strict --json
+```
+
+If a stale repository mutation lock blocks the external control root, use the
+strict JSON runtime repair entry:
+
+```bash
+jvs --json --control-root C --workspace main doctor --strict --repair-runtime
 ```
 
 ## Migration Flow

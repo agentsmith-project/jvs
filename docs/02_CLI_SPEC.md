@@ -105,10 +105,13 @@ second product model.
   main` is the explicit selector for this workflow.
 - `--repo` is not an external control root selector; it remains an advanced
   target assertion for ordinary project paths.
-- External control root doctor is strict inspection only: use
-  `jvs --json --control-root C --workspace main doctor --strict`.
-  `--repair-runtime` is rejected for this selector and is not an external
-  control root repair path.
+- External control root doctor is strict JSON only. Use
+  `jvs --json --control-root C --workspace main doctor --strict` for
+  inspection. To remove a stale repository mutation lock through the official
+  runtime repair path, use
+  `jvs --json --control-root C --workspace main doctor --strict --repair-runtime`.
+  External-control runtime repair is fail-closed for non-strict or non-JSON
+  variants and is not a workspace binding repair path.
 - For external control roots, successful restore run leaves no active recovery.
   Completed restore plan residue is non-blocking for `jvs recovery status`,
   `jvs doctor --strict`, and `jvs repo clone`. Pending, active, or malformed
@@ -1032,18 +1035,26 @@ reports an unhealthy workspace path binding until `--repair-runtime` can prove
 and store the destination binding. A skipped or failed rebind therefore leaves
 `doctor --strict --repair-runtime` unhealthy.
 
-For external control roots, doctor is strict inspection only:
-`jvs --json --control-root C --workspace main doctor --strict`.
-`--repair-runtime` is rejected for that explicit selector and must not be used
-to repair external control root workspace binding.
+For external control roots, doctor is strict JSON only:
+`jvs --json --control-root C --workspace main doctor --strict`. A runtime-safe
+stale lock repair entry is also available at
+`jvs --json --control-root C --workspace main doctor --strict --repair-runtime`.
+It runs the external-control runtime repair subset before returning the same
+strict doctor JSON plus `data.repairs[]`. Non-strict and non-JSON variants fail
+closed, and external-control `--repair-runtime` must not repair workspace
+binding.
 
-Public automatic repair actions:
+Public automatic repair actions for ordinary `.jvs/` projects:
 
 - `clean_locks`
 - `rebind_workspace_paths`
 - `clean_runtime_tmp`
 - `clean_runtime_operations`
 - `clean_runtime_cleanup_plans`
+
+External-control runtime repair subset:
+
+- `clean_locks`
 
 Doctor must not rewrite durable save point history, workspace provenance, or
 audit history as an automatic repair.

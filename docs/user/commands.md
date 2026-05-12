@@ -78,9 +78,14 @@ For external control root doctor, the supported form is:
 jvs --json --control-root C --workspace main doctor --strict
 ```
 
-In shorthand, this advanced workflow supports `doctor --strict --json` only.
-Do not add `--repair-runtime`; runtime repair is for ordinary `.jvs/`
-projects, not external control root inspection.
+In shorthand, this advanced workflow supports `doctor --strict --json`
+inspection and strict JSON stale runtime lock repair:
+
+```bash
+jvs --json --control-root C --workspace main doctor --strict --repair-runtime
+```
+
+Non-strict or non-JSON doctor repair variants fail closed.
 
 External control root clone uses a main-only target folder plus target control
 root:
@@ -481,9 +486,11 @@ jvs doctor --repair-runtime
 `--strict` performs deeper integrity checks. `--repair-runtime` changes JVS
 control data by running safe automatic runtime repairs for leftover state from
 interrupted JVS operations; it does not rewrite workspace files or save point
-history. It applies to ordinary `.jvs/` projects. For external control roots,
-use `jvs --json --control-root C --workspace main doctor --strict`; JVS rejects
-`--repair-runtime` for that selector.
+history. For ordinary `.jvs/` projects, runtime repair includes stale lock,
+runtime temporary state, operation record, cleanup plan, and safe workspace path
+binding repairs. For external control roots, runtime repair is strict JSON only
+and currently limited to stale repository mutation lock cleanup:
+`jvs --json --control-root C --workspace main doctor --strict --repair-runtime`.
 
 ## Shell Completion
 

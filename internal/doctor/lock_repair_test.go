@@ -33,6 +33,33 @@ func TestDoctorRepairCleanLocksRemovesSameHostDeadPIDAndAllowsMutation(t *testin
 	require.NoError(t, lock.Release())
 }
 
+func TestSeparatedRuntimeRepairCleanLocksPreservesWorkspaceBinding(t *testing.T) {
+	_, controlRoot, payloadRoot := setupSeparatedDoctorTestRepo(t)
+	writeDoctorRepoLockOwner(t, controlRoot, staleSameHostOwner(t, "crashed external-control mutation"))
+
+	results, err := doctor.RepairSeparatedRuntime(repo.SeparatedContextRequest{
+		ControlRoot: controlRoot,
+		Workspace:   "main",
+	})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, doctor.RepairCleanLocks, results[0].Action)
+	assert.True(t, results[0].Success)
+	assert.Equal(t, 1, results[0].Cleaned)
+	assert.NoDirExists(t, filepath.Join(controlRoot, ".jvs", "locks", "repo.lock"))
+
+	cfg, err := repo.LoadWorktreeConfig(controlRoot, "main")
+	require.NoError(t, err)
+	assert.Equal(t, payloadRoot, cfg.RealPath)
+
+	result, err := doctor.CheckSeparatedStrict(repo.SeparatedContextRequest{
+		ControlRoot: controlRoot,
+		Workspace:   "main",
+	})
+	require.NoError(t, err)
+	assert.True(t, result.Healthy)
+}
+
 func TestDoctorRepairCleanLocksPreservesUnsafeLocks(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	hostname, err := os.Hostname()

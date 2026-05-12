@@ -13,6 +13,7 @@ jvs init W --control-root C --workspace main --json
 jvs --control-root C --workspace main status --json
 jvs --control-root C --workspace main save -m "baseline" --json
 jvs --control-root C --workspace main doctor --strict --json
+jvs --json --control-root C --workspace main doctor --strict --repair-runtime
 ```
 
 Every external control root command must include
@@ -26,10 +27,13 @@ intends to use external control data. A naked workspace-folder command creates
 a different default `.jvs/` project instead of selecting the externally
 controlled workspace.
 
-The external control root doctor entry is `doctor --strict --json` only.
-`--repair-runtime`, `--repair-list`, and other repair variants fail closed for
-external control roots. Use strict JSON diagnostics to decide whether to
-resume recovery, roll back recovery, restore missing roots, or escalate.
+The external control root doctor entry is strict JSON. Use
+`doctor --strict --json` for inspection, and use
+`doctor --strict --repair-runtime --json` only for stale repository mutation
+lock cleanup. The `--repair-runtime` flag is accepted only in that strict JSON
+form. Non-strict, non-JSON, `--repair-list`, and other repair variants fail
+closed for external control roots. Use strict JSON diagnostics to decide whether
+to resume recovery, roll back recovery, restore missing roots, or escalate.
 
 Pending restore previews and active or malformed recovery state block mutation
 before save, cleanup run, clone publish, and lifecycle commands. Pending
@@ -112,10 +116,10 @@ reading it as authority.
 
 ## Incident: Runtime Artifacts
 
-Use this only when control data is in the workspace folder's `.jvs/`. It does
-not rewrite durable save point history. This is not an external control root
-repair path; external control roots use `doctor --strict --json`, and repair
-variants fail closed.
+Use this workflow only when control data is in the workspace folder's `.jvs/`.
+It does not rewrite durable save point history. For external control roots, the
+only runtime repair path is strict JSON stale repository mutation lock cleanup:
+`jvs --json --control-root C --workspace main doctor --strict --repair-runtime`.
 
 1. Run `jvs doctor --strict --json`.
 2. Run `jvs doctor --repair-list` and confirm only public runtime repairs are

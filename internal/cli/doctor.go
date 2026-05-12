@@ -37,8 +37,8 @@ Use --repair-runtime to execute safe automatic repairs.`,
 			if strings.TrimSpace(targetWorkspaceName) == "" {
 				exitWithCLIError(separatedControlRootRequiresWorkspaceError(targetControlRoot))
 			}
-			if doctorStrict && jsonOutput && !doctorRepair && !doctorRepairList {
-				runSeparatedStrictDoctorJSON()
+			if doctorStrict && jsonOutput && !doctorRepairList {
+				runSeparatedStrictDoctorJSON(doctorRepair)
 				return
 			}
 			exitWithCLIError(separatedDoctorStrictJSONRequiredError(targetControlRoot))
@@ -119,12 +119,23 @@ Use --repair-runtime to execute safe automatic repairs.`,
 	},
 }
 
-func runSeparatedStrictDoctorJSON() {
+func runSeparatedStrictDoctorJSON(repairRuntime bool) {
 	if targetRepoPath != "" {
 		exitWithCLIError(errclass.ErrUsage.WithMessage("--control-root cannot be combined with --repo"))
 	}
 	if targetWorkspaceName == "" {
 		exitWithCLIError(separatedControlRootRequiresWorkspaceError(targetControlRoot))
+	}
+	var repairs []doctor.RepairResult
+	if repairRuntime {
+		var err error
+		repairs, err = doctor.RepairSeparatedRuntime(repo.SeparatedContextRequest{
+			ControlRoot: targetControlRoot,
+			Workspace:   targetWorkspaceName,
+		})
+		if err != nil {
+			exitWithCLIError(err)
+		}
 	}
 	result, err := doctor.CheckSeparatedStrict(repo.SeparatedContextRequest{
 		ControlRoot: targetControlRoot,
@@ -133,6 +144,7 @@ func runSeparatedStrictDoctorJSON() {
 	if err != nil {
 		exitWithCLIError(err)
 	}
+	result.Repairs = repairs
 	recordResolvedTarget(result.ControlRoot, result.Workspace)
 	outputJSON(result)
 	if !result.Healthy {
