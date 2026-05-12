@@ -39,7 +39,8 @@ Unavailable:
 - No hot migration, overlay, merge, overwrite, or adoption of non-empty target
   roots.
 - No external control root `doctor --repair-runtime` migration bridge. The
-  only external-control repair path is strict JSON stale runtime lock cleanup.
+  only external-control repair path is strict JSON stale repository mutation
+  lock cleanup.
 - `--save-points all` fails closed for external control root clone until
   imported-history protection is available for that control data location.
 

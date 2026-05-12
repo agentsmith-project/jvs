@@ -79,7 +79,7 @@ jvs --json --control-root C --workspace main doctor --strict
 ```
 
 In shorthand, this advanced workflow supports `doctor --strict --json`
-inspection and strict JSON stale runtime lock repair:
+inspection and strict JSON stale repository mutation lock cleanup:
 
 ```bash
 jvs --json --control-root C --workspace main doctor --strict --repair-runtime
@@ -486,10 +486,11 @@ jvs doctor --repair-runtime
 `--strict` performs deeper integrity checks. `--repair-runtime` changes JVS
 control data by running safe automatic runtime repairs for leftover state from
 interrupted JVS operations; it does not rewrite workspace files or save point
-history. For ordinary `.jvs/` projects, runtime repair includes stale lock,
-runtime temporary state, operation record, cleanup plan, and safe workspace path
-binding repairs. For external control roots, runtime repair is strict JSON only
-and currently limited to stale repository mutation lock cleanup:
+history. For ordinary `.jvs/` projects, runtime repair includes stale
+repository mutation lock cleanup, runtime temporary state, operation record,
+cleanup plan, and safe workspace path binding repairs. For external control
+roots, runtime repair is strict JSON only and currently limited to stale
+repository mutation lock cleanup:
 `jvs --json --control-root C --workspace main doctor --strict --repair-runtime`.
 
 ## Shell Completion
