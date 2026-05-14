@@ -546,6 +546,20 @@ Required JSON `data` fields:
 - `restored_paths` when applicable
 - `unsaved_changes`
 - `transfers`
+- `save_profile`
+
+`save_profile` is a non-sensitive observability object for diagnosing slow save
+paths. It must not expose filesystem paths. Required fields:
+
+- `schema_version`
+- `requested_engine`
+- `effective_engine`
+- `optimized_transfer`
+- `clone_mode`
+- `performance_class`
+- `total_duration_ms`
+- `phase_durations_ms`
+- `phase_counts` when a measured phase has aggregate counts
 
 ### `jvs history [--path <path>] [--limit <n>|-n <n>] [--grep <text>] [--json]`
 

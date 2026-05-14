@@ -10,6 +10,7 @@ import (
 	"time"
 
 	clidoctor "github.com/agentsmith-project/jvs/internal/doctor"
+	"github.com/agentsmith-project/jvs/internal/saveprofile"
 	"github.com/agentsmith-project/jvs/internal/transfer"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/agentsmith-project/jvs/pkg/model"
@@ -33,6 +34,7 @@ type publicSavePointCreatedRecord struct {
 	RestoredFrom         string                     `json:"restored_from,omitempty"`
 	RestoredPaths        []publicRestoredPathSource `json:"restored_paths,omitempty"`
 	UnsavedChanges       bool                       `json:"unsaved_changes"`
+	SaveProfile          saveprofile.Profile        `json:"save_profile"`
 }
 
 type publicDoctorResult struct {
@@ -97,7 +99,7 @@ func publicSavePoints(descs []*model.Descriptor) []publicSavePointRecord {
 	return records
 }
 
-func publicSavePointCreated(desc *model.Descriptor, unsavedChanges bool, transferData transfer.Data) publicSavePointCreatedRecord {
+func publicSavePointCreated(desc *model.Descriptor, unsavedChanges bool, transferData transfer.Data, profile saveprofile.Profile) publicSavePointCreatedRecord {
 	record := publicSavePointCreatedRecord{
 		Data:            transferData,
 		SavePointID:     string(desc.SnapshotID),
@@ -106,6 +108,7 @@ func publicSavePointCreated(desc *model.Descriptor, unsavedChanges bool, transfe
 		CreatedAt:       desc.CreatedAt,
 		NewestSavePoint: string(desc.SnapshotID),
 		UnsavedChanges:  unsavedChanges,
+		SaveProfile:     profile,
 	}
 	if desc.RestoredFrom != nil {
 		record.RestoredFrom = string(*desc.RestoredFrom)

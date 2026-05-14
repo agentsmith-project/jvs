@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/agentsmith-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/internal/saveprofile"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/internal/transfer"
 	"github.com/agentsmith-project/jvs/pkg/color"
@@ -38,23 +39,34 @@ Examples:
 			return err
 		}
 
-		if err := validateSeparatedPayloadSymlinkBoundary(ctx.Separated); err != nil {
+		requestedEngine := requestedTransferEngine(ctx.Repo.Root)
+		profile := saveprofile.New(requestedEngine)
+
+		if err := profile.Step("separated_boundary_precheck", func() error {
+			return validateSeparatedPayloadSymlinkBoundary(ctx.Separated)
+		}); err != nil {
 			return savePointError(err)
 		}
 
-		desc, transferRecord, err := createSavePointDescriptor(ctx.Repo.Root, ctx.Workspace, message, ctx.Separated)
+		desc, transferRecord, err := createSavePointDescriptor(ctx.Repo.Root, ctx.Workspace, message, ctx.Separated, requestedEngine, profile)
 		if err != nil {
 			return savePointError(err)
 		}
 
-		unsavedChanges, err := workspaceDirty(ctx.Repo.Root, ctx.Workspace)
-		if err != nil {
+		var unsavedChanges bool
+		if err := profile.Step("workspace_dirty_check", func() error {
+			var err error
+			unsavedChanges, err = workspaceDirty(ctx.Repo.Root, ctx.Workspace)
+			return err
+		}); err != nil {
 			return err
 		}
+		saveProfile := profile.Profile(transferRecord)
+		saveProfile.ApplyDescriptorFallback(desc)
 
 		if jsonOutput {
 			return outputJSONWithSeparatedControl(
-				publicSavePointCreated(desc, unsavedChanges, transferDataFromRecord(transferRecord)),
+				publicSavePointCreated(desc, unsavedChanges, transferDataFromRecord(transferRecord), saveProfile),
 				ctx.Separated,
 				separatedDoctorStrictNotRun,
 			)
@@ -88,32 +100,43 @@ Examples:
 	},
 }
 
-func createSavePointDescriptor(repoRoot, workspaceName, message string, separated *repo.SeparatedContext) (*model.Descriptor, *transfer.Record, error) {
+func createSavePointDescriptor(repoRoot, workspaceName, message string, separated *repo.SeparatedContext, requestedEngine model.EngineType, profile *saveprofile.Recorder) (*model.Descriptor, *transfer.Record, error) {
 	var desc *model.Descriptor
 	var transferRecord *transfer.Record
-	err := repo.WithMutationLock(repoRoot, "save", func() error {
-		if err := validateSeparatedPayloadSymlinkBoundary(separated); err != nil {
+	err := profile.Step("mutation_lock", func() error {
+		return repo.WithMutationLock(repoRoot, "save", func() error {
+			if err := profile.Step("recovery_guard", func() error {
+				return enforceSeparatedRecoveryMutationGuard(repoRoot, workspaceName, separated, "save")
+			}); err != nil {
+				return err
+			}
+			if err := profile.Step("capacity_check", func() error {
+				return checkSaveCapacity(repoRoot, workspaceName)
+			}); err != nil {
+				return err
+			}
+			if err := profile.Step("separated_boundary_final_check", func() error {
+				return validateSeparatedPayloadSymlinkBoundary(separated)
+			}); err != nil {
+				return err
+			}
+			var err error
+			creator := snapshot.NewCreator(repoRoot, requestedEngine)
+			err = profile.Step("save_point_create_total", func() error {
+				desc, err = creator.CreateSavePointLocked(workspaceName, message, nil)
+				return err
+			})
+			if err != nil {
+				return err
+			}
+			if creatorProfile, ok := creator.LastSaveProfile(); ok {
+				profile.Merge(creatorProfile)
+			}
+			if record, ok := creator.LastTransferRecord(); ok {
+				transferRecord = &record
+			}
 			return err
-		}
-		if err := enforceSeparatedRecoveryMutationGuard(repoRoot, workspaceName, separated, "save"); err != nil {
-			return err
-		}
-		if err := checkSaveCapacity(repoRoot, workspaceName); err != nil {
-			return err
-		}
-		if err := validateSeparatedPayloadSymlinkBoundary(separated); err != nil {
-			return err
-		}
-		var err error
-		creator := snapshot.NewCreator(repoRoot, requestedTransferEngine(repoRoot))
-		desc, err = creator.CreateSavePointLocked(workspaceName, message, nil)
-		if err != nil {
-			return err
-		}
-		if record, ok := creator.LastTransferRecord(); ok {
-			transferRecord = &record
-		}
-		return err
+		})
 	})
 	return desc, transferRecord, err
 }

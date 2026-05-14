@@ -13,6 +13,14 @@ import (
 	"github.com/agentsmith-project/jvs/pkg/model"
 )
 
+type PayloadRootHashStats struct {
+	Entries     int64
+	Files       int64
+	Directories int64
+	Symlinks    int64
+	Bytes       int64
+}
+
 // ComputePayloadRootHash computes a deterministic hash of the entire payload tree.
 // Algorithm: walk in byte-order sorted path order, compute per-entry hash,
 // concatenate all lines, hash the result.
@@ -23,7 +31,17 @@ func ComputePayloadRootHash(root string) (model.HashValue, error) {
 // ComputePayloadRootHashWithExclusions computes a payload hash while skipping
 // any workspace-relative paths reported as excluded.
 func ComputePayloadRootHashWithExclusions(root string, excluded func(rel string) bool) (model.HashValue, error) {
+	hash, _, err := ComputePayloadRootHashWithExclusionsAndStats(root, excluded)
+	return hash, err
+}
+
+func ComputePayloadRootHashWithStats(root string) (model.HashValue, PayloadRootHashStats, error) {
+	return ComputePayloadRootHashWithExclusionsAndStats(root, nil)
+}
+
+func ComputePayloadRootHashWithExclusionsAndStats(root string, excluded func(rel string) bool) (model.HashValue, PayloadRootHashStats, error) {
 	var lines []string
+	var stats PayloadRootHashStats
 
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -48,6 +66,7 @@ func ComputePayloadRootHashWithExclusions(root string, excluded func(rel string)
 			}
 			return nil
 		}
+		stats.add(info)
 
 		entryHash, err := computeEntryHash(path, info)
 		if err != nil {
@@ -64,7 +83,7 @@ func ComputePayloadRootHashWithExclusions(root string, excluded func(rel string)
 		return nil
 	})
 	if err != nil {
-		return "", fmt.Errorf("walk payload: %w", err)
+		return "", PayloadRootHashStats{}, fmt.Errorf("walk payload: %w", err)
 	}
 
 	// Sort lines by path (byte order)
@@ -78,7 +97,31 @@ func ComputePayloadRootHashWithExclusions(root string, excluded func(rel string)
 	}
 
 	hash := sha256.Sum256([]byte(buf.String()))
-	return model.HashValue(hex.EncodeToString(hash[:])), nil
+	return model.HashValue(hex.EncodeToString(hash[:])), stats, nil
+}
+
+func (s *PayloadRootHashStats) add(info os.FileInfo) {
+	if s == nil || info == nil {
+		return
+	}
+	s.Entries++
+	switch {
+	case info.IsDir():
+		s.Directories++
+	case info.Mode()&os.ModeSymlink != 0:
+		s.Symlinks++
+		s.Bytes += nonNegativeSize(info)
+	default:
+		s.Files++
+		s.Bytes += nonNegativeSize(info)
+	}
+}
+
+func nonNegativeSize(info os.FileInfo) int64 {
+	if info == nil || info.Size() < 0 {
+		return 0
+	}
+	return info.Size()
 }
 
 func entryType(info os.FileInfo) string {

@@ -16,6 +16,7 @@ import (
 	"github.com/agentsmith-project/jvs/internal/engine"
 	"github.com/agentsmith-project/jvs/internal/integrity"
 	"github.com/agentsmith-project/jvs/internal/repo"
+	"github.com/agentsmith-project/jvs/internal/saveprofile"
 	"github.com/agentsmith-project/jvs/internal/snapshotpayload"
 	"github.com/agentsmith-project/jvs/internal/transfer"
 	"github.com/agentsmith-project/jvs/internal/workspacepath"
@@ -36,6 +37,7 @@ type Creator struct {
 	transferPlanner  transfer.EnginePlanner
 	cloneToNew       func(engine.Engine, string, string) (*engine.CloneResult, error)
 	lastTransfer     *transfer.Record
+	lastProfile      *saveprofile.Profile
 	descriptorWriter func(string, *model.Descriptor) error
 	snapshotRenamer  func(string, string) error
 	latestUpdater    func(*worktree.Manager, string, model.SnapshotID) error
@@ -105,6 +107,13 @@ func (c *Creator) LastTransferRecord() (transfer.Record, bool) {
 		return transfer.Record{}, false
 	}
 	return *c.lastTransfer, true
+}
+
+func (c *Creator) LastSaveProfile() (saveprofile.Profile, bool) {
+	if c == nil || c.lastProfile == nil {
+		return saveprofile.Profile{}, false
+	}
+	return *c.lastProfile, true
 }
 
 // Create performs a full snapshot of the worktree using the 12-step protocol.
@@ -185,11 +194,17 @@ func (c *Creator) createPartialWithDescriptorParent(worktreeName, note string, t
 
 func (c *Creator) createPartialWithDescriptorParentAndLineage(worktreeName, note string, tags []string, paths []string, parentOverride model.SnapshotID, overrideParent bool, validateSaveEvidence bool, lineageFn descriptorLineageFunc) (*model.Descriptor, error) {
 	c.lastTransfer = nil
+	c.lastProfile = nil
+	profile := saveprofile.New(c.engineType)
 
 	// Step 1: Validate worktree exists
 	wtMgr := worktree.NewManager(c.repoRoot)
-	cfg, err := wtMgr.Get(worktreeName)
-	if err != nil {
+	var cfg *model.WorktreeConfig
+	if err := profile.Step("workspace_load", func() error {
+		var err error
+		cfg, err = wtMgr.Get(worktreeName)
+		return err
+	}); err != nil {
 		return nil, fmt.Errorf("get worktree: %w", err)
 	}
 	if overrideParent {
@@ -212,15 +227,23 @@ func (c *Creator) createPartialWithDescriptorParentAndLineage(worktreeName, note
 		return nil, err
 	}
 
-	boundary, err := repo.WorktreeManagedPayloadBoundary(c.repoRoot, worktreeName)
-	if err != nil {
+	var boundary repo.WorktreePayloadBoundary
+	if err := profile.Step("managed_content_boundary_resolve", func() error {
+		var err error
+		boundary, err = repo.WorktreeManagedPayloadBoundary(c.repoRoot, worktreeName)
+		return err
+	}); err != nil {
 		return nil, fmt.Errorf("worktree payload path: %w", err)
 	}
 	if err := snapshotpayload.CheckReservedWorkspacePayloadRoot(boundary.Root); err != nil {
 		return nil, err
 	}
-	reconciledPathSources, err := workspacepath.ReconcilePathSources(c.repoRoot, boundary, cfg.PathSources)
-	if err != nil {
+	var reconciledPathSources model.PathSources
+	if err := profile.Step("path_source_reconcile", func() error {
+		var err error
+		reconciledPathSources, err = workspacepath.ReconcilePathSources(c.repoRoot, boundary, cfg.PathSources)
+		return err
+	}); err != nil {
 		return nil, fmt.Errorf("reconcile restored paths: %w", err)
 	}
 	cfg.PathSources = reconciledPathSources
@@ -228,20 +251,30 @@ func (c *Creator) createPartialWithDescriptorParentAndLineage(worktreeName, note
 	if overrideParent {
 		descriptorCfg.HeadSnapshotID = parentOverride
 	}
-	if err := c.auditLogger.EnsureAppendable(); err != nil {
+	if err := profile.Step("audit_appendability_precheck", func() error {
+		return c.auditLogger.EnsureAppendable()
+	}); err != nil {
 		return nil, fmt.Errorf("audit log not appendable: %w", err)
 	}
 	var saveEvidence model.HashValue
 	if validateSaveEvidence && len(partialPaths) == 0 {
-		saveEvidence, err = computeSaveWorkspaceEvidence(boundary)
+		start := time.Now()
+		var stats integrity.PayloadRootHashStats
+		var err error
+		saveEvidence, stats, err = computeSaveWorkspaceEvidenceWithStats(boundary)
+		profile.AddPhase("workspace_evidence_pre_hash", time.Since(start), payloadHashStatsCounts(stats))
 		if err != nil {
 			return nil, fmt.Errorf("read workspace before saving: %w", err)
 		}
 	}
 
 	// Step 3: Create intent record (for crash recovery)
-	intentPath, err := c.writeCreateIntent(snapshotID, worktreeName)
-	if err != nil {
+	var intentPath string
+	if err := profile.Step("create_intent", func() error {
+		var err error
+		intentPath, err = c.writeCreateIntent(snapshotID, worktreeName)
+		return err
+	}); err != nil {
 		return nil, err
 	}
 
@@ -257,23 +290,29 @@ func (c *Creator) createPartialWithDescriptorParentAndLineage(worktreeName, note
 		transferIntent = &intent
 	}
 
-	desc, stagedTransfer, err := c.stageSnapshot(&descriptorCfg, boundary, publishPaths, snapshotID, worktreeName, note, tags, partialPaths, lineage, saveEvidence, transferIntent)
+	desc, stagedTransfer, err := c.stageSnapshot(&descriptorCfg, boundary, publishPaths, snapshotID, worktreeName, note, tags, partialPaths, lineage, saveEvidence, transferIntent, profile)
 	if err != nil {
 		return nil, cleanupIntentAfterDefiniteFailure(intentPath, err)
 	}
 
 	// Step 12: Write descriptor atomically before publishing the READY payload.
-	if err := c.publishStagedSnapshot(publishPaths, desc); err != nil {
+	if err := profile.Step("publish_save_point", func() error {
+		return c.publishStagedSnapshot(publishPaths, desc)
+	}); err != nil {
 		return nil, cleanupIntentAfterDefiniteFailure(intentPath, err)
 	}
 
 	// Step 14: Recheck audit appendability before the save point enters history.
-	if err := c.ensureAuditAppendableBeforeHistoryUpdate(publishPaths, desc); err != nil {
+	if err := profile.Step("audit_appendability_history_precheck", func() error {
+		return c.ensureAuditAppendableBeforeHistoryUpdate(publishPaths, desc)
+	}); err != nil {
 		return nil, cleanupIntentAfterDefiniteFailure(intentPath, err)
 	}
 
 	// Step 15: Update worktree head and latest
-	if err := c.updateLatestAfterPublish(wtMgr, worktreeName, desc, publishPaths); err != nil {
+	if err := profile.Step("workspace_history_update", func() error {
+		return c.updateLatestAfterPublish(wtMgr, worktreeName, desc, publishPaths)
+	}); err != nil {
 		return nil, cleanupIntentAfterDefiniteFailure(intentPath, err)
 	}
 
@@ -283,13 +322,19 @@ func (c *Creator) createPartialWithDescriptorParentAndLineage(worktreeName, note
 	// Step 17: Write audit log. Once history has changed, a late audit write
 	// failure is reported as a warning so callers never see a failed save that
 	// already entered history.
-	if err := c.appendCreateAudit(worktreeName, snapshotID, note, desc, stagedTransfer, partialPaths); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: saved save point %s but could not write audit log: %v\n", snapshotID, err)
+	appendAuditErr := profile.Step("audit_append", func() error {
+		return c.appendCreateAudit(worktreeName, snapshotID, note, desc, stagedTransfer, partialPaths)
+	})
+	if appendAuditErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: saved save point %s but could not write audit log: %v\n", snapshotID, appendAuditErr)
 	}
 
 	if stagedTransfer != nil {
 		c.lastTransfer = stagedTransfer
 	}
+	saveProfile := profile.Profile(stagedTransfer)
+	saveProfile.ApplyDescriptorFallback(desc)
+	c.lastProfile = &saveProfile
 
 	return desc, nil
 }
@@ -400,12 +445,13 @@ func (c *Creator) stageSnapshot(
 	lineage *model.WorkspaceSaveLineage,
 	saveEvidence model.HashValue,
 	transferIntent *transfer.Intent,
+	profile *saveprofile.Recorder,
 ) (*model.Descriptor, *transfer.Record, error) {
 	cleanupTmp := func() {
 		os.RemoveAll(publishPaths.tmpDir)
 	}
 
-	cloneResult, transferRecord, err := c.cloneSnapshotPayload(boundary, publishPaths.tmpDir, partialPaths, transferIntent)
+	cloneResult, transferRecord, err := c.cloneSnapshotPayload(boundary, publishPaths.tmpDir, partialPaths, transferIntent, profile)
 	if err != nil {
 		cleanupTmp()
 		return nil, nil, err
@@ -418,7 +464,9 @@ func (c *Creator) stageSnapshot(
 	}
 
 	// Step 6: Compute payload root hash before any storage-only compression.
-	payloadHash, err := integrity.ComputePayloadRootHash(publishPaths.tmpDir)
+	start := time.Now()
+	payloadHash, stagedStats, err := integrity.ComputePayloadRootHashWithStats(publishPaths.tmpDir)
+	profile.AddPhase("staged_content_hash", time.Since(start), payloadHashStatsCounts(stagedStats))
 	if err != nil {
 		cleanupTmp()
 		return nil, nil, fmt.Errorf("compute payload hash: %w", err)
@@ -435,32 +483,44 @@ func (c *Creator) stageSnapshot(
 	}
 
 	// Step 8: Compute descriptor checksum
-	checksum, err := integrity.ComputeDescriptorChecksum(desc)
-	if err != nil {
+	var checksum model.HashValue
+	if err := profile.Step("descriptor_checksum", func() error {
+		var err error
+		checksum, err = integrity.ComputeDescriptorChecksum(desc)
+		return err
+	}); err != nil {
 		cleanupTmp()
 		return nil, nil, fmt.Errorf("compute checksum: %w", err)
 	}
 	desc.DescriptorChecksum = checksum
 
 	// Step 9: Write .READY marker in tmp
-	if err := c.writeSnapshotReadyMarker(publishPaths.tmpDir, snapshotID, payloadHash, checksum, desc.Engine); err != nil {
+	if err := profile.Step("ready_marker", func() error {
+		return c.writeSnapshotReadyMarker(publishPaths.tmpDir, snapshotID, payloadHash, checksum, desc.Engine)
+	}); err != nil {
 		cleanupTmp()
 		return nil, nil, err
 	}
 
 	// Step 10: Compress snapshot storage inside the unpublished tmp tree.
-	if err := c.compressSnapshotStorage(publishPaths.tmpDir); err != nil {
+	if err := profile.Step("compression", func() error {
+		return c.compressSnapshotStorage(publishPaths.tmpDir)
+	}); err != nil {
 		cleanupTmp()
 		return nil, nil, err
 	}
 
 	// Step 11: Fsync the final staged tree for durability.
-	if err := fsutil.FsyncTree(publishPaths.tmpDir); err != nil {
+	if err := profile.Step("staged_fsync", func() error {
+		return fsutil.FsyncTree(publishPaths.tmpDir)
+	}); err != nil {
 		cleanupTmp()
 		return nil, nil, fmt.Errorf("fsync snapshot tree: %w", err)
 	}
 	if saveEvidence != "" {
-		currentEvidence, err := computeSaveWorkspaceEvidence(boundary)
+		start := time.Now()
+		currentEvidence, currentStats, err := computeSaveWorkspaceEvidenceWithStats(boundary)
+		profile.AddPhase("workspace_evidence_post_hash", time.Since(start), payloadHashStatsCounts(currentStats))
 		if err != nil {
 			cleanupTmp()
 			return nil, nil, saveEvidenceChangedError()
@@ -474,28 +534,52 @@ func (c *Creator) stageSnapshot(
 	return desc, transferRecord, nil
 }
 
-func computeSaveWorkspaceEvidence(boundary repo.WorktreePayloadBoundary) (model.HashValue, error) {
-	return integrity.ComputePayloadRootHashWithExclusions(boundary.Root, boundary.ExcludesRelativePath)
+func computeSaveWorkspaceEvidenceWithStats(boundary repo.WorktreePayloadBoundary) (model.HashValue, integrity.PayloadRootHashStats, error) {
+	return integrity.ComputePayloadRootHashWithExclusionsAndStats(boundary.Root, boundary.ExcludesRelativePath)
+}
+
+func payloadHashStatsCounts(stats integrity.PayloadRootHashStats) map[string]int64 {
+	return map[string]int64{
+		"entries":     stats.Entries,
+		"files":       stats.Files,
+		"directories": stats.Directories,
+		"symlinks":    stats.Symlinks,
+		"bytes":       stats.Bytes,
+	}
 }
 
 func saveEvidenceChangedError() error {
 	return errors.New("workspace files changed while saving. No save point was created. Run jvs save again.")
 }
 
-func (c *Creator) cloneSnapshotPayload(boundary repo.WorktreePayloadBoundary, snapshotTmpDir string, partialPaths []string, intent *transfer.Intent) (*engine.CloneResult, *transfer.Record, error) {
+func (c *Creator) cloneSnapshotPayload(boundary repo.WorktreePayloadBoundary, snapshotTmpDir string, partialPaths []string, intent *transfer.Intent, profile *saveprofile.Recorder) (*engine.CloneResult, *transfer.Record, error) {
 	if intent == nil {
-		result, err := c.cloneSnapshotPayloadRuntime(boundary, snapshotTmpDir, partialPaths)
+		var result *engine.CloneResult
+		err := profile.Step("content_clone", func() error {
+			var err error
+			result, err = c.cloneSnapshotPayloadRuntime(boundary, snapshotTmpDir, partialPaths)
+			return err
+		})
 		return result, nil, err
 	}
 
-	plan, err := transfer.PlanIntent(c.transferPlanner, *intent)
-	if err != nil {
+	var plan *engine.TransferPlan
+	if err := profile.Step("transfer_plan", func() error {
+		var err error
+		plan, err = transfer.PlanIntent(c.transferPlanner, *intent)
+		return err
+	}); err != nil {
 		return nil, nil, fmt.Errorf("plan transfer: %w", err)
 	}
 
 	originalEngine := c.engine
 	c.engine = engine.NewEngine(plan.TransferEngine)
-	result, err := c.cloneSnapshotPayloadRuntime(boundary, snapshotTmpDir, partialPaths)
+	var result *engine.CloneResult
+	err := profile.Step("content_clone", func() error {
+		var err error
+		result, err = c.cloneSnapshotPayloadRuntime(boundary, snapshotTmpDir, partialPaths)
+		return err
+	})
 	c.engine = originalEngine
 	if err != nil {
 		return nil, nil, err

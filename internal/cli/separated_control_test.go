@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentsmith-project/jvs/internal/capacitygate"
 	"github.com/agentsmith-project/jvs/internal/engine"
 	"github.com/agentsmith-project/jvs/internal/recovery"
 	jvsrepo "github.com/agentsmith-project/jvs/internal/repo"
@@ -177,6 +178,95 @@ func TestSeparatedControlInitAdoptsExistingNonEmptyFolderAndCanSave(t *testing.T
 	assert.Equal(t, false, statusData["unsaved_changes"])
 	assert.Equal(t, "matches_save_point", statusData["files_state"])
 	assert.Equal(t, savePointID, statusData["newest_save_point"])
+}
+
+func TestSeparatedSaveJSONProfileDoesNotLeakPrivatePaths(t *testing.T) {
+	t.Setenv("JVS_SNAPSHOT_ENGINE", string(model.EngineCopy))
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control-root-secret")
+	payloadRoot := filepath.Join(base, "payload-root-secret")
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+
+	userFileName := "customer-roadmap-secret.md"
+	userContent := "TOPSECRET_PROFILE_PAYLOAD_CONTENT"
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, userFileName), []byte(userContent), 0644))
+	symlinkTarget := "internal-symlink-target-secret.txt"
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, symlinkTarget), []byte("symlink target content"), 0644))
+	symlinkName := "safe-symlink-alias"
+	if err := os.Symlink(symlinkTarget, filepath.Join(payloadRoot, symlinkName)); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	stdout, err := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"save",
+		"-m", "profile privacy",
+	)
+	require.NoError(t, err, stdout)
+
+	_, data := decodeSeparatedControlDataMap(t, stdout)
+	profile, ok := data["save_profile"].(map[string]any)
+	require.True(t, ok, "save_profile should be an object: %#v", data["save_profile"])
+	assertSeparatedSaveProfilePublicShape(t, profile)
+
+	profileJSON, marshalErr := json.Marshal(profile)
+	require.NoError(t, marshalErr)
+	serialized := string(profileJSON)
+	for _, forbidden := range []string{
+		controlRoot,
+		payloadRoot,
+		filepath.Join(controlRoot, ".jvs", "snapshots"),
+		data["save_point_id"].(string) + ".tmp",
+		userFileName,
+		userContent,
+		symlinkTarget,
+		symlinkName,
+	} {
+		assert.NotContains(t, serialized, forbidden)
+	}
+}
+
+func TestSeparatedSaveRechecksPayloadSymlinkBoundaryAfterCapacity(t *testing.T) {
+	t.Setenv("JVS_SNAPSHOT_ENGINE", string(model.EngineCopy))
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("existing user file\n"), 0644))
+	probeLink := filepath.Join(payloadRoot, "probe-link")
+	if err := os.Symlink(payloadRoot, probeLink); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	require.NoError(t, os.Remove(probeLink))
+
+	meter := &saveBoundaryInjectingCapacityMeter{
+		available: 1 << 40,
+		inject: func() error {
+			return os.Symlink(controlRoot, filepath.Join(payloadRoot, "late-control-link"))
+		},
+	}
+	restore := installCapacityGateHooks(capacitygate.Gate{
+		Meter:             meter,
+		SafetyMarginBytes: 0,
+	})
+	t.Cleanup(restore)
+
+	stdout, stderr, err := executeCommandWithErrorReport(createTestRootCmd(),
+		separatedLifecycleArgs(controlRoot, "save", "-m", "late symlink")...,
+	)
+
+	require.Error(t, err)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	env := decodeContractEnvelope(t, stdout)
+	require.False(t, env.OK, stdout)
+	require.NotNil(t, env.Error)
+	assert.Equal(t, errclass.ErrPathBoundaryEscape.Code, env.Error.Code)
+	assert.Contains(t, env.Error.Message, "payload symlink points into control root")
+	assert.Equal(t, 1, meter.checks)
+	assert.Equal(t, 0, savePointCatalogCount(t, controlRoot))
+	assert.Equal(t, 0, descriptorFileCount(t, controlRoot))
 }
 
 func TestSeparatedControlInitRejectsPayloadSymlinkEscapeBeforeControlData(t *testing.T) {
@@ -1005,6 +1095,122 @@ func captureSeparatedControlJSONOutput(t *testing.T, data any, ctx *jvsrepo.Sepa
 	_, err = io.Copy(&buf, r)
 	require.NoError(t, err)
 	return buf.String()
+}
+
+type saveBoundaryInjectingCapacityMeter struct {
+	available int64
+	checks    int
+	inject    func() error
+}
+
+func (m *saveBoundaryInjectingCapacityMeter) AvailableBytes(string) (int64, error) {
+	m.checks++
+	if m.checks == 1 && m.inject != nil {
+		if err := m.inject(); err != nil {
+			return 0, err
+		}
+	}
+	return m.available, nil
+}
+
+func (m *saveBoundaryInjectingCapacityMeter) DeviceID(string) (string, error) {
+	return "test-fs", nil
+}
+
+func assertSeparatedSaveProfilePublicShape(t *testing.T, profile map[string]any) {
+	t.Helper()
+
+	for key := range profile {
+		assert.Contains(t, separatedSaveProfileTopLevelKeys(), key)
+	}
+	for _, key := range []string{
+		"schema_version",
+		"requested_engine",
+		"effective_engine",
+		"optimized_transfer",
+		"clone_mode",
+		"performance_class",
+		"total_duration_ms",
+		"phase_durations_ms",
+	} {
+		assert.Contains(t, profile, key)
+	}
+	requireJSONNonNegativeNumber(t, profile, "total_duration_ms")
+
+	durations, ok := profile["phase_durations_ms"].(map[string]any)
+	require.True(t, ok, "phase_durations_ms should be an object: %#v", profile["phase_durations_ms"])
+	allowedPhases := separatedSaveProfilePhaseNames()
+	for phase := range durations {
+		assert.Contains(t, allowedPhases, phase)
+		requireJSONNonNegativeNumber(t, durations, phase)
+	}
+
+	counts, ok := profile["phase_counts"].(map[string]any)
+	require.True(t, ok, "phase_counts should be an object: %#v", profile["phase_counts"])
+	allowedCounts := separatedSaveProfileAggregateCountKeys()
+	for phase, rawCounts := range counts {
+		assert.Contains(t, allowedPhases, phase)
+		phaseCounts, ok := rawCounts.(map[string]any)
+		require.True(t, ok, "phase count should be an object: %#v", rawCounts)
+		for key := range phaseCounts {
+			assert.Contains(t, allowedCounts, key)
+			requireJSONNonNegativeNumber(t, phaseCounts, key)
+		}
+	}
+}
+
+func separatedSaveProfileTopLevelKeys() map[string]bool {
+	return map[string]bool{
+		"schema_version":     true,
+		"requested_engine":   true,
+		"effective_engine":   true,
+		"optimized_transfer": true,
+		"clone_mode":         true,
+		"performance_class":  true,
+		"total_duration_ms":  true,
+		"phase_durations_ms": true,
+		"phase_counts":       true,
+	}
+}
+
+func separatedSaveProfilePhaseNames() map[string]bool {
+	return map[string]bool{
+		"separated_boundary_precheck":          true,
+		"mutation_lock":                        true,
+		"recovery_guard":                       true,
+		"capacity_check":                       true,
+		"separated_boundary_final_check":       true,
+		"save_point_create_total":              true,
+		"workspace_load":                       true,
+		"managed_content_boundary_resolve":     true,
+		"path_source_reconcile":                true,
+		"audit_appendability_precheck":         true,
+		"workspace_evidence_pre_hash":          true,
+		"create_intent":                        true,
+		"transfer_plan":                        true,
+		"content_clone":                        true,
+		"staged_content_hash":                  true,
+		"descriptor_checksum":                  true,
+		"ready_marker":                         true,
+		"compression":                          true,
+		"staged_fsync":                         true,
+		"workspace_evidence_post_hash":         true,
+		"publish_save_point":                   true,
+		"audit_appendability_history_precheck": true,
+		"workspace_history_update":             true,
+		"audit_append":                         true,
+		"workspace_dirty_check":                true,
+	}
+}
+
+func separatedSaveProfileAggregateCountKeys() map[string]bool {
+	return map[string]bool{
+		"entries":     true,
+		"files":       true,
+		"directories": true,
+		"symlinks":    true,
+		"bytes":       true,
+	}
 }
 
 func assertExternalControlDataShape(t *testing.T, data map[string]any, controlRoot, folder, workspace string) {

@@ -90,6 +90,60 @@ func TestSaveCommandJSONUsesSavePointSchema(t *testing.T) {
 	assertNoOldSavePointVocabulary(t, publicDataWithoutTransfers(t, data))
 }
 
+func TestSaveCommandJSONIncludesSaveProfile(t *testing.T) {
+	t.Setenv("JVS_SNAPSHOT_ENGINE", string(model.EngineCopy))
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
+
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "save", "-m", "profiled")
+	require.NoError(t, err)
+
+	env, data := decodeFacadeDataMap(t, stdout)
+	require.True(t, env.OK, stdout)
+	profile, ok := data["save_profile"].(map[string]any)
+	require.True(t, ok, "save_profile should be an object: %#v", data["save_profile"])
+	assert.Equal(t, float64(1), profile["schema_version"])
+	assert.Equal(t, "copy", profile["requested_engine"])
+	assert.Equal(t, "copy", profile["effective_engine"])
+	assert.Equal(t, "copy", profile["clone_mode"])
+	assert.Equal(t, false, profile["optimized_transfer"])
+	assert.Contains(t, []any{"normal_copy", "fast_copy"}, profile["performance_class"])
+	requireJSONNonNegativeNumber(t, profile, "total_duration_ms")
+
+	durations, ok := profile["phase_durations_ms"].(map[string]any)
+	require.True(t, ok, "phase_durations_ms should be an object: %#v", profile["phase_durations_ms"])
+	for _, phase := range []string{
+		"capacity_check",
+		"transfer_plan",
+		"content_clone",
+		"workspace_evidence_pre_hash",
+		"staged_content_hash",
+		"staged_fsync",
+		"workspace_evidence_post_hash",
+		"workspace_dirty_check",
+	} {
+		requireJSONNonNegativeNumber(t, durations, phase)
+	}
+
+	counts, ok := profile["phase_counts"].(map[string]any)
+	require.True(t, ok, "phase_counts should be an object: %#v", profile["phase_counts"])
+	preHash, ok := counts["workspace_evidence_pre_hash"].(map[string]any)
+	require.True(t, ok, "workspace_evidence_pre_hash counts should be present: %#v", counts)
+	requireJSONNumberAtLeast(t, preHash, "files", 1)
+	requireJSONNumberAtLeast(t, preHash, "entries", 1)
+	requireJSONNumberAtLeast(t, preHash, "bytes", 2)
+	stagedHash, ok := counts["staged_content_hash"].(map[string]any)
+	require.True(t, ok, "staged_content_hash counts should be present: %#v", counts)
+	requireJSONNumberAtLeast(t, stagedHash, "files", 1)
+	requireJSONNumberAtLeast(t, stagedHash, "entries", 1)
+	requireJSONNumberAtLeast(t, stagedHash, "bytes", 2)
+
+	profileJSON, marshalErr := json.Marshal(profile)
+	require.NoError(t, marshalErr)
+	assert.NotContains(t, string(profileJSON), repoRoot)
+	assertNoOldSavePointVocabulary(t, string(profileJSON))
+}
+
 func TestHistoryCommandHumanOutputUsesSavePointVocabulary(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 
@@ -326,6 +380,20 @@ func assertNoOldSavePointVocabulary(t *testing.T, value string) {
 	for _, word := range []string{"checkpoint", "snapshot", "worktree", "head", "current", "latest", "detached", "fork", "commit"} {
 		assert.NotContains(t, lower, word)
 	}
+}
+
+func requireJSONNonNegativeNumber(t *testing.T, data map[string]any, key string) {
+	t.Helper()
+	value, ok := data[key].(float64)
+	require.True(t, ok, "%s should be a JSON number: %#v", key, data[key])
+	assert.GreaterOrEqual(t, value, float64(0), "%s should be non-negative", key)
+}
+
+func requireJSONNumberAtLeast(t *testing.T, data map[string]any, key string, minimum float64) {
+	t.Helper()
+	value, ok := data[key].(float64)
+	require.True(t, ok, "%s should be a JSON number: %#v", key, data[key])
+	assert.GreaterOrEqual(t, value, minimum, "%s should be >= %v", key, minimum)
 }
 
 func assertNoCheckpointSnapshotWorktreeVocabulary(t *testing.T, value string) {
