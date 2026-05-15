@@ -331,6 +331,56 @@ func TestRestoreDirectRequiresDiscardUnsavedWithoutMutation(t *testing.T) {
 	require.Equal(t, beforeSavePoints, savePointDescriptorFileCount(t, repoRoot))
 }
 
+func TestRestoreDirectRejectsConflictingFlagsAndExtraArgsWithoutMutation(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	firstID, secondID := createTwoSavePoints(t, repoRoot)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("local edit"), 0644))
+	before := captureViewMutationSnapshot(t, repoRoot)
+	beforePlans := restorePlanFileCount(t, repoRoot)
+	beforeSavePoints := savePointDescriptorFileCount(t, repoRoot)
+
+	cases := []struct {
+		name    string
+		args    []string
+		message string
+	}{
+		{
+			name:    "run",
+			args:    []string{"restore", firstID, "--direct", "--run", "restore-plan"},
+			message: "--direct cannot be used with --run",
+		},
+		{
+			name:    "path",
+			args:    []string{"restore", firstID, "--direct", "--path", "app.txt", "--discard-unsaved"},
+			message: "--direct cannot be used with --path",
+		},
+		{
+			name:    "save-first",
+			args:    []string{"restore", firstID, "--direct", "--save-first", "--discard-unsaved"},
+			message: "--direct cannot be used with --save-first",
+		},
+		{
+			name:    "extra args",
+			args:    []string{"restore", firstID, secondID, "--direct", "--discard-unsaved"},
+			message: "restore --direct requires exactly one save point ID",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, err := executeCommand(createTestRootCmd(), tc.args...)
+			require.Error(t, err)
+			require.Empty(t, stdout)
+			assert.Contains(t, err.Error(), tc.message)
+			assert.Contains(t, err.Error(), "No files were changed")
+			assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "local edit")
+			require.Equal(t, beforePlans, restorePlanFileCount(t, repoRoot))
+			require.Equal(t, beforeSavePoints, savePointDescriptorFileCount(t, repoRoot))
+			before.assertUnchanged(t, repoRoot)
+		})
+	}
+}
+
 func TestSeparatedControlRestoreDirectDiscardUnsaved(t *testing.T) {
 	base := setupSeparatedControlCLICWD(t)
 	controlRoot := filepath.Join(base, "control")

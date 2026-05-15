@@ -547,6 +547,32 @@ func TestRestoreWholeRunCapacityFailBeforeWorkspaceMutation(t *testing.T) {
 	before.assertUnchanged(t, repoRoot)
 }
 
+func TestRestoreDirectCapacityFailBeforeWorkspaceMutation(t *testing.T) {
+	repoRoot, firstID, secondID := setupWholeRestoreImpactRepo(t)
+	installFailingCapacityGate(t)
+	useMissingTempDir(t)
+	before := captureViewMutationSnapshot(t, repoRoot)
+
+	stdout, err := executeCommand(createTestRootCmd(), "restore", firstID, "--direct", "--discard-unsaved")
+	require.Error(t, err)
+	require.Empty(t, strings.TrimSpace(stdout))
+	assert.Contains(t, err.Error(), "Not enough free space")
+	assert.Contains(t, err.Error(), "No save point was created.")
+	assert.Contains(t, err.Error(), "History was not changed.")
+	assert.Contains(t, err.Error(), "No files were changed.")
+	assertRestoreOutputOmitsLegacyVocabulary(t, err.Error())
+	assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "v2")
+	assertFileContent(t, filepath.Join(repoRoot, "workspace-only.txt"), "workspace")
+	require.NoFileExists(t, filepath.Join(repoRoot, "only-source.txt"))
+
+	cfg, err := repo.LoadWorktreeConfig(repoRoot, "main")
+	require.NoError(t, err)
+	require.Equal(t, model.SnapshotID(secondID), cfg.HeadSnapshotID)
+	require.Equal(t, model.SnapshotID(secondID), cfg.LatestSnapshotID)
+	require.Empty(t, cfg.PathSources)
+	before.assertUnchanged(t, repoRoot)
+}
+
 func TestRestoreWholeRunCapacityChecksRestorePayloadSiblingFilesystem(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("source"), 0644))

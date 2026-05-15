@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -356,17 +357,18 @@ func runRestoreDirect(ctx *cliDiscoveryContext, target string) error {
 	}
 	result, err := executeRestoreDirect(ctx.Repo.Root, ctx.Workspace, targetID, ctx.Separated)
 	if err != nil {
+		err = restoreRunErrorWithMutationState(err, result, ctx.Separated)
 		return restorePointErrorForSeparated(err, ctx.Separated)
 	}
 	if jsonOutput {
-		return outputJSONWithSeparatedControl(result, ctx.Separated, separatedDoctorStrictNotRun)
+		return outputJSONWithSeparatedControl(result.Whole, ctx.Separated, separatedDoctorStrictNotRun)
 	}
-	printRestoreResult(result)
+	printRestoreResult(result.Whole)
 	return nil
 }
 
-func executeRestoreDirect(repoRoot, workspaceName string, targetID model.SnapshotID, separated *repo.SeparatedContext) (publicRestoreResult, error) {
-	var result publicRestoreResult
+func executeRestoreDirect(repoRoot, workspaceName string, targetID model.SnapshotID, separated *repo.SeparatedContext) (restoreRunResult, error) {
+	result := restoreRunResult{Scope: restoreplan.ScopeWhole}
 	err := repo.WithMutationLock(repoRoot, "restore direct", func() error {
 		if err := enforceSeparatedRecoveryMutationGuard(repoRoot, workspaceName, separated, "restore --direct"); err != nil {
 			return err
@@ -379,20 +381,73 @@ func executeRestoreDirect(repoRoot, workspaceName string, targetID model.Snapsho
 			return activeRecoveryBlocksRestoreError(activeRecovery[0])
 		}
 
-		restorer := restore.NewRestorer(repoRoot, requestedTransferEngine(repoRoot))
-		if err := restorer.RestoreLocked(workspaceName, targetID); err != nil {
-			return err
-		}
-		status, err := publicRestoreStatus(repoRoot, workspaceName, targetID)
+		plan, err := buildDirectRestorePlan(repoRoot, workspaceName, targetID)
 		if err != nil {
 			return err
 		}
-		status.Mode = "direct_restore"
-		status.SourceSavePoint = string(targetID)
-		result = status
-		return nil
+		result.Scope = plan.EffectiveScope()
+		return withActiveOperationSourcePin(repoRoot, plan.SourceSavePoint, "restore direct", func() error {
+			if err := runLoadedRestorePlan(repoRoot, workspaceName, plan, &result, separated); err != nil {
+				return err
+			}
+			result.Whole.Mode = "direct_restore"
+			result.Whole.PlanID = ""
+			return nil
+		})
 	})
 	return result, err
+}
+
+func buildDirectRestorePlan(repoRoot, workspaceName string, targetID model.SnapshotID) (*restoreplan.Plan, error) {
+	discovered, err := repo.Discover(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := repo.LoadWorktreeConfig(repoRoot, workspaceName)
+	if err != nil {
+		return nil, fmt.Errorf("load workspace: %w", err)
+	}
+	folder, err := workspaceFolder(repoRoot, workspaceName)
+	if err != nil {
+		return nil, err
+	}
+	evidence, err := restoreplan.WorkspaceEvidence(repoRoot, workspaceName)
+	if err != nil {
+		return nil, err
+	}
+	expectedNewest := directSnapshotIDPtr(cfg.LatestSnapshotID)
+	return &restoreplan.Plan{
+		SchemaVersion:           restoreplan.SchemaVersion,
+		RepoID:                  discovered.RepoID,
+		CreatedAt:               time.Now().UTC(),
+		Scope:                   restoreplan.ScopeWhole,
+		Folder:                  folder,
+		Workspace:               workspaceName,
+		SourceSavePoint:         targetID,
+		NewestSavePoint:         cloneDirectSnapshotIDPtr(expectedNewest),
+		HistoryHead:             cloneDirectSnapshotIDPtr(expectedNewest),
+		ExpectedNewestSavePoint: cloneDirectSnapshotIDPtr(expectedNewest),
+		ExpectedFolderEvidence:  evidence,
+		Options: restoreplan.Options{
+			DiscardUnsaved: true,
+		},
+	}, nil
+}
+
+func directSnapshotIDPtr(id model.SnapshotID) *model.SnapshotID {
+	if id == "" {
+		return nil
+	}
+	value := id
+	return &value
+}
+
+func cloneDirectSnapshotIDPtr(id *model.SnapshotID) *model.SnapshotID {
+	if id == nil {
+		return nil
+	}
+	value := *id
+	return &value
 }
 
 func runRestoreDiscardPlan(repoRoot, workspaceName, planID string, separated *repo.SeparatedContext) error {

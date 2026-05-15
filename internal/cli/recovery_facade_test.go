@@ -91,6 +91,62 @@ func TestWholeRestoreFailureCreatesRecoveryPlanStatusAndProtectsSource(t *testin
 	assertRecoveryOutputOmitsInternalVocabulary(t, err.Error())
 }
 
+func TestRestoreDirectFailureCreatesRecoveryPlanStatusAndProtectsSource(t *testing.T) {
+	repoRoot, sourceID, _ := setupWholeRecoveryRepo(t)
+	beforePins := documentedPinCount(t, repoRoot)
+
+	restoreHooks := restore.SetHooksForTest(restore.Hooks{
+		UpdateHead: func(*worktree.Manager, string, model.SnapshotID) error {
+			return errors.New("injected update metadata failure")
+		},
+	})
+	t.Cleanup(restoreHooks)
+
+	stdout, err := executeCommand(createTestRootCmd(), "restore", sourceID, "--direct", "--discard-unsaved")
+	require.Error(t, err)
+	require.Empty(t, stdout)
+	assert.Contains(t, err.Error(), "Restore did not finish safely.")
+	assert.Contains(t, err.Error(), "Recovery plan:")
+	assert.Contains(t, err.Error(), "jvs recovery status")
+	assertRecoveryOutputOmitsInternalVocabulary(t, err.Error())
+	recoveryPlanID := recoveryPlanIDFromText(t, err.Error())
+	assert.Equal(t, beforePins, documentedPinCount(t, repoRoot))
+
+	statusOut, err := executeCommand(createTestRootCmd(), "recovery", "status")
+	require.NoError(t, err)
+	assert.Contains(t, statusOut, recoveryPlanID)
+	assert.Contains(t, statusOut, "active")
+	assertRecoveryOutputOmitsInternalVocabulary(t, statusOut)
+
+	jsonOut, err := executeCommand(createTestRootCmd(), "--json", "recovery", "status", recoveryPlanID)
+	require.NoError(t, err)
+	env, data := decodeFacadeDataMap(t, jsonOut)
+	require.True(t, env.OK, jsonOut)
+	assert.Equal(t, "recovery status", env.Command)
+	assert.Equal(t, recoveryPlanID, data["plan_id"])
+	assert.Equal(t, "active", data["status"])
+	assert.Equal(t, "restore", data["operation"])
+	assert.Equal(t, sourceID, data["source_save_point"])
+	assert.Contains(t, data["recommended_next_command"], "jvs recovery")
+	assertRecoveryStatusPlanTransfers(t, data, []string{"restore-run-source-validation", "restore-run-primary"})
+
+	plan, err := recovery.NewManager(repoRoot).Load(recoveryPlanID)
+	require.NoError(t, err)
+	assert.Empty(t, plan.RestorePlanID)
+	assertRecoveryPlanTransfers(t, plan.Transfers, []string{"restore-run-source-validation", "restore-run-primary"})
+
+	gcPlan, err := gc.NewCollector(repoRoot).PlanWithPolicy(model.RetentionPolicy{})
+	require.NoError(t, err)
+	assert.Contains(t, gcPlan.ProtectedSet, model.SnapshotID(sourceID))
+
+	stdout, err = executeCommand(createTestRootCmd(), "restore", sourceID, "--direct", "--discard-unsaved")
+	require.Error(t, err)
+	require.Empty(t, stdout)
+	assert.Contains(t, err.Error(), "active recovery plan")
+	assert.Contains(t, err.Error(), "jvs recovery status")
+	assertRecoveryOutputOmitsInternalVocabulary(t, err.Error())
+}
+
 func TestSeparatedRestoreFailureGuidanceUsesSelectedCommands(t *testing.T) {
 	base := setupSeparatedControlCLICWD(t)
 	controlRoot := filepath.Join(base, "control root")
