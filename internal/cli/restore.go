@@ -25,6 +25,7 @@ var (
 	restoreInteractive    bool
 	restoreDiscardDirty   bool
 	restoreIncludeWorking bool
+	restoreDirect         bool
 	restorePath           string
 	restoreRunPlanID      string
 )
@@ -47,7 +48,8 @@ Examples:
   jvs restore --path src/config.json
   jvs restore 1771589abc --path src/config.json
   jvs restore 1771589abc --save-first
-  jvs restore 1771589abc --discard-unsaved`,
+  jvs restore 1771589abc --discard-unsaved
+  jvs restore 1771589abc --direct --discard-unsaved`,
 	Args: validateRestoreArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, err := resolveWorkspaceScoped()
@@ -55,19 +57,20 @@ Examples:
 			return err
 		}
 
+		if restoreDirectFlagChanged(cmd) {
+			return runRestoreDirect(ctx, args[0])
+		}
+
+		if err := validateAndRefreshSeparatedPayloadBoundary(ctx); err != nil {
+			return restorePointError(err)
+		}
+
 		if restorePathFlagChanged(cmd) {
 			return runRestorePath(cmd, args, ctx)
 		}
 
 		if restoreRunFlagChanged(cmd) {
-			if err := validateAndRefreshSeparatedPayloadBoundary(ctx); err != nil {
-				return restorePointError(err)
-			}
 			return runRestorePlan(ctx.Repo.Root, ctx.Workspace, restoreRunPlanID, ctx.Separated)
-		}
-
-		if err := validateAndRefreshSeparatedPayloadBoundary(ctx); err != nil {
-			return restorePointError(err)
 		}
 		if restoreDiscardDirty && restoreIncludeWorking {
 			return restorePointError(fmt.Errorf("--discard-unsaved and --save-first cannot be used together"))
@@ -142,6 +145,24 @@ var restoreDiscardCmd = &cobra.Command{
 }
 
 func validateRestoreArgs(cmd *cobra.Command, args []string) error {
+	if restoreDirectFlagChanged(cmd) {
+		if restoreRunFlagChanged(cmd) {
+			return fmt.Errorf("--direct cannot be used with --run. No files were changed.")
+		}
+		if restorePathFlagChanged(cmd) {
+			return fmt.Errorf("--direct cannot be used with --path. No files were changed.")
+		}
+		if restoreIncludeWorking {
+			return fmt.Errorf("--direct cannot be used with --save-first. No files were changed.")
+		}
+		if len(args) != 1 {
+			return fmt.Errorf("restore --direct requires exactly one save point ID. No files were changed.")
+		}
+		if !restoreDiscardDirty {
+			return fmt.Errorf("restore --direct requires --discard-unsaved confirmation. No files were changed.")
+		}
+		return nil
+	}
 	if restoreRunFlagChanged(cmd) {
 		if restorePathFlagChanged(cmd) {
 			return fmt.Errorf("--run cannot be used with --path")
@@ -262,6 +283,10 @@ func restoreRunFlagChanged(cmd *cobra.Command) bool {
 	return flag != nil && flag.Changed
 }
 
+func restoreDirectFlagChanged(cmd *cobra.Command) bool {
+	return restoreDirect
+}
+
 func changedRestoreRunBehaviorFlags(cmd *cobra.Command) []string {
 	flags := []struct {
 		name       string
@@ -319,6 +344,55 @@ func runRestorePlan(repoRoot, workspaceName, planID string, separated *repo.Sepa
 		return restorePointErrorForSeparated(err, separated)
 	}
 	return outputRestoreRunResult(result, separated)
+}
+
+func runRestoreDirect(ctx *cliDiscoveryContext, target string) error {
+	if err := validateAndRefreshSeparatedPayloadBoundary(ctx); err != nil {
+		return restorePointError(err)
+	}
+	targetID, err := resolvePublicSavePointID(ctx.Repo.Root, target)
+	if err != nil {
+		return restorePointError(err)
+	}
+	result, err := executeRestoreDirect(ctx.Repo.Root, ctx.Workspace, targetID, ctx.Separated)
+	if err != nil {
+		return restorePointErrorForSeparated(err, ctx.Separated)
+	}
+	if jsonOutput {
+		return outputJSONWithSeparatedControl(result, ctx.Separated, separatedDoctorStrictNotRun)
+	}
+	printRestoreResult(result)
+	return nil
+}
+
+func executeRestoreDirect(repoRoot, workspaceName string, targetID model.SnapshotID, separated *repo.SeparatedContext) (publicRestoreResult, error) {
+	var result publicRestoreResult
+	err := repo.WithMutationLock(repoRoot, "restore direct", func() error {
+		if err := enforceSeparatedRecoveryMutationGuard(repoRoot, workspaceName, separated, "restore --direct"); err != nil {
+			return err
+		}
+		activeRecovery, err := recovery.NewManager(repoRoot).ActiveForWorkspace(workspaceName)
+		if err != nil {
+			return err
+		}
+		if len(activeRecovery) > 0 {
+			return activeRecoveryBlocksRestoreError(activeRecovery[0])
+		}
+
+		restorer := restore.NewRestorer(repoRoot, requestedTransferEngine(repoRoot))
+		if err := restorer.RestoreLocked(workspaceName, targetID); err != nil {
+			return err
+		}
+		status, err := publicRestoreStatus(repoRoot, workspaceName, targetID)
+		if err != nil {
+			return err
+		}
+		status.Mode = "direct_restore"
+		status.SourceSavePoint = string(targetID)
+		result = status
+		return nil
+	})
+	return result, err
 }
 
 func runRestoreDiscardPlan(repoRoot, workspaceName, planID string, separated *repo.SeparatedContext) error {
@@ -1331,6 +1405,7 @@ func init() {
 	restoreCmd.Flags().Lookup("interactive").Hidden = true
 	restoreCmd.Flags().BoolVar(&restoreDiscardDirty, "discard-unsaved", false, "discard unsaved folder changes for this operation")
 	restoreCmd.Flags().BoolVar(&restoreIncludeWorking, "save-first", false, "create a save point for unsaved changes before restore")
+	restoreCmd.Flags().BoolVar(&restoreDirect, "direct", false, "restore immediately; requires --discard-unsaved and skips preview plans")
 	restoreCmd.Flags().StringVar(&restorePath, "path", "", "restore only this workspace-relative path")
 	restoreCmd.Flags().StringVar(&restoreRunPlanID, "run", "", "execute a restore preview plan")
 	restoreCmd.AddCommand(restoreDiscardCmd)

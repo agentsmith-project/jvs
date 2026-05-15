@@ -765,6 +765,7 @@ func createTestRootCmd() *cobra.Command {
 	restoreInteractive = false
 	restoreDiscardDirty = false
 	restoreIncludeWorking = false
+	restoreDirect = false
 	restorePath = ""
 	restoreRunPlanID = ""
 	cleanupPlanID = ""

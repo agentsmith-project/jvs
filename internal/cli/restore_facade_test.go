@@ -282,6 +282,114 @@ func TestRestoreDiscardUnsavedRestoresWithoutLegacyFields(t *testing.T) {
 	require.Equal(t, "v1", string(content))
 }
 
+func TestRestoreDirectDiscardUnsavedRestoresWithoutPlansOrSafetySave(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	firstID, secondID := createTwoSavePoints(t, repoRoot)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("local edit"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "new.txt"), []byte("discard me"), 0644))
+	plansBefore := restorePlanFileCount(t, repoRoot)
+	savePointsBefore := savePointDescriptorFileCount(t, repoRoot)
+
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "restore", firstID, "--direct", "--discard-unsaved")
+	require.NoError(t, err, stdout)
+
+	env, data := decodeFacadeDataMap(t, stdout)
+	require.True(t, env.OK, stdout)
+	require.Equal(t, "restore", env.Command)
+	require.Equal(t, "direct_restore", data["mode"])
+	require.Equal(t, "main", data["workspace"])
+	require.Equal(t, firstID, data["source_save_point"])
+	require.Equal(t, firstID, data["restored_save_point"])
+	require.Equal(t, false, data["history_changed"])
+	require.Equal(t, true, data["files_changed"])
+	require.Equal(t, false, data["unsaved_changes"])
+	require.NotContains(t, data, "plan_id")
+	require.NotContains(t, data, "run_command")
+	assertRestoreJSONOmitsLegacyFields(t, data)
+
+	assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "v1")
+	assert.NoFileExists(t, filepath.Join(repoRoot, "new.txt"))
+	require.Equal(t, plansBefore, restorePlanFileCount(t, repoRoot), "direct restore must not create restore plans")
+	require.Equal(t, savePointsBefore, savePointDescriptorFileCount(t, repoRoot), "direct restore must not create a safety save point")
+	assert.Equal(t, secondID, data["newest_save_point"])
+}
+
+func TestRestoreDirectRequiresDiscardUnsavedWithoutMutation(t *testing.T) {
+	repoRoot := setupAdoptedSaveFacadeRepo(t)
+	firstID, _ := createTwoSavePoints(t, repoRoot)
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("local edit"), 0644))
+	beforePlans := restorePlanFileCount(t, repoRoot)
+	beforeSavePoints := savePointDescriptorFileCount(t, repoRoot)
+
+	stdout, err := executeCommand(createTestRootCmd(), "--json", "restore", firstID, "--direct")
+	require.Error(t, err)
+	require.Empty(t, stdout)
+	assert.Contains(t, err.Error(), "--discard-unsaved")
+	assert.Contains(t, err.Error(), "No files were changed")
+	assertFileContent(t, filepath.Join(repoRoot, "app.txt"), "local edit")
+	require.Equal(t, beforePlans, restorePlanFileCount(t, repoRoot))
+	require.Equal(t, beforeSavePoints, savePointDescriptorFileCount(t, repoRoot))
+}
+
+func TestSeparatedControlRestoreDirectDiscardUnsaved(t *testing.T) {
+	base := setupSeparatedControlCLICWD(t)
+	controlRoot := filepath.Join(base, "control")
+	payloadRoot := filepath.Join(base, "payload")
+	initSeparatedControlForCLITest(t, controlRoot, payloadRoot, "main")
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("v1\n"), 0644))
+	firstOut, err := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"save", "-m", "first",
+	)
+	require.NoError(t, err, firstOut)
+	_, firstData := decodeSeparatedControlDataMap(t, firstOut)
+	firstID := firstData["save_point_id"].(string)
+
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("v2\n"), 0644))
+	secondOut, err := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"save", "-m", "second",
+	)
+	require.NoError(t, err, secondOut)
+	_, secondData := decodeSeparatedControlDataMap(t, secondOut)
+	secondID := secondData["save_point_id"].(string)
+	require.NotEqual(t, firstID, secondID)
+
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("local edit\n"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "new.txt"), []byte("discard me\n"), 0644))
+	plansBefore := restorePlanFileCount(t, controlRoot)
+	savePointsBefore := savePointDescriptorFileCount(t, controlRoot)
+
+	stdout, err := executeCommand(createTestRootCmd(),
+		"--json",
+		"--control-root", controlRoot,
+		"--workspace", "main",
+		"restore", firstID, "--direct", "--discard-unsaved",
+	)
+	require.NoError(t, err, stdout)
+
+	_, data := decodeSeparatedControlDataMap(t, stdout)
+	assertSeparatedControlOpsData(t, data, controlRoot, payloadRoot, "main")
+	require.Equal(t, "direct_restore", data["mode"])
+	require.Equal(t, firstID, data["source_save_point"])
+	require.Equal(t, firstID, data["restored_save_point"])
+	require.Equal(t, false, data["history_changed"])
+	require.Equal(t, true, data["files_changed"])
+	require.Equal(t, false, data["unsaved_changes"])
+	require.NotContains(t, data, "plan_id")
+	require.NotContains(t, data, "run_command")
+
+	assert.Equal(t, "v1\n", separatedOpsReadFile(t, filepath.Join(payloadRoot, "app.txt")))
+	assert.NoFileExists(t, filepath.Join(payloadRoot, "new.txt"))
+	require.Equal(t, plansBefore, restorePlanFileCount(t, controlRoot))
+	require.Equal(t, savePointsBefore, savePointDescriptorFileCount(t, controlRoot))
+	assert.Equal(t, secondID, data["newest_save_point"])
+}
+
 func TestRestoreSaveFirstUsesSavePointVocabulary(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
@@ -341,6 +449,19 @@ func commonSavePointPrefix(first, second string) string {
 		i++
 	}
 	return first[:i]
+}
+
+func savePointDescriptorFileCount(t *testing.T, repoRoot string) int {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(repoRoot, ".jvs", "descriptors"))
+	require.NoError(t, err)
+	count := 0
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
+			count++
+		}
+	}
+	return count
 }
 
 func assertRestoreOutputOmitsLegacyVocabulary(t *testing.T, value string) {
