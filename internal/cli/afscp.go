@@ -12,9 +12,11 @@ import (
 )
 
 var (
-	afscpHome      string
-	afscpMessage   string
-	afscpSavePoint string
+	afscpHome              string
+	afscpMessage           string
+	afscpSavePoint         string
+	afscpTargetControlRoot string
+	afscpTargetHome        string
 )
 
 var afscpCmd = &cobra.Command{
@@ -58,6 +60,19 @@ var afscpRestoreCmd = &cobra.Command{
 		runAFSCPDirect(cmd.Context(), afscp.CommandRestore, args, func(ctx context.Context, request afscp.Request) (any, error) {
 			request.SavePointID = afscpSavePoint
 			return afscp.NewService().Restore(ctx, request)
+		})
+	},
+}
+
+var afscpCloneCmd = &cobra.Command{
+	Use:    "clone",
+	Short:  "Clone an internal direct save point into a new target",
+	Hidden: true,
+	Run: func(cmd *cobra.Command, args []string) {
+		runAFSCPDirect(cmd.Context(), afscp.CommandClone, args, func(ctx context.Context, request afscp.Request) (any, error) {
+			request.SavePointID = afscpSavePoint
+			request.TargetSelector = afscp.Selector{ControlRoot: afscpTargetControlRoot, Home: afscpTargetHome}
+			return afscp.NewService().Clone(ctx, request)
 		})
 	},
 }
@@ -124,10 +139,14 @@ func init() {
 	afscpCmd.PersistentFlags().StringVar(&afscpHome, "home", "", "payload HOME root for the internal direct contract")
 	afscpSaveCmd.Flags().StringVar(&afscpMessage, "message", "", "save point message")
 	afscpRestoreCmd.Flags().StringVar(&afscpSavePoint, "save-point", "", "save point id to restore")
+	afscpCloneCmd.Flags().StringVar(&afscpSavePoint, "save-point", "", "save point id to clone; defaults to history head")
+	afscpCloneCmd.Flags().StringVar(&afscpTargetControlRoot, "target-control-root", "", "target external control data root")
+	afscpCloneCmd.Flags().StringVar(&afscpTargetHome, "target-home", "", "target payload HOME root")
 
 	afscpCmd.AddCommand(afscpSaveCmd)
 	afscpCmd.AddCommand(afscpListCmd)
 	afscpCmd.AddCommand(afscpRestoreCmd)
+	afscpCmd.AddCommand(afscpCloneCmd)
 	afscpCmd.AddCommand(afscpStatusCmd)
 	afscpCmd.AddCommand(afscpDoctorCmd)
 	rootCmd.AddCommand(afscpCmd)

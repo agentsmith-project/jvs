@@ -66,6 +66,27 @@ func ValidateMetadataSelector(selector Selector) (ResolvedSelector, error) {
 	}, nil
 }
 
+func ValidateNewTargetSelector(source ResolvedSelector, selector Selector) (ResolvedSelector, error) {
+	controlRoot, home, err := cleanSelectorPair(selector)
+	if err != nil {
+		return ResolvedSelector{}, err
+	}
+	if pathsOverlap(controlRoot, home) ||
+		pathsOverlap(source.ControlRoot, controlRoot) ||
+		pathsOverlap(source.ControlRoot, home) ||
+		pathsOverlap(source.Home, controlRoot) ||
+		pathsOverlap(source.Home, home) {
+		return ResolvedSelector{}, NewError(ErrorCodeInvalidArgument, "source and target roots must be disjoint", false)
+	}
+	if err := requireMissingTarget(controlRoot, "target control root"); err != nil {
+		return ResolvedSelector{}, err
+	}
+	if err := requireMissingTarget(home, "target home"); err != nil {
+		return ResolvedSelector{}, err
+	}
+	return ResolvedSelector{ControlRoot: controlRoot, Home: home}, nil
+}
+
 func cleanSelectorPair(selector Selector) (string, string, error) {
 	controlRoot := strings.TrimSpace(selector.ControlRoot)
 	home := strings.TrimSpace(selector.Home)
@@ -128,6 +149,15 @@ func homeContainsJVSMetadata(home string) bool {
 func validateHomeMetadataBoundary(home string) error {
 	if homeContainsJVSMetadata(home) {
 		return NewError(ErrorCodeInvalidArgument, "home must not contain JVS metadata", false)
+	}
+	return nil
+}
+
+func requireMissingTarget(path, label string) error {
+	if _, err := os.Lstat(path); err == nil {
+		return NewError(ErrorCodeInvalidArgument, label+" must be missing", false)
+	} else if !os.IsNotExist(err) {
+		return NewError(ErrorCodeInvalidArgument, label+" cannot be inspected", false)
 	}
 	return nil
 }

@@ -396,6 +396,62 @@ func TestAFSCPDirectRestoreReturnsJSONAndUpdatesHistoryHead(t *testing.T) {
 	assert.Equal(t, savePointID, listData["history_head"])
 }
 
+func TestAFSCPDirectClonePublishesTargetJSON(t *testing.T) {
+	isolateContractCLIState(t)
+	base := t.TempDir()
+	controlRoot := filepath.Join(base, "control")
+	home := filepath.Join(base, "home")
+	targetControl := filepath.Join(base, "target-control")
+	targetHome := filepath.Join(base, "target-home")
+	require.NoError(t, os.Mkdir(controlRoot, 0755))
+	require.NoError(t, os.Mkdir(home, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(home, "profile.txt"), []byte("saved"), 0644))
+	installAFSCPFakeJuiceFSClone(t)
+
+	stdout, stderr, exitCode := runContractSubprocess(
+		t,
+		base,
+		"afscp",
+		"--control-root", controlRoot,
+		"--home", home,
+		"save",
+		"--message", "baseline",
+		"--json",
+	)
+	require.Equal(t, 0, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	saveEnv := decodeAFSCPDirectEnvelope(t, stdout)
+	var saveData map[string]any
+	require.NoError(t, json.Unmarshal(saveEnv.Data, &saveData), stdout)
+	savePointID, ok := saveData["save_point_id"].(string)
+	require.True(t, ok, "save response should expose save_point_id: %#v", saveData)
+
+	stdout, stderr, exitCode = runContractSubprocess(
+		t,
+		base,
+		"afscp",
+		"--control-root", controlRoot,
+		"--home", home,
+		"clone",
+		"--save-point", savePointID,
+		"--target-control-root", targetControl,
+		"--target-home", targetHome,
+		"--json",
+	)
+	require.Equal(t, 0, exitCode, "stdout=%s stderr=%s", stdout, stderr)
+	assert.Empty(t, strings.TrimSpace(stderr))
+	assertAFSCPDirectEnvelopeShape(t, stdout, "clone", []string{"source_repo_id", "target_repo_id", "save_point_id", "save_points_copied_count"})
+	cloneEnv := decodeAFSCPDirectEnvelope(t, stdout)
+	var cloneData map[string]any
+	require.NoError(t, json.Unmarshal(cloneEnv.Data, &cloneData), stdout)
+	assert.NotEmpty(t, cloneData["target_repo_id"])
+	assert.Equal(t, savePointID, cloneData["save_point_id"])
+	assert.Equal(t, float64(1), cloneData["save_points_copied_count"])
+	assertAFSCPDirectJSONDoesNotLeakSelector(t, stdout, controlRoot, home)
+	assertAFSCPDirectJSONDoesNotLeakSelector(t, stdout, targetControl, targetHome)
+	assert.Equal(t, "saved", string(mustReadAFSCPTestFile(t, filepath.Join(targetHome, "profile.txt"))))
+}
+
 func TestAFSCPDirectGoldenJSONShapesOmitPathsRawCommandAndLegacyFields(t *testing.T) {
 	isolateContractCLIState(t)
 	base := t.TempDir()
@@ -477,6 +533,8 @@ func afscpDirectCommandArgs(command, controlRoot, home string, omitJSON bool) []
 		args = append(args, "--message", "baseline")
 	case "restore":
 		args = append(args, "--save-point", "missing-save-point")
+	case "clone":
+		args = append(args, "--target-control-root", filepath.Join(filepath.Dir(controlRoot), "target-control"), "--target-home", filepath.Join(filepath.Dir(home), "target-home"))
 	}
 	if !omitJSON {
 		args = append(args, "--json")

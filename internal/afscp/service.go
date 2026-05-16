@@ -6,9 +6,10 @@ import (
 )
 
 type Request struct {
-	Selector    Selector
-	Message     string
-	SavePointID string
+	Selector       Selector
+	TargetSelector Selector
+	Message        string
+	SavePointID    string
 }
 
 type SavePoint struct {
@@ -29,6 +30,13 @@ type RestoreResult struct {
 	RestoredSavePointID string  `json:"restored_save_point_id"`
 	PreviousHead        *string `json:"previous_head"`
 	NewHead             string  `json:"new_head"`
+}
+
+type CloneResult struct {
+	SourceRepoID          string `json:"source_repo_id"`
+	TargetRepoID          string `json:"target_repo_id"`
+	SavePointID           string `json:"save_point_id"`
+	SavePointsCopiedCount int    `json:"save_points_copied_count"`
 }
 
 type ListResult struct {
@@ -108,6 +116,28 @@ func (s *Service) Restore(ctx context.Context, request Request) (any, error) {
 		return nil, NewError(ErrorCodeInvalidArgument, "restore requires a valid --save-point", false)
 	}
 	result, err := restoreDirect(ctx, selector, request.SavePointID)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *Service) Clone(ctx context.Context, request Request) (any, error) {
+	if err := validateContext(ctx); err != nil {
+		return nil, err
+	}
+	selector, err := ValidateSelector(request.Selector)
+	if err != nil {
+		return nil, err
+	}
+	target, err := ValidateNewTargetSelector(selector, request.TargetSelector)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(request.SavePointID) != "" && !validSavePointID(request.SavePointID) {
+		return nil, NewError(ErrorCodeInvalidArgument, "clone requires a valid --save-point when provided", false)
+	}
+	result, err := cloneDirect(ctx, selector, target, strings.TrimSpace(request.SavePointID))
 	if err != nil {
 		return nil, err
 	}

@@ -128,6 +128,69 @@ func InitSeparatedControl(controlRoot, payloadRoot, workspaceName string) (*Repo
 	}, nil
 }
 
+// InitAFSCPDirectControl initializes the minimal external control metadata used
+// by the internal AFSCP direct contract. Unlike the public separated-control
+// init path, it does not walk the payload tree: direct AFSCP save points own
+// payload safety, and task HOME snapshots may intentionally contain symlinks.
+func InitAFSCPDirectControl(controlRoot, payloadRoot, workspaceName string) (*Repo, error) {
+	if err := pathutil.ValidateName(workspaceName); err != nil {
+		return nil, err
+	}
+	if workspaceName != "main" {
+		return nil, errclass.ErrWorkspaceMismatch.WithMessage("direct control init only supports workspace \"main\"")
+	}
+	roots, err := validateSeparatedInitRoots(controlRoot, payloadRoot)
+	if err != nil {
+		return nil, err
+	}
+	if err := rejectPayloadLocatorPresent(roots.payloadPath); err != nil {
+		return nil, err
+	}
+	controlExisted, err := validateSeparatedInitTarget(roots.controlPath, "control root")
+	if err != nil {
+		return nil, err
+	}
+	payloadExisted, err := validateSeparatedPayloadInitTarget(roots.payloadPath, roots.payloadPhysical)
+	if err != nil {
+		return nil, err
+	}
+	if !payloadExisted {
+		return nil, errclass.ErrWorkspaceMissing.WithMessagef("payload root does not exist: %s", roots.payloadPath)
+	}
+
+	controlCreated := !controlExisted
+	repoID, err := createControlPlane(roots.controlPath, RepoModeSeparatedControl)
+	if err != nil {
+		rollbackSeparatedInit(roots.controlPath, controlCreated, roots.payloadPath, false)
+		return nil, permissionOrWrappedErr("create control plane", err)
+	}
+
+	cfg := &model.WorktreeConfig{
+		Name:      workspaceName,
+		RealPath:  roots.payloadPath,
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := WriteWorktreeConfig(roots.controlPath, workspaceName, cfg); err != nil {
+		rollbackSeparatedInit(roots.controlPath, controlCreated, roots.payloadPath, false)
+		return nil, errclass.ErrControlMalformed.WithMessagef("write workspace registry: %v", err)
+	}
+	if err := fsutil.FsyncDir(roots.payloadPath); err != nil {
+		rollbackSeparatedInit(roots.controlPath, controlCreated, roots.payloadPath, false)
+		return nil, permissionOrWrappedErr("fsync payload root", err)
+	}
+	if err := fsutil.FsyncDir(roots.controlPath); err != nil {
+		rollbackSeparatedInit(roots.controlPath, controlCreated, roots.payloadPath, false)
+		return nil, permissionOrWrappedErr("fsync control root", err)
+	}
+
+	return &Repo{
+		Root:          roots.controlPath,
+		FormatVersion: FormatVersion,
+		RepoID:        repoID,
+		Mode:          RepoModeSeparatedControl,
+	}, nil
+}
+
 // OpenControlRoot opens exactly the supplied control root. It does not walk cwd
 // and does not read workspace locators.
 func OpenControlRoot(controlRoot string) (*Repo, error) {

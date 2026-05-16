@@ -13,6 +13,7 @@ const (
 	CommandSave    Command = "save"
 	CommandList    Command = "list"
 	CommandRestore Command = "restore"
+	CommandClone   Command = "clone"
 	CommandStatus  Command = "status"
 	CommandDoctor  Command = "doctor"
 )
