@@ -18,6 +18,7 @@ jvs afscp --control-root <control_root_path> --home <payload_home_path> save --m
 jvs afscp save --control-root <control_root_path> --home <payload_home_path> --message <message> --json
 jvs afscp --control-root <control_root_path> --home <payload_home_path> list --json
 jvs afscp --control-root <control_root_path> --home <payload_home_path> restore --save-point <save_point_id> --json
+jvs afscp --control-root <control_root_path> --home <payload_home_path> clone --target-control-root <target_control_root_path> --target-home <target_payload_home_path> [--save-point <save_point_id>] --json
 jvs afscp --control-root <control_root_path> --home <payload_home_path> status --json
 jvs afscp --control-root <control_root_path> --home <payload_home_path> doctor --json
 ```
@@ -55,7 +56,7 @@ Every direct response is one JSON object:
 Required fields:
 
 - `contract`: always `jvs.afscp.direct.v1`.
-- `command`: one of `save`, `list`, `restore`, `status`, `doctor`.
+- `command`: one of `save`, `list`, `restore`, `clone`, `status`, `doctor`.
 - `ok`: boolean success marker.
 - `status`: operation status enum.
 - `data`: command result object on success, `null` on failure.
@@ -81,6 +82,7 @@ The direct schema must not include legacy active-contract fields:
 - `created_at`: RFC3339 timestamp.
 - `message`: operator message.
 - `history_head`: save point id that is now the head.
+- `clone_evidence`: array with one operator-safe JuiceFS clone record.
 
 `list` success data:
 
@@ -94,6 +96,20 @@ The direct schema must not include legacy active-contract fields:
 - `restored_save_point_id`: restored save point id.
 - `previous_head`: previous history head or `null`.
 - `new_head`: new history head or `null`.
+- `clone_evidence`: array with one operator-safe JuiceFS clone record.
+
+`clone` success data:
+
+- `source_repo_id`: source control-root repository id string.
+- `target_repo_id`: target control-root repository id string.
+- `save_point_id`: cloned save point id.
+- `save_points_copied_count`: number of save points copied into target metadata.
+- `clone_evidence`: array with operator-safe JuiceFS clone records for target
+  HOME materialization and target snapshot materialization.
+
+Each `clone_evidence` item includes `operation`, `phase`, `engine`, `status`,
+`started_at`, `finished_at`, and `duration_ms`. It must not include source or
+destination paths, HOME, control-root, raw argv, or JuiceFS internal paths.
 
 `status` success data:
 
@@ -190,8 +206,9 @@ before mutating direct metadata. Lock contention returns `JVS_LOCKED` / exit
 payload to
 `<control-root>/afscp-direct-v1/snapshots/<save_point_id>/payload`, then writes
 checksummed descriptor, checksummed ready marker, history, and an idle journal
-outside the payload. If `juicefs` is unavailable or clone fails, direct save
-returns `JVS_CLONE_UNAVAILABLE` or `JVS_CLONE_FAILED`, records a
+outside the payload. The success response includes operator-safe clone start,
+finish, and duration evidence. If `juicefs` is unavailable or clone fails,
+direct save returns `JVS_CLONE_UNAVAILABLE` or `JVS_CLONE_FAILED`, records a
 `save_failed` journal, and does not fall back to copy.
 
 `list` reads history plus descriptors and returns `history_head` and
@@ -204,28 +221,37 @@ save/restore paths.
 
 `restore` acquires the same direct mutation lock before mutating metadata or
 HOME contents. It uses only strict
-`juicefs clone <snapshot-payload> <home-tmp-payload>` into a randomly named
-restore staging directory inside HOME. It validates binding, history,
+`juicefs clone <snapshot-payload> <sibling-tmp-home>` into a randomly named
+restore staging directory beside HOME. It validates binding, history,
 checksummed descriptor, checksummed ready marker, snapshot payload, and direct
 journal state before HOME mutation. A stale non-idle journal returns
-`JVS_JOURNAL_RECOVERY_REQUIRED`.
+`JVS_JOURNAL_RECOVERY_REQUIRED`. The success response includes operator-safe
+clone start, finish, and duration evidence.
 
 Restore updates `history_head`/`new_head` to the restored save point after the
-replacement succeeds. Before entering the replace boundary, restore renames the
-current HOME top-level entries into
-`<control-root>/afscp-direct-v1/pending-cleanups/<cleanup_id>/payload`. This
-backup location is outside HOME, so later saves do not capture old HOME content
-as payload. Failures during this backup phase are rolled back by renaming
-backed-up entries into HOME again, cleaning staging, and marking the journal
-idle. After the replace boundary starts, failures leave the backup / staging
-journal referenced and return `JVS_JOURNAL_RECOVERY_REQUIRED` so an
-operator-safe recovery path can inspect or repair state.
+replacement succeeds. Restore publishes whole HOME with directory-level renames:
+current HOME is renamed to a sibling backup, then the cloned sibling staging
+directory is renamed to the HOME path. This keeps restore constant with respect
+to HOME top-level file count and avoids cross-mount per-entry moves between
+HOME and the control root. Failures before the cloned HOME is published are
+rolled back with a directory-level sibling rename when possible, cleaning
+staging and marking the journal idle. After the replace boundary starts,
+failures leave the backup / staging journal referenced and return
+`JVS_JOURNAL_RECOVERY_REQUIRED` so an operator-safe recovery path can inspect or
+repair state.
 
-On restore success, JVS does not recursively delete the old HOME backup in the
-save / restore hot path. The pending cleanup remains metadata-referenced under
-the control root. `status` reports `recovery=cleanup_pending`, and `doctor`
-reports a warning finding without exposing the internal cleanup path.
+On restore success, JVS does not recursively delete the old HOME sibling backup
+in the save / restore hot path. A pending cleanup marker remains
+metadata-referenced under the control root. `status` reports
+`recovery=cleanup_pending`, and `doctor` reports a warning finding without
+exposing the internal cleanup path.
 Out-of-band cleanup / GC must remove these pending cleanups; save / restore
 must not perform recursive backup cleanup, payload sync, capacity pre-scan,
-content digesting, compression, or copy fallback. Restore preserves the HOME
-root directory identity.
+content digesting, compression, tree walk, or copy fallback. Restore replaces
+the HOME root directory with the cloned save point directory.
+
+`clone` uses strict `juicefs clone` for both target HOME materialization and
+target snapshot materialization. If clone is unavailable or fails at either
+boundary, clone returns the typed storage error and cleans the target; it must
+not degrade to copy fallback. The success response includes operator-safe clone
+start, finish, and duration evidence for both clone phases.

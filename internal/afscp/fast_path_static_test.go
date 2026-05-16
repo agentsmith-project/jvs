@@ -26,8 +26,18 @@ func TestFastPathProductionSourceRejectsSlowPathDependencies(t *testing.T) {
 				"restore_plan",
 				"restore-preview",
 				"restore_run",
+				"copyengine",
+				"newcopyengine",
 				"fsynctree",
 				"copy fallback",
+				"payload sync",
+				"capacity pre-scan",
+				"tree walk",
+				"tree-walk",
+				"walkdir",
+				"backupdirecthometoplevel",
+				"movedirectrestorepayloadentries",
+				"rollbackdirectrestorebackup",
 				"digest",
 			} {
 				if strings.Contains(lowerSource, fragment) {
@@ -92,6 +102,8 @@ func assertAFSCPProductionImportsAreFastPathOnly(t *testing.T, path string, file
 			"internal/snapshotpayload",
 			"internal/compression",
 			"internal/integrity",
+			"internal/engine",
+			"internal/worktree",
 		} {
 			if strings.Contains(importPath, forbidden) {
 				t.Fatalf("%s imports forbidden direct fast-path dependency %q", path, importPath)
@@ -125,6 +137,9 @@ func assertAFSCPProductionCallsAreFastPathOnly(t *testing.T, path string, file *
 		switch qualified {
 		case "filepath.Walk", "filepath.WalkDir", "fsutil.FsyncTree":
 			t.Fatalf("%s calls forbidden direct fast-path API %s", path, qualified)
+		}
+		if filepath.Base(path) == "direct_restore.go" && qualified == "os.ReadDir" {
+			t.Fatalf("%s calls forbidden restore hot-path directory traversal API %s", path, qualified)
 		}
 		if strings.Contains(strings.ToLower(callName), "copy") {
 			t.Fatalf("%s calls forbidden direct copy fallback candidate %s", path, qualified)

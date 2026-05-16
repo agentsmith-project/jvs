@@ -23,7 +23,8 @@ func cloneDirect(ctx context.Context, source, target ResolvedSelector, savePoint
 	}
 	_ = history
 
-	if err := runStrictJuiceFSClone(ctx, snapshotPayload, target.Home); err != nil {
+	cloneTargetHomeEvidence, err := runStrictJuiceFSCloneWithEvidence(ctx, "clone", "clone_target_home", snapshotPayload, target.Home)
+	if err != nil {
 		return CloneResult{}, err
 	}
 	cleanupTarget := true
@@ -41,7 +42,8 @@ func cloneDirect(ctx context.Context, source, target ResolvedSelector, savePoint
 	if err != nil {
 		return CloneResult{}, NewError(ErrorCodeInvalidArgument, "initialize direct target control", false)
 	}
-	if err := publishDirectCloneMetadata(ctx, snapshotPayload, target, selected); err != nil {
+	cloneTargetSnapshotEvidence, err := publishDirectCloneMetadata(ctx, snapshotPayload, target, selected)
+	if err != nil {
 		return CloneResult{}, err
 	}
 	cleanupTarget = false
@@ -51,6 +53,10 @@ func cloneDirect(ctx context.Context, source, target ResolvedSelector, savePoint
 		TargetRepoID:          targetRepo.RepoID,
 		SavePointID:           selected.SavePointID,
 		SavePointsCopiedCount: 1,
+		CloneEvidence: []CloneEvidence{
+			cloneTargetHomeEvidence,
+			cloneTargetSnapshotEvidence,
+		},
 	}, nil
 }
 
@@ -85,20 +91,21 @@ func selectDirectCloneSnapshot(layout directLayout, savePointID string) (directH
 	return history, snapshotPayload, desc, nil
 }
 
-func publishDirectCloneMetadata(ctx context.Context, snapshotPayload string, target ResolvedSelector, source directDescriptor) error {
+func publishDirectCloneMetadata(ctx context.Context, snapshotPayload string, target ResolvedSelector, source directDescriptor) (CloneEvidence, error) {
 	layout := newDirectLayout(target)
 	if err := ensureDirectLayout(layout); err != nil {
-		return err
+		return CloneEvidence{}, err
 	}
 	snapshotDir := filepath.Join(layout.snapshots, source.SavePointID)
 	if err := os.Mkdir(snapshotDir, 0755); err != nil {
-		return NewError(ErrorCodeInternal, "create direct clone snapshot metadata", false)
+		return CloneEvidence{}, NewError(ErrorCodeInternal, "create direct clone snapshot metadata", false)
 	}
-	if err := runStrictJuiceFSClone(ctx, snapshotPayload, filepath.Join(snapshotDir, directPayloadDirName)); err != nil {
-		return err
+	cloneEvidence, err := runStrictJuiceFSCloneWithEvidence(ctx, "clone", "clone_target_snapshot", snapshotPayload, filepath.Join(snapshotDir, directPayloadDirName))
+	if err != nil {
+		return CloneEvidence{}, err
 	}
 	if err := requireRealDirectory(filepath.Join(snapshotDir, directPayloadDirName)); err != nil {
-		return NewError(ErrorCodeCloneFailed, "juicefs clone did not create direct clone snapshot", false)
+		return CloneEvidence{}, NewError(ErrorCodeCloneFailed, "juicefs clone did not create direct clone snapshot", false)
 	}
 	desc := directDescriptor{
 		Version:      1,
@@ -111,11 +118,11 @@ func publishDirectCloneMetadata(ctx context.Context, snapshotPayload string, tar
 		PayloadState: directMetadataReady,
 	}
 	if err := writeDirectDescriptor(layout, desc); err != nil {
-		return err
+		return CloneEvidence{}, err
 	}
-	desc, err := readDirectDescriptor(layout, source.SavePointID)
+	desc, err = readDirectDescriptor(layout, source.SavePointID)
 	if err != nil {
-		return err
+		return CloneEvidence{}, err
 	}
 	if err := writeDirectReady(layout, directReady{
 		Version:            1,
@@ -126,7 +133,7 @@ func publishDirectCloneMetadata(ctx context.Context, snapshotPayload string, tar
 		DescriptorChecksum: desc.Checksum,
 		CreatedAt:          source.CreatedAt,
 	}); err != nil {
-		return err
+		return CloneEvidence{}, err
 	}
 	head := source.SavePointID
 	if err := writeDirectJSON(layout.history, directHistory{
@@ -140,7 +147,10 @@ func publishDirectCloneMetadata(ctx context.Context, snapshotPayload string, tar
 			Message:     source.Message,
 		}},
 	}, 0644); err != nil {
-		return err
+		return CloneEvidence{}, err
 	}
-	return writeDirectSaveJournal(layout, directJournalPhaseIdle, &head, source.SavePointID, time.Now().UTC().Format(time.RFC3339Nano), "", "")
+	if err := writeDirectSaveJournal(layout, directJournalPhaseIdle, &head, source.SavePointID, time.Now().UTC().Format(time.RFC3339Nano), "", ""); err != nil {
+		return CloneEvidence{}, err
+	}
+	return cloneEvidence, nil
 }

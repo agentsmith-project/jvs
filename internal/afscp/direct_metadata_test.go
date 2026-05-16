@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/stretchr/testify/assert"
@@ -31,6 +32,8 @@ func TestDirectSaveFastPathUsesJuiceFSCloneAndPublishesMetadataOnly(t *testing.T
 	require.NotEmpty(t, save.SavePointID)
 	assert.Equal(t, save.SavePointID, save.HistoryHead)
 	assert.Equal(t, "baseline", save.Message)
+	require.Len(t, save.CloneEvidence, 1)
+	assertDirectCloneEvidence(t, save.CloneEvidence[0], "save", "save_point_payload")
 
 	cloneArgs := readFakeJuiceFSCloneArgs(t, cloneLog)
 	require.Len(t, cloneArgs, 3)
@@ -490,6 +493,21 @@ func assertDirectDoctorFindingContains(t *testing.T, doctor DoctorResult, want s
 		}
 	}
 	t.Fatalf("doctor findings should contain %q: %#v", want, doctor.Findings)
+}
+
+func assertDirectCloneEvidence(t *testing.T, evidence CloneEvidence, operation, phase string) {
+	t.Helper()
+
+	assert.Equal(t, operation, evidence.Operation)
+	assert.Equal(t, phase, evidence.Phase)
+	assert.Equal(t, "juicefs_clone", evidence.Engine)
+	assert.Equal(t, string(StatusSucceeded), evidence.Status)
+	started, err := time.Parse(time.RFC3339Nano, evidence.StartedAt)
+	require.NoError(t, err)
+	finished, err := time.Parse(time.RFC3339Nano, evidence.FinishedAt)
+	require.NoError(t, err)
+	assert.False(t, finished.Before(started))
+	assert.GreaterOrEqual(t, evidence.DurationMs, int64(0))
 }
 
 type directTestTreeEntry struct {

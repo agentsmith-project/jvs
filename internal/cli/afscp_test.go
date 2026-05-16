@@ -193,6 +193,7 @@ func TestAFSCPDirectSaveAndListPublishMetadataJSON(t *testing.T) {
 	require.True(t, ok, "save response should expose save_point_id: %#v", saveData)
 	require.NotEmpty(t, savePointID)
 	assert.Equal(t, savePointID, saveData["history_head"])
+	assertAFSCPDirectCloneEvidence(t, saveData["clone_evidence"], "save", []string{"save_point_payload"})
 	assertAFSCPDirectJSONDoesNotLeakSelector(t, stdout, controlRoot, home)
 
 	stdout, stderr, exitCode = runContractSubprocess(
@@ -276,7 +277,7 @@ func TestAFSCPDirectSaveAcceptsSelectorFlagsBeforeAndAfterCommand(t *testing.T) 
 }
 
 func TestAFSCPDirectCommandsRequireSelectorPairAndJSON(t *testing.T) {
-	for _, command := range []string{"save", "list", "restore", "status", "doctor"} {
+	for _, command := range []string{"save", "list", "restore", "clone", "status", "doctor"} {
 		t.Run(command, func(t *testing.T) {
 			isolateContractCLIState(t)
 			base := t.TempDir()
@@ -376,6 +377,7 @@ func TestAFSCPDirectRestoreReturnsJSONAndUpdatesHistoryHead(t *testing.T) {
 	require.NoError(t, json.Unmarshal(restoreEnv.Data, &restoreData), stdout)
 	assert.Equal(t, savePointID, restoreData["restored_save_point_id"])
 	assert.Equal(t, savePointID, restoreData["new_head"])
+	assertAFSCPDirectCloneEvidence(t, restoreData["clone_evidence"], "restore", []string{"restore_staging"})
 	assertAFSCPDirectJSONDoesNotLeakSelector(t, stdout, controlRoot, home)
 	assert.Equal(t, "saved", string(mustReadAFSCPTestFile(t, filepath.Join(home, "profile.txt"))))
 	assert.NoFileExists(t, filepath.Join(home, "post-save.txt"))
@@ -440,13 +442,14 @@ func TestAFSCPDirectClonePublishesTargetJSON(t *testing.T) {
 	)
 	require.Equal(t, 0, exitCode, "stdout=%s stderr=%s", stdout, stderr)
 	assert.Empty(t, strings.TrimSpace(stderr))
-	assertAFSCPDirectEnvelopeShape(t, stdout, "clone", []string{"source_repo_id", "target_repo_id", "save_point_id", "save_points_copied_count"})
+	assertAFSCPDirectEnvelopeShape(t, stdout, "clone", []string{"source_repo_id", "target_repo_id", "save_point_id", "save_points_copied_count", "clone_evidence"})
 	cloneEnv := decodeAFSCPDirectEnvelope(t, stdout)
 	var cloneData map[string]any
 	require.NoError(t, json.Unmarshal(cloneEnv.Data, &cloneData), stdout)
 	assert.NotEmpty(t, cloneData["target_repo_id"])
 	assert.Equal(t, savePointID, cloneData["save_point_id"])
 	assert.Equal(t, float64(1), cloneData["save_points_copied_count"])
+	assertAFSCPDirectCloneEvidence(t, cloneData["clone_evidence"], "clone", []string{"clone_target_home", "clone_target_snapshot"})
 	assertAFSCPDirectJSONDoesNotLeakSelector(t, stdout, controlRoot, home)
 	assertAFSCPDirectJSONDoesNotLeakSelector(t, stdout, targetControl, targetHome)
 	assert.Equal(t, "saved", string(mustReadAFSCPTestFile(t, filepath.Join(targetHome, "profile.txt"))))
@@ -474,7 +477,7 @@ func TestAFSCPDirectGoldenJSONShapesOmitPathsRawCommandAndLegacyFields(t *testin
 	)
 	require.Equal(t, 0, exitCode, "stdout=%s stderr=%s", stdout, stderr)
 	assert.Empty(t, strings.TrimSpace(stderr))
-	assertAFSCPDirectEnvelopeShape(t, stdout, "save", []string{"save_point_id", "created_at", "message", "history_head"})
+	assertAFSCPDirectEnvelopeShape(t, stdout, "save", []string{"save_point_id", "created_at", "message", "history_head", "clone_evidence"})
 	saveEnv := decodeAFSCPDirectEnvelope(t, stdout)
 	var saveData map[string]any
 	require.NoError(t, json.Unmarshal(saveEnv.Data, &saveData), stdout)
@@ -504,7 +507,7 @@ func TestAFSCPDirectGoldenJSONShapesOmitPathsRawCommandAndLegacyFields(t *testin
 	)
 	require.Equal(t, 0, exitCode, "stdout=%s stderr=%s", stdout, stderr)
 	assert.Empty(t, strings.TrimSpace(stderr))
-	assertAFSCPDirectEnvelopeShape(t, stdout, "restore", []string{"restored_save_point_id", "previous_head", "new_head"})
+	assertAFSCPDirectEnvelopeShape(t, stdout, "restore", []string{"restored_save_point_id", "previous_head", "new_head", "clone_evidence"})
 	assertAFSCPDirectJSONDoesNotLeakSelector(t, stdout, controlRoot, home)
 }
 
@@ -572,6 +575,28 @@ func assertAFSCPDirectEnvelopeShape(t *testing.T, stdout, command string, dataKe
 	require.NoError(t, json.Unmarshal(env.Data, &data), stdout)
 	assert.ElementsMatch(t, dataKeys, mapKeysAny(data))
 	assertAFSCPDirectMapDoesNotContainLegacyFields(t, data)
+}
+
+func assertAFSCPDirectCloneEvidence(t *testing.T, raw any, operation string, phases []string) {
+	t.Helper()
+
+	evidenceItems, ok := raw.([]any)
+	require.True(t, ok, "clone_evidence should be an array: %#v", raw)
+	require.Len(t, evidenceItems, len(phases))
+	for i, rawEvidence := range evidenceItems {
+		evidence, ok := rawEvidence.(map[string]any)
+		require.True(t, ok, "clone_evidence[%d] should be an object: %#v", i, rawEvidence)
+		assert.ElementsMatch(t, []string{"operation", "phase", "engine", "status", "started_at", "finished_at", "duration_ms"}, mapKeysAny(evidence))
+		assert.Equal(t, operation, evidence["operation"])
+		assert.Equal(t, phases[i], evidence["phase"])
+		assert.Equal(t, "juicefs_clone", evidence["engine"])
+		assert.Equal(t, "succeeded", evidence["status"])
+		assert.NotEmpty(t, evidence["started_at"])
+		assert.NotEmpty(t, evidence["finished_at"])
+		duration, ok := evidence["duration_ms"].(float64)
+		require.True(t, ok, "duration_ms should be numeric: %#v", evidence["duration_ms"])
+		assert.GreaterOrEqual(t, duration, float64(0))
+	}
 }
 
 func afscpDirectExpectedDataKeys(command string) []string {

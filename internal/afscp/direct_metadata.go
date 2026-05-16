@@ -116,6 +116,7 @@ type directJournal struct {
 	LastSavePointID   string `json:"last_save_point_id,omitempty"`
 	TargetSavePointID string `json:"target_save_point_id,omitempty"`
 	RestoreTmpName    string `json:"restore_tmp_name,omitempty"`
+	BackupHomeName    string `json:"backup_home_name,omitempty"`
 	FailureCode       string `json:"failure_code,omitempty"`
 	Reason            string `json:"reason,omitempty"`
 	UpdatedAt         string `json:"updated_at"`
@@ -162,7 +163,8 @@ func saveDirect(ctx context.Context, selector ResolvedSelector, message string) 
 			}
 		}()
 
-		if err := runStrictJuiceFSClone(ctx, selector.Home, tmpPayload); err != nil {
+		cloneEvidence, err := runStrictJuiceFSCloneWithEvidence(ctx, "save", "save_point_payload", selector.Home, tmpPayload)
+		if err != nil {
 			_ = writeDirectSaveJournal(layout, directJournalPhaseSaveFailed, history.Head, savePointID, time.Now().UTC().Format(time.RFC3339Nano), directJournalFailureCode(err), directJournalFailureReason(err))
 			return err
 		}
@@ -230,10 +232,11 @@ func saveDirect(ctx context.Context, selector ResolvedSelector, message string) 
 		cleanupTmp = false
 		_ = os.RemoveAll(tmpDir)
 		result = SaveResult{
-			SavePointID: savePointID,
-			CreatedAt:   createdAt,
-			Message:     message,
-			HistoryHead: savePointID,
+			SavePointID:   savePointID,
+			CreatedAt:     createdAt,
+			Message:       message,
+			HistoryHead:   savePointID,
+			CloneEvidence: []CloneEvidence{cloneEvidence},
 		}
 		return nil
 	})
@@ -775,10 +778,11 @@ func validDirectJournalPhase(phase string) bool {
 	}
 }
 
-func runStrictJuiceFSClone(ctx context.Context, src, dst string) error {
+func runStrictJuiceFSCloneWithEvidence(ctx context.Context, operation, phase, src, dst string) (CloneEvidence, error) {
 	if err := validateContext(ctx); err != nil {
-		return err
+		return CloneEvidence{}, err
 	}
+	startedAt := time.Now().UTC()
 	cmd := exec.CommandContext(ctx, "juicefs", "clone", src, dst)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -786,14 +790,23 @@ func runStrictJuiceFSClone(ctx context.Context, src, dst string) error {
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
-			return NewError(ErrorCodeCloneUnavailable, "juicefs clone is unavailable", false)
+			return CloneEvidence{}, NewError(ErrorCodeCloneUnavailable, "juicefs clone is unavailable", false)
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return NewError(ErrorCodeInternal, "operation canceled", false)
+			return CloneEvidence{}, NewError(ErrorCodeInternal, "operation canceled", false)
 		}
-		return NewError(ErrorCodeCloneFailed, "juicefs clone failed", false)
+		return CloneEvidence{}, NewError(ErrorCodeCloneFailed, "juicefs clone failed", false)
 	}
-	return nil
+	finishedAt := time.Now().UTC()
+	return CloneEvidence{
+		Operation:  operation,
+		Phase:      phase,
+		Engine:     "juicefs_clone",
+		Status:     string(StatusSucceeded),
+		StartedAt:  startedAt.Format(time.RFC3339Nano),
+		FinishedAt: finishedAt.Format(time.RFC3339Nano),
+		DurationMs: finishedAt.Sub(startedAt).Milliseconds(),
+	}, nil
 }
 
 func requireDirectory(path string) error {

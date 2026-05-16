@@ -32,18 +32,20 @@ func TestDirectRestoreFastPathClonesSnapshotPayloadToHomeRestoreTmp(t *testing.T
 	restore := result.(RestoreResult)
 	assert.Equal(t, save.SavePointID, restore.RestoredSavePointID)
 	assert.Equal(t, save.SavePointID, restore.NewHead)
+	require.Len(t, restore.CloneEvidence, 1)
+	assertDirectCloneEvidence(t, restore.CloneEvidence[0], "restore", "restore_staging")
 
 	cloneArgs := readFakeJuiceFSCloneArgs(t, cloneLog)
 	require.Len(t, cloneArgs, 3)
 	assert.Equal(t, "clone", cloneArgs[0])
 	assert.Equal(t, filepath.Join(directTestSnapshotDir(controlRoot, save.SavePointID), "payload"), cloneArgs[1])
-	assert.True(t, strings.HasPrefix(cloneArgs[2], filepath.Join(home, ".jvs-afscp-restore-tmp-")), cloneArgs[2])
-	assert.Equal(t, "payload", filepath.Base(cloneArgs[2]))
+	assert.Equal(t, filepath.Dir(home), filepath.Dir(cloneArgs[2]))
+	assert.True(t, strings.HasPrefix(filepath.Base(cloneArgs[2]), directRestoreTmpPrefix), cloneArgs[2])
 	assert.Empty(t, directTestRestoreTmpNames(t, home))
 	assert.Equal(t, "saved", string(directTestReadFile(t, filepath.Join(home, "profile.txt"))))
 }
 
-func TestDirectRestoreKeepsHomeRootInodeAndReplacesWholeHome(t *testing.T) {
+func TestDirectRestoreReplacesHomeRootWithDirectoryLevelPublish(t *testing.T) {
 	base := t.TempDir()
 	controlRoot := filepath.Join(base, "control")
 	home := filepath.Join(base, "home")
@@ -65,7 +67,7 @@ func TestDirectRestoreKeepsHomeRootInodeAndReplacesWholeHome(t *testing.T) {
 	restore := result.(RestoreResult)
 	assert.Equal(t, save.SavePointID, restore.NewHead)
 	afterRoot := directTestStat(t, home)
-	assert.True(t, os.SameFile(beforeRoot, afterRoot), "restore must keep the HOME root directory identity stable")
+	assert.False(t, os.SameFile(beforeRoot, afterRoot), "restore must publish the cloned directory as the HOME root")
 	assert.FileExists(t, filepath.Join(home, "saved.txt"))
 	assert.NoFileExists(t, filepath.Join(home, "post-save.txt"))
 
@@ -108,9 +110,13 @@ func TestDirectRestoreSuccessLeavesOldHomeBackupForOutOfBandCleanup(t *testing.T
 	assert.NoDirExists(t, filepath.Join(home, "dirty-dir"))
 
 	cleanupPayloads := directTestPendingCleanupPayloads(t, controlRoot)
-	require.Len(t, cleanupPayloads, 1)
-	assert.FileExists(t, filepath.Join(cleanupPayloads[0], "dirty-dir", "nested", "dirty.txt"))
-	assert.FileExists(t, filepath.Join(cleanupPayloads[0], "post-save.txt"))
+	assert.Empty(t, cleanupPayloads, "restore success must not move old HOME entries into control-root payload cleanup")
+	require.Len(t, directTestPendingCleanupMarkers(t, controlRoot), 1)
+	backupNames := directTestRestoreSiblingBackupNames(t, home)
+	require.Len(t, backupNames, 1)
+	backupHome := filepath.Join(filepath.Dir(home), backupNames[0])
+	assert.FileExists(t, filepath.Join(backupHome, "dirty-dir", "nested", "dirty.txt"))
+	assert.FileExists(t, filepath.Join(backupHome, "post-save.txt"))
 
 	status, err := NewService().Status(context.Background(), Request{
 		Selector: Selector{ControlRoot: controlRoot, Home: home},
@@ -145,7 +151,8 @@ func TestDirectSaveAfterRestoreDoesNotCapturePendingCleanupBackup(t *testing.T) 
 		SavePointID: restoreSource.SavePointID,
 	})
 	require.NoError(t, err)
-	require.Len(t, directTestPendingCleanupPayloads(t, controlRoot), 1)
+	assert.Empty(t, directTestPendingCleanupPayloads(t, controlRoot))
+	require.Len(t, directTestPendingCleanupMarkers(t, controlRoot), 1)
 
 	nextSave := directTestSave(t, controlRoot, home, "after restore")
 	nextPayload := filepath.Join(directTestSnapshotDir(controlRoot, nextSave.SavePointID), "payload")
@@ -230,6 +237,28 @@ func TestDirectRestoreCloneFailureCleansTmpAndLeavesJournalIdle(t *testing.T) {
 	require.NotNil(t, journal)
 	assert.Equal(t, "idle", journal.Phase)
 	assert.Equal(t, "saved", string(directTestReadFile(t, filepath.Join(home, "profile.txt"))))
+}
+
+func TestDirectRestoreFailsFastWhenJuiceFSUnavailableWithoutCopyFallback(t *testing.T) {
+	base := t.TempDir()
+	controlRoot := filepath.Join(base, "control")
+	home := filepath.Join(base, "home")
+	require.NoError(t, os.Mkdir(controlRoot, 0755))
+	require.NoError(t, os.Mkdir(home, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(home, "profile.txt"), []byte("saved"), 0644))
+	installFakeJuiceFSClone(t)
+	save := directTestSave(t, controlRoot, home, "baseline")
+	before := collectDirectTestTree(t, home)
+	t.Setenv("PATH", t.TempDir())
+
+	result, err := NewService().Restore(context.Background(), Request{
+		Selector:    Selector{ControlRoot: controlRoot, Home: home},
+		SavePointID: save.SavePointID,
+	})
+	assert.Nil(t, result)
+	requireDirectError(t, err, ErrorCodeCloneUnavailable, ExitStorage)
+	assert.Equal(t, before, collectDirectTestTree(t, home))
+	assert.Empty(t, directTestRestoreTmpNames(t, home))
 }
 
 func TestDirectRestoreFailureAfterReplaceBoundaryReturnsRecoveryRequired(t *testing.T) {
@@ -376,6 +405,20 @@ func directTestRestoreTmpNames(t *testing.T, home string) []string {
 	return names
 }
 
+func directTestRestoreSiblingBackupNames(t *testing.T, home string) []string {
+	t.Helper()
+
+	entries, err := os.ReadDir(filepath.Dir(home))
+	require.NoError(t, err)
+	names := []string{}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), directRestoreBackupPrefix) {
+			names = append(names, entry.Name())
+		}
+	}
+	return names
+}
+
 func directTestPendingCleanupRoot(controlRoot string) string {
 	return filepath.Join(controlRoot, "afscp-direct-v1", "pending-cleanups")
 }
@@ -389,11 +432,26 @@ func directTestPendingCleanupPayloads(t *testing.T, controlRoot string) []string
 	payloads := []string{}
 	for _, entry := range entries {
 		payload := filepath.Join(cleanupRoot, entry.Name(), "payload")
-		if entry.IsDir() {
+		if entry.IsDir() && directTestPathIsDir(payload) {
 			payloads = append(payloads, payload)
 		}
 	}
 	return payloads
+}
+
+func directTestPendingCleanupMarkers(t *testing.T, controlRoot string) []string {
+	t.Helper()
+
+	cleanupRoot := directTestPendingCleanupRoot(controlRoot)
+	entries, err := os.ReadDir(cleanupRoot)
+	require.NoError(t, err)
+	markers := []string{}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			markers = append(markers, filepath.Join(cleanupRoot, entry.Name()))
+		}
+	}
+	return markers
 }
 
 func directTestReadFile(t *testing.T, path string) []byte {
@@ -402,6 +460,11 @@ func directTestReadFile(t *testing.T, path string) []byte {
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	return data
+}
+
+func directTestPathIsDir(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 func directTestStat(t *testing.T, path string) os.FileInfo {

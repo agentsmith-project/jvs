@@ -41,6 +41,9 @@ func TestDirectCloneUsesHistoryHeadAndPublishesDirectTarget(t *testing.T) {
 	assert.NotEqual(t, sourceRepo.RepoID, clone.TargetRepoID)
 	assert.Equal(t, save.SavePointID, clone.SavePointID)
 	assert.Equal(t, 1, clone.SavePointsCopiedCount)
+	require.Len(t, clone.CloneEvidence, 2)
+	assertDirectCloneEvidence(t, clone.CloneEvidence[0], "clone", "clone_target_home")
+	assertDirectCloneEvidence(t, clone.CloneEvidence[1], "clone", "clone_target_snapshot")
 
 	assert.Equal(t, "saved", string(directTestReadFile(t, filepath.Join(targetHome, "profile.txt"))))
 	assert.NoFileExists(t, filepath.Join(targetHome, "dirty-only.txt"))
@@ -88,4 +91,29 @@ func TestDirectCloneExplicitSavePointDoesNotReadDirtyHome(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "first", string(directTestReadFile(t, filepath.Join(targetHome, "profile.txt"))))
+}
+
+func TestDirectCloneFailsFastWhenJuiceFSUnavailableWithoutCopyFallback(t *testing.T) {
+	base := t.TempDir()
+	sourceControl := filepath.Join(base, "source-control")
+	sourceHome := filepath.Join(base, "source-home")
+	targetControl := filepath.Join(base, "target-control")
+	targetHome := filepath.Join(base, "target-home")
+	require.NoError(t, os.Mkdir(sourceControl, 0755))
+	require.NoError(t, os.Mkdir(sourceHome, 0755))
+	_, err := repo.InitAFSCPDirectControl(sourceControl, sourceHome, "main")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(sourceHome, "profile.txt"), []byte("saved"), 0644))
+	installFakeJuiceFSClone(t)
+	directTestSave(t, sourceControl, sourceHome, "baseline")
+	t.Setenv("PATH", t.TempDir())
+
+	result, err := NewService().Clone(context.Background(), Request{
+		Selector:       Selector{ControlRoot: sourceControl, Home: sourceHome},
+		TargetSelector: Selector{ControlRoot: targetControl, Home: targetHome},
+	})
+	assert.Nil(t, result)
+	requireDirectError(t, err, ErrorCodeCloneUnavailable, ExitStorage)
+	assert.NoDirExists(t, targetHome)
+	assert.NoDirExists(t, targetControl)
 }

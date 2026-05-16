@@ -20,23 +20,36 @@ type SavePoint struct {
 }
 
 type SaveResult struct {
-	SavePointID string `json:"save_point_id"`
-	CreatedAt   string `json:"created_at"`
-	Message     string `json:"message"`
-	HistoryHead string `json:"history_head"`
+	SavePointID   string          `json:"save_point_id"`
+	CreatedAt     string          `json:"created_at"`
+	Message       string          `json:"message"`
+	HistoryHead   string          `json:"history_head"`
+	CloneEvidence []CloneEvidence `json:"clone_evidence,omitempty"`
 }
 
 type RestoreResult struct {
-	RestoredSavePointID string  `json:"restored_save_point_id"`
-	PreviousHead        *string `json:"previous_head"`
-	NewHead             string  `json:"new_head"`
+	RestoredSavePointID string          `json:"restored_save_point_id"`
+	PreviousHead        *string         `json:"previous_head"`
+	NewHead             string          `json:"new_head"`
+	CloneEvidence       []CloneEvidence `json:"clone_evidence,omitempty"`
 }
 
 type CloneResult struct {
-	SourceRepoID          string `json:"source_repo_id"`
-	TargetRepoID          string `json:"target_repo_id"`
-	SavePointID           string `json:"save_point_id"`
-	SavePointsCopiedCount int    `json:"save_points_copied_count"`
+	SourceRepoID          string          `json:"source_repo_id"`
+	TargetRepoID          string          `json:"target_repo_id"`
+	SavePointID           string          `json:"save_point_id"`
+	SavePointsCopiedCount int             `json:"save_points_copied_count"`
+	CloneEvidence         []CloneEvidence `json:"clone_evidence,omitempty"`
+}
+
+type CloneEvidence struct {
+	Operation  string `json:"operation"`
+	Phase      string `json:"phase"`
+	Engine     string `json:"engine"`
+	Status     string `json:"status"`
+	StartedAt  string `json:"started_at"`
+	FinishedAt string `json:"finished_at"`
+	DurationMs int64  `json:"duration_ms"`
 }
 
 type ListResult struct {
