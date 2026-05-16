@@ -49,7 +49,6 @@ func TestDocs_SetupAndTargetingContract(t *testing.T) {
 		body string
 	}{
 		{"PRODUCT_PLAN.md", productPlan},
-		{"02_CLI_SPEC.md", cliSpec},
 	} {
 		for _, required := range []string{
 			"save point",
@@ -65,6 +64,16 @@ func TestDocs_SetupAndTargetingContract(t *testing.T) {
 			if !strings.Contains(doc.body, required) {
 				t.Fatalf("%s missing current save point contract term %q", doc.name, required)
 			}
+		}
+	}
+
+	for _, required := range []string{
+		"save point",
+		"effective_engine",
+		"warnings",
+	} {
+		if !strings.Contains(cliSpec, required) {
+			t.Fatalf("02_CLI_SPEC.md missing collapsed public CLI contract term %q", required)
 		}
 	}
 

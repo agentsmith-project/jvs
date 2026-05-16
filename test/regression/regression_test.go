@@ -519,17 +519,15 @@ func TestRegression_StatusCommand(t *testing.T) {
 	repoPath := initTestRepo(t)
 
 	createFiles(t, repoPath, map[string]string{"status.txt": "content"})
-	savePointID := createRegressionSavePoint(t, repoPath, "status baseline")
-
 	status := readRegressionStatus(t, repoPath)
 
 	assert.Equal(t, repoPath, status.Folder)
 	assert.Equal(t, "main", status.Workspace)
-	assert.Equal(t, savePointID, stringValue(status.NewestSavePoint))
-	assert.Equal(t, savePointID, stringValue(status.HistoryHead))
-	assert.Equal(t, savePointID, stringValue(status.ContentSource))
-	assert.False(t, status.UnsavedChanges)
-	assert.Equal(t, "matches_save_point", status.FilesState)
+	assert.Nil(t, status.NewestSavePoint)
+	assert.Nil(t, status.HistoryHead)
+	assert.Nil(t, status.ContentSource)
+	assert.True(t, status.UnsavedChanges)
+	assert.Equal(t, "not_saved", status.FilesState)
 }
 
 // TestRegression_CanSaveNewWorkspace verifies that the first save in a freshly

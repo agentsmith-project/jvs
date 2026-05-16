@@ -1,4 +1,4 @@
-//go:build conformance
+//go:build conformance && legacy_public_cli
 
 package conformance
 

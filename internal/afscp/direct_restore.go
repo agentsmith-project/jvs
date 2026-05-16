@@ -21,6 +21,16 @@ type directHomeIdentity struct {
 	info os.FileInfo
 }
 
+type directRestoreState struct {
+	homeIdentity directHomeIdentity
+	tmpName      string
+	tmpTop       string
+	tmpPayload   string
+	cleanupTop   string
+	backupTop    string
+	cleanupTmp   bool
+}
+
 func restoreDirect(ctx context.Context, selector ResolvedSelector, savePointID string) (RestoreResult, error) {
 	layout, initialized, err := openDirectLayout(selector)
 	if err != nil {
@@ -31,163 +41,200 @@ func restoreDirect(ctx context.Context, selector ResolvedSelector, savePointID s
 	}
 	var result RestoreResult
 	err = withDirectMutationLock(layout, func() error {
-		history, err := readDirectHistory(layout)
-		if err != nil {
-			return err
-		}
-		if !directHistoryContains(history, savePointID) {
-			return NewError(ErrorCodeSavePointNotFound, "save point not found", false)
-		}
-		desc, err := readDirectDescriptor(layout, savePointID)
-		if err != nil {
-			return err
-		}
-		if err := requireDirectReady(layout, savePointID, desc.Checksum); err != nil {
-			return err
-		}
-		snapshotPayload := filepath.Join(layout.snapshots, savePointID, directPayloadDirName)
-		if err := requireRealDirectory(snapshotPayload); err != nil {
-			return NewError(ErrorCodeMetadataInvalid, "direct snapshot payload metadata is invalid", false)
-		}
-		if err := requireDirectJournalAllowsRestore(layout); err != nil {
-			return err
-		}
-
-		homeIdentity, err := captureDirectHomeIdentity(selector.Home)
-		if err != nil {
-			return err
-		}
-		tmpName, err := newDirectRestoreTmpName(selector.Home, snapshotPayload)
-		if err != nil {
-			return err
-		}
-		tmpTop := filepath.Join(selector.Home, tmpName)
-		tmpPayload := filepath.Join(tmpTop, directPayloadDirName)
-		cleanupName := "restore-" + uuidutil.NewV4()
-		cleanupTop := filepath.Join(layout.cleanup, cleanupName)
-		backupTop := filepath.Join(cleanupTop, directPayloadDirName)
-		if err := os.Mkdir(tmpTop, 0700); err != nil {
-			return NewError(ErrorCodeInternal, "create direct restore staging", false)
-		}
-		cleanupTmp := true
-		defer func() {
-			if cleanupTmp {
-				_ = os.RemoveAll(tmpTop)
-			}
-		}()
-
-		now := time.Now().UTC().Format(time.RFC3339Nano)
-		if err := writeDirectRestoreJournal(layout, directJournalPhaseRestoreStaging, savePointID, tmpName, now, "", ""); err != nil {
-			return err
-		}
-
-		if err := runStrictJuiceFSClone(ctx, snapshotPayload, tmpPayload); err != nil {
-			_ = os.RemoveAll(tmpTop)
-			_ = writeDirectRestoreIdleJournal(layout, history.Head)
-			return err
-		}
-		if err := requireRealDirectory(tmpPayload); err != nil {
-			_ = os.RemoveAll(tmpTop)
-			_ = writeDirectRestoreIdleJournal(layout, history.Head)
-			return NewError(ErrorCodeCloneFailed, "juicefs clone did not create restore payload", false)
-		}
-		if err := homeIdentity.check(selector.Home); err != nil {
-			_ = os.RemoveAll(tmpTop)
-			_ = writeDirectRestoreIdleJournal(layout, history.Head)
-			return err
-		}
-
-		if err := os.MkdirAll(backupTop, 0700); err != nil {
-			_ = os.RemoveAll(tmpTop)
-			_ = writeDirectRestoreIdleJournal(layout, history.Head)
-			return NewError(ErrorCodeInternal, "create direct restore backup", false)
-		}
-		if err := writeDirectRestoreJournal(layout, directJournalPhaseRestoreBackingUp, savePointID, tmpName, time.Now().UTC().Format(time.RFC3339Nano), "", ""); err != nil {
-			_ = os.Remove(backupTop)
-			_ = os.Remove(cleanupTop)
-			_ = os.RemoveAll(tmpTop)
-			return err
-		}
-		if err := backupDirectHomeTopLevel(selector.Home, tmpName, backupTop); err != nil {
-			if rollbackErr := rollbackDirectRestoreBackup(selector.Home, tmpName, backupTop); rollbackErr != nil {
-				cleanupTmp = false
-				return directRestoreRecoveryRequired("direct restore could not rollback HOME backup")
-			}
-			_ = os.Remove(backupTop)
-			_ = os.Remove(cleanupTop)
-			_ = os.RemoveAll(tmpTop)
-			_ = writeDirectRestoreIdleJournal(layout, history.Head)
-			return NewError(ErrorCodeInternal, "direct restore could not backup HOME", false)
-		}
-		if directRestoreAfterBackupHomeHook != nil {
-			if err := directRestoreAfterBackupHomeHook(); err != nil {
-				if rollbackErr := rollbackDirectRestoreBackup(selector.Home, tmpName, backupTop); rollbackErr != nil {
-					cleanupTmp = false
-					return directRestoreRecoveryRequired("direct restore could not rollback HOME backup")
-				}
-				_ = os.Remove(backupTop)
-				_ = os.Remove(cleanupTop)
-				_ = os.RemoveAll(tmpTop)
-				_ = writeDirectRestoreIdleJournal(layout, history.Head)
-				return NewError(ErrorCodeInternal, "direct restore interrupted before replace", false)
-			}
-		}
-
-		if err := writeDirectRestoreJournal(layout, directJournalPhaseRestoreReplacing, savePointID, tmpName, time.Now().UTC().Format(time.RFC3339Nano), "", ""); err != nil {
-			if rollbackErr := rollbackDirectRestoreBackup(selector.Home, tmpName, backupTop); rollbackErr != nil {
-				cleanupTmp = false
-				return directRestoreRecoveryRequired("direct restore could not rollback HOME backup")
-			}
-			_ = os.Remove(backupTop)
-			_ = os.Remove(cleanupTop)
-			_ = os.RemoveAll(tmpTop)
-			_ = writeDirectRestoreIdleJournal(layout, history.Head)
-			return err
-		}
-		if err := moveDirectRestorePayloadEntries(tmpPayload, selector.Home); err != nil {
-			cleanupTmp = false
-			return directRestoreRecoveryRequired("direct restore could not publish payload entries")
-		}
-		if directRestoreAfterPublishHomeHook != nil {
-			if err := directRestoreAfterPublishHomeHook(); err != nil {
-				cleanupTmp = false
-				return directRestoreRecoveryRequired("direct restore interrupted after publishing HOME")
-			}
-		}
-		if err := homeIdentity.check(selector.Home); err != nil {
-			cleanupTmp = false
-			return directRestoreRecoveryRequired("direct restore HOME identity changed")
-		}
-
-		previousHead := history.Head
-		history.Head = &savePointID
-		if err := writeDirectJSON(layout.history, history, 0644); err != nil {
-			cleanupTmp = false
-			return directRestoreRecoveryRequired("direct restore could not update history")
-		}
-		if err := os.Remove(tmpPayload); err != nil {
-			cleanupTmp = false
-			return directRestoreRecoveryRequired("direct restore could not clean staging payload")
-		}
-		if err := os.Remove(tmpTop); err != nil {
-			cleanupTmp = false
-			return directRestoreRecoveryRequired("direct restore could not clean staging")
-		}
-		cleanupTmp = false
-		if err := writeDirectRestoreIdleJournal(layout, history.Head); err != nil {
-			return directRestoreRecoveryRequired("direct restore could not mark journal idle")
-		}
-		result = RestoreResult{
-			RestoredSavePointID: savePointID,
-			PreviousHead:        previousHead,
-			NewHead:             savePointID,
-		}
-		return nil
+		var err error
+		result, err = restoreDirectLocked(ctx, selector, layout, savePointID)
+		return err
 	})
 	if err != nil {
 		return RestoreResult{}, err
 	}
 	return result, nil
+}
+
+func restoreDirectLocked(ctx context.Context, selector ResolvedSelector, layout directLayout, savePointID string) (RestoreResult, error) {
+	history, snapshotPayload, err := validateDirectRestoreTarget(layout, savePointID)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	state, err := stageDirectRestorePayload(ctx, selector, layout, history, savePointID, snapshotPayload)
+	if err != nil {
+		return RestoreResult{}, err
+	}
+	defer state.cleanup()
+
+	if err := backupDirectRestoreCurrentHome(layout, selector, history, savePointID, state); err != nil {
+		return RestoreResult{}, err
+	}
+	if err := publishDirectRestorePayload(layout, selector, history, savePointID, state); err != nil {
+		return RestoreResult{}, err
+	}
+	return finishDirectRestore(layout, history, savePointID, state)
+}
+
+func validateDirectRestoreTarget(layout directLayout, savePointID string) (directHistory, string, error) {
+	history, err := readDirectHistory(layout)
+	if err != nil {
+		return directHistory{}, "", err
+	}
+	if !directHistoryContains(history, savePointID) {
+		return directHistory{}, "", NewError(ErrorCodeSavePointNotFound, "save point not found", false)
+	}
+	desc, err := readDirectDescriptor(layout, savePointID)
+	if err != nil {
+		return directHistory{}, "", err
+	}
+	if err := requireDirectReady(layout, savePointID, desc.Checksum); err != nil {
+		return directHistory{}, "", err
+	}
+	snapshotPayload := filepath.Join(layout.snapshots, savePointID, directPayloadDirName)
+	if err := requireRealDirectory(snapshotPayload); err != nil {
+		return directHistory{}, "", NewError(ErrorCodeMetadataInvalid, "direct snapshot payload metadata is invalid", false)
+	}
+	if err := requireDirectJournalAllowsRestore(layout); err != nil {
+		return directHistory{}, "", err
+	}
+	return history, snapshotPayload, nil
+}
+
+func stageDirectRestorePayload(ctx context.Context, selector ResolvedSelector, layout directLayout, history directHistory, savePointID, snapshotPayload string) (*directRestoreState, error) {
+	homeIdentity, err := captureDirectHomeIdentity(selector.Home)
+	if err != nil {
+		return nil, err
+	}
+	tmpName, err := newDirectRestoreTmpName(selector.Home, snapshotPayload)
+	if err != nil {
+		return nil, err
+	}
+	state := &directRestoreState{
+		homeIdentity: homeIdentity,
+		tmpName:      tmpName,
+		tmpTop:       filepath.Join(selector.Home, tmpName),
+		cleanupTop:   filepath.Join(layout.cleanup, "restore-"+uuidutil.NewV4()),
+		cleanupTmp:   true,
+	}
+	state.tmpPayload = filepath.Join(state.tmpTop, directPayloadDirName)
+	state.backupTop = filepath.Join(state.cleanupTop, directPayloadDirName)
+	if err := os.Mkdir(state.tmpTop, 0700); err != nil {
+		return nil, NewError(ErrorCodeInternal, "create direct restore staging", false)
+	}
+
+	if err := writeDirectRestoreJournal(layout, directJournalPhaseRestoreStaging, savePointID, tmpName, time.Now().UTC().Format(time.RFC3339Nano), "", ""); err != nil {
+		state.cleanup()
+		return nil, err
+	}
+	if err := runStrictJuiceFSClone(ctx, snapshotPayload, state.tmpPayload); err != nil {
+		abortDirectRestoreAttempt(layout, history.Head, state)
+		return nil, err
+	}
+	if err := requireRealDirectory(state.tmpPayload); err != nil {
+		abortDirectRestoreAttempt(layout, history.Head, state)
+		return nil, NewError(ErrorCodeCloneFailed, "juicefs clone did not create restore payload", false)
+	}
+	if err := homeIdentity.check(selector.Home); err != nil {
+		abortDirectRestoreAttempt(layout, history.Head, state)
+		return nil, err
+	}
+	return state, nil
+}
+
+func backupDirectRestoreCurrentHome(layout directLayout, selector ResolvedSelector, history directHistory, savePointID string, state *directRestoreState) error {
+	if err := os.MkdirAll(state.backupTop, 0700); err != nil {
+		abortDirectRestoreAttempt(layout, history.Head, state)
+		return NewError(ErrorCodeInternal, "create direct restore backup", false)
+	}
+	if err := writeDirectRestoreJournal(layout, directJournalPhaseRestoreBackingUp, savePointID, state.tmpName, time.Now().UTC().Format(time.RFC3339Nano), "", ""); err != nil {
+		cleanupDirectRestoreBackup(state)
+		return err
+	}
+	if err := backupDirectHomeTopLevel(selector.Home, state.tmpName, state.backupTop); err != nil {
+		return rollbackDirectRestoreBackupFailure(layout, selector, history, state, "direct restore could not backup HOME")
+	}
+	if directRestoreAfterBackupHomeHook == nil {
+		return nil
+	}
+	if err := directRestoreAfterBackupHomeHook(); err != nil {
+		return rollbackDirectRestoreBackupFailure(layout, selector, history, state, "direct restore interrupted before replace")
+	}
+	return nil
+}
+
+func publishDirectRestorePayload(layout directLayout, selector ResolvedSelector, history directHistory, savePointID string, state *directRestoreState) error {
+	if err := writeDirectRestoreJournal(layout, directJournalPhaseRestoreReplacing, savePointID, state.tmpName, time.Now().UTC().Format(time.RFC3339Nano), "", ""); err != nil {
+		if rollbackErr := rollbackDirectRestoreBackup(selector.Home, state.tmpName, state.backupTop); rollbackErr != nil {
+			state.cleanupTmp = false
+			return directRestoreRecoveryRequired("direct restore could not rollback HOME backup")
+		}
+		cleanupDirectRestoreBackup(state)
+		abortDirectRestoreAttempt(layout, history.Head, state)
+		return err
+	}
+	if err := moveDirectRestorePayloadEntries(state.tmpPayload, selector.Home); err != nil {
+		state.cleanupTmp = false
+		return directRestoreRecoveryRequired("direct restore could not publish payload entries")
+	}
+	if directRestoreAfterPublishHomeHook != nil {
+		if err := directRestoreAfterPublishHomeHook(); err != nil {
+			state.cleanupTmp = false
+			return directRestoreRecoveryRequired("direct restore interrupted after publishing HOME")
+		}
+	}
+	if err := state.homeIdentity.check(selector.Home); err != nil {
+		state.cleanupTmp = false
+		return directRestoreRecoveryRequired("direct restore HOME identity changed")
+	}
+	return nil
+}
+
+func finishDirectRestore(layout directLayout, history directHistory, savePointID string, state *directRestoreState) (RestoreResult, error) {
+	previousHead := history.Head
+	history.Head = &savePointID
+	if err := writeDirectJSON(layout.history, history, 0644); err != nil {
+		state.cleanupTmp = false
+		return RestoreResult{}, directRestoreRecoveryRequired("direct restore could not update history")
+	}
+	if err := os.Remove(state.tmpPayload); err != nil {
+		state.cleanupTmp = false
+		return RestoreResult{}, directRestoreRecoveryRequired("direct restore could not clean staging payload")
+	}
+	if err := os.Remove(state.tmpTop); err != nil {
+		state.cleanupTmp = false
+		return RestoreResult{}, directRestoreRecoveryRequired("direct restore could not clean staging")
+	}
+	state.cleanupTmp = false
+	if err := writeDirectRestoreIdleJournal(layout, history.Head); err != nil {
+		return RestoreResult{}, directRestoreRecoveryRequired("direct restore could not mark journal idle")
+	}
+	return RestoreResult{
+		RestoredSavePointID: savePointID,
+		PreviousHead:        previousHead,
+		NewHead:             savePointID,
+	}, nil
+}
+
+func rollbackDirectRestoreBackupFailure(layout directLayout, selector ResolvedSelector, history directHistory, state *directRestoreState, message string) error {
+	if rollbackErr := rollbackDirectRestoreBackup(selector.Home, state.tmpName, state.backupTop); rollbackErr != nil {
+		state.cleanupTmp = false
+		return directRestoreRecoveryRequired("direct restore could not rollback HOME backup")
+	}
+	cleanupDirectRestoreBackup(state)
+	abortDirectRestoreAttempt(layout, history.Head, state)
+	return NewError(ErrorCodeInternal, message, false)
+}
+
+func abortDirectRestoreAttempt(layout directLayout, historyHead *string, state *directRestoreState) {
+	state.cleanup()
+	_ = writeDirectRestoreIdleJournal(layout, historyHead)
+}
+
+func cleanupDirectRestoreBackup(state *directRestoreState) {
+	_ = os.Remove(state.backupTop)
+	_ = os.Remove(state.cleanupTop)
+}
+
+func (state *directRestoreState) cleanup() {
+	if state != nil && state.cleanupTmp {
+		_ = os.RemoveAll(state.tmpTop)
+	}
 }
 
 func directHistoryContains(history directHistory, savePointID string) bool {

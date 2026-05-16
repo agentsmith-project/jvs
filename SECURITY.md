@@ -61,6 +61,9 @@ All mutating operations append an audit record to `.jvs/audit/audit.jsonl` with:
 
 `jvs doctor --strict` remains a metadata/audit diagnostic spelling for legacy
 repository maintenance. It must not be used as a file-content hash proof.
+For ordinary `.jvs/` projects, `jvs doctor --strict --repair-runtime` is the
+bounded runtime state repair command; it must not rewrite saved content or
+serve as a file-content verification mechanism.
 
 ### v0.x Accepted Risks
 

@@ -1,29 +1,12 @@
-//go:build conformance
+//go:build conformance && legacy_public_cli
 
 package conformance
 
 import (
-	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
 )
-
-type contractSmokeEnvelope struct {
-	SchemaVersion int                 `json:"schema_version"`
-	Command       string              `json:"command"`
-	OK            bool                `json:"ok"`
-	RepoRoot      *string             `json:"repo_root"`
-	Workspace     *string             `json:"workspace"`
-	Data          json.RawMessage     `json:"data"`
-	Error         *contractSmokeError `json:"error"`
-}
-
-type contractSmokeError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-	Hint    string `json:"hint"`
-}
 
 func TestContract_JSONStdoutPurityForCurrentPublicCommands(t *testing.T) {
 	repoPath, cleanup := initTestRepo(t)
@@ -421,43 +404,6 @@ func closeView(t *testing.T, repoPath, viewOut string) {
 		t.Fatalf("view close failed: stdout=%s stderr=%s", stdout, stderr)
 	}
 	requirePureJSONEnvelope(t, stdout, stderr, true)
-}
-
-func requirePureJSONEnvelope(t *testing.T, stdout, stderr string, wantOK bool) contractSmokeEnvelope {
-	t.Helper()
-	if strings.TrimSpace(stderr) != "" {
-		t.Fatalf("JSON command wrote stderr: %q", stderr)
-	}
-	if !json.Valid([]byte(stdout)) {
-		t.Fatalf("stdout is not pure JSON: %q", stdout)
-	}
-	env := decodeContractEnvelope(t, stdout)
-	if env.OK != wantOK {
-		t.Fatalf("JSON envelope ok = %t, want %t: %s", env.OK, wantOK, stdout)
-	}
-	return env
-}
-
-func decodeContractEnvelope(t *testing.T, stdout string) contractSmokeEnvelope {
-	t.Helper()
-	var env contractSmokeEnvelope
-	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
-		t.Fatalf("decode JSON envelope: %v\n%s", err, stdout)
-	}
-	if env.SchemaVersion == 0 {
-		t.Fatalf("JSON envelope missing schema_version: %s", stdout)
-	}
-	return env
-}
-
-func decodeContractDataMap(t *testing.T, stdout string) map[string]any {
-	t.Helper()
-	env := requirePureJSONEnvelope(t, stdout, "", true)
-	var data map[string]any
-	if err := json.Unmarshal(env.Data, &data); err != nil {
-		t.Fatalf("decode JSON envelope data object: %v\n%s", err, stdout)
-	}
-	return data
 }
 
 func assertNoLegacyPublicJSONFields(t *testing.T, stdout string) {

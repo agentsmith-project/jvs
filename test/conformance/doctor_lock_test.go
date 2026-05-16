@@ -29,13 +29,14 @@ func TestDoctorRepairRuntimeCleansStaleRepoLock(t *testing.T) {
 		t.Fatalf("stale repo lock was not removed: %v", err)
 	}
 
-	if err := os.WriteFile(filepath.Join(repoPath, "after.txt"), []byte("mutation works"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(repoPath, "after.txt"), []byte("status works"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	stdout, stderr, code = runJVSInRepo(t, repoPath, "save", "-m", "after stale lock recovery")
+	stdout, stderr, code = runJVSInRepo(t, repoPath, "--json", "status")
 	if code != 0 {
-		t.Fatalf("save after stale lock repair failed: stdout=%s stderr=%s", stdout, stderr)
+		t.Fatalf("status after stale lock repair failed: stdout=%s stderr=%s", stdout, stderr)
 	}
+	requirePureJSONEnvelope(t, stdout, stderr, true)
 }
 
 func staleConformanceSameHostOwner(t *testing.T, operation string) map[string]any {

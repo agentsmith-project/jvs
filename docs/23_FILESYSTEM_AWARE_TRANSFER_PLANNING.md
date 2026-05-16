@@ -18,10 +18,11 @@ materialization destination 的真实边界选择复制方式。它不是公开�
 能不能快”。旧的 repo-root-only 判断最多作为过渡期 default/requested hint，
 不应保留为长期产品口径。
 
-Current public CLI contract covers `data.transfers[]` for save, restore
-preview/run, workspace new, view, and repo clone. Other commands are either
-non-copy surfaces today or remain later copy-planning refinements; do not read
-this design record as a blanket promise that every JSON command has transfers.
+The collapsed public CLI contract does not promote a generic `data.transfers[]`
+surface for inactive save/restore/view/workspace materialization commands. Repo
+clone may expose command-specific planning or transfer summaries, and later
+copy-planning refinements can re-promote a unified transfer model only through a
+future public contract update.
 
 ## 文档验收标准
 

@@ -856,9 +856,9 @@ func TestDocs_TransferJSONContractMatchesImplementedCommands(t *testing.T) {
 	cliSpec := strings.Join(strings.Fields(readRepoFile(t, "docs/02_CLI_SPEC.md")), " ")
 	for _, required := range []string{
 		"## Transfer Reporting JSON",
-		"`data.transfers[]`",
-		"save, restore preview/run, workspace new, view, and repo clone",
-		"does not promise `data.transfers[]` for commands that do not materialize or copy files",
+		"collapsed public CLI contract does not promote transfer-reporting JSON",
+		"Project clone may expose command-specific planning or transfer summaries",
+		"clients must not infer a generic transfer contract",
 	} {
 		requireReleaseReadinessText(t, "CLI transfer reporting JSON contract", cliSpec, required)
 	}
@@ -866,7 +866,8 @@ func TestDocs_TransferJSONContractMatchesImplementedCommands(t *testing.T) {
 	transferPlan := strings.Join(strings.Fields(readRepoFile(t, "docs/23_FILESYSTEM_AWARE_TRANSFER_PLANNING.md")), " ")
 	for _, required := range []string{
 		"implemented design record",
-		"current public CLI contract covers `data.transfers[]` for save, restore preview/run, workspace new, view, and repo clone",
+		"collapsed public CLI contract does not promote a generic `data.transfers[]`",
+		"later copy-planning refinements can re-promote a unified transfer model only through a future public contract update",
 		"later copy-planning refinements",
 	} {
 		requireReleaseReadinessText(t, "transfer design/current boundary", transferPlan, required)
@@ -1031,51 +1032,28 @@ func TestDocs_OperatorDocsDocumentExternalControlRoot(t *testing.T) {
 func TestDocs_ExternalControlRootRestoreRecoveryPublicContract(t *testing.T) {
 	cliDoc := "docs/02_CLI_SPEC.md"
 	cliBody := readRepoFile(t, cliDoc)
-	restoreSection := strings.Join(strings.Fields(markdownSectionByHeading(t, cliDoc, cliBody, "## Restore")), " ")
+	if strings.Contains(cliBody, "\n## Restore\n") {
+		t.Fatalf("%s should not expose legacy restore as an active public section", cliDoc)
+	}
+	externalSection := strings.Join(strings.Fields(markdownSectionByHeading(t, cliDoc, cliBody, "## External Control Root")), " ")
 	for _, required := range []string{
-		"successful restore run leaves no active recovery",
-		"completed restore plan residue is non-blocking",
-		"Only pending, stale, active, or malformed restore/recovery state blocks",
-		"`jvs restore discard <restore-plan-id>`",
-		"`restore_state`",
-		"`pending_restore_preview`",
-		"`stale_restore_preview`",
-		"`blocking`",
-		"`jvs recovery status`",
-		"`jvs doctor --strict`",
-		"`jvs repo clone`",
+		"doctor --strict",
+		"repo clone",
+		"Repo and workspace lifecycle commands are currently unsupported for external control roots",
+		"fail closed with no file changes",
 	} {
-		requireReleaseReadinessText(t, "restore recovery public contract", restoreSection, required)
+		requireReleaseReadinessText(t, "external control root public contract", externalSection, required)
 	}
 
 	runbookDoc := "docs/13_OPERATION_RUNBOOK.md"
 	runbookBody := readRepoFile(t, runbookDoc)
 	operatorSection := strings.Join(strings.Fields(markdownSectionByHeading(t, runbookDoc, runbookBody, "## External Control Root Operator Entry")), " ")
 	for _, required := range []string{
-		"Pending restore previews close through `restore --run <plan-id>`",
-		"Stale restore previews close through `restore discard <restore-plan-id>`",
-		"Inspect active recovery plans with `recovery status`; close them through `recovery resume` or `recovery rollback`",
-		"Malformed restore state is diagnosed through public `recovery status` and `doctor --strict --json` output",
-		"Successful `restore --run` leaves no active recovery",
-		"completed plan residue is non-blocking",
-		"Do not read or delete private control data files",
-		"`recovery status`",
 		"`doctor --strict --json`",
 		"`repo clone`",
+		"Do not read or delete private control data files",
 	} {
-		requireReleaseReadinessText(t, "external control root restore recovery runbook", operatorSection, required)
-	}
-
-	handoffDoc := "docs/26_EXTERNAL_CONTROL_METADATA_PRODUCT_PLAN.md"
-	handoffBody := readRepoFile(t, handoffDoc)
-	normalizedHandoff := strings.Join(strings.Fields(handoffBody), " ")
-	for _, required := range []string{
-		"successful restore run leaves no active recovery",
-		"completed restore plan residue is non-blocking",
-		"pending、stale、active 或 malformed restore/recovery state",
-		"restore discard <restore-plan-id>",
-	} {
-		requireReleaseReadinessText(t, "external control root restore recovery handoff", normalizedHandoff, required)
+		requireReleaseReadinessText(t, "external control root operator runbook", operatorSection, required)
 	}
 }
 
@@ -3115,26 +3093,10 @@ func TestDocs_StablePublicCommandPathMatchesCurrentHelpSurface(t *testing.T) {
 	publicRootCommands := publicRootHelpCommandNames(t)
 	for _, commandPath := range [][]string{
 		{"init"},
-		{"save"},
-		{"history"},
-		{"view"},
-		{"view", "close"},
-		{"restore"},
-		{"cleanup", "preview"},
-		{"cleanup", "run"},
-		{"recovery", "status"},
-		{"recovery", "resume"},
-		{"recovery", "rollback"},
 		{"repo", "clone"},
 		{"repo", "move"},
 		{"repo", "rename"},
 		{"repo", "detach"},
-		{"workspace", "new"},
-		{"workspace", "list"},
-		{"workspace", "path"},
-		{"workspace", "rename"},
-		{"workspace", "move"},
-		{"workspace", "delete"},
 		{"status"},
 		{"doctor"},
 	} {
@@ -3154,6 +3116,22 @@ func TestDocs_StablePublicCommandPathMatchesCurrentHelpSurface(t *testing.T) {
 		{"clone"},
 		{"info"},
 		{"diff"},
+		{"save"},
+		{"history"},
+		{"view"},
+		{"view", "close"},
+		{"restore"},
+		{"cleanup", "preview"},
+		{"cleanup", "run"},
+		{"recovery", "status"},
+		{"recovery", "resume"},
+		{"recovery", "rollback"},
+		{"workspace", "new"},
+		{"workspace", "list"},
+		{"workspace", "path"},
+		{"workspace", "rename"},
+		{"workspace", "move"},
+		{"workspace", "delete"},
 		{"workspace", "fork"},
 		{"view", "delete"},
 		{"recovery", "repair"},
@@ -3169,18 +3147,13 @@ func TestDocs_CLISpecVisiblePublicCommandsIncludeLifecycleSurface(t *testing.T) 
 	body := readRepoFile(t, doc)
 	section := markdownSectionByHeading(t, doc, body, "## Root Help Surface")
 	for _, required := range []string{
-		"cleanup preview",
-		"cleanup run",
 		"repo clone",
 		"repo move",
 		"repo rename",
 		"repo detach",
-		"workspace list",
-		"workspace path",
-		"workspace rename",
-		"workspace move",
-		"workspace new",
-		"workspace delete",
+		"init",
+		"status",
+		"doctor",
 	} {
 		if !strings.Contains(section, required) {
 			t.Fatalf("%s visible public commands must include %q", doc, required)
@@ -3238,14 +3211,7 @@ func TestDocs_CurrentPublicHelpSurfaceUsesSavePointCommands(t *testing.T) {
 	commands := publicRootHelpCommandNames(t)
 	for _, want := range []string{
 		"init",
-		"save",
-		"history",
-		"view",
-		"restore",
-		"cleanup",
-		"recovery",
 		"repo",
-		"workspace",
 		"status",
 		"doctor",
 		"completion",
@@ -3263,6 +3229,13 @@ func TestDocs_CurrentPublicHelpSurfaceUsesSavePointCommands(t *testing.T) {
 		"capability",
 		"worktree",
 		"snapshot",
+		"save",
+		"history",
+		"view",
+		"restore",
+		"cleanup",
+		"recovery",
+		"workspace",
 	} {
 		if commands[legacy] {
 			t.Fatalf("current public root help surface must not expose legacy command %q", legacy)

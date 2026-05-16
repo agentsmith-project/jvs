@@ -95,11 +95,6 @@ func TestStorySeparatedControlRejectsRepoFlagAndAmbientSelectors(t *testing.T) {
 			command: "status",
 		},
 		{
-			name:    "repo flag save",
-			args:    []string{"--json", "--repo", controlRoot, "save", "-m", "blocked"},
-			command: "save",
-		},
-		{
 			name:    "repo flag doctor",
 			args:    []string{"--json", "--repo", controlRoot, "doctor", "--strict"},
 			command: "doctor",
@@ -409,24 +404,6 @@ func TestStorySeparatedControlInitAdoptsExistingNonEmptyWorkspaceFolder(t *testi
 		t.Fatalf("status after adopted separated init should see existing files as unsaved: %#v", statusData)
 	}
 
-	saveOut, saveErr, saveCode := runJVS(t, base,
-		"--json",
-		"--control-root", controlRoot,
-		"--workspace", "main",
-		"save",
-		"-m", "adopt baseline",
-	)
-	if saveCode != 0 {
-		t.Fatalf("save after adopted separated init failed: stdout=%s stderr=%s", saveOut, saveErr)
-	}
-	saveData := requireSeparatedControlAuthoritativeJSON(t, saveOut, saveErr, controlRoot, payloadRoot, "main")
-	savePointID, _ := saveData["save_point_id"].(string)
-	if savePointID == "" {
-		t.Fatalf("save after adopt missing save point id: %#v", saveData)
-	}
-	if got := readAbsoluteFile(t, filepath.Join(controlRoot, ".jvs", "snapshots", savePointID, "src", "app.txt")); got != "adopt me\n" {
-		t.Fatalf("save point did not capture adopted workspace file: %q", got)
-	}
 	requireAbsolutePathAbsent(t, filepath.Join(payloadRoot, ".jvs"))
 }
 

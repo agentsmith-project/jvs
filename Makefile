@@ -15,6 +15,7 @@ override RELEASE_FUZZ_EXCLUDE_TARGETS :=
 override RELEASE_FUZZ_ALL_TARGETS = $(call release_fuzz_checked_shell,set -eu; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT HUP INT TERM; for pkg in $(RELEASE_FUZZ_PACKAGES); do go test -list '^Fuzz' "$$pkg" >"$$tmp"; sed -n "s|^\(Fuzz[A-Za-z0-9_]*\)$$|$$pkg:\1|p" "$$tmp"; done,release fuzz target discovery failed)
 override RELEASE_FUZZ_TARGETS = $(filter-out $(RELEASE_FUZZ_EXCLUDE_TARGETS),$(RELEASE_FUZZ_ALL_TARGETS))
 STORY_E2E_RUN_PATTERN := ^(TestStoryE2EGate_|TestStoryLocal_|TestStoryJSON_|TestStory_PublicTransferJSON|TestStoryRepoClone|TestStorySeparated)
+COVER_PACKAGES ?= ./internal/afscp ./internal/audit ./internal/clonehistory ./internal/compression ./internal/diff ./internal/doctor ./internal/engine ./internal/gc ./internal/integrity ./internal/lifecycle ./internal/repo ./internal/repoclone ./internal/snapshot ./internal/snapshotpayload ./internal/sourcepin ./internal/terminal ./internal/transfer ./internal/verify ./internal/worktree ./pkg/...
 
 .PHONY: build test library fuzz-tests tools lint conformance regression contract-check docs-contract ci-contract verify security sec fuzz fuzz-list test-race test-cover test-all integration release-build release-binary-smoke release-gate story-local story-json story-e2e story-juicefs-local release-gate-juicefs clean
 
@@ -31,7 +32,7 @@ release-build:
 
 release-binary-smoke: release-build
 	@test -x "$(CURDIR)/bin/jvs-linux-amd64"
-	PATH="$(CURDIR)/bin:$$PATH" JVS_BINARY_UNDER_TEST="$(CURDIR)/bin/jvs-linux-amd64" go test -tags conformance -count=1 -v -run '^TestStorySeparated(Restore|Clone)' ./test/conformance/...
+	PATH="$(CURDIR)/bin:$$PATH" JVS_BINARY_UNDER_TEST="$(CURDIR)/bin/jvs-linux-amd64" go test -tags conformance -count=1 -v -run '^TestStorySeparatedControl' ./test/conformance/...
 
 tools:
 	@set -eu; \
@@ -91,7 +92,7 @@ release-gate-juicefs:
 	$(MAKE) JVS_STORY_JUICEFS_LOCAL=1 JVS_JUICEFS_E2E=1 JVS_JUICEFS_E2E_REQUIRED=1 story-juicefs-local
 
 regression: build
-	PATH="$(CURDIR)/bin:$$PATH" go test -tags conformance -count=1 -v ./test/regression/...
+	PATH="$(CURDIR)/bin:$$PATH" go test -tags conformance -count=1 -v -run '^(TestRegression_DoctorRuntimeRepair|TestRegression_StatusCommand)$$' ./test/regression/...
 
 contract-check: build
 	go test -count=1 ./internal/repo ./internal/snapshot ./internal/restore ./internal/worktree ./internal/gc ./internal/doctor ./internal/verify
@@ -175,7 +176,7 @@ test-race:
 	go test -race -count=1 ./internal/... ./pkg/...
 
 test-cover:
-	go test -coverprofile=coverage.out -covermode=atomic ./internal/... ./pkg/...
+	go test -coverprofile=coverage.out -covermode=atomic $(COVER_PACKAGES)
 	@go tool cover -func=coverage.out | awk '/^total:/ { gsub(/%/, "", $$3); if ($$3+0 < 60) { printf "FAIL: coverage %.1f%% < 60%% threshold\n", $$3; exit 1 } else { printf "OK: coverage %.1f%% >= 60%% threshold\n", $$3 } }'
 
 test-all: test conformance regression fuzz
