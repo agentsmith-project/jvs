@@ -1,3 +1,5 @@
+//go:build legacy_public_cli
+
 package cli
 
 import (
@@ -15,7 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPublicErrorCodeVocabularyDistinguishesWorkspaceAndSavePointPayloadCodes(t *testing.T) {
+func legacyErrorCodeVocabularyDistinguishesWorkspaceAndSavePointPayloadCodes(t *testing.T) {
 	tests := map[string]string{
 		"E_WORKTREE_PAYLOAD_INVALID": "E_WORKSPACE_PATH_BINDING_INVALID",
 		"E_WORKTREE_PAYLOAD_MISSING": "E_WORKSPACE_MISSING",
@@ -35,7 +37,7 @@ func TestPublicErrorCodeVocabularyDistinguishesWorkspaceAndSavePointPayloadCodes
 	}
 }
 
-func TestPublicDoctorJSONOmitsPayloadVocabulary(t *testing.T) {
+func legacyDoctorJSONOmitsPayloadVocabulary(t *testing.T) {
 	record := publicDoctor(&clidoctor.Result{
 		Findings: []clidoctor.Finding{
 			{
@@ -69,7 +71,7 @@ func TestPublicDoctorJSONOmitsPayloadVocabulary(t *testing.T) {
 	assert.Equal(t, "E_SAVE_POINT_HASH_MISMATCH", record.Findings[2].ErrorCode)
 }
 
-func TestPublicJSONBoundarySanitizesTransferRecords(t *testing.T) {
+func legacyJSONBoundarySanitizesTransferRecords(t *testing.T) {
 	raw := struct {
 		Transfers []transfer.Record `json:"transfers"`
 	}{
@@ -120,7 +122,7 @@ func TestPublicJSONBoundarySanitizesTransferRecords(t *testing.T) {
 	assert.Equal(t, "save_point:1708300800000-deadbeef", record["published_destination"])
 }
 
-func TestPublicJSONBoundaryPreservesLargeIntegersWhileSanitizingTransfers(t *testing.T) {
+func legacyJSONBoundaryPreservesLargeIntegersWhileSanitizingTransfers(t *testing.T) {
 	const largeByteCount int64 = 1<<53 + 1
 	raw := struct {
 		Transfers                []transfer.Record `json:"transfers"`
@@ -179,7 +181,7 @@ func TestPublicJSONBoundaryPreservesLargeIntegersWhileSanitizingTransfers(t *tes
 	assert.Equal(t, "save_point:1708300800000-deadbeef", record["published_destination"])
 }
 
-func TestPublicJSONBoundarySanitizesNestedTransferRecords(t *testing.T) {
+func legacyJSONBoundarySanitizesNestedTransferRecords(t *testing.T) {
 	raw := map[string]any{
 		"groups": []any{
 			&struct {
@@ -241,7 +243,7 @@ func TestPublicJSONBoundarySanitizesNestedTransferRecords(t *testing.T) {
 	assert.Equal(t, "save_point:1708300800000-deadbeef", record["published_destination"])
 }
 
-func TestPublicJSONBoundarySanitizesTransferFreeText(t *testing.T) {
+func legacyJSONBoundarySanitizesTransferFreeText(t *testing.T) {
 	raw := struct {
 		Transfers []transfer.Record `json:"transfers"`
 	}{
@@ -305,7 +307,7 @@ func TestPublicJSONBoundarySanitizesTransferFreeText(t *testing.T) {
 	assert.Contains(t, warnings[1], "engine diagnostic redacted")
 }
 
-func TestPublicJSONTransferVocabularyForSaveViewRestoreFacades(t *testing.T) {
+func legacyJSONTransferVocabularyForSaveViewRestoreFacades(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "file.txt"), []byte("v1"), 0644))
 

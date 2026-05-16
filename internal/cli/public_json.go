@@ -1,5 +1,8 @@
 package cli
 
+// Legacy inactive public JSON helpers are retained for historical CLI tests.
+// Internal afscp direct JSON must not use content hash fields.
+
 import (
 	"encoding"
 	"encoding/json"
@@ -10,7 +13,6 @@ import (
 	"time"
 
 	clidoctor "github.com/agentsmith-project/jvs/internal/doctor"
-	"github.com/agentsmith-project/jvs/internal/saveprofile"
 	"github.com/agentsmith-project/jvs/internal/transfer"
 	"github.com/agentsmith-project/jvs/pkg/errclass"
 	"github.com/agentsmith-project/jvs/pkg/model"
@@ -34,7 +36,6 @@ type publicSavePointCreatedRecord struct {
 	RestoredFrom         string                     `json:"restored_from,omitempty"`
 	RestoredPaths        []publicRestoredPathSource `json:"restored_paths,omitempty"`
 	UnsavedChanges       bool                       `json:"unsaved_changes"`
-	SaveProfile          saveprofile.Profile        `json:"save_profile"`
 }
 
 type publicDoctorResult struct {
@@ -99,7 +100,7 @@ func publicSavePoints(descs []*model.Descriptor) []publicSavePointRecord {
 	return records
 }
 
-func publicSavePointCreated(desc *model.Descriptor, unsavedChanges bool, transferData transfer.Data, profile saveprofile.Profile) publicSavePointCreatedRecord {
+func publicSavePointCreated(desc *model.Descriptor, unsavedChanges bool, transferData transfer.Data) publicSavePointCreatedRecord {
 	record := publicSavePointCreatedRecord{
 		Data:            transferData,
 		SavePointID:     string(desc.SnapshotID),
@@ -108,7 +109,6 @@ func publicSavePointCreated(desc *model.Descriptor, unsavedChanges bool, transfe
 		CreatedAt:       desc.CreatedAt,
 		NewestSavePoint: string(desc.SnapshotID),
 		UnsavedChanges:  unsavedChanges,
-		SaveProfile:     profile,
 	}
 	if desc.RestoredFrom != nil {
 		record.RestoredFrom = string(*desc.RestoredFrom)
@@ -690,8 +690,6 @@ func publicErrorCodeVocabulary(code string) string {
 		return "E_SAVE_POINT_MISSING"
 	case "E_PAYLOAD_INVALID":
 		return "E_SAVE_POINT_INVALID"
-	case "E_PAYLOAD_HASH_MISMATCH":
-		return errclass.ErrSavePointHashMismatch.Code
 	}
 	code = strings.ReplaceAll(code, "WORKTREE", "WORKSPACE")
 	code = strings.ReplaceAll(code, "SNAPSHOT", "SAVE_POINT")

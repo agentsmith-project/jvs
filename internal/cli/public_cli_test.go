@@ -1,3 +1,5 @@
+//go:build legacy_public_cli
+
 package cli
 
 import (
@@ -104,7 +106,7 @@ func decodePublicData(t *testing.T, stdout string, target any) contractEnvelope 
 	return env
 }
 
-func TestPublicCLIStatusAndSavePointCleanliness(t *testing.T) {
+func legacyPublicCLIStatusAndSavePointCleanliness(t *testing.T) {
 	_, mainPath := setupPublicCLIRepo(t, "statusrepo")
 
 	require.NoError(t, os.WriteFile("file.txt", []byte("before save"), 0644))
@@ -128,7 +130,7 @@ func TestPublicCLIStatusAndSavePointCleanliness(t *testing.T) {
 	assert.Equal(t, "matches_save_point", clean.FilesState)
 }
 
-func TestPublicCLISaveCapturesManagedFilesWithReflinkEngine(t *testing.T) {
+func legacyPublicCLISaveCapturesManagedFilesWithReflinkEngine(t *testing.T) {
 	repoPath, _ := setupPublicCLIRepo(t, "savereflink")
 	t.Setenv("JVS_SNAPSHOT_ENGINE", string(model.EngineReflinkCopy))
 
@@ -146,7 +148,7 @@ func TestPublicCLISaveCapturesManagedFilesWithReflinkEngine(t *testing.T) {
 	assert.Equal(t, "readme", string(readme))
 }
 
-func TestPublicCLIStatusTreatsRootReadyAsDirtyOrReserved(t *testing.T) {
+func legacyPublicCLIStatusTreatsRootReadyAsDirtyOrReserved(t *testing.T) {
 	setupPublicCLIRepo(t, "reservedstatus")
 
 	require.NoError(t, os.WriteFile("file.txt", []byte("before save"), 0644))
@@ -164,7 +166,7 @@ func TestPublicCLIStatusTreatsRootReadyAsDirtyOrReserved(t *testing.T) {
 	assert.True(t, status.UnsavedChanges, "root .READY must not be reported clean")
 }
 
-func TestPublicCLIDirtyRestoreRequiresExplicitChoice(t *testing.T) {
+func legacyPublicCLIDirtyRestoreRequiresExplicitChoice(t *testing.T) {
 	repoPath, _ := setupPublicCLIRepo(t, "dirtyrestore")
 
 	require.NoError(t, os.WriteFile("file.txt", []byte("v1"), 0644))
@@ -216,7 +218,7 @@ func TestPublicCLIDirtyRestoreRequiresExplicitChoice(t *testing.T) {
 	assert.Equal(t, false, restored["history_changed"])
 }
 
-func TestPublicCLIDirtyRestoreSaveFirstCreatesSavePoint(t *testing.T) {
+func legacyPublicCLIDirtyRestoreSaveFirstCreatesSavePoint(t *testing.T) {
 	setupPublicCLIRepo(t, "savefirstrestore")
 
 	require.NoError(t, os.WriteFile("file.txt", []byte("v1"), 0644))
@@ -248,7 +250,7 @@ func TestPublicCLIDirtyRestoreSaveFirstCreatesSavePoint(t *testing.T) {
 	assert.Equal(t, first, sourcePoint["save_point_id"])
 }
 
-func TestPublicCLIRestoreNewestAndJSONBoolConsistency(t *testing.T) {
+func legacyPublicCLIRestoreNewestAndJSONBoolConsistency(t *testing.T) {
 	setupPublicCLIRepo(t, "restorelatest")
 
 	require.NoError(t, os.WriteFile("file.txt", []byte("v1"), 0644))
@@ -272,7 +274,7 @@ func TestPublicCLIRestoreNewestAndJSONBoolConsistency(t *testing.T) {
 	assert.IsType(t, true, status.UnsavedChanges)
 }
 
-func TestPublicCLIWorkspacePathJSONUsesEnvelope(t *testing.T) {
+func legacyPublicCLIWorkspacePathJSONUsesEnvelope(t *testing.T) {
 	_, mainPath := setupPublicCLIRepo(t, "pathjson")
 
 	stdout, err := runPublicCLI(t, "--json", "workspace", "path")
@@ -290,7 +292,7 @@ func TestPublicCLIWorkspacePathJSONUsesEnvelope(t *testing.T) {
 	assert.NotContains(t, strings.TrimSpace(stdout), "\n"+mainPath)
 }
 
-func TestPublicCLICleanupRunJSONUsesEnvelope(t *testing.T) {
+func legacyPublicCLICleanupRunJSONUsesEnvelope(t *testing.T) {
 	setupPublicCLIRepo(t, "cleanuprunjson")
 
 	planOut, err := runPublicCLI(t, "--json", "cleanup", "preview")
@@ -308,7 +310,7 @@ func TestPublicCLICleanupRunJSONUsesEnvelope(t *testing.T) {
 	assert.JSONEq(t, `{"plan_id":"`+planID+`","status":"completed"}`, string(env.Data))
 }
 
-func TestPublicCLICleanupPreviewJSONUsesSavePointFields(t *testing.T) {
+func legacyPublicCLICleanupPreviewJSONUsesSavePointFields(t *testing.T) {
 	setupPublicCLIRepo(t, "cleanuppreviewjson")
 
 	stdout, err := runPublicCLI(t, "--json", "cleanup", "preview")
@@ -328,7 +330,7 @@ func TestPublicCLICleanupPreviewJSONUsesSavePointFields(t *testing.T) {
 	assert.NotContains(t, plan, "retention_policy")
 }
 
-func TestPublicCLICleanupRunJSONMissingPlanUsesStableError(t *testing.T) {
+func legacyPublicCLICleanupRunJSONMissingPlanUsesStableError(t *testing.T) {
 	repoPath, _ := setupPublicCLIRepo(t, "cleanupmissingplan")
 
 	stdout, stderr, exitCode := runContractSubprocess(t, repoPath, "--json", "cleanup", "run", "--plan-id", "missing")
@@ -348,7 +350,7 @@ func TestPublicCLICleanupRunJSONMissingPlanUsesStableError(t *testing.T) {
 	assert.JSONEq(t, `null`, string(env.Data))
 }
 
-func TestPublicCLIWorkspaceDeleteRejectsUnsavedChangesByDefault(t *testing.T) {
+func legacyPublicCLIWorkspaceDeleteRejectsUnsavedChangesByDefault(t *testing.T) {
 	repoPath, _ := setupPublicCLIRepo(t, "dirtydelete")
 
 	require.NoError(t, os.WriteFile("file.txt", []byte("clean"), 0644))
@@ -387,7 +389,7 @@ func TestPublicCLIWorkspaceDeleteRejectsUnsavedChangesByDefault(t *testing.T) {
 	assert.NoDirExists(t, featurePath)
 }
 
-func TestPublicCLIStableJSONErrorsUsePublicVocabulary(t *testing.T) {
+func legacyPublicCLIStableJSONErrorsUsePublicVocabulary(t *testing.T) {
 	repoPath, _ := setupPublicCLIRepo(t, "publicerrors")
 	require.NoError(t, os.Chdir(repoPath))
 
@@ -404,7 +406,7 @@ func TestPublicCLIStableJSONErrorsUsePublicVocabulary(t *testing.T) {
 	assert.JSONEq(t, `null`, string(env.Data))
 }
 
-func TestPublicCLIErrorsPreserveUserRepoPathsWithSpacesAndLegacyWords(t *testing.T) {
+func legacyPublicCLIErrorsPreserveUserRepoPathsWithSpacesAndLegacyWords(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 	defer os.Chdir(originalWd)
@@ -431,7 +433,7 @@ func TestPublicCLIErrorsPreserveUserRepoPathsWithSpacesAndLegacyWords(t *testing
 	assert.JSONEq(t, `null`, string(env.Data))
 }
 
-func TestPublicCLIRepoFlagMismatchRejectsChildLocatorForgery(t *testing.T) {
+func legacyPublicCLIRepoFlagMismatchRejectsChildLocatorForgery(t *testing.T) {
 	cases := []struct {
 		name          string
 		writeLocator  func(t *testing.T, dir, targetRepo string)
@@ -483,7 +485,7 @@ func TestPublicCLIRepoFlagMismatchRejectsChildLocatorForgery(t *testing.T) {
 	}
 }
 
-func TestPublicCLIRepoFlagPathPrefersPhysicalAncestorOverForgedLocator(t *testing.T) {
+func legacyPublicCLIRepoFlagPathPrefersPhysicalAncestorOverForgedLocator(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 	defer os.Chdir(originalWd)
@@ -514,7 +516,7 @@ func TestPublicCLIRepoFlagPathPrefersPhysicalAncestorOverForgedLocator(t *testin
 	assert.Equal(t, "main", status.Workspace)
 }
 
-func TestPublicCLIRepoFlagRejectsExternalWorkspaceLocatorMismatchWithExplicitWorkspace(t *testing.T) {
+func legacyPublicCLIRepoFlagRejectsExternalWorkspaceLocatorMismatchWithExplicitWorkspace(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 	defer os.Chdir(originalWd)
@@ -551,7 +553,7 @@ func TestPublicCLIRepoFlagRejectsExternalWorkspaceLocatorMismatchWithExplicitWor
 	assert.Equal(t, "main", status.Workspace)
 }
 
-func TestPublicCLIRepoFlagPropagatesMalformedLocatorFromCurrentWorkspace(t *testing.T) {
+func legacyPublicCLIRepoFlagPropagatesMalformedLocatorFromCurrentWorkspace(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 	defer os.Chdir(originalWd)
@@ -574,7 +576,7 @@ func TestPublicCLIRepoFlagPropagatesMalformedLocatorFromCurrentWorkspace(t *test
 	assert.JSONEq(t, `null`, string(env.Data))
 }
 
-func TestPublicCLIRepoFlagPropagatesControlDiscoveryError(t *testing.T) {
+func legacyPublicCLIRepoFlagPropagatesControlDiscoveryError(t *testing.T) {
 	dir := t.TempDir()
 	originalWd, _ := os.Getwd()
 	defer os.Chdir(originalWd)
@@ -600,7 +602,7 @@ func TestPublicCLIRepoFlagPropagatesControlDiscoveryError(t *testing.T) {
 	assert.JSONEq(t, `null`, string(env.Data))
 }
 
-func TestPublicCLIJSONErrorsPreserveUserRepoPathWhenTargetIsMissing(t *testing.T) {
+func legacyPublicCLIJSONErrorsPreserveUserRepoPathWhenTargetIsMissing(t *testing.T) {
 	repoPath, _ := setupPublicCLIRepo(t, "missingtarget")
 
 	missingTarget := "missing worktree snapshot history"
@@ -617,7 +619,7 @@ func TestPublicCLIJSONErrorsPreserveUserRepoPathWhenTargetIsMissing(t *testing.T
 	assert.JSONEq(t, `null`, string(env.Data))
 }
 
-func TestPublicCLIErrorVocabularyPreservesQuotedUserText(t *testing.T) {
+func legacyPublicCLIErrorVocabularyPreservesQuotedUserText(t *testing.T) {
 	got := publicCLIErrorVocabulary(`snapshot "worktree-snapshot-history" history`)
 	assert.Equal(t, `save point "worktree-snapshot-history" history`, got)
 	assert.Equal(t, "source_workspace total_save_points save_point_id", publicCLIErrorVocabulary("source_worktree total_snapshots snapshot_id"))
@@ -650,7 +652,7 @@ func writePublicCLITestWorkspaceLocator(t *testing.T, dir, repoRoot string) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, jvsrepo.JVSDirName), data, 0644))
 }
 
-func TestPublicCLIJSONUsesSavePointWorkspaceTerms(t *testing.T) {
+func legacyPublicCLIJSONUsesSavePointWorkspaceTerms(t *testing.T) {
 	setupPublicCLIRepo(t, "terms")
 
 	require.NoError(t, os.WriteFile("file.txt", []byte("v1"), 0644))
@@ -681,7 +683,7 @@ func TestPublicCLIJSONUsesSavePointWorkspaceTerms(t *testing.T) {
 	}
 }
 
-func TestPublicCLIDoctorAndCleanupJSONHideInternalContractFields(t *testing.T) {
+func legacyPublicCLIDoctorAndCleanupJSONHideInternalContractFields(t *testing.T) {
 	repoPath, mainPath := setupPublicCLIRepo(t, "publicjsoncontract")
 
 	emptyPlanOut, err := runPublicCLI(t, "--json", "cleanup", "preview")
@@ -729,7 +731,7 @@ func TestPublicCLIDoctorAndCleanupJSONHideInternalContractFields(t *testing.T) {
 	assert.Equal(t, false, doctorData["healthy"])
 }
 
-func TestPublicCLIDoctorStrictMapsSavePointIntegrityPayloadCodes(t *testing.T) {
+func legacyPublicCLIDoctorStrictMapsSavePointIntegrityPayloadCodes(t *testing.T) {
 	t.Run("missing save point storage", func(t *testing.T) {
 		repoPath, _ := setupPublicCLIRepo(t, "missing-save-point-storage")
 		require.NoError(t, os.WriteFile("file.txt", []byte("baseline"), 0644))

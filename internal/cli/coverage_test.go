@@ -214,7 +214,7 @@ func TestContextFunctionsOutsideRepo(t *testing.T) {
 }
 
 // TestSaveWithLargeContent tests saving a larger file through the public CLI.
-func TestSaveWithLargeContent(t *testing.T) {
+func legacySaveWithLargeContent(t *testing.T) {
 	setupCoverageRepo(t, "testrepo")
 	data := make([]byte, 1024*100) // 100KB
 	for i := range data {
@@ -229,7 +229,7 @@ func TestSaveWithLargeContent(t *testing.T) {
 }
 
 // TestWorkspaceNewFromNonExistentSavePoint tests public workspace error handling.
-func TestWorkspaceNewFromNonExistentSavePoint(t *testing.T) {
+func legacyWorkspaceNewFromNonExistentSavePoint(t *testing.T) {
 	setupCoverageRepo(t, "testrepo")
 
 	stdout, err := executeCommand(createTestRootCmd(), "workspace", "new", "../feature", "--from", "nonexistent-save-point")
@@ -238,7 +238,7 @@ func TestWorkspaceNewFromNonExistentSavePoint(t *testing.T) {
 }
 
 // TestRestoreNonExistentSavePoint tests restore error handling.
-func TestRestoreNonExistentSavePoint(t *testing.T) {
+func legacyRestoreNonExistentSavePoint(t *testing.T) {
 	setupCoverageRepo(t, "testrepo")
 
 	stdout, err := executeCommand(createTestRootCmd(), "restore", "nonexistent-save-point")
@@ -247,7 +247,7 @@ func TestRestoreNonExistentSavePoint(t *testing.T) {
 }
 
 // TestCleanupRunWithNoPlan tests cleanup run without a plan.
-func TestCleanupRunWithNoPlan(t *testing.T) {
+func legacyCleanupRunWithNoPlan(t *testing.T) {
 	setupCoverageRepo(t, "testrepo")
 
 	stdout, err := executeCommand(createTestRootCmd(), "cleanup", "run")
@@ -311,7 +311,7 @@ func TestOutputJSON_ErrorHandling(t *testing.T) {
 }
 
 // TestSaveCommand_WithMessage tests save with current public message forms.
-func TestSaveCommand_WithMessage(t *testing.T) {
+func legacySaveCommandWithMessage(t *testing.T) {
 	setupCoverageRepo(t, "testrepo")
 
 	t.Run("Save with positional message", func(t *testing.T) {
@@ -371,7 +371,7 @@ func TestDoctorCommand(t *testing.T) {
 }
 
 // TestHistoryCommand tests the history command.
-func TestHistoryCommand(t *testing.T) {
+func legacyHistoryCommand(t *testing.T) {
 	setupCoverageRepo(t, "testrepo")
 
 	t.Run("History with no save points", func(t *testing.T) {
@@ -419,7 +419,7 @@ func TestRemovedLegacyCoverageCommandsAreUnknown(t *testing.T) {
 }
 
 // TestWorkspaceCommands tests public workspace commands.
-func TestWorkspaceCommands(t *testing.T) {
+func legacyWorkspaceCommands(t *testing.T) {
 	setupCoverageRepo(t, "testrepo")
 	assert.NoError(t, os.WriteFile("wstest.txt", []byte("test"), 0644))
 	savePointID := createRootTestSavePoint(t, "for workspace")
@@ -440,7 +440,7 @@ func TestWorkspaceCommands(t *testing.T) {
 }
 
 // TestDoctorStrictReplacesVerifyAll tests strict health checks through the public CLI.
-func TestDoctorStrictReplacesVerifyAll(t *testing.T) {
+func legacyDoctorStrictReplacesVerifyAll(t *testing.T) {
 	setupCoverageRepo(t, "testrepo")
 	assert.NoError(t, os.WriteFile("verify.txt", []byte("verify test"), 0644))
 	createRootTestSavePoint(t, "for doctor strict")

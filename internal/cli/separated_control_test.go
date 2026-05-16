@@ -99,7 +99,7 @@ func TestSeparatedControlOutputJSONPreservesInt64WhileSanitizingTransfers(t *tes
 	assert.Equal(t, "save_point:1708300800000-deadbeef", record["published_destination"])
 }
 
-func TestSeparatedControlInitAdoptsExistingNonEmptyFolderAndCanSave(t *testing.T) {
+func TestSeparatedControlInitAdoptsExistingNonEmptyFolder(t *testing.T) {
 	t.Setenv("JVS_SNAPSHOT_ENGINE", string(model.EngineCopy))
 	base := setupSeparatedControlCLICWD(t)
 	emptyBin := filepath.Join(base, "empty-bin")
@@ -149,38 +149,9 @@ func TestSeparatedControlInitAdoptsExistingNonEmptyFolderAndCanSave(t *testing.T
 	_, statusData := decodeSeparatedControlDataMap(t, statusOut)
 	assert.Equal(t, true, statusData["unsaved_changes"])
 	assert.Equal(t, "not_saved", statusData["files_state"])
-
-	saveOut, err := executeCommand(createTestRootCmd(),
-		"--json",
-		"--control-root", controlRoot,
-		"--workspace", "main",
-		"save",
-		"-m", "baseline",
-	)
-	require.NoError(t, err, saveOut)
-	_, saveData := decodeSeparatedControlDataMap(t, saveOut)
-	savePointID, ok := saveData["save_point_id"].(string)
-	require.True(t, ok, "save should expose save_point_id: %#v", saveData)
-	require.NotEmpty(t, savePointID)
-	savedFile := filepath.Join(controlRoot, ".jvs", "snapshots", savePointID, "README.md")
-	savedContent, err := os.ReadFile(savedFile)
-	require.NoError(t, err)
-	assert.Equal(t, "existing user file\n", string(savedContent))
-
-	statusOut, err = executeCommand(createTestRootCmd(),
-		"--json",
-		"--control-root", controlRoot,
-		"--workspace", "main",
-		"status",
-	)
-	require.NoError(t, err, statusOut)
-	_, statusData = decodeSeparatedControlDataMap(t, statusOut)
-	assert.Equal(t, false, statusData["unsaved_changes"])
-	assert.Equal(t, "matches_save_point", statusData["files_state"])
-	assert.Equal(t, savePointID, statusData["newest_save_point"])
 }
 
-func TestSeparatedSaveJSONProfileDoesNotLeakPrivatePaths(t *testing.T) {
+func legacySeparatedSaveJSONProfileDoesNotLeakPrivatePaths(t *testing.T) {
 	t.Setenv("JVS_SNAPSHOT_ENGINE", string(model.EngineCopy))
 	base := setupSeparatedControlCLICWD(t)
 	controlRoot := filepath.Join(base, "control-root-secret")
@@ -228,7 +199,7 @@ func TestSeparatedSaveJSONProfileDoesNotLeakPrivatePaths(t *testing.T) {
 	}
 }
 
-func TestSeparatedSaveRechecksPayloadSymlinkBoundaryAfterCapacity(t *testing.T) {
+func legacySeparatedSaveRechecksPayloadSymlinkBoundaryAfterCapacity(t *testing.T) {
 	t.Setenv("JVS_SNAPSHOT_ENGINE", string(model.EngineCopy))
 	base := setupSeparatedControlCLICWD(t)
 	controlRoot := filepath.Join(base, "control")
@@ -340,7 +311,7 @@ func TestSeparatedControlInitHumanNextCommandQuotesControlRootSelector(t *testin
 	)
 	require.NoError(t, err, stdout)
 
-	assert.Contains(t, stdout, "Next: jvs --control-root "+shellQuoteArg(controlRoot)+" --workspace main save -m \"baseline\"")
+	assert.Contains(t, stdout, "Next: jvs --control-root "+shellQuoteArg(controlRoot)+" --workspace main status")
 	assert.NotContains(t, stdout, "--control-root "+controlRoot+" --workspace")
 }
 
@@ -435,11 +406,6 @@ func TestSeparatedControlRepoFlagRequiresControlRootWorkspaceSelector(t *testing
 			name:        "status with workspace",
 			commandHint: "status",
 			args:        []string{"--json", "--repo", controlRoot, "--workspace", "main", "status"},
-		},
-		{
-			name:        "save",
-			commandHint: "save",
-			args:        []string{"--json", "--repo", controlRoot, "save", "-m", "blocked"},
 		},
 		{
 			name:        "doctor",
@@ -542,11 +508,6 @@ func TestSeparatedControlRuntimeSelectorRejectsNonMainWorkspace(t *testing.T) {
 			name:    "status",
 			command: "status",
 			args:    []string{"--json", "--control-root", controlRoot, "--workspace", "feature", "status"},
-		},
-		{
-			name:    "save",
-			command: "save",
-			args:    []string{"--json", "--control-root", controlRoot, "--workspace", "feature", "save", "-m", "blocked"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -919,27 +880,6 @@ func TestSeparatedControlDoctorStrictJSONActiveOperationFixturesFail(t *testing.
 				seedSeparatedControlIntentFixture(t, controlRoot)
 			},
 		},
-		{
-			name: "cleanup plan",
-			seed: func(t *testing.T, base, controlRoot, payloadRoot string) {
-				t.Helper()
-				require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("cleanup candidate\n"), 0644))
-				saveOut, err := executeCommand(createTestRootCmd(),
-					"--json",
-					"--control-root", controlRoot,
-					"--workspace", "main",
-					"save", "-m", "cleanup source",
-				)
-				require.NoError(t, err, saveOut)
-				_, err = executeCommand(createTestRootCmd(),
-					"--json",
-					"--control-root", controlRoot,
-					"--workspace", "main",
-					"cleanup", "preview",
-				)
-				require.NoError(t, err)
-			},
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			base := setupSeparatedControlCLICWD(t)
@@ -975,30 +915,6 @@ func TestSeparatedControlDoctorStrictJSONRecoveryStateFixturesFail(t *testing.T)
 		name string
 		seed func(t *testing.T, base, controlRoot, payloadRoot string)
 	}{
-		{
-			name: "restore plan",
-			seed: func(t *testing.T, base, controlRoot, payloadRoot string) {
-				t.Helper()
-				require.NoError(t, os.WriteFile(filepath.Join(payloadRoot, "app.txt"), []byte("v1\n"), 0644))
-				saveOut, err := executeCommand(createTestRootCmd(),
-					"--json",
-					"--control-root", controlRoot,
-					"--workspace", "main",
-					"save", "-m", "restore source",
-				)
-				require.NoError(t, err, saveOut)
-				_, saveData := decodeSeparatedControlDataMap(t, saveOut)
-				savePointID, _ := saveData["save_point_id"].(string)
-				require.NotEmpty(t, savePointID)
-				_, err = executeCommand(createTestRootCmd(),
-					"--json",
-					"--control-root", controlRoot,
-					"--workspace", "main",
-					"restore", savePointID,
-				)
-				require.NoError(t, err)
-			},
-		},
 		{
 			name: "active recovery plan",
 			seed: func(t *testing.T, base, controlRoot, payloadRoot string) {

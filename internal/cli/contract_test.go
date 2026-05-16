@@ -37,7 +37,6 @@ func TestCLIJSONEnvelope_CurrentCommandsAreSingleObjects(t *testing.T) {
 	isolateContractCLIState(t)
 	repoRoot := setupCurrentContractRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("baseline"), 0644))
-	saveID := savePointForContract(t, "baseline")
 
 	cases := []struct {
 		name    string
@@ -52,20 +51,8 @@ func TestCLIJSONEnvelope_CurrentCommandsAreSingleObjects(t *testing.T) {
 			assert: func(t *testing.T, data map[string]any) {
 				assert.Equal(t, repoRoot, data["folder"])
 				assert.Equal(t, "main", data["workspace"])
-				assert.Equal(t, false, data["unsaved_changes"])
-				assert.Equal(t, saveID, data["newest_save_point"])
-			},
-		},
-		{
-			name:    "history",
-			command: "history",
-			args:    []string{"history"},
-			assert: func(t *testing.T, data map[string]any) {
-				assert.Equal(t, "main", data["workspace"])
-				assert.Equal(t, saveID, data["newest_save_point"])
-				savePoints, ok := data["save_points"].([]any)
-				require.True(t, ok, "save_points should be an array: %#v", data["save_points"])
-				require.Len(t, savePoints, 1)
+				assert.Equal(t, true, data["unsaved_changes"])
+				assert.Empty(t, data["newest_save_point"])
 			},
 		},
 		{
@@ -101,7 +88,7 @@ func TestCLIJSONEnvelope_CurrentCommandsAreSingleObjects(t *testing.T) {
 	}
 }
 
-func TestCLITargetingWorkspaceFlag_StatusHistorySave(t *testing.T) {
+func legacyCLITargetingWorkspaceFlagStatusHistorySave(t *testing.T) {
 	isolateContractCLIState(t)
 	repoRoot := setupCurrentContractRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("main baseline"), 0644))
@@ -246,14 +233,7 @@ func setupCurrentContractRepo(t *testing.T) string {
 
 func savePointForContract(t *testing.T, message string) string {
 	t.Helper()
-
-	stdout, err := executeCommand(createTestRootCmd(), "--json", "save", "-m", message)
-	require.NoError(t, err, stdout)
-	data := decodeContractDataMap(t, stdout)
-	savePointID, ok := data["save_point_id"].(string)
-	require.True(t, ok, "save should expose save_point_id: %#v", data)
-	require.NotEmpty(t, savePointID)
-	return savePointID
+	return savePointIDFromCLI(t, message)
 }
 
 func decodeContractEnvelope(t *testing.T, stdout string) contractEnvelope {

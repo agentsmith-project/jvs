@@ -2,13 +2,14 @@
 
 This directory has two audiences:
 
-- Users start in [docs/user/README.md](user/README.md).
+- Current pre-GA users start in [the repository README](../README.md) and
+  [the collapsed CLI spec](02_CLI_SPEC.md).
 - Contributors and maintainers use the contract, architecture, operations,
   release, and design indexes below.
 
-User tutorials should not depend on the implementation specs. When linking from
-an issue, release note, or support answer, send users to `docs/user/` unless
-they are explicitly working on JVS itself.
+`docs/user/` is historical legacy save/restore guidance until it is rewritten
+for the collapsed direct model. Do not use it for new release notes, support
+answers, or active product guidance.
 
 ## User Documentation
 
@@ -16,22 +17,15 @@ The release-facing user path is:
 
 | Document | Purpose |
 | --- | --- |
-| [User Docs](user/README.md) | User documentation index |
-| [Quickstart](user/quickstart.md) | First folder, first save point, first restore |
-| [Best Practices](user/best-practices.md) | Daily habits for saving, previewing, restoring, workspaces, and cleanup |
-| [Concepts](user/concepts.md) | Product vocabulary and mental model |
-| [Command Reference](user/commands.md) | Public command reference |
-| [Examples](user/examples.md) | Common workflows |
-| [Tutorials](user/tutorials.md) | Longer step-by-step project stories |
-| [FAQ](user/faq.md) | Frequently asked questions |
-| [Troubleshooting](user/troubleshooting.md) | Problems and fixes |
-| [Safety](user/safety.md) | What JVS changes, refuses, and protects |
-| [Recovery](user/recovery.md) | Interrupted restore recovery |
+| [README](../README.md) | Current pre-GA public entry point |
+| [Overview](00_OVERVIEW.md) | Collapsed active surface and direct-model boundaries |
+| [CLI Spec](02_CLI_SPEC.md) | Current release-facing public command surface |
+| [AFSCP Direct Contract](contracts/jvs-afscp-direct-v1.md) | Internal trusted platform contract |
 
 The top-level [Quickstart](QUICKSTART.md), [FAQ](FAQ.md),
-[Examples](EXAMPLES.md), and [Troubleshooting](TROUBLESHOOTING.md) pages are
-compatibility bridges to `docs/user/`. Keep new user-facing guidance in
-`docs/user/`.
+[Examples](EXAMPLES.md), [Troubleshooting](TROUBLESHOOTING.md), and
+`docs/user/` pages are legacy references until rewritten. Keep new active
+guidance in the collapsed docs listed above.
 
 ## Developer And Maintainer Documentation
 
@@ -48,7 +42,8 @@ behavior, public JSON fields, and help text:
 | Specification map | [Overview](00_OVERVIEW.md) | Current release-facing and supporting document map |
 | Product contract | [Product Plan](PRODUCT_PLAN.md) | Current product promises and release scope |
 | CLI contract | [CLI Spec](02_CLI_SPEC.md) | Public command behavior and JSON fields |
-| Restore contract | [Restore Spec](06_RESTORE_SPEC.md) | Preview/run behavior, safety choices, and recovery |
+| AFSCP direct contract | [AFSCP Direct Contract](contracts/jvs-afscp-direct-v1.md) | Trusted platform save/list/restore/status/doctor JSON surface |
+| Restore contract | [Restore Spec](06_RESTORE_SPEC.md) | Historical preview/run behavior, safety choices, and recovery |
 | Cleanup contract | [Cleanup Spec](08_GC_SPEC.md) | Preview/run cleanup behavior and protection reasons |
 | Go facade | [API Documentation](API_DOCUMENTATION.md) | Stable library entry points |
 | Architecture | [Architecture](ARCHITECTURE.md) | Implementation boundaries and component responsibilities |

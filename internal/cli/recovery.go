@@ -1166,5 +1166,4 @@ func init() {
 	recoveryCmd.AddCommand(recoveryStatusCmd)
 	recoveryCmd.AddCommand(recoveryResumeCmd)
 	recoveryCmd.AddCommand(recoveryRollbackCmd)
-	rootCmd.AddCommand(recoveryCmd)
 }

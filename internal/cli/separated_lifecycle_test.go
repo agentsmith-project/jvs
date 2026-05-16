@@ -130,11 +130,7 @@ func TestSeparatedLifecycleUnsupportedHumanOutputSaysNoFilesChanged(t *testing.T
 
 func TestSeparatedLifecycleWorkspaceNewFailsClosedJSON(t *testing.T) {
 	base, controlRoot, payloadRoot := setupSeparatedLifecycleRepo(t)
-	saveOut, err := executeCommand(createTestRootCmd(), separatedLifecycleArgs(controlRoot, "save", "-m", "source")...)
-	require.NoError(t, err, saveOut)
-	_, saveData := decodeSeparatedControlDataMap(t, saveOut)
-	sourceID, _ := saveData["save_point_id"].(string)
-	require.NotEmpty(t, sourceID)
+	sourceID := "not-required-for-external-lifecycle-unsupported"
 	targetFolder := filepath.Join(base, "feature-payload")
 	before := captureSeparatedLifecycleRoots(t, controlRoot, payloadRoot)
 

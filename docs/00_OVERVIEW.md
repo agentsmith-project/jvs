@@ -1,37 +1,36 @@
 # Overview
 
-**Document set:** active save point contract
+**Document set:** pre-GA collapsed active surface
 
-JVS saves real folders as save points. A user starts from a normal filesystem
-folder, saves managed files, reviews history, opens read-only views, and
-restores selected content when needed.
+JVS records real-folder state as save points, but the pre-GA active user
+surface is intentionally collapsed. The current release-facing path is setup,
+status/health inspection, and project clone/metadata operations that are still
+needed while the internal direct AFSCP contract is validated.
 
 Primary public path:
 
 ```bash
 jvs init
-jvs save -m "baseline"
-jvs history
-jvs view <save> [path]
-jvs restore <save>
+jvs status
+jvs doctor
+jvs repo clone <target-folder> --dry-run
 ```
 
 Core guarantees:
 
 1. Workspaces are real folders, not virtualized folders.
-2. JVS control data is never saved as workspace content.
-3. A save point is immutable once published.
-4. Restore is preview-first and does not rewrite save point history.
-5. Interrupted restore is closed by recovery status/resume/rollback.
-6. Cleanup is review-first and must protect workspace history, open views,
-   active recovery plans, active operations, and imported clone history.
-7. Internal storage names do not define product vocabulary, commands,
+2. JVS control data is never workspace content.
+3. Internal direct AFSCP save points are immutable once published.
+4. Direct AFSCP hot paths do not perform managed HOME content sync, content
+   digesting, compression, size preflight, or recursive copying as a backup
+   path.
+5. Internal storage names do not define product vocabulary, commands,
    selectors, examples, or user mental models.
 
 Current active specs:
 
 - `02_CLI_SPEC.md`
-- `06_RESTORE_SPEC.md`
+- `contracts/jvs-afscp-direct-v1.md`
 - `PRODUCT_PLAN.md`
 - `ARCHITECTURE.md`
 - `13_OPERATION_RUNBOOK.md`

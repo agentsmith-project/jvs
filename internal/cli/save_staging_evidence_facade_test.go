@@ -1,3 +1,5 @@
+//go:build legacy_public_cli
+
 package cli
 
 import (
@@ -28,7 +30,7 @@ func init() {
 	}
 }
 
-func TestSaveConcurrentWorkspaceChangeHumanErrorUsesPublicVocabulary(t *testing.T) {
+func legacySaveConcurrentWorkspaceChangeHumanErrorUsesPublicVocabulary(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
 	restoreHook := snapshot.SetAfterSnapshotPayloadStagedHookForTest(func(model.SnapshotID, string) error {
@@ -76,7 +78,7 @@ func TestSaveConcurrentWorkspaceChangeKeepsPathSources(t *testing.T) {
 	assertPublicPathSourcesFromConfig(t, cfg, "app.txt", firstID)
 }
 
-func TestSaveConcurrentWorkspaceChangeJSONErrorUsesPublicVocabulary(t *testing.T) {
+func legacySaveConcurrentWorkspaceChangeJSONErrorUsesPublicVocabulary(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
 	t.Setenv(testSaveStagingMutationEnv, "app.txt")

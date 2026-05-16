@@ -14,7 +14,6 @@ import (
 	"github.com/agentsmith-project/jvs/internal/audit"
 	"github.com/agentsmith-project/jvs/internal/clonehistory"
 	"github.com/agentsmith-project/jvs/internal/gc"
-	"github.com/agentsmith-project/jvs/internal/integrity"
 	"github.com/agentsmith-project/jvs/internal/lifecycle"
 	"github.com/agentsmith-project/jvs/internal/repo"
 	"github.com/agentsmith-project/jvs/internal/snapshot"
@@ -120,7 +119,6 @@ const (
 	ErrorCodeReadyDescriptorInvalid      = "E_READY_DESCRIPTOR_INVALID"
 	ErrorCodeReadyDescriptorMissing      = snapshot.PublishStateCodeReadyDescriptorMissing
 	ErrorCodeReadyMissing                = snapshot.PublishStateCodeReadyMissing
-	ErrorCodeStrictVerifyFailed          = "E_STRICT_VERIFY_FAILED"
 	ErrorCodeTmpControlInvalid           = "E_TMP_CONTROL_INVALID"
 	ErrorCodeTmpOrphan                   = "E_TMP_ORPHAN"
 	ErrorCodeAuditScanFailed             = "E_AUDIT_SCAN_FAILED"
@@ -942,47 +940,12 @@ func (d *Doctor) snapshotReadyForMetadataAdvance(snapshotID model.SnapshotID) er
 		return err
 	}
 
-	snapshotDir, err := repo.SnapshotPathForRead(d.repoRoot, snapshotID)
-	if err != nil {
-		return fmt.Errorf("snapshot path invalid: %w", err)
-	}
-
-	readyExists, err := readyMarkerExists(snapshotDir)
-	if err != nil {
-		return fmt.Errorf("READY marker invalid: %w", err)
-	}
-	if !readyExists {
-		return errors.New("READY marker missing")
-	}
-
-	descriptorPath, err := repo.SnapshotDescriptorPathForRead(d.repoRoot, snapshotID)
-	if err != nil {
-		return fmt.Errorf("descriptor path invalid: %w", err)
-	}
-	if err := validateDescriptorForMetadataAdvance(descriptorPath, snapshotID); err != nil {
-		return err
-	}
-	return nil
-}
-
-func validateDescriptorForMetadataAdvance(descriptorPath string, snapshotID model.SnapshotID) error {
-	data, err := os.ReadFile(descriptorPath)
-	if err != nil {
-		return fmt.Errorf("read descriptor: %w", err)
-	}
-	var desc model.Descriptor
-	if err := json.Unmarshal(data, &desc); err != nil {
-		return fmt.Errorf("parse descriptor: %w", err)
-	}
-	if desc.SnapshotID != snapshotID {
-		return fmt.Errorf("descriptor snapshot ID %q does not match requested %q", desc.SnapshotID, snapshotID)
-	}
-	computedChecksum, err := integrity.ComputeDescriptorChecksum(&desc)
-	if err != nil {
-		return fmt.Errorf("compute descriptor checksum: %w", err)
-	}
-	if computedChecksum != desc.DescriptorChecksum {
-		return errors.New("descriptor checksum mismatch")
+	_, issue := snapshot.InspectPublishState(d.repoRoot, snapshotID, snapshot.PublishStateOptions{
+		RequireReady:             true,
+		VerifyDescriptorChecksum: true,
+	})
+	if issue != nil {
+		return errors.New(issue.Message)
 	}
 	return nil
 }
@@ -1029,11 +992,9 @@ func (d *Doctor) Check(strict bool) (*Result, error) {
 	// 7. Check for orphan operations
 	d.checkOrphanIntents(result)
 
-	// 8. Check save point integrity (if strict)
+	// 8. Check metadata-only strict diagnostics.
 	if strict {
 		d.checkImportedCloneHistory(result)
-		d.checkSnapshotIntegrity(result)
-		// 9. Check audit chain (if strict)
 		d.checkAuditChain(result)
 	}
 
@@ -1619,43 +1580,6 @@ func (d *Doctor) checkImportedCloneHistory(result *Result) {
 
 func readyMarkerExists(snapshotDir string) (bool, error) {
 	return snapshot.PublishReadyMarkerExists(snapshotDir)
-}
-
-func (d *Doctor) checkSnapshotIntegrity(result *Result) {
-	verifier := verify.NewVerifier(d.repoRoot)
-	results, err := verifier.VerifyAll(true)
-	if err != nil {
-		result.Findings = append(result.Findings, Finding{
-			Category:    "integrity",
-			Description: fmt.Sprintf("verification failed: %v", err),
-			Severity:    "error",
-			ErrorCode:   ErrorCodeStrictVerifyFailed,
-		})
-		return
-	}
-
-	for _, r := range results {
-		if r.TamperDetected || r.Error != "" || severityAffectsHealth(r.Severity) {
-			severity := r.Severity
-			if severity == "" {
-				severity = "error"
-			}
-			description := fmt.Sprintf("snapshot %s verification failed", r.SnapshotID)
-			if r.Error != "" {
-				description = fmt.Sprintf("snapshot %s: %s", r.SnapshotID, r.Error)
-			}
-			errorCode := r.ErrorCode
-			if errorCode == "" {
-				errorCode = ErrorCodeStrictVerifyFailed
-			}
-			result.Findings = append(result.Findings, Finding{
-				Category:    "integrity",
-				Description: description,
-				Severity:    severity,
-				ErrorCode:   errorCode,
-			})
-		}
-	}
 }
 
 func (d *Doctor) checkOrphanTmp(result *Result) {

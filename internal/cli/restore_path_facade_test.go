@@ -1,3 +1,5 @@
+//go:build legacy_public_cli
+
 package cli
 
 import (

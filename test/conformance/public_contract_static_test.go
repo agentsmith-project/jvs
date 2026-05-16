@@ -101,6 +101,102 @@ func TestDocs_PublicTerminologyContract(t *testing.T) {
 	}
 }
 
+func TestDocs_ActivePublicSurfaceCollapsedAwayFromLegacySaveRestore(t *testing.T) {
+	docs := []string{
+		"README.md",
+		"docs/00_OVERVIEW.md",
+		"docs/02_CLI_SPEC.md",
+	}
+	forbiddenFragments := []string{
+		"jvs save",
+		"jvs restore",
+		"restore --run",
+		"restore discard",
+		"--discard-unsaved",
+		"--save-first",
+		"save_profile",
+		"content_root_hash",
+		"copy fallback",
+		"capacity scan",
+		"capacity check",
+	}
+
+	for _, doc := range docs {
+		t.Run(doc, func(t *testing.T) {
+			scanPublicDocLines(t, doc, func(lineNo int, line string) {
+				lowerLine := strings.ToLower(line)
+				for _, forbidden := range forbiddenFragments {
+					if strings.Contains(lowerLine, forbidden) {
+						t.Fatalf("%s:%d active public surface still exposes legacy save/restore contract fragment %q:\n%s",
+							doc, lineNo, forbidden, line)
+					}
+				}
+			})
+		})
+	}
+}
+
+func TestCLI_ActivePublicSurfaceDoesNotRegisterLegacySaveRestore(t *testing.T) {
+	for _, tc := range []struct {
+		path      string
+		required  []string
+		forbidden []string
+	}{
+		{
+			path: "internal/cli/root.go",
+			forbidden: []string{
+				`"save":`,
+				`"restore":`,
+				`jvs save`,
+				`jvs restore`,
+			},
+		},
+		{
+			path: "internal/cli/init.go",
+			forbidden: []string{
+				`jvs save`,
+				` save -m `,
+			},
+		},
+		{
+			path:     "internal/cli/save.go",
+			required: []string{"Legacy inactive public CLI implementation"},
+			forbidden: []string{
+				`rootCmd.AddCommand(saveCmd)`,
+			},
+		},
+		{
+			path:     "internal/cli/restore.go",
+			required: []string{"Legacy inactive public CLI implementation"},
+			forbidden: []string{
+				`rootCmd.AddCommand(restoreCmd)`,
+			},
+		},
+		{
+			path:     "internal/cli/public_json.go",
+			required: []string{"Legacy inactive public JSON helpers"},
+		},
+		{
+			path:     "pkg/jvs/client.go",
+			required: []string{"Legacy inactive public Go facade"},
+		},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			body := readRepoFile(t, tc.path)
+			for _, required := range tc.required {
+				if !strings.Contains(body, required) {
+					t.Fatalf("%s must declare legacy non-active marker %q", tc.path, required)
+				}
+			}
+			for _, forbidden := range tc.forbidden {
+				if strings.Contains(body, forbidden) {
+					t.Fatalf("%s active public surface still contains legacy registration or hint %q", tc.path, forbidden)
+				}
+			}
+		})
+	}
+}
+
 func TestConformancePublicProfileUsesStableCommands(t *testing.T) {
 	for _, dir := range []string{"test/conformance"} {
 		entries, err := os.ReadDir(repoFile(t, dir))
@@ -1221,11 +1317,11 @@ func TestDocs_ReleaseBlockingManifestIncludesLinkedActiveMarkdownDocs(t *testing
 	}
 }
 
-func TestDocs_PublicCommandManifestCoversReleaseBlockingDocs(t *testing.T) {
+func TestDocs_PublicCommandManifestCoversCollapsedActiveCommandDocs(t *testing.T) {
 	commandDocs := publicCommandDocs()
-	for _, doc := range releaseBlockingContractDocs() {
+	for _, doc := range collapsedActivePublicCommandDocs() {
 		if !staticStringSliceContains(commandDocs, doc) {
-			t.Fatalf("public command docs manifest must cover release-blocking doc %s", doc)
+			t.Fatalf("public command docs manifest must cover collapsed active command doc %s", doc)
 		}
 	}
 }
@@ -1323,6 +1419,7 @@ func TestDocs_ActiveNonReleaseFacingExampleDocsDeclareStatus(t *testing.T) {
 
 func TestDocs_AllMarkdownDocsAreReleaseClassified(t *testing.T) {
 	classified := append([]string{}, activePublicContractDocs()...)
+	classified = append(classified, activeInternalContractDocs()...)
 	classified = append(classified, archivedNonReleaseFacingDocs()...)
 	classified = append(classified, activeNonReleaseFacingDesignDocs()...)
 	classified = append(classified, activeNonReleaseFacingReferenceDocs()...)
@@ -5146,8 +5243,17 @@ func activeNonReleaseFacingExampleDocs() []string {
 	return domainQuickstartDocs()
 }
 
+func activeInternalContractDocs() []string {
+	return []string{
+		"docs/contracts/jvs-afscp-direct-v1.md",
+	}
+}
+
 func nonReleaseFacingDocs() []string {
 	docs := append([]string{}, archivedNonReleaseFacingDocs()...)
+	for _, doc := range activeInternalContractDocs() {
+		docs = appendUniqueString(docs, doc)
+	}
 	for _, doc := range activeNonReleaseFacingDesignDocs() {
 		docs = appendUniqueString(docs, doc)
 	}
@@ -5175,7 +5281,15 @@ func activePublicContractDocs() []string {
 }
 
 func publicCommandDocs() []string {
-	return releaseBlockingContractDocs()
+	return collapsedActivePublicCommandDocs()
+}
+
+func collapsedActivePublicCommandDocs() []string {
+	return []string{
+		"README.md",
+		"docs/00_OVERVIEW.md",
+		"docs/02_CLI_SPEC.md",
+	}
 }
 
 func historyTagPublicSurfaceDocs() []string {
@@ -7647,6 +7761,7 @@ func scanPublicDocLines(t *testing.T, doc string, visit func(lineNo int, line st
 	lineNo := 0
 	codePackageSectionLevel := 0
 	internalStorageSectionLevel := 0
+	inactiveLegacySectionLevel := 0
 	for scanner.Scan() {
 		lineNo++
 		line := scanner.Text()
@@ -7657,14 +7772,23 @@ func scanPublicDocLines(t *testing.T, doc string, visit func(lineNo int, line st
 			if internalStorageSectionLevel > 0 && level <= internalStorageSectionLevel {
 				internalStorageSectionLevel = 0
 			}
+			if inactiveLegacySectionLevel > 0 && level <= inactiveLegacySectionLevel {
+				inactiveLegacySectionLevel = 0
+			}
 			if markdownHeadingNamesCodePackage(line) {
 				codePackageSectionLevel = level
 			}
 			if markdownHeadingNamesInternalStorage(line) {
 				internalStorageSectionLevel = level
 			}
+			if markdownHeadingNamesInactiveLegacySurface(line) {
+				inactiveLegacySectionLevel = level
+			}
 		}
 		if codePackageSectionLevel > 0 {
+			continue
+		}
+		if inactiveLegacySectionLevel > 0 {
 			continue
 		}
 		if internalStorageSectionLevel > 0 &&
@@ -7690,6 +7814,15 @@ func markdownHeadingNamesCodePackage(line string) bool {
 func markdownHeadingNamesInternalStorage(line string) bool {
 	lower := strings.ToLower(line)
 	return strings.Contains(lower, "internal storage") || strings.Contains(lower, "storage layout")
+}
+
+func markdownHeadingNamesInactiveLegacySurface(line string) bool {
+	lower := strings.ToLower(line)
+	return strings.Contains(lower, "inactive legacy") ||
+		strings.Contains(lower, "legacy restore and recovery") ||
+		strings.TrimSpace(lower) == "## view" ||
+		strings.TrimSpace(lower) == "## workspace creation" ||
+		strings.TrimSpace(lower) == "## cleanup layering"
 }
 
 func lineNamesInternalStoragePath(line string) bool {

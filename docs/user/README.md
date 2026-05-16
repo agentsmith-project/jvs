@@ -1,5 +1,11 @@
 # JVS User Guide
 
+> Historical legacy guide: this directory still describes the old public
+> save/restore workflow. It is not the pre-GA active surface. For current
+> release-facing guidance use `README.md`, `docs/00_OVERVIEW.md`,
+> `docs/02_CLI_SPEC.md`, and the internal direct AFSCP contract at
+> `docs/contracts/jvs-afscp-direct-v1.md`.
+
 JVS helps you save the state of a real folder, look back at earlier saved
 states, and safely bring files back when you need them. You do not need to
 learn the implementation. The everyday ideas are:

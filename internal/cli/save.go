@@ -1,5 +1,8 @@
 package cli
 
+// Legacy inactive public CLI implementation retained for historical tests only.
+// Do not register saveCmd on rootCmd; active save is the internal afscp direct path.
+
 import (
 	"errors"
 	"fmt"
@@ -61,12 +64,9 @@ Examples:
 		}); err != nil {
 			return err
 		}
-		saveProfile := profile.Profile(transferRecord)
-		saveProfile.ApplyDescriptorFallback(desc)
-
 		if jsonOutput {
 			return outputJSONWithSeparatedControl(
-				publicSavePointCreated(desc, unsavedChanges, transferDataFromRecord(transferRecord), saveProfile),
+				publicSavePointCreated(desc, unsavedChanges, transferDataFromRecord(transferRecord)),
 				ctx.Separated,
 				separatedDoctorStrictNotRun,
 			)
@@ -230,5 +230,4 @@ func publicSavePointVocabulary(value string) string {
 
 func init() {
 	saveCmd.Flags().StringVarP(&saveMessage, "message", "m", "", "message for this save point")
-	rootCmd.AddCommand(saveCmd)
 }

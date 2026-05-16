@@ -1,5 +1,8 @@
 package cli
 
+// Legacy inactive public CLI implementation retained for historical tests only.
+// Do not register restoreCmd on rootCmd; active restore is the internal afscp direct path.
+
 import (
 	"errors"
 	"fmt"
@@ -1464,5 +1467,4 @@ func init() {
 	restoreCmd.Flags().StringVar(&restorePath, "path", "", "restore only this workspace-relative path")
 	restoreCmd.Flags().StringVar(&restoreRunPlanID, "run", "", "execute a restore preview plan")
 	restoreCmd.AddCommand(restoreDiscardCmd)
-	rootCmd.AddCommand(restoreCmd)
 }

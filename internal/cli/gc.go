@@ -118,7 +118,6 @@ func init() {
 	cleanupRunCmd.Flags().StringVar(&cleanupPlanID, "plan-id", "", "plan ID to execute")
 	cleanupCmd.AddCommand(cleanupPreviewCmd)
 	cleanupCmd.AddCommand(cleanupRunCmd)
-	rootCmd.AddCommand(cleanupCmd)
 }
 
 func printCleanupProtectionGroups(groups []model.GCProtectionGroup) {

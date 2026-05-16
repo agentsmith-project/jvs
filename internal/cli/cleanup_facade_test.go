@@ -1,3 +1,5 @@
+//go:build legacy_public_cli
+
 package cli
 
 import (
@@ -80,7 +82,7 @@ func TestCleanupPreviewExplainsImportedCloneHistoryReason(t *testing.T) {
 	assert.Equal(t, []any{savePointID}, imported["save_points"])
 }
 
-func TestDoctorRepairRuntimeInvalidatesCopiedCleanupPlanPublicly(t *testing.T) {
+func legacyDoctorRepairRuntimeInvalidatesCopiedCleanupPlanPublicly(t *testing.T) {
 	isolateContractCLIState(t)
 	repoRoot := setupCurrentContractRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("baseline"), 0644))
@@ -139,7 +141,7 @@ func TestCleanupPreviewJSONActiveOperationScanFailureUsesPublicLanguage(t *testi
 	assertPublicCleanupErrorOmitsInternalActiveOperationVocabulary(t, env.Error.Code)
 }
 
-func TestCleanupPreviewJSONDamagedReadyUsesPublicLanguage(t *testing.T) {
+func legacyCleanupPreviewJSONDamagedReadyUsesPublicLanguage(t *testing.T) {
 	isolateContractCLIState(t)
 	repoRoot := setupCurrentContractRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("baseline"), 0644))
@@ -160,7 +162,7 @@ func TestCleanupPreviewJSONDamagedReadyUsesPublicLanguage(t *testing.T) {
 	assertPublicCleanupErrorOmitsInternalActiveOperationVocabulary(t, env.Error.Code)
 }
 
-func TestCleanupRunHumanDamagedReadyUsesPublicLanguage(t *testing.T) {
+func legacyCleanupRunHumanDamagedReadyUsesPublicLanguage(t *testing.T) {
 	isolateContractCLIState(t)
 	repoRoot := setupCurrentContractRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("baseline"), 0644))

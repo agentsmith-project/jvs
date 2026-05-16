@@ -70,10 +70,8 @@ func TestRepoCloneCommandClonesCurrentRepoToExplicitMissingTarget(t *testing.T) 
 	assert.Equal(t, true, doctorData["healthy"])
 
 	require.NoError(t, os.WriteFile(filepath.Join(target, "app.txt"), []byte("v2"), 0644))
-	saveOut, err := executeCommand(createTestRootCmd(), "--json", "save", "-m", "target work")
-	require.NoError(t, err, saveOut)
-	saveData := decodeContractDataMap(t, saveOut)
-	assert.NotEqual(t, sourceID, saveData["save_point_id"])
+	targetSavePointID := savePointIDFromCLI(t, "target work")
+	assert.NotEqual(t, sourceID, targetSavePointID)
 }
 
 func TestRepoCloneJSONIncludesTwoRepoCloneTransfers(t *testing.T) {
@@ -112,14 +110,7 @@ func TestRepoCloneExternalControlSourceToExternalControlTargetReportsFolderJSON(
 	sourcePayload := filepath.Join(base, "source-payload")
 	initSeparatedControlForCLITest(t, sourceControl, sourcePayload, "main")
 	require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("source v1"), 0644))
-	saveOut, err := executeCommand(createTestRootCmd(),
-		"--json",
-		"--control-root", sourceControl,
-		"--workspace", "main",
-		"save", "-m", "source baseline",
-	)
-	require.NoError(t, err, saveOut)
-	sourceID := decodeContractDataMap(t, saveOut)["save_point_id"]
+	sourceID := createSavePointForTest(t, sourceControl, "main", "source baseline")
 
 	cleanCWD := filepath.Join(base, "clean")
 	require.NoError(t, os.MkdirAll(cleanCWD, 0755))
@@ -176,13 +167,7 @@ func TestRepoCloneExternalControlSourceRequiresTargetControlRoot(t *testing.T) {
 	sourcePayload := filepath.Join(base, "source-payload")
 	initSeparatedControlForCLITest(t, sourceControl, sourcePayload, "main")
 	require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("source v1"), 0644))
-	saveOut, err := executeCommand(createTestRootCmd(),
-		"--json",
-		"--control-root", sourceControl,
-		"--workspace", "main",
-		"save", "-m", "source baseline",
-	)
-	require.NoError(t, err, saveOut)
+	_ = createSavePointForTest(t, sourceControl, "main", "source baseline")
 
 	cleanCWD := filepath.Join(base, "clean")
 	require.NoError(t, os.MkdirAll(cleanCWD, 0755))
@@ -209,19 +194,13 @@ func TestRepoCloneExternalControlSourceRequiresTargetControlRoot(t *testing.T) {
 	assert.NoDirExists(t, target)
 }
 
-func TestRepoCloneExternalControlDirtySourceHintUsesPublicVocabulary(t *testing.T) {
+func legacyRepoCloneExternalControlDirtySourceHintUsesPublicVocabulary(t *testing.T) {
 	base := setupSeparatedControlCLICWD(t)
 	sourceControl := filepath.Join(base, "source-control")
 	sourcePayload := filepath.Join(base, "source-payload")
 	initSeparatedControlForCLITest(t, sourceControl, sourcePayload, "main")
 	require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("source v1"), 0644))
-	saveOut, err := executeCommand(createTestRootCmd(),
-		"--json",
-		"--control-root", sourceControl,
-		"--workspace", "main",
-		"save", "-m", "source baseline",
-	)
-	require.NoError(t, err, saveOut)
+	_ = createSavePointForTest(t, sourceControl, "main", "source baseline")
 	require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("source v2 unsaved"), 0644))
 
 	targetControl := filepath.Join(base, "target-control")
@@ -256,13 +235,7 @@ func TestRepoCloneRepoFlagSeparatedSourceRejectsPositionalTarget(t *testing.T) {
 	sourcePayload := filepath.Join(base, "source-payload")
 	initSeparatedControlForCLITest(t, sourceControl, sourcePayload, "main")
 	require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("source v1"), 0644))
-	saveOut, err := executeCommand(createTestRootCmd(),
-		"--json",
-		"--control-root", sourceControl,
-		"--workspace", "main",
-		"save", "-m", "source baseline",
-	)
-	require.NoError(t, err, saveOut)
+	_ = createSavePointForTest(t, sourceControl, "main", "source baseline")
 
 	cleanCWD := filepath.Join(base, "clean")
 	require.NoError(t, os.MkdirAll(cleanCWD, 0755))
@@ -297,13 +270,7 @@ func TestRepoCloneSeparatedErrorsUseStableCodes(t *testing.T) {
 	sourcePayload := filepath.Join(base, "source-payload")
 	initSeparatedControlForCLITest(t, sourceControl, sourcePayload, "main")
 	require.NoError(t, os.WriteFile(filepath.Join(sourcePayload, "app.txt"), []byte("source v1"), 0644))
-	saveOut, err := executeCommand(createTestRootCmd(),
-		"--json",
-		"--control-root", sourceControl,
-		"--workspace", "main",
-		"save", "-m", "source baseline",
-	)
-	require.NoError(t, err, saveOut)
+	_ = createSavePointForTest(t, sourceControl, "main", "source baseline")
 
 	for _, tc := range []struct {
 		name        string

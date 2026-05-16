@@ -24,7 +24,7 @@ var doctorCmd = &cobra.Command{
 	Long: `Check repository health.
 
 Runs diagnostic checks on the repository and reports any issues.
-Use --strict to include full save point integrity verification.
+Use --strict only for metadata/audit diagnostics; it does not read workspace or saved content.
 Use --repair-runtime to execute safe automatic repairs.`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
@@ -153,7 +153,7 @@ func runSeparatedStrictDoctorJSON(repairRuntime bool) {
 }
 
 func init() {
-	doctorCmd.Flags().BoolVar(&doctorStrict, "strict", false, "include full save point integrity verification")
+	doctorCmd.Flags().BoolVar(&doctorStrict, "strict", false, "include metadata/audit diagnostics without reading saved content")
 	doctorCmd.Flags().BoolVar(&doctorRepair, "repair-runtime", false, "execute safe automatic repairs")
 	doctorCmd.Flags().BoolVar(&doctorRepairList, "repair-list", false, "list available repair actions")
 	rootCmd.AddCommand(doctorCmd)

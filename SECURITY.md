@@ -35,16 +35,19 @@ Instead, please report vulnerabilities responsibly by:
 
 ## Security Model Overview
 
-JVS is designed with a **save-point-first, filesystem-native** security architecture:
+JVS is currently in a pre-GA direct-model collapse. JVS owns small metadata and
+delegates workspace/HOME file operations and access control to the filesystem
+and JuiceFS.
 
-### Integrity Protection (Two-Layer Model)
+### Metadata Integrity
 
-1. **Descriptor Checksum**: Each save point descriptor includes a SHA-256 checksum covering all descriptor fields
-2. **Content Root Hash**: Each save point includes a SHA-256 hash of the complete saved workspace-folder content tree
+Direct AFSCP metadata objects carry SHA-256 checksums over JVS metadata only.
+Those checksums never read, hash, walk, sample, or summarize workspace/HOME
+content. They are fail-closed metadata corruption checks, not a proof of saved
+file content safety.
 
-Verification requires both layers to pass:
 ```bash
-jvs doctor --strict  # Strong repository health and integrity check
+jvs afscp --control-root <control-root> --home <home> doctor --json
 ```
 
 ### Audit Trail
@@ -56,7 +59,8 @@ All mutating operations append an audit record to `.jvs/audit/audit.jsonl` with:
 - Actor identity
 - Hash chain linkage for tamper evidence
 
-Run `jvs doctor --strict` to validate audit chain integrity.
+`jvs doctor --strict` remains a metadata/audit diagnostic spelling for legacy
+repository maintenance. It must not be used as a file-content hash proof.
 
 ### v0.x Accepted Risks
 
@@ -94,12 +98,11 @@ JVS relies on OS-level filesystem permissions for access control:
 
 ## Security Best Practices for Users
 
-1. **Run `jvs doctor --strict`** after any suspicious system activity
-2. **Run `jvs doctor --strict`** periodically to check repository health
-3. **Back up repository metadata safely** only as part of a JVS-aware
-   migration procedure: treat non-portable JVS runtime state as
-   destination-local, then run `jvs doctor --strict --repair-runtime` on the
-   restored destination
+1. **Run direct AFSCP `doctor --json`** for platform-managed metadata health.
+2. **Treat file-content access control as JuiceFS/filesystem policy**, not a
+   JVS hash proof.
+3. **Back up repository metadata safely** only as part of a JVS-aware migration
+   procedure; non-portable runtime state is destination-local.
 4. **Use JuiceFS authentication** to control access to underlying storage
 5. **Never commit JVS control data** to Git; it is metadata, not workspace content
 

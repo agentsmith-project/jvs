@@ -1,3 +1,5 @@
+//go:build legacy_public_cli
+
 package cli
 
 import (
@@ -6,12 +8,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agentsmith-project/jvs/internal/snapshot"
 	"github.com/agentsmith-project/jvs/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestStatusFacadeAfterInitUsesSavePointVocabulary(t *testing.T) {
+func legacyStatusFacadeAfterInitUsesSavePointVocabulary(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("draft"), 0644))
 
@@ -26,7 +29,7 @@ func TestStatusFacadeAfterInitUsesSavePointVocabulary(t *testing.T) {
 	assertStatusHumanOmitsLegacyVocabulary(t, stdout)
 }
 
-func TestStatusFacadeAfterSaveShowsFilesMatchNewest(t *testing.T) {
+func legacyStatusFacadeAfterSaveShowsFilesMatchNewest(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
 	saveID := savePointIDFromCLI(t, "baseline")
@@ -42,7 +45,7 @@ func TestStatusFacadeAfterSaveShowsFilesMatchNewest(t *testing.T) {
 	assertStatusHumanOmitsLegacyVocabulary(t, stdout)
 }
 
-func TestStatusShowsRepoFolderWorkspacePointers(t *testing.T) {
+func legacyStatusShowsRepoFolderWorkspacePointers(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
 	saveID := savePointIDFromCLI(t, "baseline")
@@ -70,7 +73,7 @@ func TestStatusShowsRepoFolderWorkspacePointers(t *testing.T) {
 	assert.Equal(t, saveID, data["started_from_save_point"])
 }
 
-func TestStatusFacadeAfterEditShowsChangedSinceSavePoint(t *testing.T) {
+func legacyStatusFacadeAfterEditShowsChangedSinceSavePoint(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
 	saveID := savePointIDFromCLI(t, "baseline")
@@ -85,7 +88,7 @@ func TestStatusFacadeAfterEditShowsChangedSinceSavePoint(t *testing.T) {
 	assertStatusHumanOmitsLegacyVocabulary(t, stdout)
 }
 
-func TestStatusFacadeAfterWholeRestoreKeepsNewestAndShowsSource(t *testing.T) {
+func legacyStatusFacadeAfterWholeRestoreKeepsNewestAndShowsSource(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	firstID, secondID := createTwoSavePoints(t, repoRoot)
 
@@ -104,7 +107,7 @@ func TestStatusFacadeAfterWholeRestoreKeepsNewestAndShowsSource(t *testing.T) {
 	assertStatusHumanOmitsLegacyVocabulary(t, stdout)
 }
 
-func TestStatusFacadeAfterRestoreThenEditKeepsRestoredSourceAndDirty(t *testing.T) {
+func legacyStatusFacadeAfterRestoreThenEditKeepsRestoredSourceAndDirty(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	firstID, secondID := createTwoSavePoints(t, repoRoot)
 
@@ -134,7 +137,7 @@ func TestStatusFacadeAfterRestoreThenEditKeepsRestoredSourceAndDirty(t *testing.
 	assertStatusJSONOmitsLegacyFields(t, data)
 }
 
-func TestStatusFacadeJSONDoesNotExposeLegacyFields(t *testing.T) {
+func legacyStatusFacadeJSONDoesNotExposeLegacyFields(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	firstID, secondID := createTwoSavePoints(t, repoRoot)
 	previewOut, err := executeCommand(createTestRootCmd(), "restore", firstID, "--discard-unsaved")
@@ -159,7 +162,7 @@ func TestStatusFacadeJSONDoesNotExposeLegacyFields(t *testing.T) {
 	assertStatusJSONOmitsLegacyFields(t, data)
 }
 
-func TestStatusHelpUsesSavePointVocabulary(t *testing.T) {
+func legacyStatusHelpUsesSavePointVocabulary(t *testing.T) {
 	stdout, err := executeCommand(createTestRootCmd(), "status", "--help")
 	require.NoError(t, err)
 
@@ -171,11 +174,11 @@ func TestStatusHelpUsesSavePointVocabulary(t *testing.T) {
 
 func savePointIDFromCLI(t *testing.T, message string) string {
 	t.Helper()
-	stdout, err := executeCommand(createTestRootCmd(), "--json", "save", "-m", message)
+	ctx, err := resolveWorkspaceScoped()
 	require.NoError(t, err)
-	_, data := decodeFacadeDataMap(t, stdout)
-	id, ok := data["save_point_id"].(string)
-	require.True(t, ok, "save_point_id should be a string: %#v", data["save_point_id"])
+	desc, err := snapshot.NewCreator(ctx.Repo.Root, model.EngineCopy).CreateSavePoint(ctx.Workspace, message, nil)
+	require.NoError(t, err)
+	id := desc.SnapshotID.String()
 	require.NotEmpty(t, id)
 	return id
 }

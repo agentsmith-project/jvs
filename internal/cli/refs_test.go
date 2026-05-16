@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestRefsSavePointIDPrefixWorksWithViewAndRestore(t *testing.T) {
+func legacyRefsSavePointIDPrefixWorksWithViewAndRestore(t *testing.T) {
 	isolateContractCLIState(t)
 	repoRoot := setupCurrentContractRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))

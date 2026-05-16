@@ -1,9 +1,12 @@
 # CLI Spec
 
-**Status:** active save point public contract
+**Status:** pre-GA collapsed active public surface
 
-This spec defines the user-facing JVS command surface. The public model is a
-real folder with save points.
+This spec defines the release-facing JVS command surface after the pre-GA
+collapse. The active user path is setup, status/health inspection, and project
+clone/metadata operations. Legacy public save/restore workflows remain in the
+repository as inactive implementation and historical reference, but they are
+not current user guidance.
 
 ## Public Vocabulary
 
@@ -17,14 +20,8 @@ procedures.
 | `project` / `repo` | The JVS-managed folder, its stable repo identity, workspace list, and save point history. |
 | `control data` | JVS-owned metadata, save point storage, and runtime state. In the ordinary shape it lives in `.jvs/`; in the external control root shape it lives outside the workspace folder. |
 | `external control root` | Explicit advanced/operator control data location outside the workspace folder, selected with `--control-root <path> --workspace main`. |
-| `save point` | An immutable project history node created from a workspace's managed files. |
-| `save` | Create a new save point from the active workspace. |
-| `history` | List project save points through the active workspace's pointer and provenance. |
-| `view` | Open a read-only view of a save point or a path inside it. |
-| `restore` | Copy managed files from a save point into a workspace. |
+| `save point` | An immutable project history node. Public creation/application commands are not active in this pre-GA surface. |
 | `unsaved changes` | Managed files differ from the known save point/source state, or JVS cannot prove they match. |
-| `cleanup` | Product term for deleting unprotected save point storage after preview and review. |
-| `recovery plan` | Durable plan that lets an interrupted restore be inspected, resumed, or rolled back. |
 
 ## Root Help Surface
 
@@ -32,36 +29,22 @@ The visible root help starts with the low-mental-overhead path:
 
 ```text
 jvs init
-jvs save -m "baseline"
-jvs history
-jvs view <save> [path]
-jvs restore <save>
+jvs status
+jvs doctor
+jvs repo clone <target-folder> --dry-run
 ```
 
 Visible public commands:
 
 ```text
-cleanup preview
-cleanup run
 completion
 doctor
-history
 init
-recovery
 repo clone
 repo detach
 repo move
 repo rename
-restore
-save
 status
-view
-workspace delete
-workspace list
-workspace move
-workspace new
-workspace path
-workspace rename
 ```
 
 Commands outside this visible surface are not part of this public contract.
@@ -75,10 +58,8 @@ They must not appear in public help, examples, or release-facing workflows.
 - Non-zero exit means failure.
 - `--json` emits exactly one JSON object to stdout.
 - JVS does not mutate the caller's shell CWD.
-- Commands that read or materialize a save point must resolve the source to one
-  concrete save point ID before acting.
-- Commands that overwrite managed files must refuse unsaved changes by default
-  unless the user chooses an explicit safety option.
+- Commands that overwrite or clone managed files must refuse ambiguous or
+  unsafe targets by default.
 
 ## External Control Root
 
@@ -96,7 +77,7 @@ second product model.
   `--workspace main` for this profile.
 - A bare workspace folder cannot safely auto-discover an external control root;
   operator scripts must pass `--control-root C --workspace main` for status,
-  save, history, view, restore, recovery, cleanup, doctor, and clone.
+  doctor, and clone.
 - For external control roots, human `status` labels the external control root as
   `Control data: C`, while `Folder` remains the workspace folder.
 - JSON `status` uses `data.control_root` and omits `data.repo` for external
@@ -105,18 +86,14 @@ second product model.
   main` is the explicit selector for this workflow.
 - `--repo` is not an external control root selector; it remains an advanced
   target assertion for ordinary project paths.
-- External control root doctor is strict JSON only. Use
-  `jvs --json --control-root C --workspace main doctor --strict` for
-  inspection. To remove a stale repository mutation lock through the official
-  runtime repair path, use
+- External control root doctor is JSON-only and currently keeps the historical
+  `--strict` flag as a metadata/audit diagnostic selector. It does not hash or
+  walk workspace content. Use `jvs --json --control-root C --workspace main
+  doctor --strict` for inspection. To remove a stale repository mutation lock
+  through the official runtime repair path, use
   `jvs --json --control-root C --workspace main doctor --strict --repair-runtime`.
   External-control runtime repair is fail-closed for non-strict or non-JSON
   variants and is not a workspace binding repair path.
-- For external control roots, successful restore run leaves no active recovery.
-  Completed restore plan residue is non-blocking for `jvs recovery status`,
-  `jvs doctor --strict`, and `jvs repo clone`. Pending, active, or malformed
-  restore/recovery state must be reported through `jvs recovery status`,
-  `jvs doctor --strict`, or the blocked command's public diagnostics.
 - Any public `run_command`, `next_commands`, or `recommended_next_command`
   emitted while targeting an external control root must be copyable from a
   clean current directory and include `--control-root C --workspace main`.
@@ -161,12 +138,10 @@ control root when those fields apply.
 
 ## Transfer Reporting JSON
 
-The implemented public CLI contract exposes `data.transfers[]` for commands
-that currently materialize or copy files: save, restore preview/run, workspace
-new, view, and repo clone. Each transfer record describes the source role,
-destination role, materialization destination, capability probe path, published
-destination, effective engine, optimized flag, performance class, degraded
-reasons, warnings, and whether the copy method was checked for this operation.
+The collapsed public CLI contract does not promote transfer-reporting JSON for
+legacy save/restore flows. Project clone may expose command-specific planning
+or transfer summaries, but clients must not infer a generic transfer contract
+unless a future release explicitly promotes it.
 
 Transfer roles and locations are public reporting vocabulary, not internal
 storage evidence. Roles use user-facing concepts such as `workspace_content`,
@@ -182,21 +157,19 @@ The `warnings` and `degraded_reasons` arrays are also public summaries. They
 must preserve useful human context without exposing raw engine stdout/stderr
 diagnostics, temporary staging paths, or internal storage paths.
 
-This contract does not promise `data.transfers[]` for commands that do not
-materialize or copy files. Do not infer transfers for status, history, cleanup,
-doctor, view close, workspace rename, workspace move/delete, repo move/rename,
-or repo detach unless a future release explicitly promotes that field.
+Direct AFSCP JSON is specified separately in
+`docs/contracts/jvs-afscp-direct-v1.md` and is not a public user CLI surface.
 
 ## Save Point IDs
 
-Public commands that accept `<save>` require one concrete save point:
+Inactive legacy commands that accept a save point require one concrete save
+point:
 
 - a full save point ID
 - a unique save point ID prefix
 
-Labels, messages, and tags are not restore or view targets in the save point
-contract. Search commands may return candidates, but the user or automation
-must choose an explicit save point ID before a mutating operation.
+Labels, messages, and tags are not save point targets in the collapsed active
+surface.
 
 ## Setup
 
@@ -219,7 +192,7 @@ Human output must show:
 - that files were not moved or copied
 - `Newest save point: none`
 - `Unsaved changes: yes`
-- the next suggested save command
+- the next suggested status command
 
 Required JSON `data` fields include:
 
@@ -514,52 +487,13 @@ changed since save point`, `Files were last restored from`, `Started from save
 point`, and `Unsaved changes`. Ordinary `.jvs/` status prints `Repo`; external
 control root status prints `Control data` instead.
 
-## Save And History
+## Inactive Legacy Save Point Commands
 
-### `jvs save [-m message] [--json]`
-
-Create a save point from the active workspace and add it to the project history
-graph. A message is required, either as `-m/--message` or as the positional
-message accepted by the implementation.
-
-Rules:
-
-- The save captures the workspace managed files, excluding JVS control data and
-  runtime state. GA has no configurable file filtering.
-- Save must hold the workspace mutation lock.
-- Capacity and staging checks must fail before publishing a partial save point.
-- If the workspace was created with `workspace new <folder> --from <save>`,
-  the first save has no inherited history parent and records
-  `started_from_save_point`.
-- If files were restored before saving, the new save records whole-workspace or
-  path provenance so later status and cleanup protection can explain it.
-
-Required JSON `data` fields:
-
-- `save_point_id`
-- `workspace`
-- `message`
-- `created_at`
-- `newest_save_point`
-- `started_from_save_point` when applicable
-- `restored_from` when applicable
-- `restored_paths` when applicable
-- `unsaved_changes`
-- `transfers`
-- `save_profile`
-
-`save_profile` is a non-sensitive observability object for diagnosing slow save
-paths. It must not expose filesystem paths. Required fields:
-
-- `schema_version`
-- `requested_engine`
-- `effective_engine`
-- `optimized_transfer`
-- `clone_mode`
-- `performance_class`
-- `total_duration_ms`
-- `phase_durations_ms`
-- `phase_counts` when a measured phase has aggregate counts
+The previous public save and restore CLI flows are not part of the current
+active user surface. Their implementation files may remain in the repository
+while pre-GA direct AFSCP work converges, but active docs and root help must not
+guide users through those paths. The current direct contract lives in
+`docs/contracts/jvs-afscp-direct-v1.md`.
 
 ### `jvs history [--path <path>] [--limit <n>|-n <n>] [--grep <text>] [--json]`
 
@@ -627,204 +561,14 @@ Required JSON `data` fields include:
 Close a read-only view, clear JVS-owned view state, and release the associated
 active view cleanup protection.
 
-## Restore
+## Legacy Restore And Recovery Surface
 
-### `jvs restore [save-point] [--path <path>] [--save-first|--discard-unsaved] [--json]`
-
-Create a restore preview plan. Preview is the default. It does not change
-files and does not change workspace history.
-
-Forms:
-
-- `jvs restore <save>` previews whole-workspace restore from a save point.
-- `jvs restore <save> --path <path>` previews single-path restore.
-- `jvs restore --path <path>` lists candidate save points for that path.
-
-Safety options:
-
-- `--save-first` creates a save point for unsaved changes before restore run.
-- `--discard-unsaved` discards unsaved changes for the operation.
-- The two options are mutually exclusive.
-
-Stable restore JSON `data` shapes:
-
-Runnable preview (`jvs restore <save>`, `jvs restore <save> --path <path>`,
-or either form with a safety option when a runnable plan is created):
-
-- `mode: "preview"`
-- `plan_id`
-- `scope`
-- `folder`
-- `workspace`
-- `source_save_point`
-- `path` for path restores
-- `newest_save_point`
-- `history_head`
-- `expected_newest_save_point`
-- `expected_folder_evidence` or `expected_path_evidence`
-- `managed_files`
-- `options`
-- `transfers`
-- `history_changed: false`
-- `files_changed: false`
-- `run_command`
-
-Decision preview (`jvs restore <save>` or `jvs restore <save> --path <path>`
-when unsaved changes require an explicit safety choice before writing a
-runnable plan):
-
-- `mode: "decision_preview"`
-- `scope`
-- `folder`
-- `workspace`
-- `source_save_point`
-- `path` for path restores
-- `decision_reason`
-- `newest_save_point`
-- `history_head`
-- `expected_newest_save_point`
-- `expected_folder_evidence` or `expected_path_evidence`
-- `managed_files`
-- `transfers`
-- `history_changed: false`
-- `files_changed: false`
-- `next_commands`
-- no `run_command`
-
-Path candidates (`jvs restore --path <path>` without a save point):
-
-- `mode: "candidates"`
-- `folder`
-- `workspace`
-- `path`
-- `candidates`
-- `next_commands`
-- `files_changed: false`
-- no `plan_id`
-- no `run_command`
-
-For external control roots, `run_command` and `next_commands` are full
-commands that include `--control-root C --workspace main`.
-
-### `jvs restore --run <restore-plan-id> [--json]`
-
-Execute a previously created restore preview plan. Run must reload the plan and
-revalidate the expected target state before writing files. Runtime options are
-fixed by the preview plan; changing `--save-first`, `--discard-unsaved`, or
-`--path` requires a new preview.
-
-On success, a successful restore run leaves no active recovery and completed
-restore plan residue is non-blocking. Only pending, stale, active, or malformed
-restore/recovery state blocks mutation or clone publish; `jvs recovery status`,
-`jvs doctor --strict`, and a blocked `jvs repo clone` must report a public
-diagnostic entry instead of requiring callers to inspect control data files.
-External `jvs recovery status --json` uses `restore_state` for pending or
-stale restore preview diagnostics, including `pending_restore_preview`,
-`stale_restore_preview`, and `blocking` semantics.
-
-### `jvs restore discard <restore-plan-id>` [--json]
-
-Discard a restore preview plan without changing managed files or workspace
-history. This is the public cleanup entry for a stale restore preview, including
-external control root previews whose workspace folder changed after preview.
-Callers must not remove private control data files directly.
-
-Required JSON `data` fields:
-
-- `mode: "discard"`
-- `plan_id`
-- `folder`
-- `workspace`
-- `source_save_point`
-- `path` for path restore plans
-- `plan_discarded: true`
-- `files_changed: false`
-- `history_changed: false`
-- `recommended_next_command`
-
-Required run JSON fields for whole-workspace restore:
-
-- `mode: "run"`
-- `plan_id`
-- `folder`
-- `workspace`
-- `restored_save_point`
-- `source_save_point`
-- `newest_save_point`
-- `history_head`
-- `content_source`
-- `unsaved_changes`
-- `files_state`
-- `history_changed: false`
-- `files_changed: true`
-- `transfers`
-
-Required run JSON fields for path restore:
-
-- `mode: "run"`
-- `plan_id`
-- `folder`
-- `workspace`
-- `restored_path`
-- `from_save_point`
-- `source_save_point`
-- `newest_save_point`
-- `history_head`
-- `content_source`
-- `path_source_recorded`
-- `path_sources`
-- `unsaved_changes`
-- `files_state`
-- `history_changed: false`
-- `files_changed: true`
-- `transfers`
-
-## Restore Recovery
-
-### `jvs recovery status [recovery-plan] [--json]`
-
-List active recovery plans or show one plan. A recovery plan records the
-restore plan, workspace, folder, source save point, optional path, last error,
-backup availability, and recommended next command.
-
-Successful restore run leaves no active recovery. Completed restore plan
-residue is non-blocking and is not an active recovery plan.
-
-For external control roots, status JSON may include `data.restore_state`
-(`restore_state`) when a
-restore preview state is relevant and no active recovery detail is requested.
-Both list and detail status paths must use the shared recovery-state classifier
-before exposing plan details, so malformed external identity or boundary state
-fails closed consistently with `doctor --strict` and `repo clone`.
-The object fields are:
-
-- `state`
-- `blocking`
-- `plan_id`
-- `recovery_plan_id`
-- `message`
-- `recommended_next_command`
-
-Stable `restore_state.state` enum values and blocking semantics:
-
-- `stable`: non-blocking; normally omitted.
-- `pending_restore_preview`: blocking; the preview is still runnable and the
-  recommended next command is `restore --run <restore-plan-id>`.
-- `stale_restore_preview`: blocking; the workspace folder changed after
-  preview and the recommended next command is
-  `restore discard <restore-plan-id>`.
-- `active_recovery`: blocking; surfaced through `plans[]` or recovery detail,
-  with `recovery status`, `recovery resume`, or `recovery rollback` as the next
-  public commands.
-- `completed_restore_residue`: non-blocking; normally omitted. External
-  control roots may classify resolved restore residue this way only after the
-  matching resolved recovery plan passes separated identity and boundary
-  checks.
-- `malformed_blocking`: blocking; `recovery status` fails closed with public
-  diagnostics and points to `doctor --strict --json`.
-
-For external control roots, `recommended_next_command` must include
-`--control-root C --workspace main`.
+The previous public restore preview, apply, and discard flow is inactive in the
+collapsed active surface. Root help and release-facing examples must not guide
+users to it. Existing recovery implementation may remain as legacy code while
+direct AFSCP converges; active diagnostics should prefer `status`, `doctor`,
+and project clone failures that do not require callers to inspect private
+control data files.
 
 ### `jvs recovery resume <recovery-plan> [--json]`
 
@@ -1038,18 +782,20 @@ Required run JSON `data` fields:
 
 ### `jvs doctor [--strict] [--repair-runtime] [--repair-list] [--json]`
 
-Check repository health. `--strict` includes full save point integrity
-verification.
+Check repository health. `--strict` is limited to metadata and audit
+diagnostics; it must not read, hash, or walk workspace content or saved content.
 
 For ordinary `.jvs/` projects, `--repair-runtime` is limited to safe runtime
 cleanup and destination-local registered workspace path rebinding after
 filesystem migration. If a physically copied ordinary project still has a
-registered workspace path that points at the source folder, strict doctor
+registered workspace path that points at the source folder, doctor
 reports an unhealthy workspace path binding until `--repair-runtime` can prove
 and store the destination binding. A skipped or failed rebind therefore leaves
-`doctor --strict --repair-runtime` unhealthy.
+`doctor --strict --repair-runtime` unhealthy without using content hashes as a
+safety proof.
 
-For external control roots, doctor is strict JSON only:
+For external control roots, doctor is JSON-only and currently uses the
+historical `--strict` spelling for metadata/audit diagnostics:
 `jvs --json --control-root C --workspace main doctor --strict`. A runtime-safe
 stale lock repair entry is also available at
 `jvs --json --control-root C --workspace main doctor --strict --repair-runtime`.

@@ -1,5 +1,8 @@
 package jvs
 
+// Legacy inactive public Go facade retained for historical library tests.
+// Internal afscp direct is the active integration surface for pre-GA.
+
 import (
 	"context"
 	"errors"

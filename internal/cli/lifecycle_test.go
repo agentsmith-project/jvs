@@ -1,3 +1,5 @@
+//go:build legacy_public_cli
+
 package cli
 
 import (
@@ -73,7 +75,7 @@ func TestLifecycleNotInsideWorkspaceHintDoesNotSuggestLegacyMainDirectory(t *tes
 	assert.NotContains(t, jvsErr.Hint, "main/")
 }
 
-func TestLifecycleCleanupPreviewUsesCurrentContract(t *testing.T) {
+func legacyLifecycleCleanupPreviewUsesCurrentContract(t *testing.T) {
 	isolateContractCLIState(t)
 	repoRoot := setupCurrentContractRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("baseline"), 0644))

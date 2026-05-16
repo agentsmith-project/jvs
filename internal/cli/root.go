@@ -40,29 +40,21 @@ var (
 
 const cliJSONSchemaVersion = 1
 
-const publicRootLong = `JVS keeps save points for a folder.
+const publicRootLong = `JVS keeps control data for real folders.
 
 Start with:
   jvs init
-  jvs save -m "baseline"
-  jvs history
-  jvs view <save> [path]
-  jvs restore <save>`
+  jvs status
+  jvs doctor
+  jvs repo clone <target-folder> --dry-run`
 
 var publicRootCommandNames = map[string]bool{
-	"cleanup":    true,
 	"completion": true,
 	"doctor":     true,
 	"help":       true,
-	"history":    true,
 	"init":       true,
 	"repo":       true,
-	"recovery":   true,
-	"restore":    true,
-	"save":       true,
 	"status":     true,
-	"view":       true,
-	"workspace":  true,
 }
 
 type cliJSONEnvelope struct {

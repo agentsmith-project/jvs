@@ -1,3 +1,5 @@
+//go:build legacy_public_cli
+
 package cli
 
 import (
@@ -14,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestInitSaveHistoryGoldenFacade(t *testing.T) {
+func legacyInitSaveHistoryGoldenFacade(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "README.md"), []byte("hello"), 0644))
 
@@ -31,7 +33,7 @@ func TestInitSaveHistoryGoldenFacade(t *testing.T) {
 	assertNoOldSavePointVocabulary(t, historyOut)
 }
 
-func TestSaveCommandHumanOutputUsesSavePointVocabulary(t *testing.T) {
+func legacySaveCommandHumanOutputUsesSavePointVocabulary(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
 
@@ -47,7 +49,7 @@ func TestSaveCommandHumanOutputUsesSavePointVocabulary(t *testing.T) {
 	assertNoOldSavePointVocabulary(t, stdout)
 }
 
-func TestSaveCommandJSONUsesSavePointSchema(t *testing.T) {
+func legacySaveCommandJSONUsesSavePointSchema(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
 
@@ -90,7 +92,7 @@ func TestSaveCommandJSONUsesSavePointSchema(t *testing.T) {
 	assertNoOldSavePointVocabulary(t, publicDataWithoutTransfers(t, data))
 }
 
-func TestSaveCommandJSONIncludesSaveProfile(t *testing.T) {
+func legacySaveCommandJSONIncludesSaveProfile(t *testing.T) {
 	t.Setenv("JVS_SNAPSHOT_ENGINE", string(model.EngineCopy))
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
@@ -144,7 +146,7 @@ func TestSaveCommandJSONIncludesSaveProfile(t *testing.T) {
 	assertNoOldSavePointVocabulary(t, string(profileJSON))
 }
 
-func TestHistoryCommandHumanOutputUsesSavePointVocabulary(t *testing.T) {
+func legacyHistoryCommandHumanOutputUsesSavePointVocabulary(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 
 	stdout, err := executeCommand(createTestRootCmd(), "history")
@@ -163,7 +165,7 @@ func TestHistoryCommandHumanOutputUsesSavePointVocabulary(t *testing.T) {
 	assertNoOldSavePointVocabulary(t, stdout)
 }
 
-func TestHistoryCommandJSONUsesSavePointSchema(t *testing.T) {
+func legacyHistoryCommandJSONUsesSavePointSchema(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
 	_, err := executeCommand(createTestRootCmd(), "save", "-m", "baseline")
@@ -188,7 +190,7 @@ func TestHistoryCommandJSONUsesSavePointSchema(t *testing.T) {
 	assertNoCheckpointSnapshotWorktreeVocabulary(t, string(env.Data))
 }
 
-func TestHistoryCommandUsesCurrentPointerAfterRestoreState(t *testing.T) {
+func legacyHistoryCommandUsesCurrentPointerAfterRestoreState(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
 	firstOut, err := executeCommand(createTestRootCmd(), "--json", "save", "-m", "first")
@@ -224,7 +226,7 @@ func TestHistoryCommandUsesCurrentPointerAfterRestoreState(t *testing.T) {
 	assertNoCheckpointSnapshotWorktreeVocabulary(t, human)
 }
 
-func TestSaveCommandAfterRestoreCreatesNewSavePointFromNewestParent(t *testing.T) {
+func legacySaveCommandAfterRestoreCreatesNewSavePointFromNewestParent(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
 	firstOut, err := executeCommand(createTestRootCmd(), "--json", "save", "-m", "first")
@@ -291,7 +293,7 @@ func TestSaveCommandAfterRestoreCreatesNewSavePointFromNewestParent(t *testing.T
 	assertNoOldSavePointVocabulary(t, human)
 }
 
-func TestRootHelpShowsSaveAndHistoryNotCheckpoint(t *testing.T) {
+func legacyRootHelpShowsSaveAndHistoryNotCheckpoint(t *testing.T) {
 	stdout, err := executeCommand(createTestRootCmd(), "--help")
 	require.NoError(t, err)
 
@@ -301,7 +303,7 @@ func TestRootHelpShowsSaveAndHistoryNotCheckpoint(t *testing.T) {
 	assertNoCheckpointSnapshotWorktreeVocabulary(t, stdout)
 }
 
-func TestSaveAndHistoryHelpUseSavePointVocabulary(t *testing.T) {
+func legacySaveAndHistoryHelpUseSavePointVocabulary(t *testing.T) {
 	for _, args := range [][]string{{"save", "--help"}, {"history", "--help"}} {
 		stdout, err := executeCommand(createTestRootCmd(), args...)
 		require.NoError(t, err)
@@ -310,7 +312,7 @@ func TestSaveAndHistoryHelpUseSavePointVocabulary(t *testing.T) {
 	}
 }
 
-func TestSaveCommandDoesNotCaptureControlData(t *testing.T) {
+func legacySaveCommandDoesNotCaptureControlData(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "app.txt"), []byte("v1"), 0644))
 	require.FileExists(t, filepath.Join(repoRoot, ".jvs", "format_version"))

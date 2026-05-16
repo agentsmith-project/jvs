@@ -71,7 +71,7 @@ Advanced platform workflows can place control data outside the folder with
 		fmt.Println("Files were not moved or copied.")
 		fmt.Println("Newest save point: none")
 		fmt.Println("Unsaved changes: yes")
-		fmt.Println("Next: jvs save -m \"baseline\"")
+		fmt.Println("Next: jvs status")
 		fmt.Printf("Capabilities: write=%s juicefs=%t reflink=%s copy=%t recommended=%s\n",
 			capabilities.Write.Confidence,
 			capabilities.JuiceFS.Supported,
@@ -161,7 +161,7 @@ func runSeparatedInit(args []string) error {
 	for _, warning := range capabilities.Warnings {
 		fmt.Printf("Warning: %s\n", warning)
 	}
-	fmt.Println("Next: jvs --control-root " + cleanHintPath(ctx.ControlRoot) + " --workspace " + ctx.Workspace + " save -m \"baseline\"")
+	fmt.Println("Next: jvs --control-root " + cleanHintPath(ctx.ControlRoot) + " --workspace " + ctx.Workspace + " status")
 	return nil
 }
 

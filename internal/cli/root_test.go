@@ -111,22 +111,23 @@ func TestRootCommand_Help(t *testing.T) {
 	for _, line := range []string{
 		"Start with:",
 		"jvs init",
-		`jvs save -m "baseline"`,
-		"jvs history",
-		"jvs view <save> [path]",
-		"jvs restore <save>",
+		"jvs status",
+		"jvs doctor",
+		"jvs repo clone <target-folder> --dry-run",
 	} {
 		assert.Contains(t, stdout, line)
 	}
-	for _, command := range []string{"init", "save", "status", "history", "view", "restore", "repo", "workspace", "recovery", "doctor", "cleanup", "completion", "help"} {
+	for _, command := range []string{"init", "status", "repo", "doctor", "completion", "help"} {
 		assertRootHelpListsCommand(t, stdout, command)
+	}
+	for _, command := range []string{"save", "restore", "history", "view", "workspace", "recovery", "cleanup"} {
+		assertRootHelpOmitsCommand(t, stdout, command)
 	}
 	for _, word := range []string{
 		"fork",
 		"gc",
 		"pin",
 		"internal",
-		"clone",
 		"import",
 		"checkpoint",
 		"snapshot",
@@ -157,6 +158,13 @@ func assertRootHelpListsCommand(t *testing.T, help, command string) {
 	assert.True(t, pattern.MatchString(help), "help should list %q:\n%s", command, help)
 }
 
+func assertRootHelpOmitsCommand(t *testing.T, help, command string) {
+	t.Helper()
+
+	pattern := regexp.MustCompile(`(?m)^\s+` + regexp.QuoteMeta(command) + `\s+`)
+	assert.False(t, pattern.MatchString(help), "help should not list %q:\n%s", command, help)
+}
+
 func assertRootHelpOmitsWord(t *testing.T, help, word string) {
 	t.Helper()
 
@@ -166,6 +174,8 @@ func assertRootHelpOmitsWord(t *testing.T, help, word string) {
 
 func TestRootCommand_RemovedOldPublicCommandsAreUnknown(t *testing.T) {
 	for _, oldCommand := range []string{
+		"save",
+		"restore",
 		"checkpoint",
 		"snapshot",
 		"fork",
@@ -189,7 +199,26 @@ func TestRootCommand_RemovedOldPublicCommandsAreUnknown(t *testing.T) {
 	}
 }
 
-func TestWorkspaceCommand_HelpListsPublicManagementSubcommands(t *testing.T) {
+func TestPublicSurfaceCollapsedLegacySaveRestoreCommandsAreUnknown(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "save", args: []string{"save", "--help"}},
+		{name: "restore preview", args: []string{"restore", "abc123"}},
+		{name: "restore run", args: []string{"restore", "--run", "restore-plan-id"}},
+		{name: "restore discard", args: []string{"restore", "discard", "restore-plan-id"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, err := executeCommand(createTestRootCmd(), tc.args...)
+			require.Error(t, err)
+			assert.Empty(t, stdout)
+			assert.Contains(t, err.Error(), "unknown command")
+		})
+	}
+}
+
+func legacyWorkspaceCommandHelpListsPublicManagementSubcommands(t *testing.T) {
 	stdout, err := executeCommand(createTestRootCmd(), "workspace", "--help")
 	require.NoError(t, err)
 
@@ -201,7 +230,7 @@ func TestWorkspaceCommand_HelpListsPublicManagementSubcommands(t *testing.T) {
 	assert.NotContains(t, stdout, "checkpoint")
 }
 
-func TestWorkspaceLeafHelpUsesLeafUsageAndArgs(t *testing.T) {
+func legacyWorkspaceLeafHelpUsesLeafUsageAndArgs(t *testing.T) {
 	for _, tc := range []struct {
 		args      []string
 		wantUsage string
@@ -247,7 +276,7 @@ func TestRepoCloneHelpDocumentsExternalControlTargetWithoutPayloadAlias(t *testi
 	assert.NotContains(t, stdout, "external-control clones")
 }
 
-func TestWorkspaceCommand_RenameIsNameOnlyAndUpdatesExternalLocator(t *testing.T) {
+func legacyWorkspaceCommandRenameIsNameOnlyAndUpdatesExternalLocator(t *testing.T) {
 	dir := setupTestDir(t)
 	repoPath := filepath.Join(dir, "testrepo")
 	require.NoError(t, os.Mkdir(repoPath, 0755))
@@ -299,7 +328,7 @@ func TestWorkspaceCommand_RenameIsNameOnlyAndUpdatesExternalLocator(t *testing.T
 	assert.Equal(t, originalFolder, status.Folder)
 }
 
-func TestWorkspaceCommand_RenameMainFailsWithRepoRenameGuidance(t *testing.T) {
+func legacyWorkspaceCommandRenameMainFailsWithRepoRenameGuidance(t *testing.T) {
 	setupCoverageRepo(t, "wsmainrename")
 
 	stdout, err := executeCommand(createTestRootCmd(), "workspace", "rename", "main", "trunk")
@@ -308,7 +337,7 @@ func TestWorkspaceCommand_RenameMainFailsWithRepoRenameGuidance(t *testing.T) {
 	assert.Equal(t, "main workspace is the repo root; use jvs repo rename to rename the folder.", err.Error())
 }
 
-func TestWorkspaceCommand_RenameRerunResumesPendingLocatorRewrite(t *testing.T) {
+func legacyWorkspaceCommandRenameRerunResumesPendingLocatorRewrite(t *testing.T) {
 	repoPath, _ := setupCoverageRepo(t, "wspendingrename")
 	require.NoError(t, os.WriteFile("file.txt", []byte("baseline"), 0644))
 	saveID := createRootTestSavePoint(t, "baseline")
@@ -355,7 +384,7 @@ func TestWorkspaceCommand_RenameRerunResumesPendingLocatorRewrite(t *testing.T) 
 	assert.Equal(t, "new-feature", status.Workspace)
 }
 
-func TestWorkspaceCommand_ListPathAndDelete(t *testing.T) {
+func legacyWorkspaceCommandListPathAndDelete(t *testing.T) {
 	dir := setupTestDir(t)
 	repoPath := filepath.Join(dir, "testrepo")
 	require.NoError(t, os.Mkdir(repoPath, 0755))
@@ -417,7 +446,7 @@ func TestInitCommand_CreatesRepo(t *testing.T) {
 	assert.NoDirExists(t, "testrepo/main")
 }
 
-func TestHistoryCommand_Empty(t *testing.T) {
+func legacyHistoryCommandEmpty(t *testing.T) {
 	setupTestDir(t)
 	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 	require.NoError(t, os.Chdir(repoPath))
@@ -429,7 +458,7 @@ func TestHistoryCommand_Empty(t *testing.T) {
 	assert.NotContains(t, stdout, "checkpoint")
 }
 
-func TestHistoryCommand_WithSavePoints(t *testing.T) {
+func legacyHistoryCommandWithSavePoints(t *testing.T) {
 	setupTestDir(t)
 	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 	require.NoError(t, os.Chdir(repoPath))
@@ -447,7 +476,7 @@ func TestHistoryCommand_WithSavePoints(t *testing.T) {
 	assert.Equal(t, firstID, history.SavePoints[1].SavePointID)
 }
 
-func TestRestoreCommand_RestoresSavePoint(t *testing.T) {
+func legacyRestoreCommandRestoresSavePoint(t *testing.T) {
 	setupTestDir(t)
 	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 	require.NoError(t, os.Chdir(repoPath))
@@ -472,7 +501,7 @@ func TestRestoreCommand_RestoresSavePoint(t *testing.T) {
 	assert.Equal(t, "version1", string(content))
 }
 
-func TestRestoreHelp(t *testing.T) {
+func legacyRestoreHelp(t *testing.T) {
 	stdout, err := executeCommand(createTestRootCmd(), "restore", "--help")
 	require.NoError(t, err)
 	assert.Contains(t, stdout, "restore")
@@ -481,11 +510,12 @@ func TestRestoreHelp(t *testing.T) {
 	assert.NotContains(t, stdout, "snapshot")
 }
 
-func TestDoctorHelpUsesSavePointIntegrityVocabulary(t *testing.T) {
+func TestDoctorHelpUsesMetadataDiagnosticsVocabulary(t *testing.T) {
 	stdout, err := executeCommand(createTestRootCmd(), "doctor", "--help")
 	require.NoError(t, err)
 
-	assert.Contains(t, stdout, "save point integrity")
+	assert.Contains(t, stdout, "metadata/audit diagnostics")
+	assert.Contains(t, stdout, "does not read workspace or saved content")
 	assert.NotContains(t, stdout, "checkpoint")
 	assert.NotContains(t, stdout, "snapshot")
 	assert.NotContains(t, stdout, "worktree")
@@ -537,7 +567,7 @@ func TestDoctorJSONOutput(t *testing.T) {
 	assert.NotContains(t, string(env.Data), "snapshot")
 }
 
-func TestCleanupCommand_Preview(t *testing.T) {
+func legacyCleanupCommandPreview(t *testing.T) {
 	setupTestDir(t)
 	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 	require.NoError(t, os.Chdir(repoPath))
@@ -552,7 +582,7 @@ func TestCleanupCommand_Preview(t *testing.T) {
 	assert.NotContains(t, stdout, "checkpoint")
 }
 
-func TestCleanupCommand_RejectsExtraArgs(t *testing.T) {
+func legacyCleanupCommandRejectsExtraArgs(t *testing.T) {
 	setupTestDir(t)
 	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 	require.NoError(t, os.Chdir(repoPath))
@@ -570,7 +600,7 @@ func TestCleanupCommand_RejectsExtraArgs(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestCleanupCommand_PreviewJSON(t *testing.T) {
+func legacyCleanupCommandPreviewJSON(t *testing.T) {
 	setupTestDir(t)
 	repoPath := initLegacyRepoForCLITest(t, "testrepo")
 	require.NoError(t, os.Chdir(repoPath))
@@ -695,12 +725,7 @@ func findChildCommand(t *testing.T, cmd *cobra.Command, name string) *cobra.Comm
 func createRootTestSavePoint(t *testing.T, note string) string {
 	t.Helper()
 
-	stdout, err := executeCommand(createTestRootCmd(), "--json", "save", "-m", note)
-	require.NoError(t, err, stdout)
-	var saved publicSavePointCreatedRecord
-	decodeRootJSONData(t, stdout, &saved)
-	require.NotEmpty(t, saved.SavePointID)
-	return saved.SavePointID
+	return savePointIDFromCLI(t, note)
 }
 
 func decodeRootJSONData(t *testing.T, stdout string, target any) contractEnvelope {
@@ -773,6 +798,9 @@ func createTestRootCmd() *cobra.Command {
 	doctorRepair = false
 	doctorRepairList = false
 	initPayloadRoot = ""
+	afscpHome = ""
+	afscpMessage = ""
+	afscpSavePoint = ""
 
 	cmd := &cobra.Command{
 		Use:              "jvs",
@@ -792,16 +820,15 @@ func createTestRootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&targetWorkspaceName, "workspace", "", "target workspace name")
 
 	cmd.AddCommand(initCmd)
-	cmd.AddCommand(saveCmd)
 	cmd.AddCommand(statusCmd)
 	cmd.AddCommand(viewCmd)
 	cmd.AddCommand(repoCmd)
 	cmd.AddCommand(workspaceCmd)
 	cmd.AddCommand(historyCmd)
-	cmd.AddCommand(restoreCmd)
 	cmd.AddCommand(recoveryCmd)
 	cmd.AddCommand(doctorCmd)
 	cmd.AddCommand(cleanupCmd)
+	cmd.AddCommand(afscpCmd)
 	cmd.AddCommand(completionCmd)
 	configurePublicRootHelpSurface(cmd)
 

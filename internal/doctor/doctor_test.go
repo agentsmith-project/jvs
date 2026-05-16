@@ -894,7 +894,7 @@ func TestDoctorStrictValidatesImportedCloneHistoryManifest(t *testing.T) {
 	assertFindingCode(t, result, "clone_history", doctor.ErrorCodeCloneHistoryInvalid)
 }
 
-func TestDoctorStrictReportsWorkspacePathSourceMissing(t *testing.T) {
+func TestDoctorStrictDoesNotRunLegacyPathSourceInventory(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	cfg, err := repo.LoadWorktreeConfig(repoPath, "main")
 	require.NoError(t, err)
@@ -904,8 +904,8 @@ func TestDoctorStrictReportsWorkspacePathSourceMissing(t *testing.T) {
 
 	result, err := doctor.NewDoctor(repoPath).Check(true)
 	require.NoError(t, err)
-	assert.False(t, result.Healthy)
-	assertFindingCode(t, result, "integrity", "E_DESCRIPTOR_MISSING")
+	assert.True(t, result.Healthy, "findings: %#v", result.Findings)
+	assertNoFindingCode(t, result, "E_DESCRIPTOR_MISSING")
 }
 
 func TestDoctor_Check_OrphanIntent(t *testing.T) {
@@ -2268,7 +2268,7 @@ func TestDoctor_Check_CorruptedFormatVersion(t *testing.T) {
 	assert.True(t, found, "expected critical format finding for corrupted format_version")
 }
 
-func TestDoctor_Check_SnapshotIntegrity_VerifyError(t *testing.T) {
+func TestDoctorStrictReportsSnapshotsControlDirInvalid(t *testing.T) {
 	repoPath := setupTestRepo(t)
 
 	require.NoError(t, os.RemoveAll(filepath.Join(repoPath, ".jvs", "snapshots")))
@@ -2279,17 +2279,10 @@ func TestDoctor_Check_SnapshotIntegrity_VerifyError(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.False(t, result.Healthy)
-	found := false
-	for _, f := range result.Findings {
-		if f.Category == "integrity" && f.Severity == "error" {
-			found = true
-			assert.Contains(t, f.Description, "verification failed")
-		}
-	}
-	assert.True(t, found, "expected strict verification execution error finding")
+	assertFindingCode(t, result, "snapshot", doctor.ErrorCodeReadyControlInvalid)
 }
 
-func TestDoctor_Check_SnapshotIntegrity_CorruptedDescriptorUnhealthy(t *testing.T) {
+func TestDoctorStrictReportsCorruptedDescriptorAsMetadataFinding(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	snapshotID := createTestSnapshot(t, repoPath)
 
@@ -2301,17 +2294,10 @@ func TestDoctor_Check_SnapshotIntegrity_CorruptedDescriptorUnhealthy(t *testing.
 	require.NoError(t, err)
 
 	assert.False(t, result.Healthy)
-	found := false
-	for _, f := range result.Findings {
-		if f.Category == "integrity" && f.Severity == "critical" {
-			found = true
-			assert.Contains(t, f.Description, string(snapshotID))
-		}
-	}
-	assert.True(t, found, "expected corrupted descriptor to be a critical integrity finding")
+	assertFindingCode(t, result, "lineage", "E_LINEAGE_PARENT_MISSING")
 }
 
-func TestDoctorStrictReportsDescriptorWithoutPayload(t *testing.T) {
+func TestDoctorStrictReportsDescriptorWithoutPublishedSnapshot(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	snapshotID := createTestSnapshot(t, repoPath)
 	require.NoError(t, os.RemoveAll(filepath.Join(repoPath, ".jvs", "snapshots", string(snapshotID))))
@@ -2320,10 +2306,10 @@ func TestDoctorStrictReportsDescriptorWithoutPayload(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.False(t, result.Healthy)
-	assertFindingCode(t, result, "integrity", "E_PAYLOAD_MISSING")
+	assertFindingCode(t, result, "snapshot", snapshot.PublishStateCodePayloadMissing)
 }
 
-func TestStrictDoctorFailsDanglingLatestCheckpoint(t *testing.T) {
+func TestDoctorStrictDoesNotRunLegacyDanglingLatestInventory(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	danglingID := model.NewSnapshotID()
 
@@ -2335,11 +2321,11 @@ func TestStrictDoctorFailsDanglingLatestCheckpoint(t *testing.T) {
 	result, err := doctor.NewDoctor(repoPath).Check(true)
 	require.NoError(t, err)
 
-	assert.False(t, result.Healthy)
-	assertFindingCode(t, result, "integrity", "E_DESCRIPTOR_MISSING")
+	assert.True(t, result.Healthy, "findings: %#v", result.Findings)
+	assertNoFindingCode(t, result, "E_DESCRIPTOR_MISSING")
 }
 
-func TestStrictDoctorPayloadMismatchHasStableErrorCode(t *testing.T) {
+func TestDoctorStrictDoesNotHashSnapshotPayloadTrees(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	snapshotID := createTestSnapshot(t, repoPath)
 	require.NoError(t, os.WriteFile(
@@ -2351,8 +2337,8 @@ func TestStrictDoctorPayloadMismatchHasStableErrorCode(t *testing.T) {
 	result, err := doctor.NewDoctor(repoPath).Check(true)
 	require.NoError(t, err)
 
-	assert.False(t, result.Healthy)
-	assertFindingCode(t, result, "integrity", "E_PAYLOAD_HASH_MISMATCH")
+	assert.True(t, result.Healthy, "findings: %#v", result.Findings)
+	assertNoFindingCode(t, result, "E_PAYLOAD_HASH_MISMATCH")
 }
 
 func TestStrictDoctorAuditDetectsRecordHashTamper(t *testing.T) {

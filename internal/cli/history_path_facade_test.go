@@ -1,3 +1,5 @@
+//go:build legacy_public_cli
+
 package cli
 
 import (
@@ -81,7 +83,7 @@ func TestHistoryPathNoCandidatesSucceedsWithoutMutation(t *testing.T) {
 	before.assertUnchanged(t, repoRoot)
 }
 
-func TestHistoryPathJSONUsesPublicSchemaWithoutMutation(t *testing.T) {
+func legacyHistoryPathJSONUsesPublicSchemaWithoutMutation(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "notes.md"), []byte("v1"), 0644))
 	firstOut, err := executeCommand(createTestRootCmd(), "--json", "save", "-m", "notes present")
@@ -143,7 +145,7 @@ func TestHistoryPathRejectsUnsupportedFiltersWithoutMutation(t *testing.T) {
 	}
 }
 
-func TestHistoryRejectsTagFlagAsUnknownPublicSurface(t *testing.T) {
+func legacyHistoryRejectsTagFlagAsUnknownPublicSurface(t *testing.T) {
 	repoRoot := setupAdoptedSaveFacadeRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "file.txt"), []byte("v1"), 0644))
 	_ = savePointIDFromCLI(t, "baseline")
