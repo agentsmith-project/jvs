@@ -183,6 +183,14 @@ func TestDirectStatusAndDoctorStableShapeAfterControlInit(t *testing.T) {
 	r, err := repo.InitSeparatedControl(controlRoot, home, "main")
 	require.NoError(t, err)
 
+	list, err := NewService().List(context.Background(), Request{
+		Selector: Selector{ControlRoot: controlRoot, Home: home},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, list.HistoryHead)
+	assert.Empty(t, list.SavePoints)
+	assert.Equal(t, "ready", list.MetadataState)
+
 	require.NoError(t, os.RemoveAll(home))
 
 	status, err := NewService().Status(context.Background(), Request{
@@ -192,7 +200,7 @@ func TestDirectStatusAndDoctorStableShapeAfterControlInit(t *testing.T) {
 	assert.Equal(t, r.RepoID, status.RepoID)
 	assert.Nil(t, status.HistoryHead)
 	assert.Equal(t, "none", status.ActiveOperation)
-	assert.Equal(t, "uninitialized", status.MetadataState)
+	assert.Equal(t, "ready", status.MetadataState)
 	assert.Equal(t, "none", status.Recovery)
 
 	doctor, err := NewService().Doctor(context.Background(), Request{
@@ -202,9 +210,71 @@ func TestDirectStatusAndDoctorStableShapeAfterControlInit(t *testing.T) {
 	assert.Equal(t, r.RepoID, doctor.RepoID)
 	assert.True(t, doctor.Healthy)
 	assert.Empty(t, doctor.Findings)
+	assert.Equal(t, "ready", doctor.MetadataState)
+	assert.Equal(t, "clean", doctor.Journal)
+	assert.Equal(t, "none", doctor.Recovery)
+}
+
+func TestDirectStatusAndDoctorReportUninitializedBeforeControlInit(t *testing.T) {
+	base := t.TempDir()
+	controlRoot := filepath.Join(base, "control")
+	home := filepath.Join(base, "home")
+	require.NoError(t, os.Mkdir(controlRoot, 0755))
+	require.NoError(t, os.Mkdir(home, 0755))
+
+	list, err := NewService().List(context.Background(), Request{
+		Selector: Selector{ControlRoot: controlRoot, Home: home},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, list.HistoryHead)
+	assert.Empty(t, list.SavePoints)
+	assert.Equal(t, "uninitialized", list.MetadataState)
+
+	status, err := NewService().Status(context.Background(), Request{
+		Selector: Selector{ControlRoot: controlRoot, Home: home},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "", status.RepoID)
+	assert.Nil(t, status.HistoryHead)
+	assert.Equal(t, "none", status.ActiveOperation)
+	assert.Equal(t, "uninitialized", status.MetadataState)
+	assert.Equal(t, "none", status.Recovery)
+
+	doctor, err := NewService().Doctor(context.Background(), Request{
+		Selector: Selector{ControlRoot: controlRoot, Home: home},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "", doctor.RepoID)
+	assert.True(t, doctor.Healthy)
+	assert.Empty(t, doctor.Findings)
 	assert.Equal(t, "uninitialized", doctor.MetadataState)
 	assert.Equal(t, "clean", doctor.Journal)
 	assert.Equal(t, "none", doctor.Recovery)
+}
+
+func TestDirectInitialReadyStateRequiresWorkspaceHomeBinding(t *testing.T) {
+	base := t.TempDir()
+	controlRoot := filepath.Join(base, "control")
+	home := filepath.Join(base, "home")
+	otherHome := filepath.Join(base, "other-home")
+	_, err := repo.InitSeparatedControl(controlRoot, home, "main")
+	require.NoError(t, err)
+	require.NoError(t, os.Mkdir(otherHome, 0755))
+
+	_, err = NewService().List(context.Background(), Request{
+		Selector: Selector{ControlRoot: controlRoot, Home: otherHome},
+	})
+	requireDirectError(t, err, ErrorCodeMetadataInvalid, ExitMetadata)
+
+	_, err = NewService().Status(context.Background(), Request{
+		Selector: Selector{ControlRoot: controlRoot, Home: otherHome},
+	})
+	requireDirectError(t, err, ErrorCodeMetadataInvalid, ExitMetadata)
+
+	_, err = NewService().Doctor(context.Background(), Request{
+		Selector: Selector{ControlRoot: controlRoot, Home: otherHome},
+	})
+	requireDirectError(t, err, ErrorCodeMetadataInvalid, ExitMetadata)
 }
 
 func TestDirectStatusAndDoctorAreMetadataOnly(t *testing.T) {

@@ -279,10 +279,14 @@ func listDirect(selector ResolvedSelector) (ListResult, error) {
 		return ListResult{}, err
 	}
 	if !initialized {
+		metadataState, err := directInitialMetadataState(selector)
+		if err != nil {
+			return ListResult{}, err
+		}
 		return ListResult{
 			HistoryHead:   nil,
 			SavePoints:    []SavePoint{},
-			MetadataState: directMetadataUninit,
+			MetadataState: metadataState,
 		}, nil
 	}
 
@@ -322,11 +326,15 @@ func statusDirect(selector ResolvedSelector) (StatusResult, error) {
 		return StatusResult{}, err
 	}
 	if !initialized {
+		metadataState, err := directInitialMetadataStateFromRepoID(selector, repoID)
+		if err != nil {
+			return StatusResult{}, err
+		}
 		return StatusResult{
 			RepoID:          repoID,
 			HistoryHead:     nil,
 			ActiveOperation: directProjectionNone,
-			MetadataState:   directMetadataUninit,
+			MetadataState:   metadataState,
 			Recovery:        directProjectionNone,
 		}, nil
 	}
@@ -379,11 +387,15 @@ func doctorDirect(selector ResolvedSelector) (DoctorResult, error) {
 		return DoctorResult{}, err
 	}
 	if !initialized {
+		metadataState, err := directInitialMetadataStateFromRepoID(selector, repoID)
+		if err != nil {
+			return DoctorResult{}, err
+		}
 		return DoctorResult{
 			Healthy:       true,
 			RepoID:        repoID,
 			Findings:      []FindingProjection{},
-			MetadataState: directMetadataUninit,
+			MetadataState: metadataState,
 			Journal:       directProjectionClean,
 			Recovery:      directProjectionNone,
 		}, nil
@@ -622,6 +634,21 @@ func emptyDirectHistory() directHistory {
 		Head:       nil,
 		SavePoints: []directHistoryEntry{},
 	}
+}
+
+func directInitialMetadataState(selector ResolvedSelector) (string, error) {
+	return directInitialMetadataStateFromRepoID(selector, readDirectRepoID(selector.ControlRoot))
+}
+
+func directInitialMetadataStateFromRepoID(selector ResolvedSelector, repoID string) (string, error) {
+	if strings.TrimSpace(repoID) == "" {
+		return directMetadataUninit, nil
+	}
+	cfg, err := repo.LoadWorktreeConfig(selector.ControlRoot, directWorkspaceName)
+	if err != nil || filepath.Clean(cfg.RealPath) != selector.Home {
+		return "", NewError(ErrorCodeMetadataInvalid, "direct metadata binding does not match selector", false)
+	}
+	return directMetadataReady, nil
 }
 
 func writeDirectSaveJournal(layout directLayout, phase string, historyHead *string, savePointID, updatedAt, failureCode, reason string) error {

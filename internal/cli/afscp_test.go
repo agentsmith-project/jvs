@@ -148,7 +148,7 @@ func TestAFSCPDirectStatusAndDoctorAfterInitExposeStableShape(t *testing.T) {
 			var data map[string]any
 			require.NoError(t, json.Unmarshal(env.Data, &data), stdout)
 			assert.Equal(t, repoID, data["repo_id"])
-			assert.Equal(t, "uninitialized", data["metadata_state"])
+			assert.Equal(t, "ready", data["metadata_state"])
 			assert.Equal(t, "none", data["recovery"])
 			if command == "status" {
 				assert.Equal(t, "none", data["active_operation"])

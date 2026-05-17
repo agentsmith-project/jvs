@@ -137,10 +137,13 @@ destination paths, HOME, control-root, raw argv, or JuiceFS internal paths.
   projected; otherwise one of `repair_metadata`, `recover_journal`, or
   `cleanup_pending`.
 
-When direct metadata has not yet been initialized under
-`<control-root>/afscp-direct-v1`, `status` and `doctor` still return the full
-stable shape with `metadata_state=uninitialized`, `active_operation=none`,
-`journal=clean`, `recovery=none`, and the control-root `repo_id` when present.
+When direct save point history has not yet been written under
+`<control-root>/afscp-direct-v1`, `history_head` is `null` and `save_points` is
+empty. If the control root has already been initialized by `jvs init`, `status`,
+`list`, and `doctor` report `metadata_state=ready`: an empty history is a valid
+ready repo state. `metadata_state=uninitialized` is reserved for a control root
+that has not yet been initialized by `jvs init`; those responses still use
+`active_operation=none`, `journal=clean`, and `recovery=none`.
 
 ## Error Object
 
