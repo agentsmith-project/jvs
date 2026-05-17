@@ -76,6 +76,45 @@ func TestDirectSaveFastPathUsesJuiceFSCloneAndPublishesMetadataOnly(t *testing.T
 	assert.Equal(t, "ready", list.MetadataState)
 }
 
+func TestDirectSavePersistsStructuredTemplateSourcePurpose(t *testing.T) {
+	base := t.TempDir()
+	controlRoot := filepath.Join(base, "control")
+	home := filepath.Join(base, "home")
+	require.NoError(t, os.Mkdir(controlRoot, 0755))
+	require.NoError(t, os.Mkdir(home, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(home, "profile.txt"), []byte("template"), 0644))
+	installFakeJuiceFSClone(t)
+
+	result, err := NewService().Save(context.Background(), Request{
+		Selector: Selector{ControlRoot: controlRoot, Home: home},
+		Message:  "Template source: starter",
+		Purpose:  "template_source",
+	})
+	require.NoError(t, err)
+	save := result.(SaveResult)
+	assert.Equal(t, "template_source", save.Purpose)
+
+	snapshotDir := directTestSnapshotDir(controlRoot, save.SavePointID)
+	var descriptor map[string]any
+	require.NoError(t, json.Unmarshal(directTestReadFile(t, filepath.Join(snapshotDir, "descriptor.json")), &descriptor))
+	assert.Equal(t, "template_source", descriptor["purpose"])
+	var history map[string]any
+	require.NoError(t, json.Unmarshal(directTestReadFile(t, filepath.Join(controlRoot, "afscp-direct-v1", "history.json")), &history))
+	rawSavePoints, ok := history["save_points"].([]any)
+	require.True(t, ok)
+	require.Len(t, rawSavePoints, 1)
+	entry, ok := rawSavePoints[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "template_source", entry["purpose"])
+
+	list, err := NewService().List(context.Background(), Request{
+		Selector: Selector{ControlRoot: controlRoot, Home: home},
+	})
+	require.NoError(t, err)
+	require.Len(t, list.SavePoints, 1)
+	assert.Equal(t, "template_source", list.SavePoints[0].Purpose)
+}
+
 func TestDirectSaveWholeHomeIncludesDotRuntimeDirsWorkspaceSymlinkAndEmptyDir(t *testing.T) {
 	base := t.TempDir()
 	controlRoot := filepath.Join(base, "control")
@@ -229,7 +268,16 @@ func TestDirectStatusAndDoctorFailClosedForInvalidPendingCleanup(t *testing.T) {
 			wantFinding: "cleanup unreferenced",
 		},
 		{
-			name: "non-convergent backup",
+			name: "invalid cleanup metadata",
+			mutate: func(t *testing.T, _ directLayout, marker string, cleanup directCleanupMetadata) {
+				t.Helper()
+				cleanup.State = "unknown"
+				require.NoError(t, writeDirectCleanupMetadata(marker, cleanup))
+			},
+			wantFinding: "cleanup non-convergent",
+		},
+		{
+			name: "missing referenced backup",
 			mutate: func(t *testing.T, layout directLayout, _ string, cleanup directCleanupMetadata) {
 				t.Helper()
 				require.NoError(t, os.RemoveAll(filepath.Join(filepath.Dir(layout.selector.Home), cleanup.BackupHomeName)))
@@ -238,7 +286,7 @@ func TestDirectStatusAndDoctorFailClosedForInvalidPendingCleanup(t *testing.T) {
 		},
 		{
 			name: "stale marker",
-			mutate: func(t *testing.T, layout directLayout, marker string, cleanup directCleanupMetadata) {
+			mutate: func(t *testing.T, _ directLayout, marker string, cleanup directCleanupMetadata) {
 				t.Helper()
 				cleanup.CreatedAt = time.Now().UTC().Add(-directPendingCleanupFreshWindow - time.Hour).Format(time.RFC3339Nano)
 				require.NoError(t, writeDirectCleanupMetadata(marker, cleanup))
@@ -287,6 +335,73 @@ func TestDirectStatusAndDoctorFailClosedForInvalidPendingCleanup(t *testing.T) {
 			assertDirectDoctorFindingContains(t, doctor, tc.wantFinding)
 		})
 	}
+}
+
+func TestDirectStatusAndDoctorTreatRestoreCleanupEvidenceAsNonBlocking(t *testing.T) {
+	base := t.TempDir()
+	controlRoot := filepath.Join(base, "control")
+	home := filepath.Join(base, "home")
+	require.NoError(t, os.Mkdir(controlRoot, 0755))
+	require.NoError(t, os.Mkdir(home, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(home, "profile.txt"), []byte("baseline"), 0644))
+	installFakeJuiceFSClone(t)
+	save := directTestSave(t, controlRoot, home, "baseline")
+
+	require.NoError(t, os.WriteFile(filepath.Join(home, "profile.txt"), []byte("dirty"), 0644))
+	_, err := NewService().Restore(context.Background(), Request{
+		Selector:    Selector{ControlRoot: controlRoot, Home: home},
+		SavePointID: save.SavePointID,
+	})
+	require.NoError(t, err)
+	require.Len(t, directTestPendingCleanupMarkers(t, controlRoot), 1)
+	require.Len(t, directTestRestoreSiblingBackupNames(t, home), 1)
+
+	status, err := NewService().Status(context.Background(), Request{
+		Selector: Selector{ControlRoot: controlRoot, Home: home},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "ready", status.MetadataState)
+	assert.Equal(t, "cleanup_pending", status.Recovery)
+
+	doctor, err := NewService().Doctor(context.Background(), Request{
+		Selector: Selector{ControlRoot: controlRoot, Home: home},
+	})
+	require.NoError(t, err)
+	assert.False(t, doctor.Healthy)
+	assert.Equal(t, "ready", doctor.MetadataState)
+	assert.Equal(t, "cleanup_pending", doctor.Recovery)
+	assertDirectDoctorFindingContains(t, doctor, "cleanup pending")
+}
+
+func TestDirectStatusAndDoctorIgnoreUnrelatedSiblingRestoreBackups(t *testing.T) {
+	base := t.TempDir()
+	controlRoot := filepath.Join(base, "control")
+	home := filepath.Join(base, "home")
+	require.NoError(t, os.Mkdir(controlRoot, 0755))
+	require.NoError(t, os.Mkdir(home, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(home, "profile.txt"), []byte("baseline"), 0644))
+	installFakeJuiceFSClone(t)
+	save := directTestSave(t, controlRoot, home, "baseline")
+	require.NoError(t, os.Mkdir(filepath.Join(filepath.Dir(home), directRestoreBackupPrefix+"unrelated"), 0755))
+
+	status, err := NewService().Status(context.Background(), Request{
+		Selector: Selector{ControlRoot: controlRoot, Home: home},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, status.HistoryHead)
+	assert.Equal(t, save.SavePointID, *status.HistoryHead)
+	assert.Equal(t, "none", status.ActiveOperation)
+	assert.Equal(t, "ready", status.MetadataState)
+	assert.Equal(t, "none", status.Recovery)
+
+	doctor, err := NewService().Doctor(context.Background(), Request{
+		Selector: Selector{ControlRoot: controlRoot, Home: home},
+	})
+	require.NoError(t, err)
+	assert.True(t, doctor.Healthy)
+	assert.Empty(t, doctor.Findings)
+	assert.Equal(t, "ready", doctor.MetadataState)
+	assert.Equal(t, "none", doctor.Recovery)
 }
 
 func TestDirectSaveFailsFastWhenJuiceFSUnavailableWithoutCopyFallback(t *testing.T) {

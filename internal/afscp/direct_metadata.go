@@ -19,23 +19,25 @@ import (
 )
 
 const (
-	directLayoutName              = "afscp-direct-v1"
-	directWorkspaceName           = "main"
-	directMetadataUninit          = "uninitialized"
-	directMetadataReady           = "ready"
-	directMetadataInvalid         = "invalid"
-	directBindingFileName         = "binding.json"
-	directHistoryFileName         = "history.json"
-	directJournalFileName         = "journal.json"
-	directMutationLockDirName     = "mutation.lock"
-	directPendingCleanupDir       = "pending-cleanups"
-	directCleanupMetadataFileName = "cleanup.json"
-	directSnapshotsDirName        = "snapshots"
-	directTmpDirName              = "tmp"
-	directDescriptorFileName      = "descriptor.json"
-	directReadyFileName           = "ready"
-	directPayloadDirName          = "payload"
-	directChecksumPrefix          = "sha256:"
+	directLayoutName                     = "afscp-direct-v1"
+	directWorkspaceName                  = "main"
+	directMetadataUninit                 = "uninitialized"
+	directMetadataReady                  = "ready"
+	directMetadataInvalid                = "invalid"
+	directBindingFileName                = "binding.json"
+	directHistoryFileName                = "history.json"
+	directJournalFileName                = "journal.json"
+	directMutationLockDirName            = "mutation.lock"
+	directPendingCleanupDir              = "pending-cleanups"
+	directCleanupMetadataFileName        = "cleanup.json"
+	directSnapshotsDirName               = "snapshots"
+	directTmpDirName                     = "tmp"
+	directDescriptorFileName             = "descriptor.json"
+	directReadyFileName                  = "ready"
+	directPayloadDirName                 = "payload"
+	directChecksumPrefix                 = "sha256:"
+	directSavePointPurposeUser           = "user"
+	directSavePointPurposeTemplateSource = "template_source"
 )
 
 const (
@@ -85,6 +87,7 @@ type directDescriptor struct {
 	SavePointID  string  `json:"save_point_id"`
 	CreatedAt    string  `json:"created_at"`
 	Message      string  `json:"message,omitempty"`
+	Purpose      string  `json:"purpose,omitempty"`
 	PreviousHead *string `json:"previous_head"`
 	PayloadState string  `json:"payload_state"`
 	Checksum     string  `json:"metadata_checksum,omitempty"`
@@ -113,6 +116,7 @@ type directHistoryEntry struct {
 	SavePointID string `json:"save_point_id"`
 	CreatedAt   string `json:"created_at"`
 	Message     string `json:"message,omitempty"`
+	Purpose     string `json:"purpose,omitempty"`
 }
 
 type directJournal struct {
@@ -148,10 +152,11 @@ type directStatusProjection struct {
 	recoveryReason  string
 }
 
-func saveDirect(ctx context.Context, selector ResolvedSelector, message string) (SaveResult, error) {
+func saveDirect(ctx context.Context, selector ResolvedSelector, message string, purpose string) (SaveResult, error) {
 	layout := newDirectLayout(selector)
 	var result SaveResult
 	err := withDirectMutationLock(layout, func() error {
+		storedPurpose := directStoredSavePointPurpose(purpose)
 		if err := ensureDirectLayout(layout); err != nil {
 			return err
 		}
@@ -209,6 +214,7 @@ func saveDirect(ctx context.Context, selector ResolvedSelector, message string) 
 			SavePointID:  savePointID,
 			CreatedAt:    createdAt,
 			Message:      message,
+			Purpose:      storedPurpose,
 			PreviousHead: history.Head,
 			PayloadState: directMetadataReady,
 		}
@@ -239,6 +245,7 @@ func saveDirect(ctx context.Context, selector ResolvedSelector, message string) 
 			SavePointID: savePointID,
 			CreatedAt:   createdAt,
 			Message:     message,
+			Purpose:     storedPurpose,
 		})
 		if err := writeDirectJSON(layout.history, history, 0644); err != nil {
 			_ = writeDirectSaveJournal(layout, directJournalPhaseSaveFailed, nil, savePointID, time.Now().UTC().Format(time.RFC3339Nano), string(ErrorCodeInternal), "write direct history")
@@ -254,6 +261,7 @@ func saveDirect(ctx context.Context, selector ResolvedSelector, message string) 
 			SavePointID:   savePointID,
 			CreatedAt:     createdAt,
 			Message:       message,
+			Purpose:       storedPurpose,
 			HistoryHead:   savePointID,
 			CloneEvidence: []CloneEvidence{cloneEvidence},
 		}
@@ -295,6 +303,7 @@ func listDirect(selector ResolvedSelector) (ListResult, error) {
 			SavePointID: desc.SavePointID,
 			CreatedAt:   desc.CreatedAt,
 			Message:     desc.Message,
+			Purpose:     desc.Purpose,
 			HistoryHead: history.Head != nil && *history.Head == desc.SavePointID,
 		})
 	}
@@ -586,6 +595,9 @@ func readDirectHistory(layout directLayout) (directHistory, error) {
 		if !validSavePointID(entry.SavePointID) {
 			return directHistory{}, NewError(ErrorCodeMetadataInvalid, "direct history metadata is invalid", false)
 		}
+		if !validDirectSavePointPurpose(entry.Purpose) {
+			return directHistory{}, NewError(ErrorCodeMetadataInvalid, "direct history metadata is invalid", false)
+		}
 		if _, ok := seen[entry.SavePointID]; ok {
 			return directHistory{}, NewError(ErrorCodeMetadataInvalid, "direct history metadata is invalid", false)
 		}
@@ -661,7 +673,8 @@ func readDirectDescriptor(layout directLayout, savePointID string) (directDescri
 		desc.Contract != ContractVersion ||
 		desc.Workspace != directWorkspaceName ||
 		desc.SavePointID != savePointID ||
-		desc.PayloadState != directMetadataReady {
+		desc.PayloadState != directMetadataReady ||
+		!validDirectSavePointPurpose(desc.Purpose) {
 		return directDescriptor{}, NewError(ErrorCodeMetadataInvalid, "direct descriptor metadata is invalid", false)
 	}
 	return desc, nil
@@ -843,6 +856,22 @@ func validDirectJournalPhase(phase string) bool {
 	}
 }
 
+func directStoredSavePointPurpose(purpose string) string {
+	if purpose == directSavePointPurposeTemplateSource {
+		return directSavePointPurposeTemplateSource
+	}
+	return ""
+}
+
+func validDirectSavePointPurpose(purpose string) bool {
+	switch purpose {
+	case "", directSavePointPurposeUser, directSavePointPurposeTemplateSource:
+		return true
+	default:
+		return false
+	}
+}
+
 func runStrictJuiceFSCloneWithEvidence(ctx context.Context, operation, phase, src, dst string) (CloneEvidence, error) {
 	if err := validateContext(ctx); err != nil {
 		return CloneEvidence{}, err
@@ -999,22 +1028,17 @@ func inspectDirectPendingCleanup(layout directLayout) (bool, string) {
 	if err != nil && !os.IsNotExist(err) {
 		return false, "non-convergent"
 	}
-	referencedBackups := map[string]struct{}{}
 	hasPendingCleanup := false
 	now := time.Now().UTC()
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			return false, "non-convergent"
 		}
-		cleanup, issue := inspectDirectPendingCleanupMarker(layout, filepath.Join(layout.cleanup, entry.Name()), now)
+		_, issue := inspectDirectPendingCleanupMarker(layout, filepath.Join(layout.cleanup, entry.Name()), now)
 		if issue != "" {
 			return false, issue
 		}
-		referencedBackups[cleanup.BackupHomeName] = struct{}{}
 		hasPendingCleanup = true
-	}
-	if issue := inspectDirectUnreferencedBackupSiblings(layout, referencedBackups); issue != "" {
-		return false, issue
 	}
 	return hasPendingCleanup, ""
 }
@@ -1038,26 +1062,6 @@ func inspectDirectPendingCleanupMarker(layout directLayout, markerPath string, n
 		return directCleanupMetadata{}, "non-convergent"
 	}
 	return cleanup, ""
-}
-
-func inspectDirectUnreferencedBackupSiblings(layout directLayout, referencedBackups map[string]struct{}) string {
-	entries, err := os.ReadDir(filepath.Dir(layout.selector.Home))
-	if err != nil {
-		return ""
-	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if !strings.HasPrefix(name, directRestoreBackupPrefix) {
-			continue
-		}
-		if !entry.IsDir() {
-			return "non-convergent"
-		}
-		if _, ok := referencedBackups[name]; !ok {
-			return "unreferenced"
-		}
-	}
-	return ""
 }
 
 func validDirectRestoreBackupName(name string) bool {

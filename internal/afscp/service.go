@@ -9,6 +9,7 @@ type Request struct {
 	Selector       Selector
 	TargetSelector Selector
 	Message        string
+	Purpose        string
 	SavePointID    string
 }
 
@@ -16,6 +17,7 @@ type SavePoint struct {
 	SavePointID string `json:"save_point_id"`
 	CreatedAt   string `json:"created_at,omitempty"`
 	Message     string `json:"message,omitempty"`
+	Purpose     string `json:"purpose,omitempty"`
 	HistoryHead bool   `json:"history_head,omitempty"`
 }
 
@@ -23,6 +25,7 @@ type SaveResult struct {
 	SavePointID   string          `json:"save_point_id"`
 	CreatedAt     string          `json:"created_at"`
 	Message       string          `json:"message"`
+	Purpose       string          `json:"purpose,omitempty"`
 	HistoryHead   string          `json:"history_head"`
 	CloneEvidence []CloneEvidence `json:"clone_evidence,omitempty"`
 }
@@ -99,7 +102,11 @@ func (s *Service) Save(ctx context.Context, request Request) (any, error) {
 	if strings.TrimSpace(request.Message) == "" {
 		return nil, NewError(ErrorCodeInvalidArgument, "save requires --message", false)
 	}
-	result, err := saveDirect(ctx, selector, strings.TrimSpace(request.Message))
+	purpose, err := normalizeSavePointPurpose(request.Purpose)
+	if err != nil {
+		return nil, err
+	}
+	result, err := saveDirect(ctx, selector, strings.TrimSpace(request.Message), purpose)
 	if err != nil {
 		return nil, err
 	}
@@ -195,4 +202,15 @@ func validSavePointID(id string) bool {
 		return false
 	}
 	return !strings.ContainsAny(id, `/\`) && !strings.Contains(id, "..")
+}
+
+func normalizeSavePointPurpose(purpose string) (string, error) {
+	switch strings.TrimSpace(purpose) {
+	case "", directSavePointPurposeUser:
+		return directSavePointPurposeUser, nil
+	case directSavePointPurposeTemplateSource:
+		return directSavePointPurposeTemplateSource, nil
+	default:
+		return "", NewError(ErrorCodeInvalidArgument, "save requires a valid --purpose", false)
+	}
 }

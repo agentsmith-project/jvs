@@ -14,6 +14,7 @@ import (
 var (
 	afscpHome              string
 	afscpMessage           string
+	afscpPurpose           string
 	afscpSavePoint         string
 	afscpTargetControlRoot string
 	afscpTargetHome        string
@@ -36,6 +37,7 @@ var afscpSaveCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		runAFSCPDirect(cmd.Context(), afscp.CommandSave, args, func(ctx context.Context, request afscp.Request) (any, error) {
 			request.Message = afscpMessage
+			request.Purpose = afscpPurpose
 			return afscp.NewService().Save(ctx, request)
 		})
 	},
@@ -138,6 +140,7 @@ func writeAFSCPDirectEnvelope(envelope afscp.Envelope) {
 func init() {
 	afscpCmd.PersistentFlags().StringVar(&afscpHome, "home", "", "payload HOME root for the internal direct contract")
 	afscpSaveCmd.Flags().StringVar(&afscpMessage, "message", "", "save point message")
+	afscpSaveCmd.Flags().StringVar(&afscpPurpose, "purpose", "", "save point purpose")
 	afscpRestoreCmd.Flags().StringVar(&afscpSavePoint, "save-point", "", "save point id to restore")
 	afscpCloneCmd.Flags().StringVar(&afscpSavePoint, "save-point", "", "save point id to clone; defaults to history head")
 	afscpCloneCmd.Flags().StringVar(&afscpTargetControlRoot, "target-control-root", "", "target external control data root")

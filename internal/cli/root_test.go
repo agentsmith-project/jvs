@@ -800,6 +800,7 @@ func createTestRootCmd() *cobra.Command {
 	initPayloadRoot = ""
 	afscpHome = ""
 	afscpMessage = ""
+	afscpPurpose = ""
 	afscpSavePoint = ""
 
 	cmd := &cobra.Command{

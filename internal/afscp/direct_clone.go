@@ -114,6 +114,7 @@ func publishDirectCloneMetadata(ctx context.Context, snapshotPayload string, tar
 		SavePointID:  source.SavePointID,
 		CreatedAt:    source.CreatedAt,
 		Message:      source.Message,
+		Purpose:      source.Purpose,
 		PreviousHead: nil,
 		PayloadState: directMetadataReady,
 	}
@@ -145,6 +146,7 @@ func publishDirectCloneMetadata(ctx context.Context, snapshotPayload string, tar
 			SavePointID: source.SavePointID,
 			CreatedAt:   source.CreatedAt,
 			Message:     source.Message,
+			Purpose:     source.Purpose,
 		}},
 	}, 0644); err != nil {
 		return CloneEvidence{}, err

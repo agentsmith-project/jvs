@@ -335,6 +335,15 @@ func TestDirectRestoreRollsBackWhenBackupBoundaryFailsBeforeReplace(t *testing.T
 	require.NoError(t, err)
 	require.NotNil(t, journal)
 	assert.Equal(t, "idle", journal.Phase)
+	assert.Empty(t, directTestPendingCleanupMarkers(t, controlRoot))
+	assert.Empty(t, directTestRestoreSiblingBackupNames(t, home))
+
+	status, err := NewService().Status(context.Background(), Request{
+		Selector: Selector{ControlRoot: controlRoot, Home: home},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "ready", status.MetadataState)
+	assert.Equal(t, "none", status.Recovery)
 }
 
 func TestDirectRestoreBlocksDifferentSavePointWhenRecoveryRequired(t *testing.T) {

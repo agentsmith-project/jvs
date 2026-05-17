@@ -114,12 +114,12 @@ func stageDirectRestorePayload(ctx context.Context, selector ResolvedSelector, l
 	}
 	cloneEvidence, err := runStrictJuiceFSCloneWithEvidence(ctx, "restore", "restore_staging", snapshotPayload, state.tmpHome)
 	if err != nil {
-		abortDirectRestoreAttempt(layout, history.Head, state)
+		_ = abortDirectRestoreAttempt(layout, history.Head, state)
 		return nil, err
 	}
 	state.cloneEvidence = cloneEvidence
 	if err := requireRealDirectory(state.tmpHome); err != nil {
-		abortDirectRestoreAttempt(layout, history.Head, state)
+		_ = abortDirectRestoreAttempt(layout, history.Head, state)
 		return nil, NewError(ErrorCodeCloneFailed, "juicefs clone did not create restore payload", false)
 	}
 	return state, nil
@@ -127,17 +127,19 @@ func stageDirectRestorePayload(ctx context.Context, selector ResolvedSelector, l
 
 func publishDirectRestoreHome(layout directLayout, selector ResolvedSelector, history directHistory, savePointID string, state *directRestoreState) error {
 	if err := os.Mkdir(state.cleanupMarker, 0700); err != nil {
-		abortDirectRestoreAttempt(layout, history.Head, state)
+		_ = abortDirectRestoreAttempt(layout, history.Head, state)
 		return NewError(ErrorCodeInternal, "create direct restore cleanup marker", false)
 	}
 	if err := writeDirectRestoreJournal(layout, directJournalPhaseRestoreBackingUp, savePointID, state.tmpName, state.backupName, time.Now().UTC().Format(time.RFC3339Nano), "", ""); err != nil {
-		cleanupDirectRestoreMarker(state)
-		abortDirectRestoreAttempt(layout, history.Head, state)
+		if cleanupErr := abortDirectRestoreAttempt(layout, history.Head, state); cleanupErr != nil {
+			return cleanupErr
+		}
 		return err
 	}
 	if err := os.Rename(selector.Home, state.backupHome); err != nil {
-		cleanupDirectRestoreMarker(state)
-		abortDirectRestoreAttempt(layout, history.Head, state)
+		if cleanupErr := abortDirectRestoreAttempt(layout, history.Head, state); cleanupErr != nil {
+			return cleanupErr
+		}
 		return NewError(ErrorCodeInternal, "direct restore could not move HOME to backup", false)
 	}
 	if err := writeDirectRestoreCleanupMetadata(state, savePointID, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
@@ -156,8 +158,9 @@ func publishDirectRestoreHome(layout directLayout, selector ResolvedSelector, hi
 			state.cleanupTmp = false
 			return directRestoreRecoveryRequired("direct restore could not publish cloned HOME")
 		}
-		cleanupDirectRestoreMarker(state)
-		abortDirectRestoreAttempt(layout, history.Head, state)
+		if cleanupErr := abortDirectRestoreAttempt(layout, history.Head, state); cleanupErr != nil {
+			return cleanupErr
+		}
 		return NewError(ErrorCodeInternal, "direct restore could not publish cloned HOME", false)
 	}
 	state.cleanupTmp = false
@@ -192,22 +195,30 @@ func rollbackDirectRestoreSiblingBackupFailure(layout directLayout, selector Res
 		state.cleanupTmp = false
 		return directRestoreRecoveryRequired("direct restore could not rollback HOME backup")
 	}
-	cleanupDirectRestoreMarker(state)
-	abortDirectRestoreAttempt(layout, history.Head, state)
+	if cleanupErr := abortDirectRestoreAttempt(layout, history.Head, state); cleanupErr != nil {
+		return cleanupErr
+	}
 	return NewError(ErrorCodeInternal, message, false)
 }
 
-func abortDirectRestoreAttempt(layout directLayout, historyHead *string, state *directRestoreState) {
+func abortDirectRestoreAttempt(layout directLayout, historyHead *string, state *directRestoreState) error {
 	state.cleanup()
-	cleanupDirectRestoreMarker(state)
-	_ = writeDirectRestoreIdleJournal(layout, historyHead)
+	cleanupErr := cleanupDirectRestoreMarker(state)
+	journalErr := writeDirectRestoreIdleJournal(layout, historyHead)
+	if cleanupErr != nil {
+		return cleanupErr
+	}
+	return journalErr
 }
 
-func cleanupDirectRestoreMarker(state *directRestoreState) {
+func cleanupDirectRestoreMarker(state *directRestoreState) error {
 	if state == nil || state.cleanupMarker == "" {
-		return
+		return nil
 	}
-	_ = os.Remove(state.cleanupMarker)
+	if err := os.RemoveAll(state.cleanupMarker); err != nil {
+		return NewError(ErrorCodeInternal, "remove direct restore cleanup marker", false)
+	}
+	return nil
 }
 
 func writeDirectRestoreCleanupMetadata(state *directRestoreState, savePointID, createdAt string) error {
