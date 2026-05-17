@@ -140,6 +140,9 @@ func publishDirectRestoreHome(layout directLayout, selector ResolvedSelector, hi
 		abortDirectRestoreAttempt(layout, history.Head, state)
 		return NewError(ErrorCodeInternal, "direct restore could not move HOME to backup", false)
 	}
+	if err := writeDirectRestoreCleanupMetadata(state, savePointID, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return rollbackDirectRestoreSiblingBackupFailure(layout, selector, history, state, "direct restore could not write cleanup metadata")
+	}
 	if directRestoreAfterBackupHomeHook != nil {
 		if err := directRestoreAfterBackupHomeHook(); err != nil {
 			return rollbackDirectRestoreSiblingBackupFailure(layout, selector, history, state, "direct restore interrupted before replace")
@@ -205,6 +208,19 @@ func cleanupDirectRestoreMarker(state *directRestoreState) {
 		return
 	}
 	_ = os.Remove(state.cleanupMarker)
+}
+
+func writeDirectRestoreCleanupMetadata(state *directRestoreState, savePointID, createdAt string) error {
+	return writeDirectCleanupMetadata(state.cleanupMarker, directCleanupMetadata{
+		Version:        1,
+		Contract:       ContractVersion,
+		Workspace:      directWorkspaceName,
+		Kind:           directCleanupKindRestoreBackup,
+		State:          directCleanupStatePending,
+		SavePointID:    savePointID,
+		BackupHomeName: state.backupName,
+		CreatedAt:      createdAt,
+	})
 }
 
 func (state *directRestoreState) cleanup() {

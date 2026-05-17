@@ -214,6 +214,81 @@ func TestDirectStatusAndDoctorAreMetadataOnly(t *testing.T) {
 	assert.Equal(t, "none", doctor.Recovery)
 }
 
+func TestDirectStatusAndDoctorFailClosedForInvalidPendingCleanup(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		mutate      func(t *testing.T, layout directLayout, marker string, cleanup directCleanupMetadata)
+		wantFinding string
+	}{
+		{
+			name: "unreferenced marker",
+			mutate: func(t *testing.T, _ directLayout, marker string, _ directCleanupMetadata) {
+				t.Helper()
+				require.NoError(t, os.Remove(filepath.Join(marker, directCleanupMetadataFileName)))
+			},
+			wantFinding: "cleanup unreferenced",
+		},
+		{
+			name: "non-convergent backup",
+			mutate: func(t *testing.T, layout directLayout, _ string, cleanup directCleanupMetadata) {
+				t.Helper()
+				require.NoError(t, os.RemoveAll(filepath.Join(filepath.Dir(layout.selector.Home), cleanup.BackupHomeName)))
+			},
+			wantFinding: "cleanup non-convergent",
+		},
+		{
+			name: "stale marker",
+			mutate: func(t *testing.T, layout directLayout, marker string, cleanup directCleanupMetadata) {
+				t.Helper()
+				cleanup.CreatedAt = time.Now().UTC().Add(-directPendingCleanupFreshWindow - time.Hour).Format(time.RFC3339Nano)
+				require.NoError(t, writeDirectCleanupMetadata(marker, cleanup))
+			},
+			wantFinding: "cleanup stale",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			controlRoot := filepath.Join(base, "control")
+			home := filepath.Join(base, "home")
+			require.NoError(t, os.Mkdir(controlRoot, 0755))
+			require.NoError(t, os.Mkdir(home, 0755))
+			require.NoError(t, os.WriteFile(filepath.Join(home, "profile.txt"), []byte("baseline"), 0644))
+			installFakeJuiceFSClone(t)
+			save := directTestSave(t, controlRoot, home, "baseline")
+
+			require.NoError(t, os.WriteFile(filepath.Join(home, "profile.txt"), []byte("dirty"), 0644))
+			_, err := NewService().Restore(context.Background(), Request{
+				Selector:    Selector{ControlRoot: controlRoot, Home: home},
+				SavePointID: save.SavePointID,
+			})
+			require.NoError(t, err)
+
+			layout := newDirectLayout(ResolvedSelector{ControlRoot: controlRoot, Home: home})
+			cleanupMarkers := directTestPendingCleanupMarkers(t, controlRoot)
+			require.Len(t, cleanupMarkers, 1)
+			cleanupMetadata, err := readDirectCleanupMetadata(layout, cleanupMarkers[0])
+			require.NoError(t, err)
+			tc.mutate(t, layout, cleanupMarkers[0], cleanupMetadata)
+
+			status, err := NewService().Status(context.Background(), Request{
+				Selector: Selector{ControlRoot: controlRoot, Home: home},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, "invalid", status.MetadataState)
+			assert.Equal(t, "repair_metadata", status.Recovery)
+
+			doctor, err := NewService().Doctor(context.Background(), Request{
+				Selector: Selector{ControlRoot: controlRoot, Home: home},
+			})
+			require.NoError(t, err)
+			assert.False(t, doctor.Healthy)
+			assert.Equal(t, "invalid", doctor.MetadataState)
+			assert.Equal(t, "repair_metadata", doctor.Recovery)
+			assertDirectDoctorFindingContains(t, doctor, tc.wantFinding)
+		})
+	}
+}
+
 func TestDirectSaveFailsFastWhenJuiceFSUnavailableWithoutCopyFallback(t *testing.T) {
 	base := t.TempDir()
 	controlRoot := filepath.Join(base, "control")

@@ -19,22 +19,29 @@ import (
 )
 
 const (
-	directLayoutName          = "afscp-direct-v1"
-	directWorkspaceName       = "main"
-	directMetadataUninit      = "uninitialized"
-	directMetadataReady       = "ready"
-	directMetadataInvalid     = "invalid"
-	directBindingFileName     = "binding.json"
-	directHistoryFileName     = "history.json"
-	directJournalFileName     = "journal.json"
-	directMutationLockDirName = "mutation.lock"
-	directPendingCleanupDir   = "pending-cleanups"
-	directSnapshotsDirName    = "snapshots"
-	directTmpDirName          = "tmp"
-	directDescriptorFileName  = "descriptor.json"
-	directReadyFileName       = "ready"
-	directPayloadDirName      = "payload"
-	directChecksumPrefix      = "sha256:"
+	directLayoutName              = "afscp-direct-v1"
+	directWorkspaceName           = "main"
+	directMetadataUninit          = "uninitialized"
+	directMetadataReady           = "ready"
+	directMetadataInvalid         = "invalid"
+	directBindingFileName         = "binding.json"
+	directHistoryFileName         = "history.json"
+	directJournalFileName         = "journal.json"
+	directMutationLockDirName     = "mutation.lock"
+	directPendingCleanupDir       = "pending-cleanups"
+	directCleanupMetadataFileName = "cleanup.json"
+	directSnapshotsDirName        = "snapshots"
+	directTmpDirName              = "tmp"
+	directDescriptorFileName      = "descriptor.json"
+	directReadyFileName           = "ready"
+	directPayloadDirName          = "payload"
+	directChecksumPrefix          = "sha256:"
+)
+
+const (
+	directCleanupKindRestoreBackup  = "restore_backup"
+	directCleanupStatePending       = "pending"
+	directPendingCleanupFreshWindow = 24 * time.Hour
 )
 
 const (
@@ -121,6 +128,18 @@ type directJournal struct {
 	Reason            string `json:"reason,omitempty"`
 	UpdatedAt         string `json:"updated_at"`
 	Checksum          string `json:"metadata_checksum,omitempty"`
+}
+
+type directCleanupMetadata struct {
+	Version        int    `json:"version"`
+	Contract       string `json:"contract"`
+	Workspace      string `json:"workspace"`
+	Kind           string `json:"kind"`
+	State          string `json:"state"`
+	SavePointID    string `json:"save_point_id"`
+	BackupHomeName string `json:"backup_home_name"`
+	CreatedAt      string `json:"created_at"`
+	Checksum       string `json:"metadata_checksum,omitempty"`
 }
 
 type directStatusProjection struct {
@@ -325,10 +344,11 @@ func statusDirect(selector ResolvedSelector) (StatusResult, error) {
 		}, nil
 	}
 	projection := directStatusFromJournal(layout, journal)
-	if projection.recovery == directProjectionNone &&
-		projection.activeOperation == directProjectionNone &&
-		directPendingCleanupExists(layout) {
-		projection = directCleanupPendingRecovery()
+	if projection.recovery == directProjectionNone && projection.activeOperation == directProjectionNone {
+		cleanupProjection, _, _ := directPendingCleanupProjection(layout)
+		if cleanupProjection.recovery != directProjectionNone {
+			projection = cleanupProjection
+		}
 	}
 	metadataState := directMetadataReady
 	if projection.recovery != directProjectionNone && projection.recovery != "cleanup_pending" {
@@ -394,9 +414,14 @@ func doctorDirect(selector ResolvedSelector) (DoctorResult, error) {
 	if projection.recovery == directProjectionNone && metadataInvalid {
 		projection = directMetadataRecovery(err, journalErr)
 	}
-	if projection.recovery == directProjectionNone && directPendingCleanupExists(layout) {
-		projection = directCleanupPendingRecovery()
-		findings = append(findings, directCleanupPendingFinding())
+	if projection.recovery == directProjectionNone && projection.activeOperation == directProjectionNone {
+		cleanupProjection, cleanupFinding, hasCleanupFinding := directPendingCleanupProjection(layout)
+		if cleanupProjection.recovery != directProjectionNone {
+			projection = cleanupProjection
+			if hasCleanupFinding {
+				findings = append(findings, cleanupFinding)
+			}
+		}
 	}
 	state := directMetadataReady
 	if directFindingsHaveErrors(findings) {
@@ -715,6 +740,33 @@ func writeDirectJournal(layout directLayout, journal directJournal) error {
 	return writeDirectJSON(layout.journal, journal, 0644)
 }
 
+func readDirectCleanupMetadata(layout directLayout, markerPath string) (directCleanupMetadata, error) {
+	var cleanup directCleanupMetadata
+	if err := readDirectJSON(filepath.Join(markerPath, directCleanupMetadataFileName), &cleanup); err != nil {
+		return directCleanupMetadata{}, err
+	}
+	if !directCleanupChecksumValid(cleanup) ||
+		cleanup.Version != 1 ||
+		cleanup.Contract != ContractVersion ||
+		cleanup.Workspace != directWorkspaceName ||
+		cleanup.Kind != directCleanupKindRestoreBackup ||
+		cleanup.State != directCleanupStatePending ||
+		!validSavePointID(cleanup.SavePointID) ||
+		!validDirectRestoreBackupName(cleanup.BackupHomeName) {
+		return directCleanupMetadata{}, NewError(ErrorCodeMetadataInvalid, "direct restore cleanup metadata is invalid", false)
+	}
+	return cleanup, nil
+}
+
+func writeDirectCleanupMetadata(markerPath string, cleanup directCleanupMetadata) error {
+	checksum, err := directCleanupChecksum(cleanup)
+	if err != nil {
+		return err
+	}
+	cleanup.Checksum = checksum
+	return writeDirectJSON(filepath.Join(markerPath, directCleanupMetadataFileName), cleanup, 0600)
+}
+
 func directDescriptorChecksum(desc directDescriptor) (string, error) {
 	desc.Checksum = ""
 	return directChecksumForMetadata(desc)
@@ -752,6 +804,19 @@ func directJournalChecksumValid(journal directJournal) bool {
 	}
 	checksum, err := directJournalChecksum(journal)
 	return err == nil && checksum == journal.Checksum
+}
+
+func directCleanupChecksum(cleanup directCleanupMetadata) (string, error) {
+	cleanup.Checksum = ""
+	return directChecksumForMetadata(cleanup)
+}
+
+func directCleanupChecksumValid(cleanup directCleanupMetadata) bool {
+	if cleanup.Checksum == "" {
+		return false
+	}
+	checksum, err := directCleanupChecksum(cleanup)
+	return err == nil && checksum == cleanup.Checksum
 }
 
 func directChecksumForMetadata(value any) (string, error) {
@@ -915,17 +980,90 @@ func directMetadataRecovery(metadataErr, journalErr error) directStatusProjectio
 	}
 }
 
-func directPendingCleanupExists(layout directLayout) bool {
+func directPendingCleanupProjection(layout directLayout) (directStatusProjection, FindingProjection, bool) {
+	hasPendingCleanup, cleanupIssue := inspectDirectPendingCleanup(layout)
+	if cleanupIssue != "" {
+		return directCleanupMetadataRecovery(cleanupIssue), directCleanupIssueFinding(cleanupIssue), true
+	}
+	if hasPendingCleanup {
+		return directCleanupPendingRecovery(), directCleanupPendingFinding(), true
+	}
+	return directStatusProjection{
+		activeOperation: directProjectionNone,
+		recovery:        directProjectionNone,
+	}, FindingProjection{}, false
+}
+
+func inspectDirectPendingCleanup(layout directLayout) (bool, string) {
 	entries, err := os.ReadDir(layout.cleanup)
+	if err != nil && !os.IsNotExist(err) {
+		return false, "non-convergent"
+	}
+	referencedBackups := map[string]struct{}{}
+	hasPendingCleanup := false
+	now := time.Now().UTC()
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			return false, "non-convergent"
+		}
+		cleanup, issue := inspectDirectPendingCleanupMarker(layout, filepath.Join(layout.cleanup, entry.Name()), now)
+		if issue != "" {
+			return false, issue
+		}
+		referencedBackups[cleanup.BackupHomeName] = struct{}{}
+		hasPendingCleanup = true
+	}
+	if issue := inspectDirectUnreferencedBackupSiblings(layout, referencedBackups); issue != "" {
+		return false, issue
+	}
+	return hasPendingCleanup, ""
+}
+
+func inspectDirectPendingCleanupMarker(layout directLayout, markerPath string, now time.Time) (directCleanupMetadata, string) {
+	cleanup, err := readDirectCleanupMetadata(layout, markerPath)
 	if err != nil {
-		return false
+		if os.IsNotExist(err) {
+			return directCleanupMetadata{}, "unreferenced"
+		}
+		return directCleanupMetadata{}, "non-convergent"
+	}
+	createdAt, err := time.Parse(time.RFC3339Nano, cleanup.CreatedAt)
+	if err != nil {
+		return directCleanupMetadata{}, "non-convergent"
+	}
+	if now.Sub(createdAt) > directPendingCleanupFreshWindow {
+		return directCleanupMetadata{}, "stale"
+	}
+	if err := requireRealDirectory(filepath.Join(filepath.Dir(layout.selector.Home), cleanup.BackupHomeName)); err != nil {
+		return directCleanupMetadata{}, "non-convergent"
+	}
+	return cleanup, ""
+}
+
+func inspectDirectUnreferencedBackupSiblings(layout directLayout, referencedBackups map[string]struct{}) string {
+	entries, err := os.ReadDir(filepath.Dir(layout.selector.Home))
+	if err != nil {
+		return ""
 	}
 	for _, entry := range entries {
-		if entry.IsDir() {
-			return true
+		name := entry.Name()
+		if !strings.HasPrefix(name, directRestoreBackupPrefix) {
+			continue
+		}
+		if !entry.IsDir() {
+			return "non-convergent"
+		}
+		if _, ok := referencedBackups[name]; !ok {
+			return "unreferenced"
 		}
 	}
-	return false
+	return ""
+}
+
+func validDirectRestoreBackupName(name string) bool {
+	return len(name) > len(directRestoreBackupPrefix) &&
+		strings.HasPrefix(name, directRestoreBackupPrefix) &&
+		filepath.Base(name) == name
 }
 
 func directCleanupPendingRecovery() directStatusProjection {
@@ -933,6 +1071,14 @@ func directCleanupPendingRecovery() directStatusProjection {
 		activeOperation: directProjectionNone,
 		recovery:        "cleanup_pending",
 		recoveryReason:  "direct restore cleanup pending",
+	}
+}
+
+func directCleanupMetadataRecovery(issue string) directStatusProjection {
+	return directStatusProjection{
+		activeOperation: directProjectionNone,
+		recovery:        "repair_metadata",
+		recoveryReason:  "direct restore cleanup " + issue,
 	}
 }
 
@@ -972,6 +1118,15 @@ func directCleanupPendingFinding() FindingProjection {
 	return FindingProjection{
 		Severity:  "warning",
 		Message:   "direct restore cleanup pending",
+		Retryable: false,
+	}
+}
+
+func directCleanupIssueFinding(issue string) FindingProjection {
+	return FindingProjection{
+		Code:      ErrorCodeMetadataInvalid,
+		Severity:  "error",
+		Message:   "direct restore cleanup " + issue,
 		Retryable: false,
 	}
 }
