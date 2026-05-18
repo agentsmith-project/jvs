@@ -28,6 +28,130 @@ Evidence classes:
 
 Raw logs and `coverage.out` are not stored here.
 
+## v0.4.10 - 2026-05-18
+
+### Release identity
+
+- Evidence class: GA candidate readiness
+- Status: not final
+- Publication state: not tagged and not published.
+- Candidate target tag: `v0.4.10`
+- Candidate scope: direct AFSCP contract improvements for AgentSmith file
+  library save point, restore, template, and Agent Task workspace flows.
+- Changelog heading date: `2026-05-18`
+- Baseline: direct AFSCP save/list/restore/clone/status/doctor primitives,
+  direct metadata ready state after init, direct version state simplification,
+  restore cleanup residue classification, and stable public v0 CLI continuity.
+- Source archive boundary: the `v0.4.10` source archive is the immutable source
+  archive for the release and records readiness from tag time.
+- Tag source archive evidence class: `GA candidate readiness`
+- publication final evidence: GitHub Release page and post-release main ledger
+  must record the workflow run, release state, assets, checksum validation,
+  signing identity, smoke, and coverage facts after publication.
+- Final evidence location: GitHub Release page and post-release main ledger.
+- Tag movement: `v0.4.10` must not be moved to add post-publication facts.
+- CI run link rule:
+  `https://github.com/agentsmith-project/jvs/actions/runs/<run_id>`
+- Canonical release URL rule:
+  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.10`
+- Canonical release URL example:
+  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.0`
+
+### Release gate summary
+
+Local candidate release gate command:
+`env -u NO_COLOR CI=true GITHUB_ACTIONS=true TERM=xterm-256color make release-gate`
+
+The table records required checks for candidate qualification. The final result
+is pending final tag publication and must be replaced by post-release evidence
+after the GitHub Release workflow publishes artifacts.
+
+| Check | Command or target | Candidate evidence |
+| --- | --- | --- |
+| Release gate | `make release-gate` | Required before tag publication |
+| Story e2e gate | `make story-e2e` plus `TestStoryE2EGate_CoversRegularUserStories` | Required through release-gate suite |
+| Docs contract | `make docs-contract` | Required through release-gate suite |
+| CI contract | `make ci-contract` | Required through release-gate suite |
+| Race tests | `make test-race` | Required through release-gate suite |
+| Coverage | `make test-cover` | Coverage total must meet the configured threshold |
+| Lint | `make lint` | Required through release-gate suite |
+| Build | `make build` | Required through release-gate suite |
+| Release cross-build | `make release-build` | Required to produce platform binaries |
+| Release binary smoke | `make release-binary-smoke` | Required against release-built Linux artifact |
+| Conformance | `make conformance` | Required through release-gate suite |
+| Library facade | `make library` | Required through release-gate suite |
+| Regression | `make regression` | Required through release-gate suite |
+| Fuzz ordinary tests | `make fuzz-tests` | Required through release-gate suite |
+| Fuzz smoke | `make fuzz` | Required through release-gate suite |
+| Artifact publication | GitHub Release workflow | Pending final tag publication |
+| Signing | cosign bundle publication and verification guidance | Pending final tag publication |
+| Runbook | `docs/13_OPERATION_RUNBOOK.md` | Candidate docs contract input |
+
+### Coverage
+
+- Coverage total: pending final release-gate measurement.
+- Coverage threshold: `60.0%`
+- Evidence command: `make test-cover`
+- Evidence source: candidate `make release-gate` output.
+
+### Representative repo evidence
+
+- Representative repo evidence source: candidate `make release-gate`, including
+  conformance, regression, and release-binary-smoke targets.
+- Representative repo coverage: save point history, strict doctor, integrity
+  checks, restore and recovery behavior, runtime repair path, direct AFSCP
+  save/list/restore/clone/status/doctor behavior, story-e2e gate coverage, and
+  release-binary smoke coverage.
+- Doctor command: `jvs doctor --strict`
+- Migration repair command for copied repos:
+  `jvs doctor --strict --repair-runtime`
+- Integrity, recovery, direct AFSCP, and runtime repair evidence are required
+  through the release-gate suite before final publication.
+
+### GA docs evidence
+
+- GA docs readiness scope: `docs/99_CHANGELOG.md`, this ledger, conformance
+  story coverage, and CI contract coverage define the release evidence contract
+  for `v0.4.10`.
+- Changelog scope: direct AFSCP contract improvements, direct metadata ready
+  state after init, direct version state simplification, restore cleanup residue
+  classification, and stable public v0 CLI continuity.
+- Runtime-state migration boundary: non-portable JVS runtime state remains
+  destination-local and must be rebuilt at the destination with
+  `jvs doctor --strict --repair-runtime`.
+
+### Artifact and signing evidence
+
+- Artifact workflow: `.github/workflows/ci.yml` release job for tag
+  `v0.4.10`.
+- Expected release artifacts: `jvs-linux-amd64`, `jvs-linux-amd64.bundle`,
+  `jvs-linux-arm64`, `jvs-linux-arm64.bundle`, `jvs-darwin-amd64`,
+  `jvs-darwin-amd64.bundle`, `jvs-darwin-arm64`,
+  `jvs-darwin-arm64.bundle`, `jvs-windows-amd64.exe`,
+  `jvs-windows-amd64.exe.bundle`, `SHA256SUMS`, and `SHA256SUMS.bundle`.
+- Required checksum command after publication:
+  `sha256sum --check --strict SHA256SUMS`
+- Required binary smoke after publication: `jvs-linux-amd64 --help`.
+- Signing verification uses cosign bundle files and certificate identity
+  `https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@refs/tags/v0.4.10`
+  with OIDC issuer `https://token.actions.githubusercontent.com`.
+- Local signature verification: no local cosign verification is claimed in this
+  candidate source archive.
+
+### Risk labels
+
+- `integrity`: descriptor checksum and content hash detect independent
+  corruption; coordinated descriptor-plus-checksum rewrite remains a v0
+  residual risk.
+- `migration`: non-portable JVS runtime state is destination-local and must be
+  rebuilt at the fresh destination with
+  `jvs doctor --strict --repair-runtime`.
+- `recovery`: interrupted restore and direct AFSCP recovery state are expected
+  to fail closed before another mutating operation continues in the same repo
+  or workspace.
+- `usability`: this release is primarily for AgentSmith/AFSCP trusted platform
+  flows; public user workflows continue to use the stable v0 commands.
+
 ## v0.4.8 - 2026-05-05
 
 ### Release identity

@@ -3812,11 +3812,6 @@ func TestDocs_ReleaseEvidenceV048FinalReleaseRecordsPublishedRelease(t *testing.
 	const runURL = "https://github.com/agentsmith-project/jvs/actions/runs/25369519260"
 	const releaseURL = "https://github.com/agentsmith-project/jvs/releases/tag/v0.4.8"
 
-	latestHeading := latestChangelogHeading(t)
-	if latestHeading != heading {
-		t.Fatalf("latest changelog entry must be the v0.4.8 final GA release heading %q, got %q", heading, latestHeading)
-	}
-
 	changelog := readRepoFile(t, "docs/99_CHANGELOG.md")
 	if !strings.Contains(changelog, previousFinalHeading) {
 		t.Fatalf("changelog must retain the historical v0.4.7 final GA release heading %q", previousFinalHeading)

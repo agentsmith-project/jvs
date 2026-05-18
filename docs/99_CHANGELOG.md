@@ -5,6 +5,92 @@ as active reader content for the published GA line. The active product
 vocabulary is folder, workspace, save point, save, history, view, restore,
 recovery plan, doctor, and cleanup.
 
+## v0.4.10 - 2026-05-18
+
+### Highlights
+
+- Publishes the direct AFSCP contract improvements needed by AgentSmith file
+  library save point, restore, template, and Agent Task workspace flows.
+- Adds direct AFSCP restore and clone primitives so trusted platform callers can
+  save, list, restore, clone, inspect status, and run doctor checks through the
+  internal `jvs afscp` surface without using the public preview/run workflow.
+- Fixes direct metadata readiness after repository initialization so AFSCP can
+  treat a newly initialized repository as usable without requiring a save point
+  first.
+- Simplifies direct AFSCP version state and keeps restore cleanup residue
+  classification aligned with AFSCP recovery semantics.
+- Keeps the stable public v0 CLI contract unchanged; these changes are for the
+  internal trusted AFSCP integration surface documented in
+  `docs/contracts/jvs-afscp-direct-v1.md`.
+- Release-facing identity remains `github.com/agentsmith-project/jvs`; release
+  URLs use the canonical GitHub project, for example
+  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.0`.
+
+### Breaking changes
+
+- None for the stable v0 public CLI contract.
+
+### Known limitations
+
+- Direct AFSCP commands remain an internal trusted platform contract, not a
+  public user workflow.
+- v0 still does not include remote push/pull, in-JVS signing commands, public
+  partial-save contracts, compression contracts, merge/rebase, or complex
+  retention policy flags.
+- Complex retention policy flags remain outside the v0 contract.
+
+### Risk labels
+
+- `integrity`: descriptor checksum and content hash detect independent
+  corruption; coordinated descriptor-plus-checksum rewrite remains a v0
+  residual risk.
+- `migration`: non-portable JVS runtime state is destination-local and must be
+  rebuilt at the fresh destination with
+  `jvs doctor --strict --repair-runtime`.
+- `recovery`: interrupted restore and direct AFSCP recovery state are expected
+  to fail closed before another mutating operation continues in the same repo
+  or workspace.
+- `usability`: this release is primarily for AgentSmith/AFSCP trusted platform
+  flows; public user workflows continue to use the stable v0 commands.
+
+### Migration notes
+
+- Existing repositories do not need an on-disk migration for `v0.4.10`.
+- AgentSmith/AFSCP should pin the published `v0.4.10` `jvs-linux-amd64`
+  release artifact instead of relying on a sibling checkout or local build.
+- After upgrading, run `jvs doctor --strict` on a representative repo before
+  relying on it for release workflows.
+
+### Release evidence
+
+- See the [release evidence ledger](RELEASE_EVIDENCE.md#v0410---2026-05-18)
+  for the `v0.4.10` candidate readiness record.
+- Source archive boundary: the `v0.4.10` source archive is the immutable source
+  archive for the release and records readiness from tag time.
+- Tag source archive evidence class: `GA candidate readiness`
+- publication final evidence is recorded on the GitHub Release page and in the
+  post-release main ledger after the release exists.
+- Final evidence location: GitHub Release page and post-release main ledger.
+- Tag movement: `v0.4.10` must not be moved to add post-publication facts.
+- Local release qualification must use
+  `env -u NO_COLOR CI=true GITHUB_ACTIONS=true TERM=xterm-256color make release-gate`.
+
+### Release artifacts
+
+- Candidate target tag: `v0.4.10`
+- Expected release URL:
+  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.10`
+- Expected artifacts: `jvs-linux-amd64`, `jvs-linux-amd64.bundle`,
+  `jvs-linux-arm64`, `jvs-linux-arm64.bundle`, `jvs-darwin-amd64`,
+  `jvs-darwin-amd64.bundle`, `jvs-darwin-arm64`,
+  `jvs-darwin-arm64.bundle`, `jvs-windows-amd64.exe`,
+  `jvs-windows-amd64.exe.bundle`, `SHA256SUMS`, and `SHA256SUMS.bundle`.
+- Release verification must include `sha256sum --check --strict SHA256SUMS`
+  and `./jvs-linux-amd64 --help`.
+- Signing verification uses cosign bundle files and the GitHub Actions OIDC
+  issuer `https://token.actions.githubusercontent.com`; local cosign
+  verification is not claimed in this source archive.
+
 ## v0.4.8 - 2026-05-05
 
 ### Highlights
