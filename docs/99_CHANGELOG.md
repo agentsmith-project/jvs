@@ -64,32 +64,37 @@ recovery plan, doctor, and cleanup.
 ### Release evidence
 
 - See the [release evidence ledger](RELEASE_EVIDENCE.md#v0410---2026-05-18)
-  for the `v0.4.10` candidate readiness record.
-- Source archive boundary: the `v0.4.10` source archive is the immutable source
-  archive for the release and records readiness from tag time.
+  for the `v0.4.10` final release evidence.
+- Source archive boundary: the `v0.4.10` source archive is the immutable source archive
+  for the release and records readiness from tag time.
 - Tag source archive evidence class: `GA candidate readiness`
 - publication final evidence is recorded on the GitHub Release page and in the
-  post-release main ledger after the release exists.
+  post-release main ledger.
 - Final evidence location: GitHub Release page and post-release main ledger.
-- Tag movement: `v0.4.10` must not be moved to add post-publication facts.
-- Local release qualification must use
+- Tag movement: `v0.4.10` was not moved; the tag was not moved to add
+  post-publication facts. Those facts live in the GitHub Release page and
+  post-release main ledger.
+- Final release qualification used
   `env -u NO_COLOR CI=true GITHUB_ACTIONS=true TERM=xterm-256color make release-gate`.
+- GitHub Release workflow run:
+  `https://github.com/agentsmith-project/jvs/actions/runs/26012602687`.
 
 ### Release artifacts
 
-- Candidate target tag: `v0.4.10`
-- Expected release URL:
+- Published tag: `v0.4.10`
+- Final tagged commit: `6a0f7628764ce2430b2b754a7375ca67f637ad08`
+- Release URL:
   `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.10`
-- Expected artifacts: `jvs-linux-amd64`, `jvs-linux-amd64.bundle`,
+- Published artifact count: `12`
+- Published artifacts: `jvs-linux-amd64`, `jvs-linux-amd64.bundle`,
   `jvs-linux-arm64`, `jvs-linux-arm64.bundle`, `jvs-darwin-amd64`,
   `jvs-darwin-amd64.bundle`, `jvs-darwin-arm64`,
   `jvs-darwin-arm64.bundle`, `jvs-windows-amd64.exe`,
   `jvs-windows-amd64.exe.bundle`, `SHA256SUMS`, and `SHA256SUMS.bundle`.
-- Release verification must include `sha256sum --check --strict SHA256SUMS`
-  and `./jvs-linux-amd64 --help`.
+- Release verification includes `sha256sum --check --strict SHA256SUMS` and
+  `./jvs-linux-amd64 --help`.
 - Signing verification uses cosign bundle files and the GitHub Actions OIDC
-  issuer `https://token.actions.githubusercontent.com`; local cosign
-  verification is not claimed in this source archive.
+  issuer `https://token.actions.githubusercontent.com`.
 
 ## v0.4.8 - 2026-05-05
 

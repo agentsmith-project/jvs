@@ -32,24 +32,30 @@ Raw logs and `coverage.out` are not stored here.
 
 ### Release identity
 
-- Evidence class: GA candidate readiness
-- Status: not final
-- Publication state: not tagged and not published.
-- Candidate target tag: `v0.4.10`
-- Candidate scope: direct AFSCP contract improvements for AgentSmith file
-  library save point, restore, template, and Agent Task workspace flows.
+- Evidence class: Final release evidence
+- Status: PASS
+- Tag: `v0.4.10`
+- Final tagged commit: `6a0f7628764ce2430b2b754a7375ca67f637ad08`
+- Commit message: `release: prepare jvs v0.4.10`
+- Tag object: `c75dc5cae9f400b4052a012bfb3470fa24ff8ac0`
+- Annotated tag subject: `Release v0.4.10`
+- Tagger date: `2026-05-17 20:54:20 -0700`
 - Changelog heading date: `2026-05-18`
-- Baseline: direct AFSCP save/list/restore/clone/status/doctor primitives,
-  direct metadata ready state after init, direct version state simplification,
-  restore cleanup residue classification, and stable public v0 CLI continuity.
-- Source archive boundary: the `v0.4.10` source archive is the immutable source
-  archive for the release and records readiness from tag time.
+- Baseline: direct AFSCP contract improvements for AgentSmith file
+  library save point, restore, template, and Agent Task workspace flows.
+  Direct save/list/restore/clone/status/doctor primitives, direct metadata
+  ready state after init, direct version state simplification, restore cleanup
+  residue classification, and stable public v0 CLI continuity are included.
+- Source archive boundary: the `v0.4.10` source archive is the immutable source archive
+  for the release and records readiness from tag time.
 - Tag source archive evidence class: `GA candidate readiness`
 - publication final evidence: GitHub Release page and post-release main ledger
-  must record the workflow run, release state, assets, checksum validation,
-  signing identity, smoke, and coverage facts after publication.
+  record the workflow run, release state, assets, checksum validation, signing
+  identity, smoke, and coverage facts created after publication.
 - Final evidence location: GitHub Release page and post-release main ledger.
-- Tag movement: `v0.4.10` must not be moved to add post-publication facts.
+- Tag movement: `v0.4.10` was not moved; the tag was not moved to add
+  post-publication facts. Those facts live in the GitHub Release page and
+  post-release main ledger.
 - CI run link rule:
   `https://github.com/agentsmith-project/jvs/actions/runs/<run_id>`
 - Canonical release URL rule:
@@ -59,44 +65,47 @@ Raw logs and `coverage.out` are not stored here.
 
 ### Release gate summary
 
-Local candidate release gate command:
+Local final release gate command:
 `env -u NO_COLOR CI=true GITHUB_ACTIONS=true TERM=xterm-256color make release-gate`
 
-The table records required checks for candidate qualification. The final result
-is pending final tag publication and must be replaced by post-release evidence
-after the GitHub Release workflow publishes artifacts.
+Local final release gate result: `RELEASE GATE PASSED`.
 
-| Check | Command or target | Candidate evidence |
+The table records the final release-gate evidence source. Rows marked
+"PASS via release-gate suite" were qualified by the final local release gate
+and, where noted, by the tag workflow run.
+
+| Check | Command or target | Final evidence |
 | --- | --- | --- |
-| Release gate | `make release-gate` | Required before tag publication |
-| Story e2e gate | `make story-e2e` plus `TestStoryE2EGate_CoversRegularUserStories` | Required through release-gate suite |
-| Docs contract | `make docs-contract` | Required through release-gate suite |
-| CI contract | `make ci-contract` | Required through release-gate suite |
-| Race tests | `make test-race` | Required through release-gate suite |
-| Coverage | `make test-cover` | Coverage total must meet the configured threshold |
-| Lint | `make lint` | Required through release-gate suite |
-| Build | `make build` | Required through release-gate suite |
-| Release cross-build | `make release-build` | Required to produce platform binaries |
-| Release binary smoke | `make release-binary-smoke` | Required against release-built Linux artifact |
-| Conformance | `make conformance` | Required through release-gate suite |
-| Library facade | `make library` | Required through release-gate suite |
-| Regression | `make regression` | Required through release-gate suite |
-| Fuzz ordinary tests | `make fuzz-tests` | Required through release-gate suite |
-| Fuzz smoke | `make fuzz` | Required through release-gate suite |
-| Artifact publication | GitHub Release workflow | Pending final tag publication |
-| Signing | cosign bundle publication and verification guidance | Pending final tag publication |
-| Runbook | `docs/13_OPERATION_RUNBOOK.md` | Candidate docs contract input |
+| Release gate | `make release-gate` | PASS; local result `RELEASE GATE PASSED`; tag workflow release run `26012602687` published the release |
+| Story e2e gate | `make story-e2e` plus `TestStoryE2EGate_CoversRegularUserStories` | PASS via release-gate suite |
+| Docs contract | `make docs-contract` | PASS via release-gate suite |
+| CI contract | `make ci-contract` | PASS via release-gate suite |
+| Race tests | `make test-race` | PASS via release-gate suite |
+| Coverage | `make test-cover` | PASS; local post-release refresh measured `71.0% >= 60%` |
+| Lint | `make lint` | PASS via release-gate suite |
+| Build | `make build` | PASS via release-gate suite |
+| Release cross-build | `make release-build` | PASS via release-gate suite; release job published five platform binaries |
+| Release binary smoke | `make release-binary-smoke` | PASS via release-gate suite and release-built Linux artifact smoke |
+| Conformance | `make conformance` | PASS via release-gate suite |
+| Library facade | `make library` | PASS via release-gate suite |
+| Regression | `make regression` | PASS via release-gate suite |
+| Fuzz ordinary tests | `make fuzz-tests` | PASS via release-gate suite |
+| Fuzz smoke | `make fuzz` | PASS via release-gate suite |
+| Artifact publication | GitHub Release workflow | PASS; GitHub Release `v0.4.10`, `draft=false`, `prerelease=false` |
+| Signing | cosign bundle publication and verification guidance | PASS; bundle assets published for binaries and `SHA256SUMS` |
+| Runbook | `docs/13_OPERATION_RUNBOOK.md` | PASS via docs contract input |
 
 ### Coverage
 
-- Coverage total: pending final release-gate measurement.
+- Coverage total: `71.0%`
 - Coverage threshold: `60.0%`
 - Evidence command: `make test-cover`
-- Evidence source: candidate `make release-gate` output.
+- Evidence source: local post-release ledger refresh check.
+- Evidence summary: `71.0% >= 60%`.
 
 ### Representative repo evidence
 
-- Representative repo evidence source: candidate `make release-gate`, including
+- Representative repo evidence source: final local `make release-gate`, including
   conformance, regression, and release-binary-smoke targets.
 - Representative repo coverage: save point history, strict doctor, integrity
   checks, restore and recovery behavior, runtime repair path, direct AFSCP
@@ -106,11 +115,11 @@ after the GitHub Release workflow publishes artifacts.
 - Migration repair command for copied repos:
   `jvs doctor --strict --repair-runtime`
 - Integrity, recovery, direct AFSCP, and runtime repair evidence are required
-  through the release-gate suite before final publication.
+  through the release-gate suite before publication.
 
 ### GA docs evidence
 
-- GA docs readiness scope: `docs/99_CHANGELOG.md`, this ledger, conformance
+- GA docs scope: `docs/99_CHANGELOG.md`, this ledger, conformance
   story coverage, and CI contract coverage define the release evidence contract
   for `v0.4.10`.
 - Changelog scope: direct AFSCP contract improvements, direct metadata ready
@@ -122,21 +131,30 @@ after the GitHub Release workflow publishes artifacts.
 
 ### Artifact and signing evidence
 
-- Artifact workflow: `.github/workflows/ci.yml` release job for tag
-  `v0.4.10`.
-- Expected release artifacts: `jvs-linux-amd64`, `jvs-linux-amd64.bundle`,
+- Release URL:
+  `https://github.com/agentsmith-project/jvs/releases/tag/v0.4.10`
+- Release state: `draft=false`, `prerelease=false`
+- Release listing: GitHub release list shows `v0.4.10` as Latest.
+- Workflow run: `https://github.com/agentsmith-project/jvs/actions/runs/26012602687`
+- Artifact workflow: `.github/workflows/ci.yml` release job in tag workflow run
+  `26012602687`.
+- Published artifact count: `12`
+- Published artifacts: `jvs-linux-amd64`, `jvs-linux-amd64.bundle`,
   `jvs-linux-arm64`, `jvs-linux-arm64.bundle`, `jvs-darwin-amd64`,
   `jvs-darwin-amd64.bundle`, `jvs-darwin-arm64`,
   `jvs-darwin-arm64.bundle`, `jvs-windows-amd64.exe`,
   `jvs-windows-amd64.exe.bundle`, `SHA256SUMS`, and `SHA256SUMS.bundle`.
-- Required checksum command after publication:
+- Published `jvs-linux-amd64` SHA-256:
+  `fa4ada8e3353f85679d13870ea53307caafbd8217b04ba576b185105d9178cef`
+- Published `SHA256SUMS` asset digest:
+  `sha256:d06c908e58011952cf0bdfb16e42ef1b0672296dd8228ae821ee08df0ceddf0d`
+- Published asset validation command:
   `sha256sum --check --strict SHA256SUMS`
-- Required binary smoke after publication: `jvs-linux-amd64 --help`.
+- Published binary smoke: `jvs-linux-amd64 --help`.
 - Signing verification uses cosign bundle files and certificate identity
   `https://github.com/agentsmith-project/jvs/.github/workflows/ci.yml@refs/tags/v0.4.10`
   with OIDC issuer `https://token.actions.githubusercontent.com`.
-- Local signature verification: no local cosign verification is claimed in this
-  candidate source archive.
+- GitHub Release page records the same signing identity and release asset set.
 
 ### Risk labels
 
